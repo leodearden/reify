@@ -1311,6 +1311,18 @@ impl Engine {
         &self.last_eval_set
     }
 
+    /// Access the most recent passive would-prune measurement (task 4532),
+    /// recorded at the end of each `edit_param` (and thus `edit_check`).
+    ///
+    /// `None` before the first edit. NON-cfg-gated (mirrors `last_eval_set`):
+    /// the GUI production build reads this to ship the selective-demand
+    /// measurement DTO. The measurement is OBSERVATIONAL ONLY — it reflects what
+    /// a selective-demand scheduler WOULD prune given the observed-demand cone,
+    /// and never affects evaluation results.
+    pub fn last_demand_prune_measurement(&self) -> Option<&crate::DemandPruneMeasurement> {
+        self.last_demand_prune_measurement.as_ref()
+    }
+
     /// **Test-instrumentation only — not a stable public metric.**
     ///
     /// Count of non-skipped guarded-group iterations across Phase 1 and Phase 3

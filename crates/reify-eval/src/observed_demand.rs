@@ -60,6 +60,45 @@ impl WouldPruneByKind {
     }
 }
 
+/// Compute the passive would-prune measurement for a production `eval_set`
+/// against an `observed`-demand cone.
+///
+/// OBSERVATIONAL ONLY. This function reads `eval_set` and `observed` and returns
+/// a measurement; it mutates nothing and its result is NEVER fed back into
+/// `compute_eval_set`. A node of the production eval-set is "retained" if it is
+/// in the observed cone (a selective-demand scheduler would still evaluate it),
+/// otherwise it is counted as "would-prune" under its `NodeId` kind. The
+/// exhaustive `match` on `NodeId` makes a future variant a compile error here,
+/// forcing a reviewed per-kind classification.
+///
+/// Invariant: `result.observed_retained + result.would_prune.total()
+/// == result.eval_set_size`.
+pub(crate) fn measure_would_prune(
+    eval_set: &[NodeId],
+    observed: &DemandRegistry,
+) -> DemandPruneMeasurement {
+    let mut retained = 0usize;
+    let mut wp = WouldPruneByKind::default();
+    for node in eval_set {
+        if observed.is_demanded(node) {
+            retained += 1;
+        } else {
+            match node {
+                NodeId::Value(_) => wp.value += 1,
+                NodeId::Constraint(_) => wp.constraint += 1,
+                NodeId::Realization(_) => wp.realization += 1,
+                NodeId::Resolution(_) => wp.resolution += 1,
+                NodeId::Compute(_) => wp.compute += 1,
+            }
+        }
+    }
+    DemandPruneMeasurement {
+        eval_set_size: eval_set.len(),
+        observed_retained: retained,
+        would_prune: wp,
+    }
+}
+
 /// Engine-level observed-demand side-channel (task 4532).
 ///
 /// These methods operate EXCLUSIVELY on `self.observed_demand` — they never

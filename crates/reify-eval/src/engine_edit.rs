@@ -1936,6 +1936,23 @@ impl Engine {
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
 
+        // Task 4532: passive would-prune measurement (selective-demand
+        // precondition). OBSERVATIONAL ONLY — this block reads the FINAL
+        // production eval-set (`self.last_eval_set`, post early-cutoff skipping
+        // and post wave-2) and the observed-demand cone, and records the
+        // resulting measurement in `self.last_demand_prune_measurement`. It must
+        // NEVER feed `compute_eval_set` and must NOT mutate any returned state
+        // (values / new_snapshot / cache / demand): the observed cone is a pure
+        // side-channel. Computing from the FINAL eval-set makes
+        // `observed_retained + Σwould_prune == eval_set_size` hold by
+        // construction. The two field borrows (`&self.last_eval_set`,
+        // `&self.observed_demand`) are disjoint, so this is NLL-OK.
+        let measurement = crate::observed_demand::measure_would_prune(
+            &self.last_eval_set,
+            &self.observed_demand,
+        );
+        self.last_demand_prune_measurement = Some(measurement);
+
         // task 4530: if the collection-count re-elaboration phase mutated the
         // graph (added/removed instance cells or emitted/drained forall
         // constraints), rebuild reverse_index, trace_map, and demand against
