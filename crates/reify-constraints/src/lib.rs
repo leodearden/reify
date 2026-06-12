@@ -45,10 +45,21 @@ use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, Constr
 ///
 /// Returns:
 /// - `(true, names)` — at least one leaf is `Undef`; `names` lists the undefined
-///   cell names (deduped, stable declaration order) via `ValueCellId::Display`.
+///   cell names (deduped, sorted alphabetically) via `ValueCellId::Display`.
 /// - `(false, kinds)` — all leaves are defined (or the expression has no ValueRefs);
 ///   `kinds` lists the distinct `value_kind_label` strings of the defined leaf values
-///   (deduped, stable declaration order).
+///   (deduped, sorted alphabetically).
+///
+/// ## CrossSubGeometryRef
+/// `CompiledExpr::collect_value_refs()` collects both `ValueRef` and
+/// `CrossSubGeometryRef` leaf IDs. A `CrossSubGeometryRef` that is absent from the
+/// `ValueMap` resolves to `Value::Undef` via `get_or_undef` and is reported as an
+/// undefined input cell — the same as any missing ordinary input cell. In practice,
+/// constraint expressions evaluated by `SimpleConstraintChecker` in M1 do not contain
+/// `CrossSubGeometryRef` leaves (those are emitted exclusively for sub-geometry stamp
+/// access and are resolved before constraint checking). The behaviour is therefore
+/// correct for the current call sites; this comment documents the contract so future
+/// callers are aware that cross-sub geometry refs will surface here if present.
 fn classify_undef(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -77,8 +88,10 @@ fn classify_undef(
     }
 
     if !undef_names.is_empty() {
+        undef_names.sort();
         (true, undef_names)
     } else {
+        defined_kinds.sort();
         (false, defined_kinds)
     }
 }
