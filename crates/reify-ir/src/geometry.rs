@@ -7009,6 +7009,24 @@ mod tests {
         }
     }
 
+    /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`
+    /// when called through a trait object on a kernel that does not override it.
+    ///
+    /// Mirrors the `ingest_mesh_default_returns_does_not_accept_via_trait_object`
+    /// pattern.  Pins realization-read-api.md §3.3 (δ): kernels that never set up
+    /// a voxel grid must propagate honest failure, not panic or silently return a
+    /// fabricated field.
+    #[test]
+    fn densify_grid_to_sampled_default_returns_query_failed_via_trait_object() {
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(DefaultsOnlyKernel);
+        let result = boxed.densify_grid_to_sampled(GeometryHandleId(1));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from default \
+             densify_grid_to_sampled; got: {result:?}",
+        );
+    }
+
     // ── STL serializer unit tests ────────────────────────────────────────────
 
     /// Helper: parse a u32 from little-endian bytes at `buf[offset..offset+4]`.
