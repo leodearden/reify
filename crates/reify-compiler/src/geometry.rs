@@ -238,7 +238,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
         | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" | "fillet_all" => &[0],
+        | "fillet" | "fillet_all" | "zone_slab" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1692,9 +1692,10 @@ pub(crate) fn compile_geometry_call(
             sub_ops,
         ),
         // --- Modify extensions ---
-        // All five modifiers take a geometry target as their first argument (correctly
+        // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all"
+        | "zone_slab" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1843,6 +1844,7 @@ mod tests {
         "chamfer",
         "fillet",
         "fillet_all",
+        "zone_slab",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1909,7 +1911,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 46;
+    const EXPECTED_DISPATCH_COUNT: usize = 47;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

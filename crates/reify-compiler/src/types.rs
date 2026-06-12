@@ -1269,6 +1269,7 @@ pub enum ModifyKind {
     Shell,
     Draft,
     Thicken,
+    ZoneSlab,
     OffsetSolid,
 }
 
@@ -1286,12 +1287,13 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Fillet,
         Self::Chamfer,
         Self::Shell,
         Self::Draft,
         Self::Thicken,
+        Self::ZoneSlab,
         Self::OffsetSolid,
     ];
 
@@ -1311,6 +1313,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Shell => f.write_str("shell"),
             ModifyKind::Draft => f.write_str("draft"),
             ModifyKind::Thicken => f.write_str("thicken"),
+            ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
         }
     }
@@ -1638,6 +1641,7 @@ mod kind_display_tests {
             (ModifyKind::Shell, "shell"),
             (ModifyKind::Draft, "draft"),
             (ModifyKind::Thicken, "thicken"),
+            (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
         ]);
     }

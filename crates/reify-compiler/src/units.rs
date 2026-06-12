@@ -64,6 +64,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "wedge",
     "rectangle",
     "circle",
+    "zone_slab",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {

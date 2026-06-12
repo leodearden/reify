@@ -106,6 +106,7 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (ModifyShell, ReprKind::BRep),
         (ModifyDraft, ReprKind::BRep),
         (ModifyThicken, ReprKind::BRep),
+        (ModifyZoneSlab, ReprKind::BRep),
         (ModifyOffsetSolid, ReprKind::BRep),
         // Transform ×4
         (TransformTranslate, ReprKind::BRep),

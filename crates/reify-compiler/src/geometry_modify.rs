@@ -82,6 +82,17 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // zone_slab(face, width) — offset face ±w/2 and cap into a centered slab solid
+        "zone_slab" => compile_modify_2arg(
+            "zone_slab",
+            ModifyKind::ZoneSlab,
+            "width",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // offset_solid(target, distance)
         "offset_solid" => compile_modify_2arg(
             "offset_solid",
@@ -566,6 +577,7 @@ mod tests {
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
+            (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
             (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
@@ -583,6 +595,7 @@ mod tests {
             | ModifyKind::Thicken
             | ModifyKind::Shell
             | ModifyKind::Draft
+            | ModifyKind::ZoneSlab
             | ModifyKind::OffsetSolid => (),
         };
         CASES

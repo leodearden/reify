@@ -1125,7 +1125,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
@@ -1196,7 +1197,8 @@ fn substitute_op_parents(
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
-        | GeometryOp::Shell { target, .. } => {
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => {
             sub(target);
         }
 
@@ -1338,6 +1340,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
         GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
         // Transform
@@ -1425,7 +1428,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1515,6 +1518,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
+            ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
@@ -6507,6 +6511,7 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyZoneSlab, ReprKind::BRep),
                 (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
                 (Operation::TransformRotate, ReprKind::BRep),
@@ -9981,6 +9986,14 @@ mod tests {
                 label: "Shell → [target]",
             },
             Case {
+                op: GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(90),
+                    width: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(90)],
+                label: "ZoneSlab → [target]",
+            },
+            Case {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
                     angle: Value::Real(0.1),
@@ -10348,6 +10361,14 @@ mod tests {
                 },
                 expected: Operation::ModifyThicken,
                 label: "Thicken → ModifyThicken",
+            },
+            Case {
+                op: GeometryOp::ZoneSlab {
+                    target: h(1),
+                    width: r(0.002),
+                },
+                expected: Operation::ModifyZoneSlab,
+                label: "ZoneSlab → ModifyZoneSlab",
             },
             Case {
                 op: GeometryOp::OffsetSolid {
@@ -12400,6 +12421,7 @@ mod mixed_region_tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
         ] {
             assert!(

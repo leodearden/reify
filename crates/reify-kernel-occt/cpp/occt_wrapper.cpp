@@ -2077,7 +2077,72 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     });
 }
 
-// --- Thicken / Shell / Offset Solid ---
+// --- zone_slab / Thicken / Shell / Offset Solid ---
+
+// Create a centered slab solid from a face by extruding ±width/2 about the face plane.
+// Algorithm: extract the face normal, translate the face by -width/2 in the normal
+// direction (centering), then extrude by width in the normal direction using
+// BRepPrimAPI_MakePrism.  This is the correct OCCT approach for face→solid; the
+// PerformBySimple path is for shells/solids (used by thicken_shape below).
+//
+// Planar face guarantee: for a planar face the result is a right prism (closed solid)
+// with V = width·Area exactly (GProp-analytic); centroid.z ≈ 0 (symmetric centering).
+// Curved face guarantee: for a surface patch (e.g. cylindrical) the result is a
+// non-degenerate extruded solid with volume > 0 (PRD G6 smoke bar).
+//
+// NOTE — approximation for curved faces: this implementation extracts a single surface
+// normal at the first (U,V) parameter and extrudes the entire face along that one
+// constant direction (a linear prism).  For planar faces this is exact (the normal is
+// uniform and the prism is a right slab).  For curved patches (e.g. cylindrical) the
+// result is a linear sweep of the curved profile, NOT a true ±width/2 offset zone about
+// the surface.  Proper curved-face zone semantics (e.g. via BRepOffsetAPI_MakeOffsetShape
+// thick-shell of the surface) are deferred; task θ owns the full §9 accuracy matrix.
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) {
+    return wrap_occt_call("zone_slab_shape", [&]() {
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("zone_slab_shape: width must be finite and positive");
+        }
+
+        // Step 1: extract the face normal at the first point on the surface.
+        gp_Dir normal(0.0, 0.0, 1.0); // fallback: +Z
+        {
+            TopExp_Explorer ex(face.shape, TopAbs_FACE);
+            if (ex.More()) {
+                BRepAdaptor_Surface surf(TopoDS::Face(ex.Current()));
+                gp_Vec du, dv;
+                gp_Pnt p;
+                surf.D1(surf.FirstUParameter(), surf.FirstVParameter(), p, du, dv);
+                gp_Vec n = du.Crossed(dv);
+                if (n.Magnitude() > 1e-12) {
+                    normal = gp_Dir(n);
+                }
+            }
+        }
+
+        // Step 2: translate the face by -width/2 in the normal direction so the
+        // slab will be centered ±width/2 about the nominal face plane.
+        // (For curved faces this uses the single extracted normal — see approximation note above.)
+        gp_Vec shift(normal);
+        shift.Multiply(-width / 2.0);
+        gp_Trsf trsf;
+        trsf.SetTranslation(shift);
+        BRepBuilderAPI_Transform mover(face.shape, trsf, /*copy=*/Standard_True);
+        TopoDS_Shape start_face = mover.Shape();
+
+        // Step 3: extrude the translated face by width in the normal direction to
+        // produce the slab solid.
+        gp_Vec extrusion(normal);
+        extrusion.Multiply(width);
+        BRepPrimAPI_MakePrism prism(start_face, extrusion);
+        if (!prism.IsDone()) {
+            throw std::runtime_error("zone_slab_shape: BRepPrimAPI_MakePrism failed");
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = prism.Shape();
+        return result;
+    });
+}
 
 std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance) {
     return wrap_occt_call("offset_solid_shape", [&]() {
@@ -2237,6 +2302,33 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
         BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
         if (!faceBuilder.IsDone()) {
             throw std::runtime_error("make_circle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height) {
+    return wrap_occt_call("make_cylindrical_face", [&]() {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: radius must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: height must be finite and positive");
+        }
+        // Open lateral cylindrical face: axis = +Z, base at origin.
+        // U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+        gp_Ax3 axes(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+        Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(axes, radius);
+        BRepBuilderAPI_MakeFace faceBuilder(
+            cyl,
+            0.0, 2.0 * M_PI,  // U: full revolution
+            0.0, height,       // V: 0..height
+            /*tolerance=*/1e-7
+        );
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_cylindrical_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
