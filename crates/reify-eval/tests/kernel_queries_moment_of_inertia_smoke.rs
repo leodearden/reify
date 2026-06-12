@@ -6,7 +6,7 @@
 //! ```ri
 //! structure def MomentOfInertiaBox {
 //!     let b = box(50mm, 30mm, 10mm)
-//!     let steel_density = 7850.0
+//!     let steel_density = 7850kg/m^3
 //!     let i = moment_of_inertia(b, steel_density)
 //! }
 //! ```

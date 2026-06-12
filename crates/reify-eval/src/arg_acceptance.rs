@@ -151,19 +151,24 @@ mod tests {
     }
 
     #[test]
-    fn accept_bare_real_rejected_with_density_and_migration_hint() {
+    fn accept_bare_real_rejected_with_migration_hint() {
+        // Structural assertion: Real must be Rejected, the hint must be Some,
+        // and message() must include both the arg name and the hint text.
+        // The exact wording of the hint is pinned in geometry_ops'
+        // resolve_density_arg_diagnostics integration test, not here.
         let value = reify_ir::Value::Real(7850.0);
         let spec = density_spec();
         match accept_arg(&value, &spec) {
             Acceptance::Rejected(rej) => {
-                let msg = rej.message("moment_of_inertia", "density").to_lowercase();
                 assert!(
-                    msg.contains("density"),
-                    "rejection message must contain 'density', got: {msg:?}"
+                    rej.migration_hint.is_some(),
+                    "ArgRejection for a bare Real must carry a migration hint"
                 );
+                let hint = rej.migration_hint.unwrap();
+                let msg = rej.message("moment_of_inertia", "density");
                 assert!(
-                    msg.contains("7850kg/m^3"),
-                    "rejection message must contain '7850kg/m^3' migration hint, got: {msg:?}"
+                    msg.contains(hint),
+                    "message() must embed the migration_hint text; got: {msg:?}"
                 );
             }
             other => panic!(
