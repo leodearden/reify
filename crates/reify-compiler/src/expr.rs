@@ -121,6 +121,72 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// §7.2 syntactic-zero coercion for binary operator operands (task-4485/β).
+///
+/// If exactly one operand is a **syntactic literal zero** (see
+/// [`type_compat::is_syntactic_zero_literal`]) whose compiled type is
+/// dimensionless (`Type::Int` or `Type::Scalar{DIMENSIONLESS}`) AND the other
+/// operand's compiled type is `Type::Scalar{D}` with non-dimensionless D,
+/// return `(left, right)` with the zero operand replaced by
+/// `CompiledExpr::literal(Value::Scalar{0.0, D}, Type::Scalar{D})`.
+///
+/// If the condition is not met (both zeros, both dimensionless, non-scalar
+/// sibling, etc.) the inputs are returned unchanged — this is a pure no-op for
+/// all HARD BOUND cases listed in §7.2.
+///
+/// Placed here (not `type_compat`) because it constructs `CompiledExpr` /
+/// `Value::Scalar` objects — it is not a pure type predicate.  Called from
+/// `compile_binop` BEFORE `infer_binop_type` so that the result type and the
+/// downstream Add/Sub dimension guard see the rewritten operands.
+fn coerce_zero_operand(
+    left_ast: &reify_ast::Expr,
+    left: CompiledExpr,
+    right_ast: &reify_ast::Expr,
+    right: CompiledExpr,
+) -> (CompiledExpr, CompiledExpr) {
+    /// Returns `true` if `ty` is dimensionless: `Type::Int` or
+    /// `Type::Scalar` with `DIMENSIONLESS` dimension.
+    fn is_dimensionless(ty: &Type) -> bool {
+        match ty {
+            Type::Int => true,
+            Type::Scalar { dimension } => dimension.is_dimensionless(),
+            _ => false,
+        }
+    }
+
+    // Left operand is a syntactic zero, right is Scalar<D non-dimensionless>.
+    if type_compat::is_syntactic_zero_literal(left_ast) && is_dimensionless(&left.result_type) {
+        if let Type::Scalar { dimension } = right.result_type {
+            if !dimension.is_dimensionless() {
+                return (
+                    CompiledExpr::literal(
+                        Value::Scalar { si_value: 0.0, dimension },
+                        Type::Scalar { dimension },
+                    ),
+                    right,
+                );
+            }
+        }
+    }
+
+    // Right operand is a syntactic zero, left is Scalar<D non-dimensionless>.
+    if type_compat::is_syntactic_zero_literal(right_ast) && is_dimensionless(&right.result_type) {
+        if let Type::Scalar { dimension } = left.result_type {
+            if !dimension.is_dimensionless() {
+                return (
+                    left,
+                    CompiledExpr::literal(
+                        Value::Scalar { si_value: 0.0, dimension },
+                        Type::Scalar { dimension },
+                    ),
+                );
+            }
+        }
+    }
+
+    (left, right)
+}
+
 /// Scan raw AST `args` for the first `ExprKind::Auto` and emit an
 /// `E_AUTO_NOT_AT_BINDING_SITE` gate diagnostic if one is found.
 ///
@@ -949,7 +1015,7 @@ pub(crate) fn compile_expr_guarded(
                 return acc;
             }
 
-            let compiled_left = compile_expr_guarded(
+            let mut compiled_left = compile_expr_guarded(
                 left,
                 scope,
                 enum_defs,
@@ -958,7 +1024,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let compiled_right = compile_expr_guarded(
+            let mut compiled_right = compile_expr_guarded(
                 right,
                 scope,
                 enum_defs,
@@ -969,6 +1035,24 @@ pub(crate) fn compile_expr_guarded(
             );
             match resolve_binop(op) {
                 Some(bin_op) => {
+                    // §7.2 zero-coercion: promote a syntactic literal `0`/`0.0`
+                    // (dimensionless) to `Scalar<D>(0.0)` when the sibling is
+                    // `Scalar<D>` with non-dimensionless D.  Applied BEFORE
+                    // `infer_binop_type` so result_type and the Add/Sub dimension
+                    // guard below both see the rewritten operands.
+                    if matches!(
+                        bin_op,
+                        BinOp::Eq
+                            | BinOp::Ne
+                            | BinOp::Lt
+                            | BinOp::Le
+                            | BinOp::Gt
+                            | BinOp::Ge
+                    ) {
+                        (compiled_left, compiled_right) =
+                            coerce_zero_operand(left, compiled_left, right, compiled_right);
+                    }
+
                     let mut result_type = infer_binop_type(
                         bin_op,
                         &compiled_left.result_type,
