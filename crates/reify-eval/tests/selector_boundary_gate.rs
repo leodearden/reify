@@ -169,6 +169,61 @@ fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
 
+// ── BT2: same-kind union resolves to set-union with K3 dedup ─────────────────
+
+/// BT2 (producer / resolve): `union(faces_by_normal(b,+Z,1deg), faces_by_normal(b,-Z,1deg))`
+/// resolves to `[+Z face, -Z face]` in canonical first-seen order with K3
+/// dedup (no duplicates). No diagnostics emitted.
+///
+/// PRD §5 BT2: "same-kind union resolves to set-union — K3 dedup, canonical order".
+///
+/// Strategy: build the fixture with an unstaged kernel (kernel-free, giving
+/// `Value::Selector(Face)` Union cell), then call `topology_selectors::resolve`
+/// against `staged_box_kernel()` (always-on, no OCCT). The staged kernel has
+/// `extract_faces(GHId(1)) → [2..7]` and per-face normals; `ByNormal{+Z,1°}`
+/// selects face 6 and `ByNormal{-Z,1°}` selects face 7.
+///
+/// RED when fixture `bt2_same_kind_union.ri` is absent.
+#[test]
+fn bt2_same_kind_union_resolves_to_set_union() {
+    let source = std::fs::read_to_string(fixture_path("bt2_same_kind_union.ri")).expect(
+        "fixture bt2_same_kind_union.ri must exist (create in step-8 to turn GREEN)",
+    );
+
+    // Kernel-free build: obtain the Union Value::Selector(Face) cell.
+    let result = build_with_unstaged_kernel(&source);
+    let sv = selector_cell(&result, "BT2SameKindUnion", "u");
+    assert_eq!(sv.kind, SelectorKind::Face, "BT2: u must be Selector(Face)");
+
+    // The Union must have two children (one per faces_by_normal call).
+    match &sv.node {
+        SelectorNode::Union(children) => {
+            assert_eq!(children.len(), 2, "BT2: union must have 2 children");
+        }
+        other => panic!("BT2: u must be a Union selector, got: {other:?}"),
+    }
+
+    // Call resolve() against the staged box kernel (always-on, no OCCT).
+    let mut staged = staged_box_kernel();
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    let handles = topology_selectors::resolve(sv, &mut staged, &mut diags)
+        .expect("BT2: resolve() must not return a QueryError");
+
+    // (a) resolves to [+Z face (id=6), -Z face (id=7)] — canonical first-seen
+    //     order, K3 dedup (no overlapping faces here, so the list is 2 items).
+    assert_eq!(
+        handles,
+        vec![GeometryHandleId(6), GeometryHandleId(7)],
+        "BT2: union(+Z, -Z) must resolve to [face6(+Z), face7(-Z)] in canonical order"
+    );
+
+    // (b) no diagnostics
+    assert!(
+        diags.is_empty(),
+        "BT2: resolve() must emit no diagnostics for a clean same-kind union, got: {diags:#?}"
+    );
+}
+
 // ── BT7: construction is kernel-free (K2 — zero query() round-trips) ─────────
 
 /// BT7 (producer / K2 invariant): building a bare, unconsumed
