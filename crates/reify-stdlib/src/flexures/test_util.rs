@@ -166,6 +166,41 @@ pub fn angle_range_half_si(v: &Value, label: &str) -> f64 {
     }
 }
 
+/// Assert `v` is a symmetric LENGTH `Range` `[−h, +h]` (both-inclusive) and
+/// return the half-width in metres (task 4587: prismatic `prb_validity_range`
+/// is now `Range<Length>` instead of `Range<Angle>`).
+pub fn length_range_half_si(v: &Value, label: &str) -> f64 {
+    match v {
+        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            assert!(*lower_inclusive, "{label}: lower_inclusive should be true");
+            assert!(*upper_inclusive, "{label}: upper_inclusive should be true");
+            let lo = lower.as_deref().unwrap_or_else(|| panic!("{label}: lower bound missing"));
+            let hi = upper.as_deref().unwrap_or_else(|| panic!("{label}: upper bound missing"));
+            let lo_si = match lo {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(*dimension, DimensionVector::LENGTH, "{label}: lower bound dimension");
+                    *si_value
+                }
+                other => panic!("{label}: lower bound expected LENGTH Scalar, got {other:?}"),
+            };
+            let hi_si = match hi {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(*dimension, DimensionVector::LENGTH, "{label}: upper bound dimension");
+                    *si_value
+                }
+                other => panic!("{label}: upper bound expected LENGTH Scalar, got {other:?}"),
+            };
+            // Symmetry: lo + hi == 0.0 exactly (IEEE 754 exact negation).
+            assert!(
+                lo_si + hi_si == 0.0,
+                "{label}: range not symmetric ([{lo_si}, {hi_si}])"
+            );
+            hi_si
+        }
+        other => panic!("{label}: expected Value::Range{{LENGTH}}, got {other:?}"),
+    }
+}
+
 /// Assert `actual` is an ANGLE-dimensioned Scalar whose si_value matches
 /// `expected_rad` to a relative tolerance of 1e-9 (closed-form reproduction).
 pub fn assert_angle_close(actual: &Value, expected_rad: f64, label: &str) {
