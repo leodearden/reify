@@ -1266,12 +1266,40 @@ pub fn resolve_auto_type_params(
 // below. The module-level rustdoc (top of file, "Phase E (v0.2) —
 // Backtracking" section) carries a one-line pointer to that function.
 
+/// Find the value-cell member in `parameterized_template` that holds the given
+/// `type_param_name` (the cell whose `cell_type == Type::TypeParam(type_param_name)`).
+///
+/// Returns the `member` component of that cell's `ValueCellId`, or `None` if no
+/// such cell exists (e.g. the type-param has no value-cell in the template, or the
+/// template carries no value cells at all).
+///
+/// Used by the joint-recheck in `emit_fallback_warning_and_delegate_to_bfs` and
+/// by the hoist-reversion NOTE sites (task 4434 γ, task 3637 re-homed) to derive
+/// `param_member` for `seed_candidate_value_map`.
+fn param_type_member<'t>(
+    parameterized_template: &'t TopologyTemplate,
+    type_param_name: &str,
+) -> Option<&'t str> {
+    parameterized_template
+        .value_cells
+        .iter()
+        .find(|cell| matches!(&cell.cell_type, Type::TypeParam(n) if n == type_param_name))
+        .map(|cell| cell.id.member.as_str())
+}
+
 /// Push a `Severity::Warning` diagnostic with the given `code` + `message`
 /// (anchored on `params[0].use_site_span` with a label rendered by
-/// `render_auto_type_param_label`) and tail-call into v0.1 BFS
+/// `render_auto_type_param_label`) and delegate to v0.1 BFS
 /// (`resolve_auto_type_params`). Used by the depth-bound and cross-product-cap
 /// guard branches in `resolve_auto_type_params_with_backtracking` to emit a
 /// "search-space-too-large" warning and delegate back to BFS.
+///
+/// γ (task 4434) — PRD §6.2 joint-recheck: BFS is run **first**; only if the
+/// resulting assignment is jointly feasible (or incomplete) is the Warning
+/// emitted. If BFS returns a COMPLETE assignment that is jointly INFEASIBLE
+/// under the full seeded ValueMap, the Warning is suppressed and a hard
+/// `AutoTypeParamBoundedInfeasible` Error is emitted instead — the function
+/// returns an outcome with an **empty substitution**.
 ///
 /// Centralizes the shared invariants of the two fallback branches (label
 /// anchor, severity, BFS tail-call arg list) so that adding a new guard or
@@ -1291,13 +1319,9 @@ fn emit_fallback_warning_and_delegate_to_bfs(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MultiParamResolutionOutcome {
-    let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
-    diagnostics.push(
-        Diagnostic::warning(message)
-            .with_code(code)
-            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
-    );
-    resolve_auto_type_params(
+    // γ PRD §6.2: run BFS first so the joint recheck can inspect the full
+    // assignment before deciding Warning vs hard Error.
+    let outcome = resolve_auto_type_params(
         params,
         template_registry,
         trait_registry,
@@ -1305,7 +1329,94 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         constraint_checker,
         functions,
         diagnostics,
-    )
+    );
+
+    // Joint-recheck: only when BFS returned a COMPLETE assignment (one entry
+    // per param).  BFS-incomplete outcomes (NoCandidate/Ambiguous) already
+    // carry their own diagnostics and there is no assignment to recheck.
+    if outcome.substitution.len() == params.len() {
+        // Build the full-A ValueMap by merging one per-param seed.
+        // `seed_candidate_value_map(candidate_template, param_member)` keys
+        // entries under `param_member.field`, matching the parameterized
+        // template's constraint expressions that reference `<param_member>.<field>`.
+        let mut full_value_map = reify_ir::ValueMap::new();
+        for (param_name, candidate_name) in &outcome.substitution {
+            if let Some(param_member) = param_type_member(parameterized_template, param_name) {
+                if let Some(&candidate_template) =
+                    template_registry.get(candidate_name.as_str())
+                {
+                    let seed = seed_candidate_value_map(candidate_template, param_member);
+                    for (k, v) in seed.iter() {
+                        full_value_map.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+
+        // Single joint check (O(1), one `checker.check()` call).
+        let constraints_template = build_constraints_template(parameterized_template);
+        let verdict = check_constraints_leaf(
+            &constraints_template,
+            constraint_checker,
+            functions,
+            &full_value_map,
+        );
+
+        if !verdict.feasible {
+            // BFS assignment is jointly infeasible (Violated constraint(s)
+            // found in the full-A ValueMap).  Emit `AutoTypeParamBoundedInfeasible`
+            // Error INSTEAD of the Warning and return empty substitution — PRD
+            // §6.2 step 4: "Produce NO substitution for the declaration."
+            let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            let bound_clause = if code == DiagnosticCode::AutoTypeParamDepthBoundExceeded {
+                "depth bound exceeded"
+            } else {
+                "cross-product cap exceeded"
+            };
+            let assignment_str: Vec<String> = outcome
+                .substitution
+                .iter()
+                .map(|(p, c)| format!("{p}={c}"))
+                .collect();
+            let violated_str: Vec<String> = verdict
+                .violated_constraints
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            let err_message = format!(
+                "auto type-parameter BFS fallback assignment is jointly infeasible: \
+                 parameters [{names}] {bound_clause}; \
+                 BFS assignment [{assignment}] violates constraint(s) [{violated}] \
+                 under joint check. No substitution produced.",
+                names = param_names.join(", "),
+                bound_clause = bound_clause,
+                assignment = assignment_str.join(", "),
+                violated = violated_str.join(", "),
+            );
+            let (_, label_message) = render_auto_type_param_label(&params[0].bounds);
+            diagnostics.push(
+                Diagnostic::error(err_message)
+                    .with_code(DiagnosticCode::AutoTypeParamBoundedInfeasible)
+                    .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
+            );
+            return MultiParamResolutionOutcome {
+                per_param: outcome.per_param,
+                substitution: vec![],
+            };
+        }
+    }
+
+    // Feasible (or BFS incomplete) → push the existing depth-bound/cap Warning
+    // and return the BFS outcome unchanged.  This is the stub-path no-op
+    // guarantee of PRD §11.2: `CompileTimeIndeterminateChecker` never returns
+    // Violated, so γ is transparent on the production compile path.
+    let (_, label_message) = render_auto_type_param_label(&params[0].bounds);
+    diagnostics.push(
+        Diagnostic::warning(message)
+            .with_code(code)
+            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
+    );
+    outcome
 }
 
 /// DFS over the cross-product of `auto:` candidate sets with a depth bound.
