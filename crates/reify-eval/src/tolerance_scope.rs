@@ -745,6 +745,43 @@ mod tests {
         }
     }
 
+    /// Scope-vs-combine divergence lock: when a param IS a declared purpose
+    /// param (membership gate passes) but has NO entry in the `bindings` slice,
+    /// `extract_tolerance_bindings` must skip the constraint and return empty —
+    /// while `recognize_representation_within` (combine side) still returns Some.
+    ///
+    /// C2 guarantees every declared param has a binding in valid activations, so
+    /// this branch is defensively unreachable in production.  The test locks the
+    /// scope-specific binding-resolution gate so it cannot silently widen.
+    ///
+    /// Together with `extract_tolerance_bindings_rejects_value_ref_to_non_purpose_param`
+    /// (param-membership gate) this covers both scope-only divergence paths that the
+    /// drift-agreement test deliberately elides (its fixtures always pass both scope gates).
+    #[test]
+    fn extract_tolerance_bindings_skips_param_with_no_binding_entry() {
+        let constraint_expr =
+            representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH);
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr.clone())
+            .build();
+
+        // Bindings slice is empty — "subject" param is declared but has no binding.
+        let scope_bindings = extract_tolerance_bindings(&purpose, &[]);
+        let combine_result =
+            crate::tolerance_combine::recognize_representation_within(&constraint_expr);
+
+        assert!(
+            scope_bindings.is_empty(),
+            "scope must skip a declared param with no binding entry (binding-resolution gate)"
+        );
+        assert!(
+            combine_result.is_some(),
+            "combine side must still recognise the shape (scope gate must not affect combine)"
+        );
+    }
+
     #[test]
     fn extract_tolerance_bindings_threads_each_param_to_its_bound_entity() {
         let constraint_part =
