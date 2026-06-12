@@ -19,6 +19,8 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
+use crate::shell_assembly::{build_shell_frame, membrane_node_pair_block, plane_stress_d};
+use crate::shell_kinematics::shell_kinematics;
 
 /// Compute the 9×9 elastic stiffness `K_e` for a flat 3-node CST membrane
 /// element (3 translational DOF/node, DOF layout `3·node + axis`).
@@ -30,12 +32,53 @@ use crate::constitutive::IsotropicElastic;
 /// Returns an [`ElementStiffness`] with `n_dofs = 9`, row-major, assemblable
 /// through the unchanged [`crate::assemble_global_stiffness`] scatter
 /// (`dofs_per_node = 9 / 3 = 3`).
+#[allow(clippy::needless_range_loop)]
 pub fn element_stiffness_membrane_cst(
     nodes: &[[f64; 3]; 3],
     thickness: f64,
     material: &IsotropicElastic,
 ) -> ElementStiffness {
-    todo!("element_stiffness_membrane_cst: implemented in S2/S4")
+    // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
+    // panics on a degenerate (collinear/zero-edge) triangle — reused as the
+    // degeneracy guard.
+    let frame = build_shell_frame(nodes);
+    let area = frame.area;
+    let dn = shell_kinematics(nodes, &frame).dn;
+
+    // Pre-scale the plane-stress constitutive matrix by thickness: t · D_pl.
+    let d_pl = plane_stress_d(material);
+    let mut t_dpl = [[0.0_f64; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            t_dpl[i][j] = thickness * d_pl[i][j];
+        }
+    }
+
+    // Assemble the local 9×9 in-plane membrane block at local DOFs 3i + {0, 1}
+    // using the shell's patch-test-validated CST strain-displacement core.
+    let mut k_loc = [[0.0_f64; 9]; 9];
+    for ni in 0..3 {
+        for nj in 0..3 {
+            let blk = membrane_node_pair_block(dn[ni], dn[nj], &t_dpl);
+            for a in 0..2 {
+                for b in 0..2 {
+                    k_loc[3 * ni + a][3 * nj + b] += blk[a][b] * area;
+                }
+            }
+        }
+    }
+
+    // S2: pack local-as-global (correct only for xy-plane triangles where R = I).
+    // The local→global block rotation is added in S4. Symmetrize on the way out —
+    // the BᵀDB block is symmetric in form, so the two triangles agree to within
+    // floating-point rounding; averaging minimises the residual asymmetry.
+    let mut ke = ElementStiffness::zeros(9);
+    for i in 0..9 {
+        for j in 0..9 {
+            ke.data[i * 9 + j] = 0.5 * (k_loc[i][j] + k_loc[j][i]);
+        }
+    }
+    ke
 }
 
 #[cfg(test)]
