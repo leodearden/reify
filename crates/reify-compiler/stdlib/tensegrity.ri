@@ -1,29 +1,32 @@
 // Stdlib: Tensegrity Structure Types
 //
 // Provides the typed-element network types for tensegrity structures:
-// Strut, Cable, Tensegrity, and TensegrityWire.
+// Strut, Cable, Membrane, Tensegrity, TensegrityWire, TensegritySurface,
+// and FormFindResult.
 //
-// PRD reference: docs/prds/v0_6/tensegrity-structures.md
-//   §3 — Representation contract
-//   §9 — Tier-0 leaf (T0a)
+// PRD references:
+//   docs/prds/v0_6/tensegrity-structures.md §3, §9 (T0a)
+//   docs/prds/v0_6/tensegrity-membrane.md §3, §7 (task α / T4)
 //
 // Module exports:
-//   - `Strut`          — compression member: cross-section area + material
-//   - `Cable`          — tension member: cross-section area + material + pretension
-//   - `Tensegrity`     — typed network: node positions + member connectivity
-//   - `TensegrityWire` — emitted wire record: kind tag + endpoint geometry
+//   - `Strut`              — compression member: cross-section area + material
+//   - `Cable`              — tension member: cross-section area + material + pretension
+//   - `Membrane`           — surface element: thickness + material + prestress (α / T4)
+//   - `Tensegrity`         — typed network: nodes + struts + cables + surfaces
+//   - `TensegrityWire`     — emitted wire record: kind tag + endpoint geometry
+//   - `TensegritySurface`  — emitted facet record: kind + indices + corner coords (α / T4)
+//   - `FormFindResult`     — form-finding output container (T1a/T1b)
 //
-// Open typed-element-groups seam (Design Decision 2):
-//   `struts` and `cables` are explicit named fields on `Tensegrity`; the
-//   generic `tensegrity_wires(t)` builtin is the seam layers 2–4 consume.
-//   Adding a future `surfaces` group (§10 / T4) is two-line additive:
-//   (i) add `param surfaces : List<List<Int>>` to Tensegrity,
-//   (ii) add a sibling `tensegrity_surfaces(t)` accessor — existing
-//   wire-consuming call sites do not change.
+// Open typed-element-groups seam (Design Decision 2 — LANDED in task-α):
+//   `struts`, `cables`, and `surfaces` are explicit named fields on `Tensegrity`.
+//   `tensegrity_wires(t)` and `tensegrity_surfaces(t)` are the accessor seam that
+//   layers 2–4 consume.  Adding a future group is additive: add the param to
+//   Tensegrity and add a sibling accessor — existing wire/surface call sites
+//   do not change.
 //
 // Dependencies (all earlier in the growing-prelude sequence):
-//   - std.units        — Length, Area, Force dimensions
-//   - std.si_units     — 0N, mm², etc.
+//   - std.units         — Length, Area, Force, Pressure dimensions
+//   - std.si_units      — 0N, mm², Pa, etc.
 //   - std.materials.fea — ElasticMaterial trait
 
 // ── Strut ─────────────────────────────────────────────────────────────────────
@@ -58,23 +61,62 @@ structure def Cable {
     param pretension : Force = 0 * 1N
 }
 
+// ── Membrane ──────────────────────────────────────────────────────────────────
+//
+// A surface element in the tensegrity membrane network. Carries the minimum
+// constitutive data for the membrane solver and viewport:
+//   thickness  — physical membrane thickness (determines membrane stiffness)
+//   material   — elastic properties (E, ν, ρ, σy) from ElasticMaterial
+//   prestress  — isotropic surface stress σ (Pa); n = σ·thickness is the
+//                corresponding surface tension (N/m). Defaults to 0Pa per PRD
+//                §3; a zero-prestress membrane is still structurally meaningful
+//                as a geometric patch (the surface geometry is emitted regardless).
+//
+// thickness and material are required (no defaults) because a bare Membrane()
+// is meaningless — a surface element without geometry or material has no
+// structural identity. Matches the no-default discipline of Strut.
+//
+// prestress defaults to 0Pa so a Membrane can be constructed with only its
+// geometry and material when prestress is unknown or irrelevant (e.g. pure
+// topology enumeration), mirroring Cable.pretension = 0N.
+structure def Membrane {
+    param thickness : Length
+    param material : ElasticMaterial
+    param prestress : Pressure = 0 * 1Pa
+}
+
 // ── Tensegrity ────────────────────────────────────────────────────────────────
 //
-// The typed network binding node positions to member connectivity. All three
+// The typed network binding node positions to member connectivity. All four
 // params are required; no defaults — a bare Tensegrity() is structurally
 // meaningless (no nodes, no members, no topology).
 //
-//   nodes  — ordered list of 3D node positions (Length-typed points)
-//   struts — connectivity index pairs [[from, to], ...] into nodes list
-//   cables — connectivity index pairs [[from, to], ...] into nodes list
+//   nodes    — ordered list of 3D node positions (Length-typed points)
+//   struts   — connectivity index pairs [[from, to], ...] into nodes list
+//   cables   — connectivity index pairs [[from, to], ...] into nodes list
+//   surfaces — triangle index-triples [[i0, i1, i2], ...] into nodes list
+//              (M0 surface element group; see PRD §3 / T4 / task-α).
+//              Each inner list is exactly [i0, i1, i2] — three 0-based indices
+//              into `nodes`. The `tensegrity_surfaces(t)` builtin validates each
+//              triple against nodes.len() and emits Value::Undef on violation;
+//              a MISSING or empty surfaces field returns an empty facet list []
+//              (not Undef) because surfaces is legitimately absent for
+//              non-membrane nets. Triangles-only in M0; no axis triad.
 //
-// Index convention: each inner list is exactly [from_index, to_index] where
-// both are 0-based indices into `nodes`. The `tensegrity_wires(t)` builtin
-// validates each pair against nodes.len() and emits Value::Undef on violation.
+// Open typed-element-groups invariant: existing Tensegrity(nodes,struts,cables)
+// call sites are unchanged — the uncovered `surfaces` required param is silently
+// dropped by the `StructureInstanceCtor` branch in expr.rs, so all prior goldens and
+// tests remain byte-identical. See Design Decision 1 in plan.json.
+//
+// Index convention (wire members): each inner list in struts/cables is exactly
+// [from_index, to_index] where both are 0-based indices into `nodes`. The
+// `tensegrity_wires(t)` builtin validates each pair against nodes.len() and
+// emits Value::Undef on violation.
 structure def Tensegrity {
     param nodes : List<Point3<Length>>
     param struts : List<List<Int>>
     param cables : List<List<Int>>
+    param surfaces : List<List<Int>>
 }
 
 // ── TensegrityWire ────────────────────────────────────────────────────────────
@@ -101,6 +143,45 @@ structure def TensegrityWire {
     param kind : String
     param from_index : Int
     param to_index : Int
+    param x1 : Length
+    param y1 : Length
+    param z1 : Length
+    param x2 : Length
+    param y2 : Length
+    param z2 : Length
+}
+
+// ── TensegritySurface ─────────────────────────────────────────────────────────
+//
+// Emitted by the `tensegrity_surfaces(t)` builtin for each surface facet
+// (triangle) in the Tensegrity.surfaces list. Carries both index metadata
+// (for topology consumers) and inline corner coordinates (for direct rendering
+// without a second nodes-table dereference — mirrors TensegrityWire DD3).
+//
+//   kind       — "membrane" (facet type tag for viewport styling); the only
+//                surface kind in M0 (warp/weft anisotropy ε is a later slice)
+//   i0, i1, i2 — 0-based indices of the three triangle corners in the
+//                Tensegrity.nodes list; ordered CCW-positive by convention
+//   x0,y0,z0   — corner 0 coordinates (Length-typed scalars, SI metres)
+//   x1,y1,z1   — corner 1 coordinates (Length-typed scalars, SI metres)
+//   x2,y2,z2   — corner 2 coordinates (Length-typed scalars, SI metres)
+//
+// This structure_def exists so the CLI dump shows
+//   TensegritySurface { kind: "membrane", i0: 0, i1: 1, i2: 2, x0: ..., ... }
+// rather than an opaque map. The Rust-side `tensegrity_surfaces` builtin
+// constructs TensegritySurface instances directly using StructureTypeId(0) as
+// placeholder (SIR-α convention, same as TensegrityWire).
+//
+// All params are required — TensegritySurface instances are never user-constructed;
+// the builtin always supplies all thirteen fields.
+structure def TensegritySurface {
+    param kind : String
+    param i0 : Int
+    param i1 : Int
+    param i2 : Int
+    param x0 : Length
+    param y0 : Length
+    param z0 : Length
     param x1 : Length
     param y1 : Length
     param z1 : Length

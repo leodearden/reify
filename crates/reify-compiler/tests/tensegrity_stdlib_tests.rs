@@ -82,10 +82,14 @@ fn std_tensegrity_module_loads_with_no_errors() {
     );
 }
 
-/// The std/tensegrity module must declare exactly five top-level structures:
-/// Strut, Cable, Tensegrity, TensegrityWire, FormFindResult.
+/// The std/tensegrity module must declare exactly seven top-level structures:
+/// Strut, Cable, Membrane, Tensegrity, TensegrityWire, TensegritySurface,
+/// FormFindResult.
+///
+/// RED (step-5): expects 7 — fails until `structure def TensegritySurface` is
+/// added to tensegrity.ri in step-6.
 #[test]
-fn std_tensegrity_module_has_five_structures() {
+fn std_tensegrity_module_has_seven_structures() {
     let module = load_stdlib_module();
 
     let structures: Vec<&str> = module
@@ -95,7 +99,10 @@ fn std_tensegrity_module_has_five_structures() {
         .map(|t| t.name.as_str())
         .collect();
 
-    let expected = ["Strut", "Cable", "Tensegrity", "TensegrityWire", "FormFindResult"];
+    let expected = [
+        "Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire",
+        "TensegritySurface", "FormFindResult",
+    ];
     assert_eq!(
         structures.len(),
         expected.len(),
@@ -111,6 +118,77 @@ fn std_tensegrity_module_has_five_structures() {
             structures
         );
     }
+}
+
+// ─── Membrane structure ───────────────────────────────────────────────────────
+
+/// `Membrane` has exactly 3 params:
+///   - `thickness : Length`          — required, no default
+///   - `material  : ElasticMaterial` — required, no default
+///   - `prestress : Pressure`        — defaults to 0*1Pa (isotropic surface stress σ)
+///
+/// RED (step-3): fails until `structure def Membrane` is added in step-4.
+#[test]
+fn membrane_structure_has_thickness_material_and_prestress_default() {
+    let template = find_structure("Membrane");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        3,
+        "Membrane should have exactly 3 param cells (thickness, material, prestress), got: {:?}",
+        names
+    );
+
+    // thickness: Length, required
+    let thickness = params
+        .iter()
+        .find(|vc| vc.id.member == "thickness")
+        .unwrap_or_else(|| panic!("Membrane missing 'thickness' param; got: {:?}", names));
+    assert_eq!(
+        thickness.cell_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "Membrane.thickness should be Length (Scalar[m]), got {:?}",
+        thickness.cell_type
+    );
+    assert!(
+        thickness.default_expr.is_none(),
+        "Membrane.thickness should have no default (required param)"
+    );
+
+    // material: ElasticMaterial, required
+    let material = params
+        .iter()
+        .find(|vc| vc.id.member == "material")
+        .unwrap_or_else(|| panic!("Membrane missing 'material' param; got: {:?}", names));
+    assert_eq!(
+        material.cell_type,
+        Type::TraitObject("ElasticMaterial".to_string()),
+        "Membrane.material should be TraitObject(ElasticMaterial), got {:?}",
+        material.cell_type
+    );
+    assert!(
+        material.default_expr.is_none(),
+        "Membrane.material should have no default (required param)"
+    );
+
+    // prestress: Pressure, defaults to 0*1Pa
+    let prestress = params
+        .iter()
+        .find(|vc| vc.id.member == "prestress")
+        .unwrap_or_else(|| panic!("Membrane missing 'prestress' param; got: {:?}", names));
+    assert_eq!(
+        prestress.cell_type,
+        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        "Membrane.prestress should be Pressure (Scalar[Pa]), got {:?}",
+        prestress.cell_type
+    );
+    // prestress defaults to 0*1Pa per PRD §3.
+    assert!(
+        prestress.default_expr.is_some(),
+        "Membrane.prestress should have a default expression (= 0*1Pa per PRD §3)"
+    );
 }
 
 // ─── Strut structure ─────────────────────────────────────────────────────────
@@ -228,18 +306,22 @@ fn cable_structure_has_required_fields_and_pretension_default() {
 
 // ─── Tensegrity structure ─────────────────────────────────────────────────────
 
-/// `Tensegrity` has exactly 3 required params: `nodes : List<Point3<Length>>`,
-/// `struts : List<List<Int>>`, `cables : List<List<Int>>`. All required.
+/// `Tensegrity` has exactly 4 required params: `nodes : List<Point3<Length>>`,
+/// `struts : List<List<Int>>`, `cables : List<List<Int>>`,
+/// `surfaces : List<List<Int>>`. All required (no defaults).
+///
+/// RED (step-1): expects 4 params — fails until `param surfaces` is added to
+/// tensegrity.ri in step-2.
 #[test]
-fn tensegrity_structure_has_nodes_struts_cables_params() {
+fn tensegrity_structure_has_nodes_struts_cables_surfaces_params() {
     let template = find_structure("Tensegrity");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
     assert_eq!(
         params.len(),
-        3,
-        "Tensegrity should have exactly 3 param cells (nodes, struts, cables), got: {:?}",
+        4,
+        "Tensegrity should have exactly 4 param cells (nodes, struts, cables, surfaces), got: {:?}",
         names
     );
 
@@ -284,13 +366,29 @@ fn tensegrity_structure_has_nodes_struts_cables_params() {
         .unwrap_or_else(|| panic!("Tensegrity missing 'cables' param; got: {:?}", names));
     assert_eq!(
         cables.cell_type,
-        list_list_int,
+        list_list_int.clone(),
         "Tensegrity.cables should be List<List<Int>>, got {:?}",
         cables.cell_type
     );
     assert!(
         cables.default_expr.is_none(),
         "Tensegrity.cables should have no default (required param)"
+    );
+
+    // step-1: surfaces param — List<List<Int>>, required, no default.
+    let surfaces = params
+        .iter()
+        .find(|vc| vc.id.member == "surfaces")
+        .unwrap_or_else(|| panic!("Tensegrity missing 'surfaces' param; got: {:?}", names));
+    assert_eq!(
+        surfaces.cell_type,
+        list_list_int,
+        "Tensegrity.surfaces should be List<List<Int>>, got {:?}",
+        surfaces.cell_type
+    );
+    assert!(
+        surfaces.default_expr.is_none(),
+        "Tensegrity.surfaces should have no default (required param)"
     );
 }
 
@@ -439,6 +537,75 @@ fn tensegrity_wire_structure_has_nine_params() {
             cell.cell_type, *expected_ty,
             "TensegrityWire.{} should be {:?}, got {:?}",
             member, expected_ty, cell.cell_type
+        );
+    }
+}
+
+// ─── TensegritySurface structure ──────────────────────────────────────────────
+
+/// `TensegritySurface` has 13 params, all required (no defaults):
+///   kind : String
+///   i0, i1, i2 : Int   (0-based node indices)
+///   x0,y0,z0 : Length  (corner 0 coordinates)
+///   x1,y1,z1 : Length  (corner 1 coordinates)
+///   x2,y2,z2 : Length  (corner 2 coordinates)
+///
+/// This structure is Rust-side constructed by `tensegrity_surfaces`; the .ri
+/// declaration exists so the CLI dump shows `TensegritySurface { ... }`.
+///
+/// RED (step-5): fails until `structure def TensegritySurface` is added in step-6.
+#[test]
+fn tensegrity_surface_structure_has_thirteen_params() {
+    let template = find_structure("TensegritySurface");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        13,
+        "TensegritySurface should have exactly 13 param cells \
+         (kind, i0, i1, i2, x0, y0, z0, x1, y1, z1, x2, y2, z2), got: {:?}",
+        names
+    );
+
+    let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+
+    let expected: &[(&str, Type)] = &[
+        ("kind", Type::String),
+        ("i0",   Type::Int),
+        ("i1",   Type::Int),
+        ("i2",   Type::Int),
+        ("x0",   length.clone()),
+        ("y0",   length.clone()),
+        ("z0",   length.clone()),
+        ("x1",   length.clone()),
+        ("y1",   length.clone()),
+        ("z1",   length.clone()),
+        ("x2",   length.clone()),
+        ("y2",   length.clone()),
+        ("z2",   length.clone()),
+    ];
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TensegritySurface missing '{}' param; got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "TensegritySurface.{} should be {:?}, got {:?}",
+            member, expected_ty, cell.cell_type
+        );
+        // All params must be required (no default).
+        assert!(
+            cell.default_expr.is_none(),
+            "TensegritySurface.{} should have no default (required param, never user-constructed)",
+            member
         );
     }
 }

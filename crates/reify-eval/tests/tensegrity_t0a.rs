@@ -260,6 +260,61 @@ structure def TNet {
     }
 }
 
+/// Regression: `Tensegrity(nodes, struts, cables)` with NO `surfaces` argument
+/// compiles and evaluates successfully to a `Value::StructureInstance`. The
+/// `surfaces` field is ABSENT from the resulting fields map — the SIR
+/// `StructureInstanceCtor` branch in expr.rs silently drops uncovered required params
+/// rather than defaulting them. This contracts the backward-compatibility
+/// invariant that makes `surfaces` safely addable as a required (no-default)
+/// param: all pre-existing call sites remain valid by language semantics.
+///
+/// If this test ever fails it signals that the ctor-lowering behavior has
+/// changed and the design decision must be re-evaluated.
+#[test]
+fn tensegrity_ctor_without_surfaces_evals_without_surfaces_field() {
+    const SOURCE: &str = r#"
+structure def TNet {
+    let t = Tensegrity(
+        nodes: [point3(0m, 0m, 0m), point3(1m, 0m, 0m)],
+        struts: [[0, 1]],
+        cables: []
+    )
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("TNet", "t");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("TNet.t cell missing from eval result"));
+
+    match v {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Tensegrity",
+                "type_name should be Tensegrity, got {:?}",
+                data.type_name
+            );
+            // surfaces field must be ABSENT — the ctor-lowering drops uncovered
+            // required params rather than filling them with a default value.
+            assert!(
+                field(&data.fields, "surfaces").is_none(),
+                "Tensegrity(nodes,struts,cables) should have no surfaces field \
+                 (ctor-lowering drops uncovered required params); \
+                 unexpectedly found: {:?}",
+                field(&data.fields, "surfaces")
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for TNet.t, got {:?}",
+            other
+        ),
+    }
+}
+
 // ── step-5: shape-guard tests for tensegrity_wires ───────────────────────────
 
 // Shared helpers for building Tensegrity-shaped Values directly (bypassing
@@ -731,6 +786,103 @@ fn cli_reify_eval_prints_t_prism_wireframe() {
     );
 }
 
+// ── step-3 (task-4412): Membrane ctor eval test ───────────────────────────────
+
+/// `Membrane(thickness: 2mm, material: Steel_AISI_1045())` evaluates to a
+/// `Value::StructureInstance` with type_name "Membrane". The `prestress` field
+/// carries the 0*1Pa default (Pressure-dimensioned Scalar with si_value ~0.0).
+///
+/// RED (step-3): fails until `structure def Membrane` is added to tensegrity.ri
+/// in step-4. After step-4 the SIR ctor-lowering path handles it automatically.
+#[test]
+fn membrane_ctor_evaluates_to_structure_instance_with_prestress_default() {
+    const SOURCE: &str = r#"
+structure def F {
+    let m = Membrane(thickness: 2mm, material: Steel_AISI_1045())
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let id = ValueCellId::new("F", "m");
+    let v = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("F.m cell missing from eval result"));
+
+    match v {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Membrane",
+                "type_name should be Membrane, got {:?}",
+                data.type_name
+            );
+
+            // thickness: Length-dimensioned scalar
+            let th = field(&data.fields, "thickness").unwrap_or_else(|| {
+                panic!(
+                    "Membrane missing thickness field; fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
+            match th {
+                Value::Scalar { dimension, .. } => assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "Membrane.thickness should have LENGTH dimension, got {:?}",
+                    dimension
+                ),
+                other => panic!("Membrane.thickness should be Scalar, got {:?}", other),
+            }
+
+            // material: nested StructureInstance (Steel_AISI_1045)
+            let mat = field(&data.fields, "material")
+                .unwrap_or_else(|| panic!("Membrane missing material field"));
+            match mat {
+                Value::StructureInstance(mdata) => assert_eq!(
+                    mdata.type_name, "Steel_AISI_1045",
+                    "Membrane.material should be Steel_AISI_1045, got {:?}",
+                    mdata.type_name
+                ),
+                other => panic!(
+                    "Membrane.material should be StructureInstance, got {:?}",
+                    other
+                ),
+            }
+
+            // prestress: defaults to 0*1Pa → Pressure-dimensioned Scalar, si_value ~0.0
+            let ps = field(&data.fields, "prestress").unwrap_or_else(|| {
+                panic!(
+                    "Membrane missing prestress field (should be filled by 0*1Pa default); \
+                     fields: {:?}",
+                    data.fields.iter().map(|(k, _)| k).collect::<Vec<_>>()
+                )
+            });
+            match ps {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::PRESSURE,
+                        "Membrane.prestress should have PRESSURE dimension, got {:?}",
+                        dimension
+                    );
+                    assert!(
+                        si_value.abs() < 1e-10,
+                        "Membrane.prestress default should be ~0 Pa, got si_value={}",
+                        si_value
+                    );
+                }
+                other => panic!(
+                    "Membrane.prestress should be Scalar, got {:?}",
+                    other
+                ),
+            }
+        }
+        other => panic!("expected Value::StructureInstance for F.m, got {:?}", other),
+    }
+}
+
 /// args[0] is Tensegrity-shaped but struts references out-of-range index → Undef.
 #[test]
 fn tensegrity_wires_undef_on_out_of_range_index() {
@@ -766,5 +918,184 @@ fn tensegrity_wires_undef_on_out_of_range_index() {
         !positive.is_undef(),
         "tensegrity_wires(valid Tensegrity) should return non-Undef; \
          got Undef — step-6 not yet implemented"
+    );
+}
+
+// ── step-7 (task-4412): tensegrity_surfaces integration tests ────────────────
+
+/// Build a Tensegrity StructureInstance with a surfaces field.
+fn make_tensegrity_with_surfaces() -> Value {
+    // 4 nodes forming a simple quad — two triangles share the diagonal
+    let nodes = vec![
+        make_node(0.0, 0.0, 0.0), // node 0
+        make_node(1.0, 0.0, 0.0), // node 1
+        make_node(1.0, 1.0, 0.0), // node 2
+        make_node(0.0, 1.0, 0.0), // node 3
+    ];
+    let surfaces = Value::List(vec![
+        Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(2)]), // tri 0
+        Value::List(vec![Value::Int(0), Value::Int(2), Value::Int(3)]), // tri 1
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), Value::List(nodes)),
+        ("struts".to_string(), Value::List(vec![])),
+        ("cables".to_string(), Value::List(vec![])),
+        ("surfaces".to_string(), surfaces),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// `tensegrity_surfaces` on a Tensegrity with surfaces=[[0,1,2],[0,2,3]] (4 nodes)
+/// yields 2 TensegritySurface facets, each kind="membrane", indices and inline
+/// coords matching the nodes table.
+///
+/// RED (step-7): fails until `tensegrity_surfaces` is registered in eval_builtin
+/// (step-8).
+#[test]
+fn tensegrity_surfaces_emits_two_tagged_facets() {
+    let t = make_tensegrity_with_surfaces();
+    let result = eval_builtin("tensegrity_surfaces", &[t]);
+
+    let facets = match &result {
+        Value::List(f) => f,
+        other => panic!("expected Value::List of facets, got {:?}", other),
+    };
+    assert_eq!(facets.len(), 2, "expected 2 facets, got {}", facets.len());
+
+    // Facet 0: triangle [0, 1, 2]
+    let f0 = match &facets[0] {
+        Value::StructureInstance(d) => d,
+        other => panic!("facets[0] should be StructureInstance, got {:?}", other),
+    };
+    assert_eq!(f0.type_name, "TensegritySurface", "facets[0] type_name");
+    assert_eq!(
+        f0.fields.get(&"kind".to_string()),
+        Some(&Value::String("membrane".to_string())),
+        "facets[0] kind"
+    );
+    assert_eq!(f0.fields.get(&"i0".to_string()), Some(&Value::Int(0)));
+    assert_eq!(f0.fields.get(&"i1".to_string()), Some(&Value::Int(1)));
+    assert_eq!(f0.fields.get(&"i2".to_string()), Some(&Value::Int(2)));
+    // x0 = node 0 x = 0.0m
+    match f0.fields.get(&"x0".to_string()) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!((si_value - 0.0).abs() < 1e-12, "facet[0].x0 should be 0.0m")
+        }
+        other => panic!("facet[0].x0 should be Scalar, got {:?}", other),
+    }
+    // x1 = node 1 x = 1.0m
+    match f0.fields.get(&"x1".to_string()) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!((si_value - 1.0).abs() < 1e-12, "facet[0].x1 should be 1.0m")
+        }
+        other => panic!("facet[0].x1 should be Scalar, got {:?}", other),
+    }
+    // x2 = node 2 x = 1.0m
+    match f0.fields.get(&"x2".to_string()) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!((si_value - 1.0).abs() < 1e-12, "facet[0].x2 should be 1.0m")
+        }
+        other => panic!("facet[0].x2 should be Scalar, got {:?}", other),
+    }
+
+    // Facet 1: triangle [0, 2, 3]
+    let f1 = match &facets[1] {
+        Value::StructureInstance(d) => d,
+        other => panic!("facets[1] should be StructureInstance, got {:?}", other),
+    };
+    assert_eq!(f1.type_name, "TensegritySurface", "facets[1] type_name");
+    assert_eq!(
+        f1.fields.get(&"kind".to_string()),
+        Some(&Value::String("membrane".to_string())),
+        "facets[1] kind"
+    );
+    assert_eq!(f1.fields.get(&"i0".to_string()), Some(&Value::Int(0)));
+    assert_eq!(f1.fields.get(&"i1".to_string()), Some(&Value::Int(2)));
+    assert_eq!(f1.fields.get(&"i2".to_string()), Some(&Value::Int(3)));
+    // x2 = node 3 x = 0.0m
+    match f1.fields.get(&"x2".to_string()) {
+        Some(Value::Scalar { si_value, .. }) => {
+            assert!((si_value - 0.0).abs() < 1e-12, "facet[1].x2 should be 0.0m")
+        }
+        other => panic!("facet[1].x2 should be Scalar, got {:?}", other),
+    }
+}
+
+// ── step-9 (task-4412): CLI golden test ───────────────────────────────────────
+
+/// `reify eval examples/tensegrity_membrane_patch.ri` must print the membrane
+/// patch instance and TensegritySurface values tagged kind: "membrane".
+/// Output compared against the committed golden at
+/// `crates/reify-eval/tests/golden/tensegrity_membrane_patch.txt`.
+/// Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
+///
+/// RED (step-9): `examples/tensegrity_membrane_patch.ri` and the golden don't
+/// exist yet, so `cargo run` fails to read the example.
+#[test]
+fn cli_reify_eval_prints_membrane_patch() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_membrane_patch.ri");
+    let golden = std::path::Path::new(manifest)
+        .join("tests/golden/tensegrity_membrane_patch.txt");
+
+    let output = std::process::Command::new(env!("CARGO"))
+        .current_dir(&workspace_root)
+        .args([
+            "run",
+            "-q",
+            "-p",
+            "reify-cli",
+            "--bin",
+            "reify",
+            "--",
+            "eval",
+        ])
+        .arg(&example)
+        .output()
+        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_membrane_patch.ri` exited non-zero.\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+
+    if std::env::var("REIFY_REGENERATE_GOLDEN").is_ok() {
+        std::fs::write(&golden, &stdout).expect("failed to write golden file");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&golden).unwrap_or_else(|_| {
+        panic!(
+            "golden crates/reify-eval/tests/golden/tensegrity_membrane_patch.txt missing; \
+             run once with REIFY_REGENERATE_GOLDEN=1"
+        )
+    });
+    assert_eq!(
+        stdout, expected,
+        "`reify eval examples/tensegrity_membrane_patch.ri` stdout drifted from the golden; \
+         re-run with REIFY_REGENERATE_GOLDEN=1 to update"
+    );
+
+    // Defense-in-depth: M0 signal — independent of golden content.
+    assert!(
+        stdout.contains("kind: \"membrane\""),
+        "M0 signal: expected at least one TensegritySurface with kind=\"membrane\"; \
+         got:\n{stdout}"
     );
 }
