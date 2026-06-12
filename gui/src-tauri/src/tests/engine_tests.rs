@@ -12273,6 +12273,46 @@ fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
     );
 }
 
+/// `surface_data_from_instance` must return `None` (no panic) when a required
+/// integer field (`i0`) is present but has the wrong type (a String instead of Int).
+///
+/// This directly tests the no-panic/skip contract advertised in the docstring of
+/// `collect_surfaces_from_value` / `surface_data_from_instance`: a malformed facet
+/// must be dropped, not cause an unwrap-panic, so a future regression that panics
+/// instead of skipping will fail this test.
+#[test]
+fn surface_data_from_instance_returns_none_for_malformed_field() {
+    use crate::engine::surface_data_from_instance;
+    use reify_ir::{PersistentMap, Value};
+
+    // Near-valid TensegritySurface field set — i0 is a String (wrong type; must be Int).
+    // All other required fields are well-typed so this is the minimal malformed case.
+    let fields: PersistentMap<String, Value> = [
+        ("kind".to_string(), Value::String("membrane".to_string())),
+        ("i0".to_string(), Value::String("not-an-int".to_string())), // MALFORMED
+        ("i1".to_string(), Value::Int(1)),
+        ("i2".to_string(), Value::Int(2)),
+        ("x0".to_string(), Value::Real(0.0)),
+        ("y0".to_string(), Value::Real(0.0)),
+        ("z0".to_string(), Value::Real(0.0)),
+        ("x1".to_string(), Value::Real(1.0)),
+        ("y1".to_string(), Value::Real(0.0)),
+        ("z1".to_string(), Value::Real(0.0)),
+        ("x2".to_string(), Value::Real(1.0)),
+        ("y2".to_string(), Value::Real(1.0)),
+        ("z2".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+
+    let result = surface_data_from_instance(&fields, "TestEntity");
+    assert!(
+        result.is_none(),
+        "malformed i0 (String instead of Int) must return None without panicking; got {:?}",
+        result
+    );
+}
+
 /// A module that binds a Tensegrity struct but never calls `tensegrity_surfaces()`
 /// must yield an empty `tensegrity_surfaces` vec (type-name filter test).
 #[test]

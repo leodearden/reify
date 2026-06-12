@@ -64,6 +64,13 @@ export function createSurfaceManager(scene: Scene): SurfaceManagerContext {
   }
 
   function sync(facets: TensegritySurfaceData[]): void {
+    // NOTE: the Rust bridge emits one surface-list cell per template in practice
+    // (α binds tensegrity_surfaces() to one cell), so duplicate facets are
+    // unlikely.  If a module ever re-binds the surface list the same facets may
+    // appear more than once and would be rendered as overlapping transparent
+    // triangles.  De-dup by (kind, i0, i1, i2) can be added cheaply here if
+    // that becomes an issue.
+
     // Group facets by kind.
     const byKind = new Map<string, TensegritySurfaceData[]>();
     for (const facet of facets) {

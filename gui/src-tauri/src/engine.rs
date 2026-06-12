@@ -2389,20 +2389,16 @@ impl EngineSession {
             });
         }
 
-        // Extract tensegrity wire descriptors from value cells.
-        // Scoped borrow released before GuiState construction.
-        let tensegrity_wires = {
+        // Extract tensegrity wire and surface descriptors from value cells.
+        // Single scoped borrow covers both — shared precondition made explicit.
+        // Borrow released before GuiState construction.
+        let (tensegrity_wires, tensegrity_surfaces) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
-            build_tensegrity_wires(compiled, check)
-        };
-
-        // Extract tensegrity surface facet descriptors from value cells.
-        // Scoped borrow released before GuiState construction.
-        let tensegrity_surfaces = {
-            let compiled = self.core.compiled().unwrap();
-            let check = self.core.last_check().unwrap();
-            build_tensegrity_surfaces(compiled, check)
+            (
+                build_tensegrity_wires(compiled, check),
+                build_tensegrity_surfaces(compiled, check),
+            )
         };
 
         Ok(GuiState {
@@ -3258,7 +3254,10 @@ fn collect_surfaces_from_value(
 /// Returns `None` if `kind` is missing/non-string, any of `i0/i1/i2` is
 /// missing/non-integer, or any coordinate field is missing/non-numeric — the
 /// caller silently drops malformed facets (no-panic contract).
-fn surface_data_from_instance(
+///
+/// Exposed as `pub(crate)` so tests in the sibling `tests/` module can pin the
+/// malformed-field / no-panic contract without round-tripping through Reify source.
+pub(crate) fn surface_data_from_instance(
     fields: &reify_ir::PersistentMap<String, Value>,
     entity_path: &str,
 ) -> Option<TensegritySurfaceData> {
