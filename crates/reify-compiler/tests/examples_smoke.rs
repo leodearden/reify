@@ -59,6 +59,18 @@ const SKIP_SET: &[(&str, &str)] = &[
          Task 4434 (γ) delivers the joint-recheck; task 4433 β delivers \
          seed_candidate_value_map.",
     ),
+    (
+        "conditional_compilation/main.ri",
+        "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
+         through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
+         reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
+         compile_with_stdlib bulk smoke path cannot follow gated imports, so `Platform` is an \
+         unresolved-type Error there. The two-way symmetric behaviour (both --cfg target=linux \
+         and --cfg target=wasm exit 0, each resolving the platform-correct Platform variant) \
+         is exercised end-to-end by crates/reify-cli/tests/cli_check_cfg_example.rs. \
+         The siblings (platform_linux.ri, platform_wasm.ri) define their own types, compile \
+         clean single-file, and are intentionally NOT skipped.",
+    ),
 ];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
