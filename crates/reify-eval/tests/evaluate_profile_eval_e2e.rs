@@ -1,5 +1,5 @@
-//! End-to-end eval tests for `evaluate_profile` / `profile_duration` reaching
-//! the real spline evaluator (task 4539 — β-3816 residue).
+//! End-to-end eval tests for the `evaluate_profile` family / `profile_duration`
+//! reaching the real spline evaluator (task 4539 — β-3816 residue).
 //!
 //! Compiles an inline `.ri` snippet that constructs a 3-waypoint
 //! `PiecewisePolynomialProfile` (natural cubic, values [1.0]/[3.0]/[2.0] at
@@ -7,22 +7,22 @@
 //!
 //! ```text
 //! let q   = evaluate_profile(pi.profile, 1.0s)
+//! let qd  = evaluate_profile_dot(pi.profile, 1.0s)
+//! let qdd = evaluate_profile_ddot(pi.profile, 1.0s)
 //! let dur = profile_duration(pi.profile)
 //! ```
 //!
 //! then asserts:
 //!
-//! (i) VALUE — `q` is `Value::List([Value::Real(3.0)])` within 1e-9 (exact at
-//!     the interior knot for a natural-cubic spline, proving the `[0.0]` stub
-//!     path is gone), and `dur` is `Value::Scalar{TIME, si_value≈2.0}`.
-//!     `evaluate_profile` is a plain delegate (not `@optimized`), so no
-//!     `register_compute_fns` is needed — `make_simple_engine()` suffices.
+//! VALUE — `q` is `Value::List([Value::Real(3.0)])` within 1e-9 (exact at the
+//! interior knot), `qd` is within 1e-9 of 0.5 (first derivative at t=1 for
+//! this natural cubic), `qdd` is within 1e-9 of -4.5 (second derivative), and
+//! `dur` is `Value::Scalar{TIME, si_value≈2.0}`. No `register_compute_fns`
+//! needed — all four functions are plain delegates.
 //!
-//! (ii) IR CONTRACT — the four stdlib function bodies (`evaluate_profile`,
-//!      `evaluate_profile_dot`, `evaluate_profile_ddot`, `profile_duration`)
-//!      each compile to `CompiledExprKind::FunctionCall` naming the undeclared
-//!      `*_at` delegate intrinsic, and the `q` call site lowers to
-//!      `CompiledExprKind::UserFunctionCall("evaluate_profile")`.
+//! IR CONTRACT — the `q` call site lowers to
+//! `CompiledExprKind::UserFunctionCall("evaluate_profile")`, confirming the
+//! `.ri` declaration shadows the builtin name at the call site.
 
 // Value::Map uses BTreeMap<Value, Value>; Value's interior-mutable SampledField
 // trips clippy::mutable_key_type, but Ord/Hash on Value are by-design.
@@ -39,8 +39,10 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// A 3-waypoint natural-cubic `PiecewisePolynomialProfile` with values
 /// [1.0]/[3.0]/[2.0] at t=0s/1s/2s, sampled at the interior knot t=1s and
-/// queried for duration. Natural cubic interpolates exactly at every knot
-/// (spline.rs:796), so `q` at t=1s equals the waypoint value 3.0 exactly.
+/// queried for duration and derivatives. Natural cubic interpolates exactly at
+/// every knot (spline.rs:796), so `q` at t=1s equals 3.0 exactly. For this
+/// specific knot set the first derivative at t=1 is 0.5 and the second is -4.5
+/// (both exact in natural-cubic arithmetic).
 const SNIPPET: &str = r#"
 structure def EvaluateProfileE2E {
     let wp0 = Waypoint(t: 0.0s, values: [1.0], vels: none, accels: none)
@@ -58,8 +60,12 @@ structure def EvaluateProfileE2E {
     // `Profile` trait type (overload resolver requires exact type equality).
     let pi = ProfileInput(profile: profile)
 
-    // Sample position at the interior knot (1s) — must equal 3.0 exactly.
-    let q = evaluate_profile(pi.profile, 1.0s)
+    // Position at interior knot (1s) — must equal 3.0 exactly.
+    let q   = evaluate_profile(pi.profile, 1.0s)
+    // First derivative at t=1s — must equal 0.5 exactly.
+    let qd  = evaluate_profile_dot(pi.profile, 1.0s)
+    // Second derivative at t=1s — must equal -4.5 exactly.
+    let qdd = evaluate_profile_ddot(pi.profile, 1.0s)
 
     // Duration = last_knot - first_knot = 2s - 0s = 2s.
     let dur = profile_duration(pi.profile)
@@ -80,9 +86,8 @@ const E2E_TOL: f64 = 1e-9;
 
 /// `EvaluateProfileE2E.q` must evaluate to `Value::List([Value::Real(3.0)])`.
 /// Natural cubic interpolates exactly at every knot, so at t=1s the result
-/// equals the waypoint value 3.0. A `[0.0]` result proves the stub body is
-/// still live (this is the primary indicator that task 4539 is incomplete).
-/// No `register_compute_fns` needed — `evaluate_profile` is a plain delegate.
+/// equals the waypoint value 3.0. A `[0.0]` or `Undef` result proves the stub
+/// body is still live. No `register_compute_fns` needed — plain delegate.
 #[test]
 fn evaluate_profile_at_knot_equals_waypoint_value() {
     let compiled = compiled();
@@ -115,11 +120,8 @@ fn evaluate_profile_at_knot_equals_waypoint_value() {
     };
     assert!(
         (q - 3.0).abs() < E2E_TOL,
-        "evaluate_profile at knot t=1s should equal the waypoint value 3.0, got {q}"
-    );
-    assert!(
-        q > E2E_TOL,
-        "evaluate_profile returned [0.0] — the .ri stub body is still active"
+        "evaluate_profile at knot t=1s should equal waypoint value 3.0, got {q} \
+         (0.0 means the .ri stub body is still active)"
     );
 }
 
@@ -150,11 +152,72 @@ fn profile_duration_equals_knot_span() {
     );
     assert!(
         (si_value - 2.0).abs() < E2E_TOL,
-        "profile_duration should return 2.0s (last_knot - first_knot), got {si_value}s"
+        "profile_duration should return 2.0s (last_knot - first_knot), got {si_value}s \
+         (0.0 means the .ri stub body is still active)"
     );
+}
+
+/// `EvaluateProfileE2E.qd` must equal 0.5 (first derivative at t=1s for the
+/// natural cubic on these 3 knots — exact in natural-cubic arithmetic).
+/// A `[0.0]` or `Undef` result proves the _dot delegate path is broken.
+#[test]
+fn evaluate_profile_dot_at_knot_is_correct() {
+    let compiled = compiled();
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let id = ValueCellId::new("EvaluateProfileE2E", "qd");
+    let qd_val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("EvaluateProfileE2E.qd cell missing from eval result"));
+
+    let Value::List(items) = qd_val else {
+        panic!(
+            "EvaluateProfileE2E.qd should be Value::List, got {qd_val:?} — \
+             if Undef: dispatch broken; if List([0.0]): _dot delegate not wired"
+        );
+    };
+    assert_eq!(items.len(), 1, "evaluate_profile_dot on a 1-joint profile should return a 1-element list");
+    let Value::Real(qd) = items[0] else {
+        panic!("EvaluateProfileE2E.qd[0] should be Value::Real, got {:?}", items[0]);
+    };
     assert!(
-        si_value > E2E_TOL,
-        "profile_duration returned 0s — the .ri stub body is still active"
+        (qd - 0.5).abs() < E2E_TOL,
+        "evaluate_profile_dot at t=1s should equal 0.5 (natural-cubic first derivative), \
+         got {qd} (0.0 means the .ri stub body is still active)"
+    );
+}
+
+/// `EvaluateProfileE2E.qdd` must equal -4.5 (second derivative at t=1s for the
+/// natural cubic on these 3 knots — equal to the inner second-derivative M_1,
+/// exact in natural-cubic arithmetic).
+#[test]
+fn evaluate_profile_ddot_at_knot_is_correct() {
+    let compiled = compiled();
+    let mut engine = make_simple_engine();
+    let result = engine.eval(compiled);
+
+    let id = ValueCellId::new("EvaluateProfileE2E", "qdd");
+    let qdd_val = result
+        .values
+        .get(&id)
+        .unwrap_or_else(|| panic!("EvaluateProfileE2E.qdd cell missing from eval result"));
+
+    let Value::List(items) = qdd_val else {
+        panic!(
+            "EvaluateProfileE2E.qdd should be Value::List, got {qdd_val:?} — \
+             if Undef: dispatch broken; if List([0.0]): _ddot delegate not wired"
+        );
+    };
+    assert_eq!(items.len(), 1, "evaluate_profile_ddot on a 1-joint profile should return a 1-element list");
+    let Value::Real(qdd) = items[0] else {
+        panic!("EvaluateProfileE2E.qdd[0] should be Value::Real, got {:?}", items[0]);
+    };
+    assert!(
+        (qdd - (-4.5)).abs() < E2E_TOL,
+        "evaluate_profile_ddot at t=1s should equal -4.5 (natural-cubic M_1), \
+         got {qdd} (0.0 means the .ri stub body is still active)"
     );
 }
 
@@ -162,26 +225,18 @@ fn profile_duration_equals_knot_span() {
 // IR dispatch-contract regression guard
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Pins the two simultaneous properties the `*_at` delegate scheme depends on:
-///
-/// 1. `EvaluateProfileE2E.q` compiles to
-///    `CompiledExprKind::UserFunctionCall { function_name: "evaluate_profile" }`
-///    — the `.ri` declaration shadows the builtin name, and the call site uses
-///    the declared `-> List<JointValue>` return type.
-///
-/// 2. Each of the four stdlib function bodies (`evaluate_profile`,
-///    `evaluate_profile_dot`, `evaluate_profile_ddot`, `profile_duration`)
-///    compiles its `result_expr` to `CompiledExprKind::FunctionCall` naming
-///    the undeclared `*_at` intrinsic (`evaluate_profile_at` etc.) — confirming
-///    the body delegates via a name that resolves `NoUserFunctions` →
-///    `FunctionCall` → `eval_builtin` (not back into the public name).
+/// Pins the non-obvious shadowing property: `EvaluateProfileE2E.q` compiles to
+/// `CompiledExprKind::UserFunctionCall { function_name: "evaluate_profile" }`,
+/// confirming the `.ri` declaration shadows the builtin name at the call site.
+/// The value/derivative/duration tests already verify that dispatch reaches the
+/// real evaluator, so this test only pins the call-site IR shape (the part the
+/// value tests cannot directly observe).
 #[test]
-fn evaluate_profile_family_dispatch_ir_contract() {
+fn evaluate_profile_call_site_is_user_function_call() {
     use reify_ir::CompiledExprKind;
 
     let compiled = compiled();
 
-    // ── Part 1: call site in EvaluateProfileE2E.q ────────────────────────────
     let template = compiled
         .templates
         .iter()
@@ -210,42 +265,5 @@ fn evaluate_profile_family_dispatch_ir_contract() {
             "EvaluateProfileE2E.q init expr should be \
              UserFunctionCall(\"evaluate_profile\"), got: {other:?}"
         ),
-    }
-
-    // ── Part 2: stdlib function bodies ───────────────────────────────────────
-    let stdlib_modules = reify_compiler::stdlib_loader::load_stdlib();
-
-    // (fn_name, expected_delegate_name) pairs for all four functions.
-    let cases = [
-        ("evaluate_profile", "evaluate_profile_at"),
-        ("evaluate_profile_dot", "evaluate_profile_dot_at"),
-        ("evaluate_profile_ddot", "evaluate_profile_ddot_at"),
-        ("profile_duration", "profile_duration_at"),
-    ];
-
-    for (fn_name, delegate_name) in cases {
-        let stdlib_fn = stdlib_modules
-            .iter()
-            .flat_map(|m| m.functions.iter())
-            .find(|f| f.name == fn_name)
-            .unwrap_or_else(|| {
-                panic!("stdlib '{fn_name}' function should appear in a stdlib module")
-            });
-
-        match &stdlib_fn.body.result_expr.kind {
-            CompiledExprKind::FunctionCall { function, .. } => {
-                assert_eq!(
-                    function.name, delegate_name,
-                    "stdlib '{fn_name}' body should delegate to '{delegate_name}' \
-                     as a FunctionCall (builtin path), got: {:?}",
-                    function.name
-                );
-            }
-            other => panic!(
-                "stdlib '{fn_name}' body result_expr should be \
-                 FunctionCall(\"{delegate_name}\"), got: {other:?} — \
-                 the .ri stub body has not yet been replaced with the delegate call"
-            ),
-        }
     }
 }

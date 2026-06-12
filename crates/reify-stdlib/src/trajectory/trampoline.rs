@@ -303,6 +303,11 @@ pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSp
 // as `gcode_import`/`gcode_import_lower`). Return `Value::Undef` on any
 // unmarshalable / degenerate input — the loud not-computed signal rather than
 // a numeric placeholder.
+//
+// TODO(perf): each call re-fits the spline from scratch (O(n_knots) via
+// value_to_multijoint_spline). Dense sampling loops pay that cost N times.
+// A future fitted-spline cache keyed on the profile Value (mirroring
+// InputShapeCacheKey) would amortize the fit to once per profile.
 
 /// Sample a profile at time `t` (SI seconds), returning a `Value::List` of
 /// `Value::Real` per joint — or `Value::Undef` on unmarshalable input.
