@@ -4,13 +4,120 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_core::{ConstraintNodeId, Diagnostic, Severity, ValueCellId};
+use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Severity, ValueCellId};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
+
+// ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
+
+/// The process-category kind of a recognized DFM rule, together with the
+/// relevant capability threshold (in SI radians).
+///
+/// Determined by duck-typing the `applies_to` conformer's capability param:
+/// if `max_overhang_angle` is present → `Overhang`; if `draft_angle` is
+/// present (and `max_overhang_angle` is absent) → `Draft`.
+/// Overhang takes precedence when both fields are present.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DfmRuleKind {
+    /// Additive-manufacturing overhang check.
+    /// `max_angle_rad` is the process's `max_overhang_angle` in radians.
+    Overhang { max_angle_rad: f64 },
+    /// Mould/die draft-angle check.
+    /// `min_draft_rad` is the process's `draft_angle` in radians.
+    Draft { min_draft_rad: f64 },
+}
+
+/// A fully-parsed DFM rule ready for the auto-measurement pass.
+///
+/// Produced by [`dfm_rule_spec`] from a `Value::StructureInstance` that
+/// conforms (by duck-typing) to the `DFMRule` trait shape.
+#[derive(Debug, Clone)]
+pub(crate) struct DfmRuleSpec {
+    /// The process category and associated capability threshold.
+    pub kind: DfmRuleKind,
+    /// Live kernel handle for the rule's `subject` Solid, or `None` if the
+    /// subject value was not a `Value::GeometryHandle` at check time (C1 guard).
+    pub subject_handle: Option<GeometryHandleId>,
+    /// The original DFM rule `Value::StructureInstance` (cloned), passed as
+    /// `args[0]` to `dfm_diagnose` so it can read the `severity` field.
+    pub rule_value: Value,
+}
+
+/// Attempt to parse a `Value` as a DFM rule and extract a [`DfmRuleSpec`].
+///
+/// Recognition (duck-typing, no `type_name` check — conformers keep their own
+/// concrete `type_name`):
+/// - `v` must be a `Value::StructureInstance`.
+/// - Must have a `severity` field that is a `Value::Enum { type_name:
+///   "DFMSeverity", .. }` (same shape as `parse_dfm_severity` in dfm.rs).
+/// - Must have an `applies_to` field that is itself a `StructureInstance`.
+/// - Must have a `subject` field (any value; `None` handle if not a
+///   `GeometryHandle`).
+///
+/// Process category (duck-typing the `applies_to` capability param):
+/// - `applies_to.fields["max_overhang_angle"]` is an ANGLE scalar →
+///   `Overhang { max_angle_rad }`.  (Checked first; takes precedence.)
+/// - `applies_to.fields["draft_angle"]` is an ANGLE scalar →
+///   `Draft { min_draft_rad }`.
+/// - Neither → `None` (not a DFM rule we handle).
+///
+/// Returns `None` when the shape doesn't match.
+pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
+    let data = match v {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+
+    // Require a DFMSeverity `severity` field.
+    match data.fields.get("severity") {
+        Some(Value::Enum { type_name, .. }) if type_name == "DFMSeverity" => {}
+        _ => return None,
+    }
+
+    // Require an `applies_to` StructureInstance.
+    let applies_to = match data.fields.get("applies_to") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    // Require a `subject` field (value irrelevant for recognition;
+    // we use `get` which accepts `&str` via the Borrow bound).
+    if data.fields.get("subject").is_none() {
+        return None;
+    }
+
+    // Extract angle scalar helper: returns si_value if the field is an
+    // ANGLE-dimension scalar.
+    let angle_si = |fields: &PersistentMap<String, Value>, key: &str| -> Option<f64> {
+        match fields.get(key) {
+            Some(Value::Scalar { si_value, dimension }) if *dimension == DimensionVector::ANGLE => {
+                Some(*si_value)
+            }
+            _ => None,
+        }
+    };
+
+    // Determine category: overhang takes precedence over draft.
+    let kind = if let Some(max_angle_rad) = angle_si(&applies_to.fields, "max_overhang_angle") {
+        DfmRuleKind::Overhang { max_angle_rad }
+    } else if let Some(min_draft_rad) = angle_si(&applies_to.fields, "draft_angle") {
+        DfmRuleKind::Draft { min_draft_rad }
+    } else {
+        return None;
+    };
+
+    // Extract subject handle (None if not a live GeometryHandle).
+    let subject_handle = match data.fields.get("subject") {
+        Some(Value::GeometryHandle { kernel_handle, .. }) => Some(*kernel_handle),
+        _ => None,
+    };
+
+    Some(DfmRuleSpec { kind, subject_handle, rule_value: v.clone() })
+}
 
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
@@ -682,5 +789,111 @@ impl Engine {
             diagnostics,
             resolved_params: eval_result.resolved_params,
         }
+    }
+}
+
+// ── Unit tests for DFM auto-measurement helpers ───────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use reify_core::DimensionVector;
+    use reify_core::identity::RealizationNodeId;
+    use reify_ir::geometry::GeometryHandleId;
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    use super::{DfmRuleKind, dfm_rule_spec};
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Build a minimal DFMSeverity enum variant.
+    fn severity_warning() -> Value {
+        Value::Enum {
+            type_name: "DFMSeverity".to_string(),
+            variant: "Warning".to_string(),
+        }
+    }
+
+    /// Build a `Value::StructureInstance` with the given field pairs.
+    fn structure(type_name: &str, pairs: &[(&str, Value)]) -> Value {
+        let fields: PersistentMap<String, Value> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build an ANGLE scalar from a value in radians.
+    fn angle(radians: f64) -> Value {
+        Value::Scalar { si_value: radians, dimension: DimensionVector::ANGLE }
+    }
+
+    /// Build a dummy `Value::GeometryHandle` with the given kernel handle id.
+    fn geometry_handle(kernel_id: u64) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(kernel_id),
+        }
+    }
+
+    // ── step-1: dfm_rule_spec recognises Overhang branch ─────────────────────
+
+    /// A well-formed DFMRule-shaped StructureInstance with `applies_to` carrying
+    /// `max_overhang_angle` should be recognized as `Overhang`.
+    #[test]
+    fn step1_dfm_rule_spec_overhang_recognised() {
+        let max_angle_rad = std::f64::consts::FRAC_PI_4; // 45 deg
+
+        // applies_to: an Adding-like process with max_overhang_angle
+        let applies_to = structure("AddingProc", &[
+            ("max_overhang_angle", angle(max_angle_rad)),
+        ]);
+
+        // subject: a live GeometryHandle
+        let kernel_id = 42u64;
+        let subj = geometry_handle(kernel_id);
+
+        let rule = structure("MyAddingRule", &[
+            ("rule_name", Value::String("overhang-check".to_string())),
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", subj),
+        ]);
+
+        let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec)");
+
+        assert_eq!(spec.kind, DfmRuleKind::Overhang { max_angle_rad });
+        assert_eq!(spec.subject_handle, Some(GeometryHandleId(kernel_id)));
+    }
+
+    /// A StructureInstance missing the `subject` field returns None.
+    #[test]
+    fn step1_dfm_rule_spec_missing_subject_none() {
+        let applies_to = structure("AddingProc", &[
+            ("max_overhang_angle", angle(0.5)),
+        ]);
+        let rule = structure("MyRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            // no "subject"
+        ]);
+        assert!(dfm_rule_spec(&rule).is_none(), "missing subject should return None");
+    }
+
+    /// A StructureInstance missing a DFMSeverity `severity` field returns None.
+    #[test]
+    fn step1_dfm_rule_spec_missing_severity_none() {
+        let applies_to = structure("AddingProc", &[
+            ("max_overhang_angle", angle(0.5)),
+        ]);
+        let rule = structure("MyRule", &[
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+            // no "severity"
+        ]);
+        assert!(dfm_rule_spec(&rule).is_none(), "missing severity should return None");
     }
 }
