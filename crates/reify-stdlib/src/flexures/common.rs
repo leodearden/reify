@@ -514,6 +514,43 @@ mod tests {
         }
     }
 
+    /// Assert `v` is a symmetric ANGLE `Range` `[−h, +h]` (both-inclusive) and
+    /// return the half-width in radians.
+    fn angle_range_half(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(lower_inclusive, "{label}: lower_inclusive should be true");
+                assert!(upper_inclusive, "{label}: upper_inclusive should be true");
+                let lo = lower
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{label}: lower bound missing"));
+                let hi = upper
+                    .as_deref()
+                    .unwrap_or_else(|| panic!("{label}: upper bound missing"));
+                let lo_si = match lo {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: lower bound dimension");
+                        *si_value
+                    }
+                    other => panic!("{label}: lower bound expected ANGLE Scalar, got {other:?}"),
+                };
+                let hi_si = match hi {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: upper bound dimension");
+                        *si_value
+                    }
+                    other => panic!("{label}: upper bound expected ANGLE Scalar, got {other:?}"),
+                };
+                assert!(
+                    (lo_si + hi_si).abs() < 1e-15,
+                    "{label}: range not symmetric ([{lo_si}, {hi_si}])"
+                );
+                hi_si
+            }
+            other => panic!("{label}: expected Value::Range{{ANGLE}}, got {other:?}"),
+        }
+    }
+
     #[test]
     fn make_compliance_record_is_flexure_compliance_with_seven_fields() {
         let rec = make_compliance_record(1.42, 100e6, 0.0, Some(310e6), None, 0.0872664626);
@@ -577,10 +614,11 @@ mod tests {
             "absent parasitic ⇒ Option(None)"
         );
 
-        // prb_validity_range stored as a Real (the SI half-angle/half-displacement).
+        // prb_validity_range is a symmetric ANGLE Range<Angle> = [−h, +h].
+        let half = angle_range_half(field(&rec, "prb_validity_range"), "prb_validity_range");
         assert!(
-            (real_of(field(&rec, "prb_validity_range"), "prb_validity_range") - 0.0872664626).abs()
-                < 1e-9
+            (half - 0.0872664626).abs() < 1e-9,
+            "prb_validity_range half-width {half} vs expected 0.0872664626"
         );
     }
 
@@ -610,6 +648,13 @@ mod tests {
             },
             other => panic!("expected Option(Some(Length)), got {other:?}"),
         }
+
+        // prb_validity_range is a symmetric ANGLE Range<Angle> = [−h, +h].
+        let half = angle_range_half(field(&rec, "prb_validity_range"), "prb_validity_range");
+        assert!(
+            (half - 0.17453293).abs() < 1e-9,
+            "prb_validity_range half-width {half} vs expected 0.17453293"
+        );
     }
 
     #[test]
@@ -626,5 +671,9 @@ mod tests {
         );
         let m = real_of(field(&rec, "yield_margin"), "yield_margin");
         assert_eq!(m, 1.0, "no-yield margin sentinel is 1.0 (maximally safe)");
+
+        // prb_validity_range for zero input is a zero-width ANGLE Range<Angle> = [0, 0].
+        let half = angle_range_half(field(&rec, "prb_validity_range"), "prb_validity_range");
+        assert_eq!(half, 0.0, "zero-input prb_validity_range half-width should be 0.0");
     }
 }

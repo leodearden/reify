@@ -827,18 +827,41 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
         ),
     }
 
-    // prb_validity_range = 0 (Real placeholder for Range<Angle>). Accept
-    // Int(0) or Real(0.0).
+    // prb_validity_range = 0deg..0deg (sentinel-zero Range<Angle>; task 4576).
     let prb_validity_range = data
         .fields
         .get(&"prb_validity_range".to_string())
         .expect("flexure_compliance(0.0).prb_validity_range missing");
     match prb_validity_range {
-        Value::Real(v) if *v == 0.0 => {}
-        Value::Int(0) => {}
+        Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+            assert!(lower_inclusive, "prb_validity_range: lower_inclusive");
+            assert!(upper_inclusive, "prb_validity_range: upper_inclusive");
+            for (label, bound) in [("lower", lower), ("upper", upper)] {
+                let b = bound.as_deref().unwrap_or_else(|| {
+                    panic!("flexure_compliance(0.0).prb_validity_range {label} bound missing")
+                });
+                match b {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            reify_core::DimensionVector::ANGLE,
+                            "prb_validity_range {label} bound dimension"
+                        );
+                        assert_eq!(
+                            *si_value, 0.0,
+                            "prb_validity_range {label} bound si_value (0deg)"
+                        );
+                    }
+                    other => panic!(
+                        "flexure_compliance(0.0).prb_validity_range {label} bound \
+                         should be ANGLE Scalar(0.0); got: {other:?}"
+                    ),
+                }
+            }
+        }
         other => panic!(
-            "flexure_compliance(0.0).prb_validity_range should be Real(0.0) \
-             or Int(0) (sentinel-zero default; Range<Angle> placeholder); \
+            "flexure_compliance(0.0).prb_validity_range should be \
+             Value::Range{{0deg..0deg}} (sentinel-zero Range<Angle>; task 4576); \
              got: {:?}",
             other
         ),
