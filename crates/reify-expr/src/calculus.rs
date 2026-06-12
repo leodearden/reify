@@ -385,77 +385,102 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     }
 }
 
-/// Compute the curl of a 3D vector field.
+/// Compute the result-codomain type for the curl operator.
 ///
-/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
-/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+/// Returns `Some(Type::vec3(result_component))` when:
+/// - `domain_type` is `Point { 3, scalar }`, **and**
+/// - `codomain_type` is `Vector { 3, scalar }`.
 ///
-/// Validation:
-/// - Argument must be an Analytical or Composed Field
-/// - Domain must be `Point{3, scalar}`
-/// - Codomain must be `Vector{3, scalar}`
+/// The result codomain is `Type::vec3(codomain_component_dim / domain_dim)`.
 ///
-/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
-/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
-/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
-/// `Value::Undef`, which is the correct ζ-pending behaviour.
-pub(crate) fn compute_curl(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
-        Some(pair) => pair,
-        None => return Value::Undef,
-    };
-
-    // Domain must be Point{3, scalar}
+/// Returns `None` for non-Point{3} domain or non-Vector{3} codomain.
+///
+/// Used by both the Sampled eager-lower path (ζ) and the existing
+/// Analytical/Composed path to guarantee identical D6 typing across both paths.
+fn curl_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Domain must be Point{3, scalar}.
     match domain_type {
-        Type::Point { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Int | Type::Scalar { .. }
-            ) => {}
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: domain must be Point{{3}}, got {:?}",
-                domain_type
-            );
-            return Value::Undef;
-        }
+        Type::Point { n: 3, quantity } if scalar_dimension(quantity).is_some() => {}
+        _ => return None,
     }
-
-    // Codomain must be Vector{3, scalar}; capture the unwrapped quantity for dim propagation.
+    // Codomain must be Vector{3, scalar}; extract the unwrapped quantity.
     let codomain_quantity = match codomain_type {
-        Type::Vector { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Int | Type::Scalar { .. }
-            ) =>
-        {
+        Type::Vector { n: 3, quantity } if scalar_dimension(quantity).is_some() => {
             quantity.as_ref()
         }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: codomain must be Vector{{3}}, got {:?}",
-                codomain_type
-            );
-            return Value::Undef;
-        }
+        _ => return None,
     };
-
-    // Compute result component type: codomain_component_dim / domain_dim.
-    // Same pattern as compute_divergence, but wrapped back in Vector{3, ...}.
     let result_component = dim_quotient_type(
         scalar_dimension(codomain_quantity),
         domain_dimension(domain_type),
         1,
         dimensionless_fallback(codomain_quantity),
     );
+    Some(Type::vec3(result_component))
+}
+
+/// Compute the curl of a 3D vector field.
+///
+/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+///
+/// Validation:
+/// - Domain must be `Point{3, scalar}`
+/// - Codomain must be `Vector{3, scalar}`
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Curl)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled vector field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
+pub(crate) fn compute_curl(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // curl_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = curl_result_codomain(domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Curl,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
+
+    let result_codomain = match curl_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
+            );
+            return Value::Undef;
+        }
+    };
 
     // Result: vector field with dimensionally-correct codomain.
     // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::vec3(result_component),
+        codomain_type: result_codomain,
         source: FieldSourceKind::Curl,
         lambda: Arc::new(field_val.clone()),
     }
