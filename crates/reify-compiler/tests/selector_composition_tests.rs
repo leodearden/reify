@@ -513,3 +513,129 @@ fn difference_three_args_emits_compile_time_arity_error() {
         sel_expr.result_type
     );
 }
+
+// ── (h) All-ident selector composition (task 4527) ───────────────────────────
+//
+// Before the fix: `union(top, big)` where both operands are Ident expressions
+// bound to selector lets is mis-classified as CSG geometry → compile_boolean_op
+// cannot resolve `top`/`big` as GeomRef nodes → emits a confusing geometry
+// error (errors_only non-empty) and/or 'u' is absent from value_cells.
+//
+// After the fix (known_selector_lets accumulator): the Ident arm of
+// is_selector_expr returns `known_selector_lets.contains(name)`, so
+// union(top, big) with top/big in the set → is_selector_composition true →
+// is_geometry_let false → routed to the value-typing path →
+// selector_composition_result_type infers Type::Selector(Face).
+
+/// All-ident operands, union: `let top = faces(b); let big = faces(c); let u = union(top, big)`.
+/// Must compile without errors and `u` must infer `Type::Selector(Face)`.
+/// RED until the known_selector_lets accumulator is implemented (task 4527).
+const SOURCE_UNION_ALL_IDENT: &str = r#"
+structure def UnionAllIdent {
+    let b = box(10mm, 10mm, 10mm)
+    let c = box(20mm, 20mm, 20mm)
+    let top = faces(b)
+    let big = faces(c)
+    let u = union(top, big)
+}
+"#;
+
+/// All-ident operands, difference: `let top = faces(b); let big = faces(c); let u = difference(top, big)`.
+/// Must compile without errors and `u` must infer `Type::Selector(Face)`.
+/// RED until the known_selector_lets accumulator is implemented (task 4527).
+const SOURCE_DIFFERENCE_ALL_IDENT: &str = r#"
+structure def DifferenceAllIdent {
+    let b = box(10mm, 10mm, 10mm)
+    let c = box(20mm, 20mm, 20mm)
+    let top = faces(b)
+    let big = faces(c)
+    let u = difference(top, big)
+}
+"#;
+
+/// Transitive/chained: `let u = union(top, big); let v = difference(u, top)`.
+/// `u` itself must be recorded in known_selector_lets so `v` can chain on it.
+/// Both `u` and `v` must infer `Type::Selector(Face)` and the compilation must be error-free.
+/// RED until the known_selector_lets accumulator is implemented (task 4527).
+const SOURCE_CHAINED_ALL_IDENT: &str = r#"
+structure def ChainedAllIdent {
+    let b = box(10mm, 10mm, 10mm)
+    let c = box(20mm, 20mm, 20mm)
+    let top = faces(b)
+    let big = faces(c)
+    let u = union(top, big)
+    let v = difference(u, top)
+}
+"#;
+
+/// `union(top, big)` — both operands are Ident expressions bound to Face selectors —
+/// must compile without errors and `u` must infer `Type::Selector(Face)`.
+/// Fixes the all-ident mis-routing from task 4119 δ (known limitation).
+#[test]
+fn union_all_ident_operands_compiles_clean_with_face_selector_type() {
+    let compiled = compile_source_with_stdlib(SOURCE_UNION_ALL_IDENT);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(top, big) with ident selector operands: must compile without errors; got: {errors:#?}"
+    );
+
+    let u_expr = cell_default_expr(&compiled, "u");
+    assert_eq!(
+        u_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "union(top, big) with ident selector operands must infer Type::Selector(Face), got {:?}",
+        u_expr.result_type
+    );
+}
+
+/// `difference(top, big)` — both operands are Ident expressions bound to Face selectors —
+/// must compile without errors and `u` must infer `Type::Selector(Face)`.
+/// Fixes the all-ident mis-routing from task 4119 δ (known limitation).
+#[test]
+fn difference_all_ident_operands_compiles_clean_with_face_selector_type() {
+    let compiled = compile_source_with_stdlib(SOURCE_DIFFERENCE_ALL_IDENT);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "difference(top, big) with ident selector operands: must compile without errors; got: {errors:#?}"
+    );
+
+    let u_expr = cell_default_expr(&compiled, "u");
+    assert_eq!(
+        u_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "difference(top, big) with ident selector operands must infer Type::Selector(Face), got {:?}",
+        u_expr.result_type
+    );
+}
+
+/// `let u = union(top, big); let v = difference(u, top)` — chained all-ident composition.
+/// `u` must itself be recorded in known_selector_lets so `v` resolves `u` as a selector.
+/// Both `u` and `v` must infer `Type::Selector(Face)` and compilation must be error-free.
+/// Locks the transitive accumulator chaining required by task 4527.
+#[test]
+fn chained_all_ident_operands_compiles_clean_with_face_selector_type() {
+    let compiled = compile_source_with_stdlib(SOURCE_CHAINED_ALL_IDENT);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "chained all-ident composition: must compile without errors; got: {errors:#?}"
+    );
+
+    let u_expr = cell_default_expr(&compiled, "u");
+    assert_eq!(
+        u_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "union(top, big) in chain must infer Type::Selector(Face), got {:?}",
+        u_expr.result_type
+    );
+
+    let v_expr = cell_default_expr(&compiled, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "difference(u, top) in chain must infer Type::Selector(Face), got {:?}",
+        v_expr.result_type
+    );
+}
