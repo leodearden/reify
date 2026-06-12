@@ -199,7 +199,7 @@ mod tests {
     use crate::graph::ValueCellNode;
     use reify_compiler::ValueCellKind;
     use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, PersistentMap, Value};
+    use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, PersistentMap, ResolvedFunction, Value};
     use reify_test_support::builders::CompiledPurposeBuilder;
     use std::collections::HashMap;
 
@@ -583,6 +583,201 @@ mod tests {
     /// in step-2 of task 4070: `extract_tolerance_bindings` now resolves each
     /// matched constraint's subject param against the `bindings` slice so
     /// multi-param purposes produce per-param `ToleranceBinding`s.
+    /// Regression lock: `extract_tolerance_bindings` (scope side) and
+    /// `recognize_representation_within` (combine side) must agree on every
+    /// `CompiledExpr` shape in the shared fixture set.
+    ///
+    /// Each fixture's subject `ValueRef` entity is declared as a purpose param
+    /// ("subject") with a matching binding, so the scope-only membership and
+    /// binding gates always pass — the shared shape gate is the sole decider.
+    ///
+    /// Before the routing fix the resolved-`FunctionCall` fixture drives RED:
+    /// the combine side recognises it (`Some`) but the still-hand-rolled scope
+    /// side does not (empty `Vec`).
+    #[test]
+    fn extract_tolerance_bindings_agrees_with_recognize_representation_within_on_fixture_set() {
+        let subject_vref = || {
+            CompiledExpr::value_ref(
+                ValueCellId::new("subject", "self"),
+                Type::StructureRef("Bracket".to_string()),
+            )
+        };
+        let len_tol = |si: f64| {
+            CompiledExpr::literal(
+                Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH },
+                Type::Scalar { dimension: DimensionVector::LENGTH },
+            )
+        };
+
+        // Resolved FunctionCall variant (RED driver before routing fix) —
+        // mirrors reify-ir's `make_function_call` helper (expr.rs:1827).
+        let f_resolved_fc = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "RepresentationWithin".to_string(),
+                    qualified_name: "std::RepresentationWithin".to_string(),
+                },
+                args: vec![subject_vref(), len_tol(1e-6)],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of("RepresentationWithin".as_bytes()),
+        };
+        let f_wrong_name_fc = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "ToleranceWithin".to_string(),
+                    qualified_name: "std::ToleranceWithin".to_string(),
+                },
+                args: vec![subject_vref(), len_tol(1e-6)],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of("ToleranceWithin".as_bytes()),
+        };
+
+        // Each case: (label, expr, expected_si — None means no-match expected).
+        let cases: Vec<(&str, CompiledExpr, Option<f64>)> = vec![
+            // Gate-2 variant coverage.
+            (
+                "canonical UFC",
+                representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH),
+                Some(1e-6),
+            ),
+            (
+                "resolved FunctionCall",
+                f_resolved_fc,
+                Some(1e-6),
+            ),
+            (
+                "wrong name UFC",
+                CompiledExpr::user_function_call(
+                    "ToleranceWithin".to_string(),
+                    vec![subject_vref(), len_tol(1e-6)],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            ("wrong name resolved FC", f_wrong_name_fc, None),
+            // Arity gate.
+            (
+                "arity-1 UFC",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![subject_vref()],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            // Gate-3: arg0 shape.
+            (
+                "non-ValueRef arg0",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![
+                        CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
+                        len_tol(1e-6),
+                    ],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            (
+                "non-StructureRef arg0",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![
+                        CompiledExpr::value_ref(
+                            ValueCellId::new("subject", "self"),
+                            Type::dimensionless_scalar(),
+                        ),
+                        len_tol(1e-6),
+                    ],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            // Gate-4a: dimension.
+            (
+                "DIMENSIONLESS tol",
+                representation_within_constraint("subject", "Bracket", 1.0, DimensionVector::DIMENSIONLESS),
+                None,
+            ),
+            // Gate-4b/c: is_valid_tolerance_si.
+            (
+                "NaN tol",
+                representation_within_constraint("subject", "Bracket", f64::NAN, DimensionVector::LENGTH),
+                None,
+            ),
+            (
+                "+Inf tol",
+                representation_within_constraint("subject", "Bracket", f64::INFINITY, DimensionVector::LENGTH),
+                None,
+            ),
+            (
+                "negative tol",
+                representation_within_constraint("subject", "Bracket", -1e-6, DimensionVector::LENGTH),
+                None,
+            ),
+            // Zero is the exact >= 0.0 lower boundary (accepted).
+            (
+                "zero tol",
+                representation_within_constraint("subject", "Bracket", 0.0, DimensionVector::LENGTH),
+                Some(0.0),
+            ),
+            // Non-call outer expr.
+            (
+                "bare Real-literal",
+                CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar()),
+                None,
+            ),
+        ];
+
+        for (label, expr, expected_si) in &cases {
+            let purpose = CompiledPurposeBuilder::new("p")
+                .param("subject", "Structure")
+                .constraint("subject", 0, None, expr.clone())
+                .build();
+            let scope_bindings = extract_tolerance_bindings(
+                &purpose,
+                &[("subject".to_string(), "Inst".to_string())],
+            );
+            let combine_result =
+                crate::tolerance_combine::recognize_representation_within(expr);
+
+            let scope_matches = !scope_bindings.is_empty();
+            let combine_matches = combine_result.is_some();
+            let should_match = expected_si.is_some();
+
+            assert_eq!(
+                scope_matches,
+                combine_matches,
+                "fixture '{label}': scope ({scope_matches}) and combine ({combine_matches}) disagree"
+            );
+            assert_eq!(
+                scope_matches,
+                should_match,
+                "fixture '{label}': expected {} but got {}",
+                if should_match { "match" } else { "no-match" },
+                if scope_matches { "match" } else { "no-match" },
+            );
+
+            if let Some(expected_tol) = expected_si {
+                assert_eq!(
+                    scope_bindings.len(),
+                    1,
+                    "fixture '{label}': expected exactly one binding"
+                );
+                assert_eq!(
+                    scope_bindings[0].subject_entity, "Inst",
+                    "fixture '{label}': subject_entity must be 'Inst'"
+                );
+                assert_eq!(
+                    scope_bindings[0].si_tolerance, *expected_tol,
+                    "fixture '{label}': si_tolerance must equal {expected_tol}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn extract_tolerance_bindings_threads_each_param_to_its_bound_entity() {
         let constraint_part =
