@@ -39,8 +39,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::auto_type_param::{
-    AutoTypeParam, MultiParamResolutionOutcome, SelectionResult,
-    resolve_auto_type_params_with_backtracking,
+    AutoTypeParam, resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
@@ -146,8 +145,7 @@ fn depth_bound_infeasible_joint_check_emits_bounded_infeasible_error_generated_f
         //     `filter_feasible_candidates` (1 candidate per param → 1 call per param).
         //   - 1 × Violated: the single joint-recheck call in γ's
         //     `emit_fallback_warning_and_delegate_to_bfs`.
-        let queue: Vec<Satisfaction> = std::iter::repeat(Satisfaction::Indeterminate)
-            .take(param_count)
+        let queue: Vec<Satisfaction> = std::iter::repeat_n(Satisfaction::Indeterminate, param_count)
             .chain(std::iter::once(Satisfaction::Violated))
             .collect();
         let checker = MockConstraintChecker::new().with_call_queue(queue);
