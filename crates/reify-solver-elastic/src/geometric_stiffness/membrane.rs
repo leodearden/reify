@@ -21,6 +21,9 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
+use crate::elements::membrane_cst::rotate_membrane_local_to_global;
+use crate::shell_assembly::build_shell_frame;
+use crate::shell_kinematics::shell_kinematics;
 
 /// In-plane membrane stress **resultant** (force/length) in the element local
 /// frame, carried as a 2×2 tensor `S` indexed `resultant[i][j]`.
@@ -65,11 +68,71 @@ impl MembranePrestress {
 /// `prestress` is the in-plane stress resultant `S` (local frame). Returns an
 /// [`ElementStiffness`] with `n_dofs = 9`, row-major, sharing the `3·node +
 /// axis` DOF layout of [`ElementStiffness`].
+#[allow(clippy::needless_range_loop)]
 pub fn geometric_element_stiffness_membrane_cst(
     nodes: &[[f64; 3]; 3],
     prestress: &MembranePrestress,
 ) -> ElementStiffness {
-    todo!("geometric_element_stiffness_membrane_cst: implemented in S6")
+    // A non-finite resultant would propagate NaN/±∞ through the stiffness matrix
+    // — guard under debug_assertions, mirroring tet/bar K_g's finite check. The
+    // test is finite-only (not finite-positive): compressive prestress is
+    // negative and zero prestress is mathematically valid.
+    debug_assert!(
+        prestress.resultant.iter().flatten().all(|x| x.is_finite()),
+        "resultant must be entrywise finite, got {:?}",
+        prestress.resultant,
+    );
+
+    // Symmetrise the resultant: only the symmetric part of S contributes to the
+    // strain energy, so K_g(S) ≡ K_g(½(S+Sᵀ)). Pre-symmetrising makes the
+    // assembled K_g exactly symmetric even for a slightly off-symmetric input,
+    // matching the struct-doc contract (and InitialStress3's implicit symmetry).
+    let r = &prestress.resultant;
+    let s = [
+        [r[0][0], 0.5 * (r[0][1] + r[1][0])],
+        [0.5 * (r[0][1] + r[1][0]), r[1][1]],
+    ];
+
+    // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
+    // panics on a degenerate (collinear/zero-edge) triangle — the same degeneracy
+    // guard K_e reuses.
+    let frame = build_shell_frame(nodes);
+    let area = frame.area;
+    let dn = shell_kinematics(nodes, &frame).dn;
+
+    // Assemble the local 9×9 geometric stiffness. Under an in-plane prestress
+    // resultant S the membrane stiffens ONLY the transverse/local-normal DOF
+    // (local index 2 within each 3-DOF nodal block):
+    //   K_g_loc[3i+2][3j+2] = A · (dn_i · S · dn_j)
+    // The in-plane DOFs (local 0, 1) carry zero geometric stiffness — the 2-D
+    // analogue of the bar's axial null. For an isotropic resultant N=σt this is
+    // N·A·(∇N·∇N), the σt-scaled cotangent-Laplacian (§4 NFDM reduction).
+    let mut k_loc = [[0.0_f64; 9]; 9];
+    for ni in 0..3 {
+        for nj in 0..3 {
+            // dn_i · S · dn_j = Σ_{a,b} dn_i[a]·S[a][b]·dn_j[b]
+            let mut g_ij = 0.0;
+            for a in 0..2 {
+                for b in 0..2 {
+                    g_ij += dn[ni][a] * s[a][b] * dn[nj][b];
+                }
+            }
+            k_loc[3 * ni + 2][3 * nj + 2] = g_ij * area;
+        }
+    }
+
+    // Rotate the local-frame block into the global frame via blockdiag(R) — the
+    // identical congruence K_e uses. For the flat xy-plane triangle R = I, so the
+    // transverse stiffening lands in global DOFs {2, 5, 8} unchanged (S5 exact).
+    let k_glob = rotate_membrane_local_to_global(&k_loc, &frame.r);
+
+    let mut kg = ElementStiffness::zeros(9);
+    for i in 0..9 {
+        for j in 0..9 {
+            kg.data[i * 9 + j] = k_glob[i][j];
+        }
+    }
+    kg
 }
 
 /// Compute the per-element membrane tangent stiffness `K_t = K_e + K_g`.
