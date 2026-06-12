@@ -1124,7 +1124,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
@@ -1194,7 +1195,8 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => {
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => {
             sub(target);
         }
 
@@ -1336,6 +1338,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
 
         // Transform
         GeometryOp::Translate { .. } => Operation::TransformTranslate,
@@ -1421,7 +1424,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
 
         // Modify — BRep-only consumers
-        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => Some(BREP_ONLY),
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken | ModifyZoneSlab => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -6502,6 +6505,7 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyZoneSlab, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
@@ -9967,6 +9971,14 @@ mod tests {
                 label: "Shell → [target]",
             },
             Case {
+                op: GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(90),
+                    width: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(90)],
+                label: "ZoneSlab → [target]",
+            },
+            Case {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
                     angle: Value::Real(0.1),
@@ -10334,6 +10346,14 @@ mod tests {
                 },
                 expected: Operation::ModifyThicken,
                 label: "Thicken → ModifyThicken",
+            },
+            Case {
+                op: GeometryOp::ZoneSlab {
+                    target: h(1),
+                    width: r(0.002),
+                },
+                expected: Operation::ModifyZoneSlab,
+                label: "ZoneSlab → ModifyZoneSlab",
             },
             // Transform
             Case {
@@ -12378,6 +12398,7 @@ mod mixed_region_tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
         ] {
             assert!(
                 op_accepts_repr(&mod_op, ReprKind::BRep),

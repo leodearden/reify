@@ -293,6 +293,8 @@ pub enum Operation {
     ModifyDraft,
     /// Thicken a surface by offset.
     ModifyThicken,
+    /// Offset a face ±width/2 and cap into a centered slab solid.
+    ModifyZoneSlab,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -800,6 +802,11 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         offset: Value,
     },
+    /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
+    ZoneSlab {
+        target: GeometryHandleId,
+        width: Value,
+    },
     /// Shell a solid (hollow it out, removing specified faces).
     Shell {
         target: GeometryHandleId,
@@ -892,6 +899,7 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::ZoneSlab { .. } => "ZoneSlab",
             GeometryOp::Shell { .. } => "Shell",
             GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
@@ -5742,12 +5750,13 @@ mod tests {
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
-            // Modify (5)
+            // Modify (6)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -5849,6 +5858,7 @@ mod tests {
             Operation::ModifyShell => {}
             Operation::ModifyDraft => {}
             Operation::ModifyThicken => {}
+            Operation::ModifyZoneSlab => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -6575,6 +6585,13 @@ mod tests {
                 },
             ),
             (
+                "ZoneSlab",
+                GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(1),
+                    width: Value::Real(0.002),
+                },
+            ),
+            (
                 "Shell",
                 GeometryOp::Shell {
                     target: GeometryHandleId(1),
@@ -6609,7 +6626,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 41;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 42;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
