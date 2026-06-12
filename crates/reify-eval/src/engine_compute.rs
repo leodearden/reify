@@ -528,7 +528,7 @@ impl crate::Engine {
     /// by scanning `arg_values` for `Value::GeometryHandle` entries.
     ///
     /// For each `Value::GeometryHandle { realization_ref, .. }` encountered (in
-    /// argument order, **no dedup**), the method:
+    /// argument order, first-occurrence wins), the method:
     /// 1. Pushes `realization_ref` into the returned `inputs` vec.
     /// 2. Calls [`project_realization_read_handle`](crate::Engine::project_realization_read_handle)
     ///    to obtain the matching handle (possibly degraded to `None` content in β).
@@ -538,13 +538,12 @@ impl crate::Engine {
     /// `value_inputs` unchanged (value identity via `Value`, content identity via
     /// handle).
     ///
-    /// ## No-dedup contract (PRD §3.4 / §10 OQ-4)
+    /// ## Dedup (first-occurrence, arg order preserved)
     ///
-    /// The returned `inputs` preserve arg order and allow duplicates: if the same
-    /// `RealizationNodeId` appears twice in `arg_values`, it appears twice in the
-    /// returned `inputs`.  The compute-cache-key machinery is already
-    /// order/cardinality-aware (sorted-bucket hash in `compute_cache_key.rs`), so
-    /// no dedup is needed here.
+    /// Duplicate `RealizationNodeId`s are deduplicated: if the same id appears
+    /// more than once in `arg_values`, only the first occurrence is contributed to
+    /// `inputs`.  This is required by `compute_cache_key`, which asserts that
+    /// `realization_inputs` contains no duplicates.
     ///
     /// The returned `inputs` and `handles` are 1-to-1 (same length); each
     /// `handles[i]` corresponds to `inputs[i]`.
@@ -560,14 +559,17 @@ impl crate::Engine {
         let mut inputs = Vec::new();
         let mut handles = Vec::new();
         let mut diags = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
         for arg in arg_values {
             if let Value::GeometryHandle { realization_ref, .. } = arg {
-                let (handle, arg_diags) =
-                    self.project_realization_read_handle(realization_ref, graph);
-                inputs.push(realization_ref.clone());
-                handles.push(handle);
-                diags.extend(arg_diags);
+                if seen.insert(realization_ref) {
+                    let (handle, arg_diags) =
+                        self.project_realization_read_handle(realization_ref, graph);
+                    inputs.push(realization_ref.clone());
+                    handles.push(handle);
+                    diags.extend(arg_diags);
+                }
             }
         }
 
@@ -2164,7 +2166,7 @@ mod tests {
         // ── step-5: build_compute_realization_inputs lowering rule tests ──────
 
         #[test]
-        fn lowering_extracts_geometry_handle_args_in_order_no_dedup() {
+        fn lowering_extracts_geometry_handle_args_in_order_deduped() {
             let mut engine = make_engine();
             let mut graph = EvaluationGraph::default();
 
@@ -2176,41 +2178,39 @@ mod tests {
             seed_realization(&mut graph, r1.clone(), h1, ReprKind::BRep);
 
             // Mixed arg_values: leading non-geometry, two distinct geometry args,
-            // then R0 REPEATED to pin no-dedup.
+            // then R0 REPEATED to verify first-occurrence dedup.
             let arg_values = vec![
                 Value::Int(7),
                 make_geometry_handle_value(r0.clone()),
                 Value::Int(42), // non-geometry interleaved
                 make_geometry_handle_value(r1.clone()),
-                make_geometry_handle_value(r0.clone()),
+                make_geometry_handle_value(r0.clone()), // duplicate — must be dropped
             ];
 
             let (inputs, handles, diags) =
                 engine.build_compute_realization_inputs(&arg_values, &graph);
 
-            // (a) inputs in arg order, no dedup, non-geometry skipped
+            // (a) inputs in arg order, first-occurrence dedup, non-geometry skipped
             assert_eq!(
                 inputs,
-                vec![r0.clone(), r1.clone(), r0.clone()],
-                "realization_inputs must preserve arg order and allow duplicates"
+                vec![r0.clone(), r1.clone()],
+                "realization_inputs must preserve arg order and dedup by first occurrence"
             );
 
-            // (b) handles parallel to inputs
-            assert_eq!(handles.len(), 3, "handles must be 1:1 with inputs");
+            // (b) handles parallel to inputs (2, not 3 — duplicate dropped)
+            assert_eq!(handles.len(), 2, "handles must be 1:1 with deduplicated inputs");
             assert_eq!(handles[0].node_id, r0, "handles[0] must reference R0");
             assert_eq!(handles[0].content_hash, h0, "handles[0].content_hash must be H0");
             assert_eq!(handles[1].node_id, r1, "handles[1] must reference R1");
             assert_eq!(handles[1].content_hash, h1, "handles[1].content_hash must be H1");
-            assert_eq!(handles[2].node_id, r0, "handles[2] must reference R0 (repeated)");
-            assert_eq!(handles[2].content_hash, h0, "handles[2].content_hash must be H0");
 
-            // (c) BRep (handles[1]) emits no diagnostic; Mesh (handles[0,2]) each
-            //     emit one warning — accumulated across all geometry args.
-            //     Total diags = 2 (one for each Mesh handle, BRep is silent).
+            // (c) BRep (handles[1]) emits no diagnostic; Mesh (handles[0]) emits one
+            //     warning; duplicate R0 is dropped so not processed twice.
+            //     Total diags = 1.
             assert_eq!(
                 diags.len(),
-                2,
-                "two Mesh handles × one warning each = 2 total diags"
+                1,
+                "one Mesh handle (duplicate dropped) × one warning = 1 total diag"
             );
         }
 
@@ -2328,7 +2328,6 @@ mod tests {
             let c_id = ComputeNodeId::new("BP", 0);
             seed_output_cell(&mut engine, &cell);
 
-            // (a) ComputeNode.realization_inputs == [R0]
             let node = ComputeNodeData {
                 computation_id: c_id.clone(),
                 target: "test::beta_probe".to_string(),
@@ -2342,17 +2341,19 @@ mod tests {
                 running: Some(CancellationHandle::new()),
                 output_value_cells: vec![cell.clone()],
             };
-            assert_eq!(
-                node.realization_inputs,
-                vec![r0.clone()],
-                "(a) inserted node.realization_inputs must be [R0]"
-            );
 
             // Record the initial cache key (realization_inputs=[R0] with H0
             // feeds into the key).
             let key_before = compute_cache_key(&node, &graph);
 
             graph.compute_nodes.insert(c_id.clone(), node);
+
+            // (a) Verify graph actually stored realization_inputs=[R0].
+            assert_eq!(
+                graph.compute_nodes.get(&c_id).unwrap().realization_inputs,
+                vec![r0.clone()],
+                "(a) graph-stored node.realization_inputs must be [R0]"
+            );
 
             let result = engine.run_compute_dispatch(
                 &c_id,

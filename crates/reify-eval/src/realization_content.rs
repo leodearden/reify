@@ -26,9 +26,12 @@ use crate::graph::EvaluationGraph;
 
 /// Memoization store for realized geometry content.
 ///
-/// Keyed by `(RealizationNodeId, ContentHash)` so that two dispatches over the
-/// same realization identity but *different* content hashes are never conflated
-/// (e.g. after a parameter edit changes the realization's geometry).
+/// Keyed by `RealizationNodeId → ContentHash → RealizedContent` (two-level map)
+/// so that two dispatches over the same realization identity but *different*
+/// content hashes are never conflated (e.g. after a parameter edit).
+///
+/// The two-level structure lets [`get`](RealizationProjectionStore::get) borrow
+/// `node_id` directly (no clone) for the outer lookup.
 ///
 /// ## Arc-clone-on-get semantics
 ///
@@ -45,7 +48,7 @@ use crate::graph::EvaluationGraph;
 /// incorrect.  A future task may add an LRU cap.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
 pub(crate) struct RealizationProjectionStore {
-    memo: HashMap<(RealizationNodeId, ContentHash), RealizedContent>,
+    memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,
 }
 
 impl RealizationProjectionStore {
@@ -55,16 +58,17 @@ impl RealizationProjectionStore {
 
     /// Look up content by `(node_id, content_hash)`.
     ///
-    /// Returns a cloned `RealizedContent` (cheap Arc-clone) when present,
-    /// `None` on a cache miss.  Two calls with the same key return distinct
-    /// enum values pointing to the *same* inner Arc allocation.
+    /// Borrows `node_id` for the outer lookup (no clone).  Returns a cloned
+    /// `RealizedContent` (cheap Arc-clone) when present, `None` on a miss.
+    /// Two calls with the same key return distinct enum values pointing to the
+    /// *same* inner Arc allocation.
     #[allow(dead_code)] // used in step-2 tests; dead-code silenced until step-4 wires it
     pub(crate) fn get(
         &self,
         node_id: &RealizationNodeId,
         content_hash: ContentHash,
     ) -> Option<RealizedContent> {
-        self.memo.get(&(node_id.clone(), content_hash)).cloned()
+        self.memo.get(node_id)?.get(&content_hash).cloned()
     }
 
     /// Insert (or overwrite) content for `(node_id, content_hash)`.
@@ -79,7 +83,7 @@ impl RealizationProjectionStore {
         content_hash: ContentHash,
         content: RealizedContent,
     ) {
-        self.memo.insert((node_id, content_hash), content);
+        self.memo.entry(node_id).or_default().insert(content_hash, content);
     }
 }
 
@@ -158,7 +162,13 @@ impl crate::Engine {
                         // eval-time (kernels are collected per-build, not a
                         // persistent Engine field).  Honest degradation:
                         // content=None + one warning.  γ/δ replace these
-                        // arms.
+                        // arms with real kernel projection + store insert.
+                        //
+                        // Note: this warning is dormant in β — no live
+                        // compute target currently receives GeometryHandle
+                        // args (Value::GeometryHandle is a post-eval
+                        // BUILD-time artifact; dispatch sees Undef for
+                        // geometry args until task 4091 wires the chain).
                         let handle =
                             RealizationReadHandle::new(node_id.clone(), content_hash, None);
                         let diag = Diagnostic::warning(format!(
