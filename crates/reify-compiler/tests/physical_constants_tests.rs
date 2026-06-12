@@ -91,9 +91,11 @@ fn check_constant(fn_name: &str, expected_dim: DimensionVector, expected_si_valu
 /// `SPEED_OF_LIGHT` must be present in `std/units`, be `pub`, take no
 /// parameters, and return `Scalar<LENGTH / TIME>`.
 ///
-/// Return type uses the `Length / Time` type-expression form (not `Velocity`)
-/// because `Velocity` is not in NAMED_DIMENSIONS — design decision recorded
-/// in plan.json for task 4026.
+/// Return type resolves to the m·s⁻¹ DimensionVector (Scalar{LENGTH/TIME}).
+/// As of task 4580, `Velocity` IS now in NAMED_DIMENSIONS, so the units.ri
+/// `pub type Velocity = Length / Time` alias is shadowed by the builtin
+/// — but both resolve to the same DimensionVector, so this assertion is
+/// unchanged.
 #[test]
 fn speed_of_light_function_present_in_std_units() {
     let module = common::units_module();

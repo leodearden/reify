@@ -196,6 +196,8 @@ impl DimensionVector {
     /// `"Density"` — the natural spelling at call sites like
     /// `density: Density`.
     pub const MASS_DENSITY: DimensionVector = DimensionVector::from_exps(&[(0, -3), (1, 1)]);
+    /// Velocity: m·s⁻¹ (LENGTH / TIME)
+    pub const VELOCITY: DimensionVector = DimensionVector::from_exps(&[(0, 1), (2, -1)]);
     /// Acceleration: m·s⁻² (LENGTH / TIME²)
     pub const ACCELERATION: DimensionVector = DimensionVector::from_exps(&[(0, 1), (2, -2)]);
     /// Force density (force per unit volume): N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME,
@@ -505,6 +507,7 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
     (DimensionVector::MOMENT_OF_INERTIA, "MomentOfInertia"),
     (DimensionVector::MASS_DENSITY, "Density"),
+    (DimensionVector::VELOCITY, "Velocity"),
     (DimensionVector::ACCELERATION, "Acceleration"),
     (DimensionVector::FORCE_DENSITY, "ForceDensity"),
     // ── Composite-quantity aliases added by task #3115 (see task-E in the audit) ──

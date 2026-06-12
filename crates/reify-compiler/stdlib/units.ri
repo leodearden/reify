@@ -86,8 +86,10 @@ pub unit USD : Money
 
 /// Velocity dimension, m/s. Aliases `Length / Time` so it can appear in
 /// function return type position (where the grammar admits `identifier`
-/// only). Note: `Velocity` is intentionally absent from `NAMED_DIMENSIONS`
-/// (only `AngularVelocity` is registered) — this alias substitutes.
+/// only). Note: as of task 4580, `Velocity` IS registered in `NAMED_DIMENSIONS`
+/// (m·s⁻¹, adjacent to Acceleration). This alias is retained as a
+/// harmless back-compat alias — it is shadowed by the builtin at every
+/// use-site (same DimensionVector), so removing it is safe but deferred.
 pub type Velocity = Length / Time
 
 /// Energy per unit temperature — dimension of entropy / heat capacity /
