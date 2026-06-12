@@ -32,15 +32,71 @@ fn import_edges_for(source: &str, module_path: ModulePath, names: &[&str]) -> Ve
         .collect()
 }
 
-/// Stable DFS post-order topological sort.
+/// Three-color DFS state for cycle detection.
+#[derive(Clone, Copy, PartialEq)]
+enum DfsColor {
+    White, // not yet visited
+    Gray,  // in the current DFS path (back-edge target → cycle)
+    Black, // fully processed
+}
+
+/// Helper that carries mutable DFS state across recursive calls.
+struct TopoSorter<'a> {
+    edges: &'a [Vec<usize>],
+    names: &'a [&'a str],
+    color: Vec<DfsColor>,
+    stack: Vec<usize>, // current DFS path (for cycle chain reconstruction)
+    result: Vec<usize>,
+}
+
+impl<'a> TopoSorter<'a> {
+    fn dfs(&mut self, node: usize) -> Result<(), Diagnostic> {
+        match self.color[node] {
+            DfsColor::Black => return Ok(()),
+            DfsColor::Gray => {
+                // Back-edge: node is already in the current DFS path → cycle
+                let cycle_start = self.stack.iter().position(|&s| s == node).unwrap_or(0);
+                let chain: Vec<&str> = self.stack[cycle_start..]
+                    .iter()
+                    .map(|&i| self.names[i])
+                    .collect();
+                let mut arrow_chain = chain.join(" -> ");
+                arrow_chain.push_str(" -> ");
+                arrow_chain.push_str(self.names[node]);
+                return Err(Diagnostic::error(format!(
+                    "circular dependency detected: {}",
+                    arrow_chain
+                )));
+            }
+            DfsColor::White => {}
+        }
+
+        self.color[node] = DfsColor::Gray;
+        self.stack.push(node);
+
+        // Clone to avoid simultaneous borrow of self.edges and self (via dfs)
+        let deps: Vec<usize> = self.edges[node].clone();
+        for dep in deps {
+            self.dfs(dep)?;
+        }
+
+        self.stack.pop();
+        self.color[node] = DfsColor::Black;
+        self.result.push(node);
+        Ok(())
+    }
+}
+
+/// Stable DFS post-order topological sort with cycle detection.
 ///
 /// Returns a permutation of `0..sources.len()` such that every dependency
 /// appears before its dependents.  Independent modules retain their input order
 /// (DFS visits roots in input order; a node with no deps is appended
 /// immediately).
 ///
-/// No cycle detection — [`compile_modules_topo`] adds that in step-4.
-fn stable_topo_sort(sources: &[(&str, &str)]) -> Vec<usize> {
+/// Returns `Err(Diagnostic)` if a cycle is detected, with the chain named in
+/// the message ("circular dependency detected: a -> b -> a").
+fn stable_topo_sort(sources: &[(&str, &str)]) -> Result<Vec<usize>, Diagnostic> {
     let n = sources.len();
     let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
 
@@ -53,25 +109,21 @@ fn stable_topo_sort(sources: &[(&str, &str)]) -> Vec<usize> {
         })
         .collect();
 
-    let mut visited = vec![false; n];
-    let mut result = Vec::with_capacity(n);
-
-    fn dfs(node: usize, edges: &[Vec<usize>], visited: &mut Vec<bool>, result: &mut Vec<usize>) {
-        if visited[node] {
-            return;
-        }
-        visited[node] = true;
-        for &dep in &edges[node] {
-            dfs(dep, edges, visited, result);
-        }
-        result.push(node);
-    }
+    let mut sorter = TopoSorter {
+        edges: &edges,
+        names: &names,
+        color: vec![DfsColor::White; n],
+        stack: Vec::new(),
+        result: Vec::with_capacity(n),
+    };
 
     for i in 0..n {
-        dfs(i, &edges, &mut visited, &mut result);
+        if sorter.color[i] == DfsColor::White {
+            sorter.dfs(i)?;
+        }
     }
 
-    result
+    Ok(sorter.result)
 }
 
 /// Compile `sources` in topological order derived from their `import` declarations.
@@ -87,7 +139,7 @@ fn stable_topo_sort(sources: &[(&str, &str)]) -> Vec<usize> {
 pub(crate) fn compile_modules_topo(
     sources: &[(&str, &str)],
 ) -> Result<Vec<CompiledModule>, Diagnostic> {
-    let topo_indices = stable_topo_sort(sources);
+    let topo_indices = stable_topo_sort(sources)?;
 
     let mut compiled_so_far: Vec<CompiledModule> = Vec::with_capacity(sources.len());
 
