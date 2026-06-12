@@ -7,8 +7,8 @@
 //! change the production eval-set produced by `edit_param`.
 
 use reify_core::ValueCellId;
-use reify_eval::Engine;
 use reify_eval::cache::NodeId;
+use reify_eval::{Engine, WouldPruneByKind};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{bracket_compiled_module, cnid, vcid};
@@ -108,5 +108,57 @@ fn observed_demand_registration_does_not_change_production_eval_set() {
     assert_eq!(
         eval_set_a, eval_set_b,
         "observed-demand registration must not change the production eval-set"
+    );
+}
+
+#[test]
+fn edit_param_records_exact_would_prune_measurement() {
+    let mut engine = bracket_engine();
+
+    // Constraint panel shows only C0 (`thickness > 2mm`). Observed cone after
+    // rebuild is {C0, thickness}.
+    engine.add_observed_demand(NodeId::Constraint(cnid("Bracket", 0)));
+    engine.rebuild_observed_cone();
+
+    // Edit thickness. Dirty cone = {volume(Value), C0,C1,C2(Constraint),
+    // R0(Realization)} (dirty.rs::dirty_cone_bracket_change_thickness); since
+    // production demand is total, eval_set is exactly those 5.
+    engine
+        .edit_param(ValueCellId::new("Bracket", "thickness"), Value::length(0.004))
+        .expect("edit_param(thickness)");
+
+    let m = engine
+        .last_demand_prune_measurement()
+        .expect("measurement recorded after edit_param");
+
+    // Invariant: measurement counts the FINAL production eval-set.
+    assert_eq!(
+        m.eval_set_size,
+        engine.last_eval_set().len(),
+        "eval_set_size mirrors last_eval_set().len()"
+    );
+    assert_eq!(m.eval_set_size, 5, "eval_set = {{volume,C0,C1,C2,R0}}");
+
+    // Only C0 of the eval-set is in the observed cone {C0, thickness}.
+    assert_eq!(m.observed_retained, 1, "C0 retained");
+
+    // The other four would be pruned, split by kind.
+    assert_eq!(
+        m.would_prune,
+        WouldPruneByKind {
+            value: 1,       // volume
+            constraint: 2,  // C1, C2
+            realization: 1, // R0
+            resolution: 0,
+            compute: 0,
+        },
+        "would-prune split: volume / C1,C2 / R0"
+    );
+
+    // Conservation law (held by construction at the measurement site).
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "observed_retained + Σwould_prune == eval_set_size"
     );
 }
