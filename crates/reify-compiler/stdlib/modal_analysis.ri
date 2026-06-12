@@ -33,10 +33,11 @@
 //      The PRD's `1e-9` default for `tol` therefore appears here as
 //      `0.000000001`, same convention as `solver_buckling.ri`'s `tol = 1e-8`
 //      → `0.00000001`.
-//   2. `ModalResult.part : String` is a PLACEHOLDER for the future `Part`
-//      structure_def from the v0.3 solver-elastic PRD (not yet landed; see
-//      `fea_multi_case.ri:269-273` placeholder convention). A FIXME comment
-//      on the param flags the future tighten target.
+//   2. `ModalResult.part`, `ForcingTimeHistory.part`, and
+//      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
+//      marker declared in this module (task 4578, per PRD §12 OQ3). `Part`
+//      will be grown into a full geometry+material+topology structure in a
+//      later task; the single-module opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Real` is a placeholder for `Scalar<Frequency>` —
 //      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
 //      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
@@ -221,17 +222,10 @@ structure def Part { }
 // `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
 //
 // Field semantics (PRD §4.1):
-//   part                 — the analysed part. FIXME(part-structdef): encoded
-//                          as `String` PLACEHOLDER for the future `Part`
-//                          structure_def from the v0.3 solver-elastic PRD
-//                          (not yet landed). `String` (not `Real`) because
-//                          `Part` semantically denotes a named entity /
-//                          handle, consistent with the `FixedSupport.target
-//                          : String` selector-placeholder precedent
-//                          (fea_multi_case.ri:269-273 placeholder
-//                          convention). Tightens to the `Part` type once it
-//                          lands; consumer task ζ reads `.modes`, not
-//                          `.part`, so this placeholder is non-blocking.
+//   part                 — the analysed part. Typed `Part` (declared in this
+//                          module, task 4578). Opaque marker in this phase;
+//                          grows to full geometry+material+topology later.
+//                          Consumer task ζ reads `.modes`, not `.part`.
 //   modes                — the computed modal eigenpairs, one `Mode` per
 //                          extracted mode, ordered ascending by frequency.
 //                          `Mode` is module-local so this resolves to
@@ -250,7 +244,7 @@ structure def Part { }
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.1.
 structure def ModalResult {
-    param part : String
+    param part : Part
     param modes : List<Mode>
     param boundary_conditions : List<Support>
     param damping : DampingDescriptor
@@ -691,13 +685,10 @@ structure def SampledForce : ForcingFunction {
 // HarmonicForce, SampledForce, or any future conformer) at the per-Part layer.
 //
 // Param semantics (PRD §5.1):
-//   part    — the Part on which the forcing history acts.
-//             FIXME(part-structdef): encoded as `String` PLACEHOLDER for the
-//             future `Part` topology type (not yet landed in Reify v0.3).
-//             Consistent with `ModalResult.part : String` (modal_analysis.ri:
-//             241) and `ModalOptions.part : String` using `String` as a
-//             selector/name placeholder. Consumer tasks θ/ι locate the DOF
-//             assembly via this string at runtime.
+//   part    — the Part on which the forcing history acts. Typed `Part`
+//             (declared in this module, task 4578); opaque marker in this
+//             phase, grown later. Consumer tasks θ/ι locate the DOF assembly
+//             via this Part at runtime.
 //   sources — list of forcing sources that sum linearly at each (t, location)
 //             pair per PRD §12.5 resolved-question ("sources sum linearly; no
 //             cross-source coupling in modal superposition"). Encoded as
@@ -719,7 +710,7 @@ structure def SampledForce : ForcingFunction {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 structure def ForcingTimeHistory {
-    param part : String
+    param part : Part
     param sources : List<ForcingFunction>
 
     // An empty `sources` list corresponds exactly to the PRD §1
@@ -734,8 +725,7 @@ structure def ForcingTimeHistory {
     constraint sources.count > 0
 
     // NOTE — explicitly NOT constrained:
-    //   part : String — no scalar invariant expressible on a String placeholder;
-    //                   the future `Part` tighten target does not change this.
+    //   part : Part — opaque marker; no scalar invariant expressible.
     //   Cross-source temporal-overlap semantics (sources summing linearly at
     //   each (t, location) per PRD §12.5 resolved-question) are runtime
     //   semantics, not a structure-def scalar predicate; deferred to the
@@ -764,11 +754,8 @@ structure def ForcingTimeHistory {
 // (task ι), mirroring the `ModalResult.modes` discipline.
 //
 // Field semantics (PRD §5.2):
-//   part         — the analysed part. FIXME(part-structdef): encoded as `String`
-//                  PLACEHOLDER for the future `Part` type, identical to
-//                  `ModalResult.part` (modal_analysis.ri:241) and
-//                  `ForcingTimeHistory.part`. The trampoline echoes it from the
-//                  modal result (currently the `""` placeholder).
+//   part         — the analysed part. Typed `Part` (declared in this module,
+//                  task 4578). Echoed from the modal result by the trampoline.
 //   modal_result — the `ModalResult` the response was integrated against, echoed
 //                  verbatim so `displacement_at` can read each mode's `shape`
 //                  (Φ_i) for the projection coefficient Φ_i[node]·direction
@@ -794,14 +781,12 @@ structure def ForcingTimeHistory {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.2.
 structure def DisplacementTimeHistory {
-    param part : String
+    param part : Part
     param modal_result : ModalResult
     param t_samples : List<Time>
     param mode_coords : List<List<Real>>
     // NOTE — explicitly NOT constrained:
-    //   part         : String      — no scalar invariant expressible on a String
-    //                                 placeholder; the future `Part` tighten
-    //                                 target does not change this.
+    //   part         : Part        — opaque marker; no scalar invariant expressible.
     //   modal_result : ModalResult — struct-typed; not scalar-predicable.
     //   t_samples / mode_coords    — collection invariants (`mode_coords` outer
     //                                 length == modes count, each inner length ==
