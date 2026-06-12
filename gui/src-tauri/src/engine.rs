@@ -3061,7 +3061,11 @@ pub(crate) fn build_constraints(
             parameter_ids,
         });
     }
-    // Sort by node_id ascending for a deterministic GuiState.constraints order.
+    // Sort by node_id ascending (lexicographic on the stringified
+    // "{entity}#constraint[{index}]" key) for a deterministic order.
+    // Note: for an entity with >9 constraints, "[10]" sorts before "[2]"
+    // — a total, stable, deterministic order is achieved either way, and
+    // the GUI constraint-panel use case is not sensitive to numeric index order.
     constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
 }

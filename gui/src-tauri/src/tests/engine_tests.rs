@@ -12399,15 +12399,18 @@ fn build_constraints_sorts_constraints_by_node_id() {
 
     let result = build_constraints(&compiled, &check);
 
-    let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
-
-    let mut expected = node_ids.clone();
-    expected.sort();
-
     assert_eq!(
-        node_ids, expected,
+        result.len(),
+        3,
+        "build_constraints must return all 3 entries; got: {:?}",
+        result.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+    );
+
+    let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
+    assert_eq!(
+        node_ids,
+        vec!["Alpha#constraint[0]", "Mid#constraint[0]", "Zeta#constraint[0]"],
         "build_constraints must return ConstraintData in ascending node_id order \
-         regardless of constraint_results insertion order; got: {:?}",
-        node_ids
+         regardless of constraint_results insertion order"
     );
 }
