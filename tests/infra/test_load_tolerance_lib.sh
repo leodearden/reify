@@ -147,5 +147,23 @@ echo "--- Test 11: source guard _REIFY_LOAD_TOLERANCE_LIB_SH_SOURCED ---"
 assert "double-sourcing load_tolerance_lib.sh is a no-op (guard works)" \
     bash -c 'source "$1" && source "$1" && declare -f load_tolerance_factor >/dev/null' _ "$LIB"
 
+# -- Test 12: fractional loadavg — mirrors real /proc/loadavg input -----------
+# /proc/loadavg always emits a float like "2.50"; Tests 1-5 only inject integers.
+# These assertions exercise the awk float-division/ceil path and the _la_valid
+# numeric validator ($1+0 == $1) with values that cannot appear in a pure-integer
+# test: the intermediate ratio is non-integer AND the dividend itself is a float.
+#   48.5 / 32 = 1.515625 → ceil → 2
+#   31.9 / 32 = 0.996875 → ceil → 1  (below 1, clamped to 1)
+echo ""
+echo "--- Test 12: fractional loadavg — real /proc format (floats) ---"
+
+assert "factor=2 at loadavg=48.5 nproc=32 (float input, ceil(1.515)=2)" \
+    env REIFY_LOAD_TOLERANCE_LOADAVG=48.5 REIFY_LOAD_TOLERANCE_NPROC=32 \
+    bash -c 'source "$1" && f=$(load_tolerance_factor) && [ "$f" -eq 2 ]' _ "$LIB"
+
+assert "factor=1 at loadavg=31.9 nproc=32 (float input, ceil(0.997)=1)" \
+    env REIFY_LOAD_TOLERANCE_LOADAVG=31.9 REIFY_LOAD_TOLERANCE_NPROC=32 \
+    bash -c 'source "$1" && f=$(load_tolerance_factor) && [ "$f" -eq 1 ]' _ "$LIB"
+
 # -- Summary -------------------------------------------------------------------
 test_summary
