@@ -56,7 +56,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_compiler::auto_type_param::{
-    AutoTypeParam, MultiParamResolutionOutcome, resolve_auto_type_params_with_backtracking,
+    AutoTypeParam, resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{DiagnosticCode, SourceSpan, Type, ValueCellId};
@@ -176,10 +176,7 @@ impl ConstraintChecker for CountingRealChecker {
         // template cell typed as TypeParam("T")), so `seed_candidate_value_map`
         // seeds: `ValueCellId::new("field_t", "diameter") → Value::Real(<v>)`.
         let diameter_key = ValueCellId::new("field_t", "diameter");
-        let violated = match input.values.get(&diameter_key) {
-            Some(Value::Real(v)) if *v > 5.0 => true,
-            _ => false,
-        };
+        let violated = matches!(input.values.get(&diameter_key), Some(Value::Real(v)) if *v > 5.0);
 
         // Return one ConstraintResult per constraint, using the shared verdict.
         // For Template A (1 constraint), this gives one Violated or Satisfied
@@ -219,7 +216,7 @@ impl ConstraintChecker for CountingRealChecker {
 /// Exhaustive enumeration (all 8 leaves in DFS order, same verdict logic):
 /// - ORingSeal (diameter=10.0 > 5.0) → Violated for all 4 ORingSeal-containing leaves.
 /// - RubberSeal (diameter=2.0 ≤ 5.0) → Satisfied for 4 RubberSeal-containing leaves.
-/// Lex-first feasible = (RubberSeal, AirCooled, Hot1).
+///   Lex-first feasible = (RubberSeal, AirCooled, Hot1).
 ///
 /// **(b) Checker.count() < full cross-product.**
 /// WITH backjumping:  5 leaves visited × 1 constraint = 5 calls.
