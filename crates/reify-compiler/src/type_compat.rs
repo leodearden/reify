@@ -1950,4 +1950,102 @@ mod tests {
             "dimensionless_scalar() should be compatible with Type::Int (Int-widening)"
         );
     }
+
+    // ── task-4544: try_default_padding trait-carrying prefix wildcard ─────────
+
+    /// Positive: a TraitObject-typed leading param acts as a wildcard so that a
+    /// StructureRef arg (a concrete type satisfying the trait at runtime) passes
+    /// the prefix check and the trailing default is returned.
+    ///
+    /// Candidate: `f(j: TraitObject("DrivingJoint"), y: Real)` where `y` has
+    /// default `Real(1.0)`.  Call: `f(StructureRef("X"))` — 1 arg.
+    ///
+    /// Expected: `Some((&cand, [Real(1.0)]))`.
+    ///
+    /// RED before step-2: the strict `param_ty == arg_ty` prefix check rejects
+    /// `TraitObject("DrivingJoint") != StructureRef("X")` → returns None.
+    #[test]
+    fn try_default_padding_resolves_when_leading_param_is_trait_carrying() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                (
+                    "j".to_string(),
+                    Type::TraitObject("DrivingJoint".to_string()),
+                ),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_trait_prefix"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide ONE arg of type StructureRef("X") — the TraitObject param is
+        // a wildcard (concrete type conforms at runtime), so the trailing
+        // Real default must be returned.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "trait-carrying leading param must act as a wildcard: expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand),
+            "returned candidate must be the same object"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_expr.content_hash,
+            "returned default must be the Real(1.0) literal"
+        );
+    }
+
+    /// Negative control: a concrete (non-trait) leading param that mismatches the
+    /// provided arg type must still return `None` — the loosening is scoped to
+    /// trait/type-param wildcards only.
+    ///
+    /// Candidate: `g(x: Int, y: Real)` where `y` has default `Real(1.0)`.
+    /// Call: `g(Real)` — Int ≠ Real, concrete param, no wildcard.
+    ///
+    /// Expected: `None` (both before and after step-2).
+    #[test]
+    fn try_default_padding_concrete_mismatch_still_returns_none() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "g".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Int),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("g_4544_concrete_mismatch"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide Real where Int is expected — concrete mismatch, must stay None.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::dimensionless_scalar()],
+        );
+        assert!(
+            result.is_none(),
+            "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
+        );
+    }
 }
