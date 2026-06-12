@@ -88,9 +88,7 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
 
     // Require a `subject` field (value irrelevant for recognition;
     // we use `get` which accepts `&str` via the Borrow bound).
-    if data.fields.get("subject").is_none() {
-        return None;
-    }
+    data.fields.get("subject")?;
 
     // Extract angle scalar helper: returns si_value if the field is an
     // ANGLE-dimension scalar.
@@ -836,20 +834,20 @@ impl Engine {
                     version: template.version(),
                     fields,
                 }));
-                if let Some(spec) = dfm_rule_spec(&si) {
-                    if spec.subject_handle.is_some() {
-                        specs.push(spec);
-                    }
+                if let Some(spec) = dfm_rule_spec(&si)
+                    && spec.subject_handle.is_some()
+                {
+                    specs.push(spec);
                 }
             }
         }
 
         // (B) Sub-component StructureInstance values (task-3540 synthetic cells).
         for (_, v) in values.iter() {
-            if let Some(spec) = dfm_rule_spec(v) {
-                if spec.subject_handle.is_some() {
-                    specs.push(spec);
-                }
+            if let Some(spec) = dfm_rule_spec(v)
+                && spec.subject_handle.is_some()
+            {
+                specs.push(spec);
             }
         }
 
