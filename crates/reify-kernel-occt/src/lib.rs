@@ -2353,6 +2353,12 @@ impl OcctKernel {
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ZoneSlab { target, width } => {
+                let shape = self.get_shape(*target)?;
+                let w = extract_f64(width)?;
+                ffi::ffi::zone_slab_shape(shape, w)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Shell {
                 target,
                 thickness,

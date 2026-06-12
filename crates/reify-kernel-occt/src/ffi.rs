@@ -599,6 +599,7 @@ pub mod ffi {
 
         // --- Thicken / Shell ---
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
+        fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
             shape: &OcctShape,
             thickness: f64,

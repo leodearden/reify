@@ -716,6 +716,8 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
+
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices);
 

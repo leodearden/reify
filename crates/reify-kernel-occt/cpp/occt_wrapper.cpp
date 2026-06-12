@@ -2077,7 +2077,63 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     });
 }
 
-// --- Thicken / Shell ---
+// --- zone_slab / Thicken / Shell ---
+
+// Create a centered slab solid from a face by extruding ±width/2 about the face plane.
+// Algorithm: extract the face normal, translate the face by -width/2 in the normal
+// direction (centering), then extrude by width in the normal direction using
+// BRepPrimAPI_MakePrism.  This is the correct OCCT approach for face→solid; the
+// PerformBySimple path is for shells/solids (used by thicken_shape below).
+//
+// Planar face guarantee: for a planar face the result is a right prism (closed solid)
+// with V = width·Area exactly (GProp-analytic); centroid.z ≈ 0 (symmetric centering).
+// Curved face guarantee: for a surface patch (e.g. cylindrical) the result is a
+// non-degenerate extruded solid with volume > 0 (PRD G6 smoke bar).
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) {
+    return wrap_occt_call("zone_slab_shape", [&]() {
+        if (width <= 0.0) {
+            throw std::runtime_error("zone_slab_shape: width must be positive");
+        }
+
+        // Step 1: extract the face normal at the first point on the surface.
+        gp_Dir normal(0.0, 0.0, 1.0); // fallback: +Z
+        {
+            TopExp_Explorer ex(face.shape, TopAbs_FACE);
+            if (ex.More()) {
+                BRepAdaptor_Surface surf(TopoDS::Face(ex.Current()));
+                gp_Vec du, dv;
+                gp_Pnt p;
+                surf.D1(surf.FirstUParameter(), surf.FirstVParameter(), p, du, dv);
+                gp_Vec n = du.Crossed(dv);
+                if (n.Magnitude() > 1e-12) {
+                    normal = gp_Dir(n);
+                }
+            }
+        }
+
+        // Step 2: translate the face by -width/2 in the normal direction so the
+        // slab will be centered ±width/2 about the nominal face plane.
+        gp_Vec shift(normal);
+        shift.Multiply(-width / 2.0);
+        gp_Trsf trsf;
+        trsf.SetTranslation(shift);
+        BRepBuilderAPI_Transform mover(face.shape, trsf, /*copy=*/Standard_True);
+        TopoDS_Shape start_face = mover.Shape();
+
+        // Step 3: extrude the translated face by width in the normal direction to
+        // produce the slab solid.
+        gp_Vec extrusion(normal);
+        extrusion.Multiply(width);
+        BRepPrimAPI_MakePrism prism(start_face, extrusion);
+        if (!prism.IsDone()) {
+            throw std::runtime_error("zone_slab_shape: BRepPrimAPI_MakePrism failed");
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = prism.Shape();
+        return result;
+    });
+}
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
     return wrap_occt_call("thicken_shape", [&]() {
