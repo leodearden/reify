@@ -21,7 +21,9 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
-use crate::elements::membrane_cst::rotate_membrane_local_to_global;
+use crate::elements::membrane_cst::{
+    element_stiffness_membrane_cst, rotate_membrane_local_to_global,
+};
 use crate::shell_assembly::build_shell_frame;
 use crate::shell_kinematics::shell_kinematics;
 
@@ -140,13 +142,25 @@ pub fn geometric_element_stiffness_membrane_cst(
 /// A flat membrane's transverse stiffness comes **entirely** from `K_g`
 /// (`K_e` is transversely singular), so a transverse/pressure solve requires
 /// `K_t`. Mirrors [`crate::geometric_stiffness::bar_tangent_stiffness`].
+///
+/// `doc-note:` slack / tension-only active-set handling for compressive
+/// principal stress (a wrinkled membrane carries no compression) is task
+/// η/T3b's domain — this kernel assembles the linearised tangent for the
+/// *given* prestress state and does not enforce tension-only membrane
+/// behaviour or update the prestress under load.
 pub fn membrane_tangent_stiffness(
     nodes: &[[f64; 3]; 3],
     thickness: f64,
     material: &IsotropicElastic,
     prestress: &MembranePrestress,
 ) -> ElementStiffness {
-    todo!("membrane_tangent_stiffness: implemented in S8")
+    let ke = element_stiffness_membrane_cst(nodes, thickness, material);
+    let kg = geometric_element_stiffness_membrane_cst(nodes, prestress);
+    let mut kt = ElementStiffness::zeros(9);
+    for i in 0..81 {
+        kt.data[i] = ke.data[i] + kg.data[i];
+    }
+    kt
 }
 
 #[cfg(test)]
