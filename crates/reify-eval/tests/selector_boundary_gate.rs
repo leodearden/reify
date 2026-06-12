@@ -39,8 +39,6 @@
 //!   OCCT-gated (`reify_kernel_occt::OCCT_AVAILABLE`) realized-handle assertion,
 //!   mirroring `selector_coercion_golden.rs`.
 
-#![allow(dead_code)] // helpers used by subsequent test steps
-
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::identity::ValueCellId;
