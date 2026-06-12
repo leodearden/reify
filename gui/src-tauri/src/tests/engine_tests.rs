@@ -12149,3 +12149,201 @@ fn gui_auto_type_resolution_no_op_contract() {
         compiled.diagnostics
     );
 }
+
+// ── Tensegrity-β step-3: tensegrity_surfaces extraction via build_gui_state ──
+
+/// Inline membrane-patch topology source — mirrors `examples/tensegrity_membrane_patch.ri`.
+///
+/// 4 corner nodes of a 1m × 1m flat square at z=0.
+/// 2 triangles: [0,1,2] (bottom-right) and [0,2,3] (top-left).
+fn membrane_patch_source() -> &'static str {
+    r#"
+structure def MembranePatch {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m),
+            point3(0m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [
+            [0, 1, 2],
+            [0, 2, 3]
+        ]
+    )
+    let facets = tensegrity_surfaces(patch)
+}
+"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must extract 2 tensegrity surface
+/// facets from the membrane-patch module: both with kind=="membrane".
+///
+/// Asserts:
+/// - `tensegrity_surfaces.len() == 2`
+/// - both facets have `kind == "membrane"`
+/// - facet 0: i0=0, i1=1, i2=2; corner coords match the nodes
+/// - facet 1: i0=0, i1=2, i2=3; corner coords match the nodes
+/// - `entity_path == "MembranePatch"` for all facets (owning template name)
+///
+/// RED until `build_tensegrity_surfaces` is implemented (field always empty).
+#[test]
+fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(membrane_patch_source(), "membrane_patch")
+        .expect("membrane_patch load_from_source should succeed");
+
+    assert_eq!(
+        state.tensegrity_surfaces.len(),
+        2,
+        "membrane patch must produce 2 surface facets; got {}",
+        state.tensegrity_surfaces.len()
+    );
+
+    // Both facets are kind "membrane".
+    for (i, facet) in state.tensegrity_surfaces.iter().enumerate() {
+        assert_eq!(
+            facet.kind, "membrane",
+            "facet[{}] kind must be 'membrane'; got '{}'",
+            i, facet.kind
+        );
+    }
+
+    // All facets belong to the MembranePatch template.
+    for facet in &state.tensegrity_surfaces {
+        assert_eq!(
+            facet.entity_path, "MembranePatch",
+            "entity_path must be 'MembranePatch'; got '{}'",
+            facet.entity_path
+        );
+    }
+
+    // Facet 0: triangle [0,1,2] — nodes (0,0,0), (1,0,0), (1,1,0).
+    let f0 = &state.tensegrity_surfaces[0];
+    assert_eq!(f0.i0, 0, "facet0.i0 must be 0");
+    assert_eq!(f0.i1, 1, "facet0.i1 must be 1");
+    assert_eq!(f0.i2, 2, "facet0.i2 must be 2");
+    assert_eq!(f0.x0, 0.0, "facet0.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f0.y0, 0.0, "facet0.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f0.z0, 0.0, "facet0.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f0.x1, 1.0, "facet0.x1 must be 1.0 (node 1 x)");
+    assert_eq!(f0.y1, 0.0, "facet0.y1 must be 0.0 (node 1 y)");
+    assert_eq!(f0.z1, 0.0, "facet0.z1 must be 0.0 (node 1 z)");
+    assert_eq!(f0.x2, 1.0, "facet0.x2 must be 1.0 (node 2 x)");
+    assert_eq!(f0.y2, 1.0, "facet0.y2 must be 1.0 (node 2 y)");
+    assert_eq!(f0.z2, 0.0, "facet0.z2 must be 0.0 (node 2 z)");
+
+    // Facet 1: triangle [0,2,3] — nodes (0,0,0), (1,1,0), (0,1,0).
+    let f1 = &state.tensegrity_surfaces[1];
+    assert_eq!(f1.i0, 0, "facet1.i0 must be 0");
+    assert_eq!(f1.i1, 2, "facet1.i1 must be 2");
+    assert_eq!(f1.i2, 3, "facet1.i2 must be 3");
+    assert_eq!(f1.x0, 0.0, "facet1.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f1.y0, 0.0, "facet1.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f1.z0, 0.0, "facet1.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f1.x1, 1.0, "facet1.x1 must be 1.0 (node 2 x)");
+    assert_eq!(f1.y1, 1.0, "facet1.y1 must be 1.0 (node 2 y)");
+    assert_eq!(f1.z1, 0.0, "facet1.z1 must be 0.0 (node 2 z)");
+    assert_eq!(f1.x2, 0.0, "facet1.x2 must be 0.0 (node 3 x)");
+    assert_eq!(f1.y2, 1.0, "facet1.y2 must be 1.0 (node 3 y)");
+    assert_eq!(f1.z2, 0.0, "facet1.z2 must be 0.0 (node 3 z)");
+}
+
+/// A module with no surface calls must yield an empty `tensegrity_surfaces` vec.
+#[test]
+fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "non-surface module must produce no tensegrity surfaces; got {}",
+        state.tensegrity_surfaces.len()
+    );
+}
+
+/// `surface_data_from_instance` must return `None` (no panic) when a required
+/// integer field (`i0`) is present but has the wrong type (a String instead of Int).
+///
+/// This directly tests the no-panic/skip contract advertised in the docstring of
+/// `collect_surfaces_from_value` / `surface_data_from_instance`: a malformed facet
+/// must be dropped, not cause an unwrap-panic, so a future regression that panics
+/// instead of skipping will fail this test.
+#[test]
+fn surface_data_from_instance_returns_none_for_malformed_field() {
+    use crate::engine::surface_data_from_instance;
+    use reify_ir::{PersistentMap, Value};
+
+    // Near-valid TensegritySurface field set — i0 is a String (wrong type; must be Int).
+    // All other required fields are well-typed so this is the minimal malformed case.
+    let fields: PersistentMap<String, Value> = [
+        ("kind".to_string(), Value::String("membrane".to_string())),
+        ("i0".to_string(), Value::String("not-an-int".to_string())), // MALFORMED
+        ("i1".to_string(), Value::Int(1)),
+        ("i2".to_string(), Value::Int(2)),
+        ("x0".to_string(), Value::Real(0.0)),
+        ("y0".to_string(), Value::Real(0.0)),
+        ("z0".to_string(), Value::Real(0.0)),
+        ("x1".to_string(), Value::Real(1.0)),
+        ("y1".to_string(), Value::Real(0.0)),
+        ("z1".to_string(), Value::Real(0.0)),
+        ("x2".to_string(), Value::Real(1.0)),
+        ("y2".to_string(), Value::Real(1.0)),
+        ("z2".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+
+    let result = surface_data_from_instance(&fields, "TestEntity");
+    assert!(
+        result.is_none(),
+        "malformed i0 (String instead of Int) must return None without panicking; got {:?}",
+        result
+    );
+}
+
+/// A module that binds a Tensegrity struct but never calls `tensegrity_surfaces()`
+/// must yield an empty `tensegrity_surfaces` vec (type-name filter test).
+#[test]
+fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
+    let source = r#"
+structure def TOnly {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [[0, 1, 2]]
+    )
+}
+"#;
+
+    let state = session
+        .load_from_source(source, "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "a Tensegrity StructureInstance (no tensegrity_surfaces() call) must not be extracted as a surface facet; got {} facet(s)",
+        state.tensegrity_surfaces.len()
+    );
+}

@@ -16,6 +16,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -34,6 +35,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1651,6 +1653,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2377,6 +2380,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![wire],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2403,6 +2407,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2651,4 +2656,112 @@ fn mode_shape_frame_base_eigenvalue_none_omits_key() {
     let rt: ModeShapeFrame = serde_json::from_value(v)
         .expect("base ModeShapeFrame must deserialize from 3-key JSON");
     assert_eq!(rt.eigenvalue, None, "absent 'eigenvalue' key must deserialize to None");
+}
+
+// ── Tensegrity-β step-1: TensegritySurfaceData serde wire-shape tests ────────
+
+/// `TensegritySurfaceData` must serialize to JSON with snake_case keys:
+/// `entity_path`, `kind`, `i0`, `i1`, `i2`, `x0`, `y0`, `z0`, `x1`, `y1`,
+/// `z1`, `x2`, `y2`, `z2` — all present and typed correctly (string for
+/// entity_path/kind, integer for i0/i1/i2, number for the nine coords).
+///
+/// RED until `TensegritySurfaceData` is added to `types.rs`.
+#[test]
+fn tensegrity_surface_data_serializes_with_expected_keys() {
+    let surface = TensegritySurfaceData {
+        entity_path: "TPatch".to_string(),
+        kind: "membrane".to_string(),
+        i0: 0,
+        i1: 1,
+        i2: 2,
+        x0: 0.0,
+        y0: 0.0,
+        z0: 0.0,
+        x1: 1.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.5,
+        y2: 0.866,
+        z2: 0.0,
+    };
+    let v = serde_json::to_value(&surface).unwrap();
+    assert_eq!(v["entity_path"], json!("TPatch"), "entity_path must be 'TPatch'");
+    assert_eq!(v["kind"], json!("membrane"), "kind must be 'membrane'");
+    assert_eq!(v["i0"], json!(0), "i0 must be 0");
+    assert_eq!(v["i1"], json!(1), "i1 must be 1");
+    assert_eq!(v["i2"], json!(2), "i2 must be 2");
+    assert_eq!(v["x0"], json!(0.0), "x0 must be 0.0");
+    assert_eq!(v["y0"], json!(0.0), "y0 must be 0.0");
+    assert_eq!(v["z0"], json!(0.0), "z0 must be 0.0");
+    assert_eq!(v["x1"], json!(1.0), "x1 must be 1.0");
+    assert_eq!(v["y1"], json!(0.0), "y1 must be 0.0");
+    assert_eq!(v["z1"], json!(0.0), "z1 must be 0.0");
+    assert_eq!(v["x2"], json!(0.5), "x2 must be 0.5");
+    assert_eq!(v["y2"], json!(0.866), "y2 must be 0.866");
+    assert_eq!(v["z2"], json!(0.0), "z2 must be 0.0");
+}
+
+/// `GuiState.tensegrity_surfaces` must serialize as a JSON array.
+/// - Non-empty case: array length and element kind preserved.
+/// - Empty case: empty array (not absent).
+///
+/// RED until `GuiState.tensegrity_surfaces` field is added.
+#[test]
+fn gui_state_tensegrity_surfaces_serializes_as_array() {
+    // Non-empty case
+    let surface = TensegritySurfaceData {
+        entity_path: "TPatch".to_string(),
+        kind: "membrane".to_string(),
+        i0: 0, i1: 1, i2: 2,
+        x0: 0.0, y0: 0.0, z0: 0.0,
+        x1: 1.0, y1: 0.0, z1: 0.0,
+        x2: 0.5, y2: 0.866, z2: 0.0,
+    };
+    let state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![surface],
+    };
+    let v = serde_json::to_value(&state).unwrap();
+    assert!(
+        v.get("tensegrity_surfaces").unwrap().is_array(),
+        "tensegrity_surfaces must serialize as a JSON array"
+    );
+    assert_eq!(
+        v["tensegrity_surfaces"].as_array().unwrap().len(),
+        1,
+        "non-empty tensegrity_surfaces must have 1 element"
+    );
+    assert_eq!(
+        v["tensegrity_surfaces"][0]["kind"],
+        json!("membrane"),
+        "surface kind must be 'membrane'"
+    );
+
+    // Empty case — must serialize as [] not be absent
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+    };
+    let ev = serde_json::to_value(&empty_state).unwrap();
+    assert!(
+        ev.get("tensegrity_surfaces").unwrap().is_array(),
+        "empty tensegrity_surfaces must still serialize as a JSON array (not be absent)"
+    );
+    assert_eq!(
+        ev["tensegrity_surfaces"].as_array().unwrap().len(),
+        0,
+        "empty tensegrity_surfaces must be an empty array"
+    );
 }
