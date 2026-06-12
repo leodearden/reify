@@ -33,6 +33,19 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// is stable (identity when no module declares `import`), so the hand-chosen
 /// positions are preserved unchanged. `std.units` stays first,
 /// `std.determinacy.purposes` stays last.
+///
+/// **Ordering footgun:** the hand-chosen positions encode implicit load-order
+/// constraints (e.g. `std.solver.buckling.fns` after `std.solver.buckling`,
+/// `std.determinacy.purposes` last) that are NOT expressed as `import` edges
+/// and are therefore NOT machine-checked by the topo-sort.  Adding any `import`
+/// declaration to a stdlib module causes `compile_modules_topo` to reorder it
+/// (pulling dependencies earlier), which may silently violate one of these
+/// implicit constraints.  Before adding an `import`, re-validate ALL ordering
+/// requirements against the new topo output.  The stability regression test
+/// `signal_2_real_stdlib_compiles_clean_and_order_is_stable` (in
+/// `stdlib_topo::tests`) acts as a permanent guard that the sort remains the
+/// identity when no imports are present; it will need updating if imports are
+/// intentionally introduced.
 pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![

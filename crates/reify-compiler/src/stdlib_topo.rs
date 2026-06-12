@@ -12,12 +12,20 @@ use crate::CompiledModule;
 
 /// Extract intra-set import edges for one module source.
 ///
-/// Returns the indices (into `names`) of modules that this source imports.
-/// Import targets not present in `names` are silently ignored — they represent
-/// external or stdlib imports that drive no ordering here.
-fn import_edges_for(source: &str, module_path: ModulePath, names: &[&str]) -> Vec<usize> {
-    let name_to_idx: HashMap<&str, usize> =
-        names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+/// Returns the indices (into `name_to_idx`) of modules that this source imports.
+/// Import targets not present in `name_to_idx` are silently ignored — they
+/// represent external or stdlib imports that drive no ordering here.
+///
+/// Note: `source` is parsed here for edge extraction only.  The same source is
+/// parsed again in [`compile_modules_topo`] via `parse_with_prelude_enums`,
+/// which seeds enum names from already-compiled modules.  The double-parse is
+/// intentional: edge extraction is prelude-agnostic, while compilation needs
+/// the enum-name prelude for correct tokenisation.
+fn import_edges_for(
+    source: &str,
+    module_path: ModulePath,
+    name_to_idx: &HashMap<&str, usize>,
+) -> Vec<usize> {
     let parsed = reify_syntax::parse(source, module_path);
     parsed
         .declarations
@@ -100,12 +108,17 @@ fn stable_topo_sort(sources: &[(&str, &str)]) -> Result<Vec<usize>, Diagnostic> 
     let n = sources.len();
     let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
 
+    // Build the name→index map once; import_edges_for reuses it for every module
+    // rather than constructing it O(n) times.
+    let name_to_idx: HashMap<&str, usize> =
+        names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+
     // Build dependency edge lists
     let edges: Vec<Vec<usize>> = sources
         .iter()
         .map(|(name, source)| {
             let path = ModulePath::from_dotted(name).expect("valid dotted module name");
-            import_edges_for(source, path, &names)
+            import_edges_for(source, path, &name_to_idx)
         })
         .collect();
 
@@ -177,10 +190,15 @@ mod tests {
     use crate::CompiledModule;
     use super::compile_modules_topo;
 
-    /// SIGNAL #2 + stability: the real stdlib compiles clean through the topo path
-    /// and output order equals input order (no imports → stable sort is identity).
+    /// SIGNAL #2 + **permanent regression guard**: the real stdlib compiles clean
+    /// through the topo path and output order equals input order (no imports →
+    /// stable sort is the identity permutation).
     ///
-    /// RED until step-6 extracts `stdlib_sources()` from `load_stdlib`.
+    /// This test must remain green forever.  If it ever fails due to a new `import`
+    /// being added to a stdlib module, the author must re-validate ALL implicit
+    /// ordering constraints encoded only as comments in `stdlib_sources()` — they
+    /// are not expressed as import edges and are therefore not machine-checked by
+    /// the topo-sort.
     #[test]
     fn signal_2_real_stdlib_compiles_clean_and_order_is_stable() {
         use crate::stdlib_loader::stdlib_sources;
