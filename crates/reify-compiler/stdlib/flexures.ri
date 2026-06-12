@@ -118,14 +118,16 @@ pub type RotationalStiffness = Real
 //                           cases.
 //   prb_validity_range    — angular range where the PRB approximation is
 //                           accurate (~5% per PRD §5.1's
-//                           `theta_prb_limit = 5deg`). Encoded as `Real`
-//                           placeholder for `Range<Angle>` because the
-//                           `Range<Angle>` parameterized type has no arm in
-//                           `type_resolution.rs::resolve_parameterized_
-//                           builtin_type` today (a similar placeholder in
-//                           `fea_multi_case.ri` was since tightened to
-//                           `List<Load>` — task ζ/4444). See TODO(range-angle-type)
-//                           below.
+//                           `theta_prb_limit = 5deg`). Tightened to
+//                           `Range<Angle>` (task 4576). Sentinel-zero default
+//                           `0deg..0deg` matches the runtime
+//                           `symmetric_angle_range(0.0)` posture.
+//                           Prismatic-family residual: for prismatic PRB ctors
+//                           the half-width is a displacement (length), but the
+//                           field stays `Range<Angle>` because
+//                           `Range<Length>` is scoped OUT (tolerancing-gdt-
+//                           surface-completion.md §4 decision 6); the
+//                           displacement→Range<Length> tightening is deferred.
 //   at_yield              — true iff `max_stress >= material.yield_stress`.
 //                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
 //                           when this flips true; the field stays on the
@@ -142,16 +144,17 @@ pub type RotationalStiffness = Real
 // `solver_elastic.ri::ElasticOptions` (every default-bearing field
 // overridable at call time).
 //
-// TODO(range-angle-type): tighten `prb_validity_range : Real` to
-// `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
-// type` grows a Range arm (out of scope for β per the task description).
+// Task 4576: `prb_validity_range` is now `Range<Angle> = 0deg..0deg`.
+// The Range<Angle> resolver arm was added to type_resolution.rs as part of
+// the same task. Prismatic-family displacement-validity → Range<Length>
+// tightening is deferred (Range<Length> scoped OUT per plan §design_decisions).
 structure def FlexureCompliance {
     param effective_stiffness : RotationalStiffness = 0.0
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0
     param parasitic_error : Option<Length> = none
-    param prb_validity_range : Real = 0.0
+    param prb_validity_range : Range<Angle> = 0deg..0deg
     param at_yield : Bool = false
 
     // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is
