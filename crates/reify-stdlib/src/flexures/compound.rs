@@ -27,7 +27,8 @@ use reify_ir::Value;
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
     fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
-    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind,
+    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range,
+    symmetric_length_range, RangeKind,
     CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
@@ -186,7 +187,7 @@ where
         max_stress_at_neutral,
         c.yield_si,
         Some(delta_rot),
-        symmetric_angle_range(delta_auto),
+        symmetric_length_range(delta_auto),
     );
     attach_compliance(Value::Map(m), record)
 }
