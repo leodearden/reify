@@ -128,10 +128,19 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 # and prints without a downstream pipe — removing the grep -oP | sort -u two-
 # process pipeline that the task-4586 hypothesis names as the truncation point.
 # Membership tests are order-independent so output order does not matter.
+#
+# Optional second argument: pass 1 to restrict extraction to the §1 section only
+# (used by the bidirectional pass, which must exclude pre-implementation §2 rows).
 extract_registered_channels() {
     local inv="$1"
-    awk '
+    local sec1_only="${2:-0}"
+    awk -v sec1_only="$sec1_only" '
     {
+        if (sec1_only) {
+            if (/^## §1 /) { in_sec1 = 1; next }
+            if (/^## §[0-9]+ /) { in_sec1 = 0; next }
+            if (!in_sec1) next
+        }
         line = $0
         while (match(line, /\| `[a-z0-9-]+` \|/)) {
             name = substr(line, RSTART + 3, RLENGTH - 6)
@@ -144,8 +153,12 @@ extract_registered_channels() {
 }
 registered=$(extract_registered_channels "$INVENTORY")
 
-# task-4586 fault-injection seam: drop one channel from registered to simulate
-# under-load single-line truncation (inert unless REIFY_EVENT_INVENTORY_DROP_REGISTERED is set).
+# TEST-ONLY fault-injection seam (task-4586): drop one channel from registered
+# to deterministically simulate under-load single-line truncation so the per-
+# orphan re-check (below) can be RED/GREEN tested.  Inert unless the env var is
+# set; MUST NOT be set in CI / verify runs — doing so would suppress real orphan
+# detection.  Mirrors the REIFY_TEST_SEMAPHORE_DISABLE / REIFY_MAIN_GATE_BYPASS
+# convention for test-only env knobs.
 if [[ -n "${REIFY_EVENT_INVENTORY_DROP_REGISTERED:-}" ]]; then
     registered=$(printf '%s\n' "$registered" | grep -vx -- "$REIFY_EVENT_INVENTORY_DROP_REGISTERED" || true)
 fi
@@ -196,10 +209,7 @@ fi
 # not just .emit("…") form, so dynamic-emit patterns are naturally covered.
 phantom_count=0
 if [[ $BIDIRECTIONAL -eq 1 ]]; then
-    sec1_channels=$(
-        awk '/^## §1 /{f=1;next} /^## §[0-9]+ /{f=0} f' "$INVENTORY" \
-        | grep -oP '\| `\K[a-z0-9-]+(?=` \|)' | sort -u || true
-    )
+    sec1_channels=$(extract_registered_channels "$INVENTORY" 1)
     while IFS= read -r ch; do
         [[ -z "$ch" ]] && continue
         if [[ ${#_tracked_rs[@]} -eq 0 ]] || ! grep -qF -- "\"$ch\"" "${_tracked_rs[@]}" 2>/dev/null; then

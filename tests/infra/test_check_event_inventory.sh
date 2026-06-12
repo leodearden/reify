@@ -829,13 +829,21 @@ assert "Check 19: value-update appears in --print-registered output" \
 assert "Check 19: claude-done appears in --print-registered output" \
     grep -qx 'claude-done' "$_fix19_stdout"
 
-# Stable presence check: file-changed is the exact esc-4578-61 channel; it must
-# appear in the real worktree's extracted registered set regardless of load.
+# Generic property assertion: every | `name` | row in the real inventory must
+# appear in --print-registered output.  Decoupled from specific channel names —
+# a legitimate rename/removal of any channel won't break this test for the wrong
+# reason.  The esc-4578-61 regression (file-changed dropping under load) is
+# covered generically: if ANY registered channel is missing the assertion fails.
 _fix19_real_stdout="$_tmpdir/fix19_real.txt"
 "$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --print-registered > "$_fix19_real_stdout" 2>/dev/null || true
 
-assert "Check 19: file-changed in real worktree --print-registered output (esc-4578-61)" \
-    grep -qx 'file-changed' "$_fix19_real_stdout"
+_fix19_inv_channels=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' \
+    "$REPO_ROOT/docs/gui-event-channels.md" 2>/dev/null | sort -u || true)
+while IFS= read -r _ch19; do
+    [[ -z "$_ch19" ]] && continue
+    assert "Check 19: '$_ch19' (real inventory) in --print-registered output" \
+        grep -qx "$_ch19" "$_fix19_real_stdout"
+done <<< "$_fix19_inv_channels"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
