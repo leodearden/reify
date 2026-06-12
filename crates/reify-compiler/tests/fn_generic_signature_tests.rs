@@ -16,7 +16,7 @@
 //! declared return type, so trivial bodies produce no diagnostics and need no stdlib symbol.
 
 use reify_test_support::compile_source;
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-1 / Step-2: CompiledFunction.type_params lowering
@@ -280,5 +280,89 @@ fn nongeneric_unknown_type_keeps_unresolved_type() {
         fn_unknown_diag.is_none(),
         "non-generic fn must not emit FnUnknownTypeParam, got: {:?}",
         fn_unknown_diag
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-3 / Step-4 (task 4234 ε): dimension-kinded params — B10 happy path
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>` — B10 happy path.
+///
+/// RED until step-4: today `Scalar<Q>` routes to `resolve_type_alias_expr_to_dimension`,
+/// which can't resolve `Q` and emits an Error diagnostic.
+///
+/// Pinned back-compat: `fn area(w: Scalar<Length>) -> Scalar<Length>` must still
+/// resolve to the concrete `Type::Scalar{dimension: DimensionVector::LENGTH}` (INV-10).
+#[test]
+fn dim_kinded_param_scalar_q_resolves_to_scalar_param() {
+    // B10 happy path — Q: Dimension bound
+    let source = r#"
+        fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q> { x }
+        fn area(w: Scalar<Length>) -> Scalar<Length> { w }
+    "#;
+    let module = compile_source(source);
+
+    // (i) Zero Error-severity diagnostics
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for dim-kinded fn g<Q: Dimension>, got: {:?}",
+        errors
+    );
+
+    let gf = module
+        .functions
+        .iter()
+        .find(|f| f.name == "g")
+        .expect("function 'g' should be compiled");
+
+    // (ii) param resolves to ScalarParam("Q")
+    assert_eq!(
+        gf.params[0].1,
+        Type::ScalarParam("Q".to_string()),
+        "param x should resolve to Type::ScalarParam(\"Q\")"
+    );
+
+    // (iii) return type resolves to ScalarParam("Q")
+    assert_eq!(
+        gf.return_type,
+        Type::ScalarParam("Q".to_string()),
+        "return type should resolve to Type::ScalarParam(\"Q\")"
+    );
+
+    // (iv) type_params lowers the bound — Q with bound Dimension
+    assert_eq!(gf.type_params.len(), 1, "g should have 1 type param");
+    assert_eq!(gf.type_params[0].name, "Q");
+    assert_eq!(
+        gf.type_params[0].bounds.len(),
+        1,
+        "Q should have 1 bound (Dimension)"
+    );
+    assert_eq!(
+        gf.type_params[0].bounds[0].trait_ref.name,
+        "Dimension",
+        "Q's bound should be 'Dimension'"
+    );
+
+    // Back-compat (INV-10): concrete Scalar<Length> is unaffected
+    let area = module
+        .functions
+        .iter()
+        .find(|f| f.name == "area")
+        .expect("function 'area' should be compiled");
+    assert_eq!(
+        area.params[0].1,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "area param 'w' should still resolve to concrete Scalar[LENGTH]"
+    );
+    assert_eq!(
+        area.return_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "area return type should still resolve to concrete Scalar[LENGTH]"
     );
 }
