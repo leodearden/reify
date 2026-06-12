@@ -4239,6 +4239,17 @@ pub(crate) fn build_structure_def_skeleton(
                 known_geometry_lets.insert(let_decl.name.as_str());
                 continue;
             }
+            // Track selector lets BEFORE the where_clause guard — mirrors the authoritative
+            // pre-pass (entity.rs:857-875) which populates known_selector_lets regardless
+            // of where_clause.  Without this, a per-decl-guarded selector let followed by
+            // a non-guarded all-ident composition (`let u = union(s, other)` where `s`
+            // has a where_clause) would have `u` mis-classified as CSG on this skeleton
+            // pass even though the authoritative pass correctly routes it to the selector
+            // path.  Mirrors the `known_geometry_lets` population above (which also
+            // precedes the where_clause continue). (task 4527 amendment)
+            if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
+                known_selector_lets.insert(let_decl.name.as_str());
+            }
             // Per-decl guarded lets belong in guarded_groups on the authoritative path;
             // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
             //
@@ -4274,11 +4285,6 @@ pub(crate) fn build_structure_def_skeleton(
             let id = ValueCellId::new(&structure.name, &let_decl.name);
             // Register in scope so later lets can reference earlier lets.
             scope.register(&let_decl.name, cell_type.clone());
-            // Track selector lets so subsequent all-ident compositions route
-            // correctly — mirrors the authoritative pre-pass (task 4527).
-            if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
-                known_selector_lets.insert(let_decl.name.as_str());
-            }
             // Respect is_pub, matching the authoritative path (entity.rs:1434).
             let let_visibility = if let_decl.is_pub {
                 Visibility::Public

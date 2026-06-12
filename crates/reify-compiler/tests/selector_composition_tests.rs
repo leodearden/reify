@@ -610,6 +610,53 @@ fn difference_all_ident_operands_compiles_clean_with_face_selector_type() {
     );
 }
 
+/// All-ident union inside a block-level `where cond { ... }` guard.
+///
+/// `top` and `big` are plain (unguarded) selector lets; `u = union(top, big)` sits
+/// inside the guarded block and is compiled via `compile_guarded_members` (guards.rs).
+/// That path calls `is_geometry_let` with `known_selector_lets` threaded from the
+/// pre-pass — this test locks that the classification is correct and the guarded member
+/// gets `Type::Selector(Face)` (not mis-routed to CSG). (task 4527 amendment)
+const SOURCE_GUARDED_BLOCK_UNION_ALL_IDENT: &str = r#"
+structure def GuardedBlockUnionAllIdent {
+    param cond : Bool = true
+    let b = box(10mm, 10mm, 10mm)
+    let c = box(20mm, 20mm, 20mm)
+    let top = faces(b)
+    let big = faces(c)
+    where cond {
+        let u = union(top, big)
+    }
+}
+"#;
+
+/// All-ident union where BOTH operands are per-decl-guarded selector lets.
+///
+/// `let s = faces(b) where active` and `let t = faces(c) where active` are per-decl
+/// guarded; `let u = union(s, t)` is unguarded.  The authoritative pre-pass populates
+/// `known_selector_lets` regardless of `where_clause`, so this routes correctly on
+/// the authoritative path.  The skeleton pass (build_structure_def_skeleton, used for
+/// fn-returned structures) requires the amendment-1 fix to also populate
+/// `known_selector_lets` before the `where_clause` continue.  Including a `pub fn`
+/// that returns the structure in the source exercises the skeleton path as well.
+/// (task 4527 amendment)
+const SOURCE_PER_DECL_GUARDED_BOTH_SELECTOR_LETS: &str = r#"
+module test.perdeclguarded
+
+structure def PerDeclGuardedBothSelectorLets {
+    param active : Bool = true
+    let b = box(10mm, 10mm, 10mm)
+    let c = box(20mm, 20mm, 20mm)
+    let s = faces(b) where active
+    let t = faces(c) where active
+    let u = union(s, t)
+}
+
+pub fn make_it() -> PerDeclGuardedBothSelectorLets {
+    PerDeclGuardedBothSelectorLets(true)
+}
+"#;
+
 /// `let u = union(top, big); let v = difference(u, top)` — chained all-ident composition.
 /// `u` must itself be recorded in known_selector_lets so `v` resolves `u` as a selector.
 /// Both `u` and `v` must infer `Type::Selector(Face)` and compilation must be error-free.
@@ -637,5 +684,71 @@ fn chained_all_ident_operands_compiles_clean_with_face_selector_type() {
         Type::Selector(SelectorKind::Face),
         "difference(u, top) in chain must infer Type::Selector(Face), got {:?}",
         v_expr.result_type
+    );
+}
+
+/// `union(top, big)` with both operands as Ident selector lets, inside a guarded block.
+///
+/// Exercises `compile_guarded_members` in guards.rs — the `is_geometry_let` call at
+/// that site receives `known_selector_lets` (threaded from the pre-pass), so `top`
+/// and `big` are recognised as selector idents and `u` routes to the selector path.
+/// The guarded member `u` must have `Type::Selector(Face)` in `guarded_groups[0].members`.
+/// Locks the guards.rs all-ident classification path (task 4527 amendment).
+#[test]
+fn guarded_block_union_all_ident_compiles_clean_with_face_selector_type() {
+    let compiled = compile_source_with_stdlib(SOURCE_GUARDED_BLOCK_UNION_ALL_IDENT);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(top, big) inside a guarded block: must compile without errors; got: {errors:#?}"
+    );
+
+    // `u` is a let inside the `where cond { ... }` block → lives in guarded_groups[0].members.
+    let template = compiled.templates.first().expect("expected at least one template");
+    let group = template
+        .guarded_groups
+        .first()
+        .expect("expected at least one guarded group for the `where cond` block");
+    let u_member = group
+        .members
+        .iter()
+        .find(|m| m.id.member == "u")
+        .expect("expected guarded member 'u' in the where block");
+    assert_eq!(
+        u_member.cell_type,
+        Type::Selector(SelectorKind::Face),
+        "union(top, big) inside a guarded block must infer Type::Selector(Face), got {:?}",
+        u_member.cell_type
+    );
+}
+
+/// `union(s, t)` where BOTH `s` and `t` are per-decl-guarded selector lets
+/// (`let s = faces(b) where active`).
+///
+/// On the authoritative path the pre-pass populates `known_selector_lets` regardless
+/// of `where_clause`, so `u = union(s, t)` routes to the selector path. The source
+/// also includes a `pub fn make_it()` so the skeleton path
+/// (`build_structure_def_skeleton`) is exercised; without the amendment-1 fix both
+/// `s` and `t` would be absent from `known_selector_lets` on the skeleton pass and
+/// `u` would be mis-classified as a geometry let.
+/// (task 4527 amendment)
+#[test]
+fn per_decl_guarded_both_selector_lets_union_compiles_clean() {
+    let compiled = compile_source_with_stdlib(SOURCE_PER_DECL_GUARDED_BOTH_SELECTOR_LETS);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "union(s, t) with BOTH s and t per-decl-guarded selector lets: must compile \
+         without errors; got: {errors:#?}"
+    );
+
+    // `u` is an unguarded let → in value_cells on the authoritative path.
+    let u_expr = cell_default_expr(&compiled, "u");
+    assert_eq!(
+        u_expr.result_type,
+        Type::Selector(SelectorKind::Face),
+        "union(s, t) with both per-decl-guarded selector lets must infer \
+         Type::Selector(Face), got {:?}",
+        u_expr.result_type
     );
 }

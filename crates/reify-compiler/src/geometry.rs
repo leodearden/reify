@@ -3042,16 +3042,25 @@ mod tests {
              as a geometry let (CSG default) — unknown idents must not flip routing"
         );
 
-        // Case 3 — top/big in known_GEOMETRY_lets (not selector_lets) → CSG preserved.
-        let mut geom_known: HashSet<&str> = HashSet::new();
-        geom_known.insert("top");
-        geom_known.insert("big");
-        // The Ident arm of is_geometry_let returns true (geometry idents), so
-        // union(top,big) = union(geom_ident, geom_ident) → is_geometry_let true (CSG).
+        // Case 3 — same name in BOTH known_geometry_lets AND known_selector_lets:
+        // is_selector_composition is driven by is_selector_expr (which consults
+        // known_selector_lets via the Ident arm), so when top/big are in both sets
+        // is_selector_composition = true → is_geometry_let = false (selector path).
+        // Documents the actual tie-breaking rule: known_selector_lets membership in
+        // the operand controls the union/difference routing, not known_geometry_lets.
+        // In practice a name is never in both sets (they are populated in the else-branch
+        // of each other), but this pins the exact behavior if that invariant were broken.
+        let mut geom_both: HashSet<&str> = HashSet::new();
+        let mut sel_both: HashSet<&str> = HashSet::new();
+        geom_both.insert("top");
+        geom_both.insert("big");
+        sel_both.insert("top");
+        sel_both.insert("big");
         assert!(
-            is_geometry_let(&union_ident, &functions, &geom_known, &sel_empty),
-            "union(top, big) with top/big as geometry idents must remain a geometry \
-             let (CSG path preserved) — known_geometry_lets takes precedence"
+            !is_geometry_let(&union_ident, &functions, &geom_both, &sel_both),
+            "union(top, big) with top/big in BOTH sets: known_selector_lets membership \
+             drives is_selector_composition → is_geometry_let must be false (selector \
+             path), even when the operand names are also in known_geometry_lets"
         );
     }
 
