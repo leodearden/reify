@@ -49,6 +49,16 @@ pub(super) fn symmetric_angle_range(half_width_rad: f64) -> Value {
     )
 }
 
+/// Return a both-inclusive symmetric length range `[−h, +h]` centred on zero.
+pub(super) fn symmetric_length_range(half_width_m: f64) -> Value {
+    Value::range(
+        Some(Value::length(-half_width_m)),
+        Some(Value::length(half_width_m)),
+        true,
+        true,
+    )
+}
+
 /// Assemble a flexure joint `Value::Map`: the standard `{kind, axis, range}`
 /// joint layout (mirroring `joints::make_joint`) extended with the
 /// flexure-specific keys `spring_rate`, `damping`, `neutral`, and `pivot`.
@@ -270,12 +280,11 @@ fn parse_declared_range_value(v: &Value, kind: &RangeKind) -> Option<f64> {
 ///   (maximally safe — no yield datum places no stress limit) when `yield_si` is
 ///   `None`.
 /// - `parasitic_error` → [`Value::Option`] of a LENGTH Scalar (`None` ⇒ `Option(None)`).
-/// - `prb_validity_range` → `Value::Range` of ANGLE via [`symmetric_angle_range`]:
-///   `[−h, +h]` where `h = prb_validity_half_si` (both-inclusive). For revolute /
-///   cantilever families `h` is a genuine half-angle (rad); for prismatic families
-///   `h` is a half-displacement (m) wrapped as an angle magnitude — a documented
-///   residual consistent with `Range<Length>` being scoped OUT
-///   (tolerancing-gdt-surface-completion.md §4 decision 6; tightening deferred).
+/// - `prb_validity_range` → the caller-provided `Value` stored verbatim —
+///   `Range<Angle>` (both-inclusive `[−h, +h]`) for revolute/cantilever families
+///   (via [`symmetric_angle_range`]), `Range<Length>` for prismatic/displacement
+///   families (via [`symmetric_length_range`]). Each caller wraps the
+///   dimensionally-correct half-width before calling this function.
 /// - `at_yield` → [`Value::Bool`]: `max_stress > yield·(1 + AT_YIELD_REL_TOL)`
 ///   (strict, with a tiny relative tolerance so operating exactly at the
 ///   yield-deflection endpoint — the SAFE-envelope boundary — is not flagged by
@@ -286,7 +295,7 @@ pub(super) fn make_compliance_record(
     max_stress_at_neutral_si: f64,
     yield_si: Option<f64>,
     parasitic: Option<f64>,
-    prb_validity_half_si: f64,
+    prb_validity_range: Value,
 ) -> Value {
     let pressure = |si: f64| Value::Scalar {
         si_value: si,
@@ -327,10 +336,7 @@ pub(super) fn make_compliance_record(
         ),
         ("yield_margin".to_string(), Value::Real(yield_margin)),
         ("parasitic_error".to_string(), parasitic_error),
-        (
-            "prb_validity_range".to_string(),
-            symmetric_angle_range(prb_validity_half_si),
-        ),
+        ("prb_validity_range".to_string(), prb_validity_range),
         ("at_yield".to_string(), Value::Bool(at_yield)),
     ]
     .into_iter()
@@ -519,8 +525,43 @@ mod tests {
     }
 
     #[test]
+    fn make_compliance_record_stores_caller_provided_range() {
+        use super::super::test_util::{angle_range_half_si, length_range_half_si};
+        // LENGTH range: symmetric_length_range(δ) stored verbatim → Range<Length>.
+        let delta = 0.003_f64;
+        let rec_len = make_compliance_record(
+            1.0,
+            50e6,
+            0.0,
+            None,
+            None,
+            symmetric_length_range(delta),
+        );
+        let half_len = length_range_half_si(field(&rec_len, "prb_validity_range"), "prb_validity_range/length");
+        assert!(
+            (half_len - delta).abs() < 1e-12,
+            "length half-width {half_len} vs expected {delta}"
+        );
+        // ANGLE range: symmetric_angle_range(θ) stored verbatim → Range<Angle>.
+        let theta = 0.0872664626_f64;
+        let rec_ang = make_compliance_record(
+            1.0,
+            50e6,
+            0.0,
+            None,
+            None,
+            symmetric_angle_range(theta),
+        );
+        let half_ang = angle_range_half_si(field(&rec_ang, "prb_validity_range"), "prb_validity_range/angle");
+        assert!(
+            (half_ang - theta).abs() < 1e-9,
+            "angle half-width {half_ang} vs expected {theta}"
+        );
+    }
+
+    #[test]
     fn make_compliance_record_is_flexure_compliance_with_seven_fields() {
-        let rec = make_compliance_record(1.42, 100e6, 0.0, Some(310e6), None, 0.0872664626);
+        let rec = make_compliance_record(1.42, 100e6, 0.0, Some(310e6), None, symmetric_angle_range(0.0872664626));
         match &rec {
             Value::StructureInstance(data) => {
                 assert_eq!(data.type_name, "FlexureCompliance", "type_name");
@@ -546,7 +587,7 @@ mod tests {
         // max_stress (100 MPa) < yield (310 MPa) ⇒ at_yield false, positive margin.
         let yield_si = 310e6_f64;
         let max_stress = 100e6_f64;
-        let rec = make_compliance_record(1.42, max_stress, 0.0, Some(yield_si), None, 0.0872664626);
+        let rec = make_compliance_record(1.42, max_stress, 0.0, Some(yield_si), None, symmetric_angle_range(0.0872664626));
 
         // effective_stiffness stored as a bare Real (family-agnostic: revolute
         // rotational vs prismatic translational stiffness share this slot).
@@ -595,7 +636,7 @@ mod tests {
         let yield_si = 310e6_f64;
         let max_stress = 447e6_f64;
         let rec =
-            make_compliance_record(0.01, max_stress, 50e6, Some(yield_si), Some(1e-6), 0.17453293);
+            make_compliance_record(0.01, max_stress, 50e6, Some(yield_si), Some(1e-6), symmetric_angle_range(0.17453293));
 
         assert_eq!(field(&rec, "at_yield"), &Value::Bool(true), "at yield");
 
@@ -630,7 +671,7 @@ mod tests {
         // no yield datum places no stress limit, clamped to the margin upper
         // bound). Pairs naturally with at_yield=false (0.0 would falsely read as
         // "exactly at the yield boundary").
-        let rec = make_compliance_record(1.0, 100e6, 0.0, None, None, 0.0872664626);
+        let rec = make_compliance_record(1.0, 100e6, 0.0, None, None, symmetric_angle_range(0.0872664626));
         assert_eq!(
             field(&rec, "at_yield"),
             &Value::Bool(false),
