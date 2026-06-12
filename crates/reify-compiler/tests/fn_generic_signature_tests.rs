@@ -366,3 +366,71 @@ fn dim_kinded_param_scalar_q_resolves_to_scalar_param() {
         "area return type should still resolve to concrete Scalar[LENGTH]"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-5 / Step-6 (ε): Vector3<Q> and Point3<Q> with a dimension-kinded param
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Vector3<Q> and Point3<Q> with Q: Dimension resolve their quantity slot to
+/// the dim-param representation (B10 extension).
+///
+/// RED until step-6: only the `Scalar` arm is wired in step-4; `Vector3` and
+/// `Point3` arms still route to `resolve_type_alias_expr_to_dimension`, which
+/// fails on `Q` and emits an Error diagnostic.
+#[test]
+fn dim_kinded_vector3_and_point3_resolve_to_scalar_param_slot() {
+    let source = r#"
+        fn gv<Q: Dimension>(v: Vector3<Q>) -> Vector3<Q> { v }
+        fn gp<Q: Dimension>(p: Point3<Q>) -> Point3<Q> { p }
+    "#;
+    let module = compile_source(source);
+
+    // ── gv: Vector3<Q> ───────────────────────────────────────────────────────
+
+    let errors_gv: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_gv.is_empty(),
+        "expected no Error diagnostics for gv<Q: Dimension>(v: Vector3<Q>) -> Vector3<Q>, got: {:?}",
+        errors_gv
+    );
+
+    let gv = module
+        .functions
+        .iter()
+        .find(|f| f.name == "gv")
+        .expect("function 'gv' should be compiled");
+
+    assert_eq!(
+        gv.params[0].1,
+        Type::vec3(Type::ScalarParam("Q".to_string())),
+        "gv param v should resolve to Type::vec3(ScalarParam(\"Q\"))"
+    );
+    assert_eq!(
+        gv.return_type,
+        Type::vec3(Type::ScalarParam("Q".to_string())),
+        "gv return type should resolve to Type::vec3(ScalarParam(\"Q\"))"
+    );
+
+    // ── gp: Point3<Q> ────────────────────────────────────────────────────────
+
+    let gp = module
+        .functions
+        .iter()
+        .find(|f| f.name == "gp")
+        .expect("function 'gp' should be compiled");
+
+    assert_eq!(
+        gp.params[0].1,
+        Type::point3(Type::ScalarParam("Q".to_string())),
+        "gp param p should resolve to Type::point3(ScalarParam(\"Q\"))"
+    );
+    assert_eq!(
+        gp.return_type,
+        Type::point3(Type::ScalarParam("Q".to_string())),
+        "gp return type should resolve to Type::point3(ScalarParam(\"Q\"))"
+    );
+}
