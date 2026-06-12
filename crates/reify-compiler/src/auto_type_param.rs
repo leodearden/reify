@@ -756,45 +756,101 @@ pub enum FeasibilityResult {
 ///
 /// Only `Violated` appears in [`RejectedCandidate::violated_constraints`];
 /// `Satisfied` and `Indeterminate` ids are never recorded there.
+/// Public backward-compat wrapper around [`filter_feasible_candidates_seeded`].
+///
+/// External callers that do not have access to a `template_registry` (or
+/// operate without per-candidate ValueMap seeding — e.g. the
+/// `reify-eval` determinism test that calls this directly) should use this
+/// function. Internal callers should prefer [`filter_feasible_candidates_seeded`]
+/// so that per-candidate literal defaults are seeded into the `check()` call's
+/// `ValueMap` (hoist reversion — task 4434 γ, re-homed from task 3637).
 pub fn filter_feasible_candidates(
     candidates: &[String],
     parameterized_template: &TopologyTemplate,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> FeasibilityResult {
-    use reify_ir::{Satisfaction, ValueMap};
+    // Empty registry + empty param_name → no seeding → empty ValueMap per
+    // candidate (identical to the pre-reversion behaviour).
+    let empty_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+    filter_feasible_candidates_seeded(
+        candidates,
+        parameterized_template,
+        &empty_registry,
+        "",
+        constraint_checker,
+        functions,
+    )
+}
+
+/// Per-candidate feasibility filter with ValueMap seeding (hoist reversion —
+/// task 4434 γ, re-homed from task 3637).
+///
+/// Identical to [`filter_feasible_candidates`] except that `build_constraints_template`
+/// and per-candidate `ValueMap` setup now live **inside** the per-candidate loop,
+/// matching the `NOTE(substitution-pass-trigger)` reversion intent.
+///
+/// For each candidate, the `checker.check()` call receives a `ValueMap` seeded
+/// from that candidate's literal defaults via `seed_candidate_value_map`.  The
+/// key is derived from `param_type_member(parameterized_template, param_name)`,
+/// so constraints of the form `<param_member>.<field> < K` can resolve
+/// `<param_member>.<field>` from the seeded map.
+///
+/// When `template_registry` does not contain a candidate's template (or
+/// `param_type_member` returns `None` for `param_name`), the per-candidate
+/// ValueMap falls back to empty — identical to the pre-reversion behaviour.
+/// This preserves stub-path no-op semantics for callers using
+/// `CompileTimeIndeterminateChecker` (PRD §11.2).
+///
+/// # Note for external callers
+///
+/// This function is `pub(crate)`.  External callers (e.g. `reify-eval` tests
+/// that exercise Phase B in isolation) should use the public
+/// [`filter_feasible_candidates`] wrapper (which passes an empty registry and
+/// produces the pre-reversion empty-ValueMap behaviour).
+///
+/// Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md
+/// M-005/M-013 — resolved by this reversion (task 4434 γ).
+pub(crate) fn filter_feasible_candidates_seeded(
+    candidates: &[String],
+    parameterized_template: &TopologyTemplate,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    param_name: &str,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+) -> FeasibilityResult {
+    use reify_ir::Satisfaction;
 
     debug_assert!(
         !candidates.is_empty(),
-        "filter_feasible_candidates: candidates slice must be non-empty (Phase A's Found arm guarantees ≥1 candidate)"
+        "filter_feasible_candidates_seeded: candidates slice must be non-empty (Phase A's Found arm guarantees ≥1 candidate)"
     );
-
-    let empty_values = ValueMap::new();
-
-    // Build the template's constraint list once — it does not change across
-    // candidates in Phase B.
-    //
-    // NOTE(substitution-pass-trigger): This hoist is sound TODAY because the empty
-    // `ValueMap` and the unchanged `template.constraints` slice means the
-    // `(ConstraintNodeId, &CompiledExpr)` list is identical across candidates.
-    // This changes the moment `Type::TypeParam(T) → Type::StructureRef(candidate)`
-    // substitution starts mutating per-candidate cell types in the expression graph.
-    // Revert this hoist when the substitution pass lands — move the build inside
-    // the per-candidate loop with per-candidate `ValueMap` setup. See
-    // `build_constraints_template` for the full deferred-substitution note.
-    // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
-    let constraints_template = build_constraints_template(parameterized_template);
 
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
     for candidate in candidates {
+        // Hoist reversion (task 4434 γ, re-homed from task 3637):
+        // `build_constraints_template` and per-candidate `ValueMap` setup
+        // now live INSIDE the per-candidate loop, as the NOTE(substitution-pass-trigger)
+        // required.  Once `Type::TypeParam(T) → Type::StructureRef(candidate)`
+        // substitution lands, the constraints expression graph will specialize
+        // per-candidate; the build must be here for that to work.
+        let constraints_template = build_constraints_template(parameterized_template);
+        let candidate_values =
+            if let Some(param_member) = param_type_member(parameterized_template, param_name) {
+                if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
+                    seed_candidate_value_map(candidate_template, param_member)
+                } else {
+                    reify_ir::ValueMap::new()
+                }
+            } else {
+                reify_ir::ValueMap::new()
+            };
+
         let input = ConstraintInput {
-            // constraints_template is hoisted above the loop and does not change
-            // across candidates in Phase B; borrow it directly to avoid an
-            // O(candidates × constraints) ConstraintNodeId-String clone.
             constraints: Cow::Borrowed(&constraints_template),
-            values: &empty_values,
+            values: &candidate_values,
             functions,
             determinacy: None,
         };
@@ -1202,10 +1258,14 @@ pub fn resolve_auto_type_params(
                 SelectionResult::Ambiguous(overflow_vec)
             }
             CandidateEnumeration::Found(candidates) => {
-                // Phase B: feasibility filter.
-                let feasibility = filter_feasible_candidates(
+                // Phase B: feasibility filter (hoist-reversion wiring — task 4434 γ).
+                // Use `filter_feasible_candidates_seeded` so per-candidate ValueMaps
+                // are seeded from the candidate template's literal defaults.
+                let feasibility = filter_feasible_candidates_seeded(
                     &candidates,
                     parameterized_template,
+                    template_registry,
+                    &param.name,
                     constraint_checker,
                     functions,
                 );
@@ -1706,9 +1766,13 @@ pub fn resolve_auto_type_params_with_backtracking(
     if params.len() == 1 {
         let param = &params[0];
         let candidates = &per_param_candidates[0];
-        let feasibility = filter_feasible_candidates(
+        // Hoist-reversion wiring (task 4434 γ, re-homed from task 3637):
+        // use the seeded version so per-candidate ValueMaps are populated.
+        let feasibility = filter_feasible_candidates_seeded(
             candidates,
             parameterized_template,
+            template_registry,
+            &param.name,
             constraint_checker,
             functions,
         );
