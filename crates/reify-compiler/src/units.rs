@@ -1,3 +1,4 @@
+use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 use super::*;
 
 /// The complete set of stdlib geometry constructor names recognised by the
@@ -711,92 +712,6 @@ pub(crate) fn is_field_op(name: &str) -> bool {
     FIELD_OP_NAMES.contains(&name)
 }
 
-// ---------------------------------------------------------------------------
-// Dim helpers — faithful copies of reify-expr/src/calculus.rs:19-130.
-//
-// Behavioural source of truth: `reify_expr::calculus`.  These duplicates exist
-// because `reify-compiler` depends on `reify-expr` ONLY as a dev-dependency, so
-// production compiler code cannot import from `reify_expr::calculus` at the lib
-// level.  Any change to the gradient/divergence/curl/laplacian codomain logic in
-// `calculus.rs` must be mirrored here.  The table test
-// `field_op_result_type_gradient_is_codomain_correct` pins the gradient case;
-// integration tests in `crates/reify-compiler/tests/field_op_typing_tests.rs`
-// exercise the compile surface end-to-end.
-// ---------------------------------------------------------------------------
-
-/// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
-/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::dimensionless_scalar() | Type::Int`.
-/// Returns `None` for all other types.
-///
-/// Mirrors `reify_expr::calculus::scalar_dimension`.
-fn scalar_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::DimensionVector> {
-    use reify_core::{DimensionVector, Type};
-    match ty {
-        Type::Scalar { dimension } => Some(*dimension),
-        Type::Int => Some(DimensionVector::DIMENSIONLESS),
-        _ => None,
-    }
-}
-
-/// Domain-side analog of `scalar_dimension_for_field_op`, unwrapping
-/// `Type::Point { quantity }` before delegating to `scalar_dimension_for_field_op`.
-///
-/// Mirrors `reify_expr::calculus::domain_dimension`.
-fn domain_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::DimensionVector> {
-    use reify_core::Type;
-    match ty {
-        Type::Point { quantity, .. } => scalar_dimension_for_field_op(quantity),
-        _ => scalar_dimension_for_field_op(ty),
-    }
-}
-
-/// Returns `Type::dimensionless_scalar()` if `ty` is a dimensionless `Scalar`, otherwise returns
-/// a clone of `ty`.  Shared fallback for all four differential operators.
-///
-/// Mirrors `reify_expr::calculus::dimensionless_fallback`.
-fn dimensionless_fallback_for_field_op(ty: &reify_core::Type) -> reify_core::Type {
-    use reify_core::{DimensionVector, Type};
-    match ty {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::dimensionless_scalar(),
-        _ => ty.clone(),
-    }
-}
-
-/// Compute the quotient Type for a differential operator result.
-///
-/// Returns `Scalar { dimension: cd / dd^exponent }` when both dimensions are
-/// non-DIMENSIONLESS; `Type::dimensionless_scalar()` when the quotient is DIMENSIONLESS; and
-/// `fallback` in all other cases.
-///
-/// Mirrors `reify_expr::calculus::dim_quotient_type`.
-fn dim_quotient_type_for_field_op(
-    codomain_dim: Option<reify_core::DimensionVector>,
-    domain_dim: Option<reify_core::DimensionVector>,
-    domain_exponent: i8,
-    fallback: reify_core::Type,
-) -> reify_core::Type {
-    use reify_core::{DimensionVector, Type};
-    match (codomain_dim, domain_dim) {
-        (Some(cd), Some(dd))
-            if cd != DimensionVector::DIMENSIONLESS && dd != DimensionVector::DIMENSIONLESS =>
-        {
-            let result_dim = if domain_exponent == 1 {
-                cd.div(&dd)
-            } else {
-                cd.div(&dd.pow(domain_exponent))
-            };
-            if result_dim != DimensionVector::DIMENSIONLESS {
-                Type::Scalar {
-                    dimension: result_dim,
-                }
-            } else {
-                Type::dimensionless_scalar()
-            }
-        }
-        _ => fallback,
-    }
-}
-
 /// Compile-time return type for a field-op call, per PRD §5.1.
 ///
 /// Returns `Some(Type)` when `name` is a recognised field-op name AND the
@@ -905,33 +820,11 @@ pub(crate) fn field_op_result_type(
         // nD (Point{n, scalar} D): result_codomain = Vector{n, gradient_quantity}
         "gradient" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                let n = match domain.as_ref() {
-                    d if scalar_dimension_for_field_op(d).is_some() => 1,
-                    Type::Point { n, quantity }
-                        if scalar_dimension_for_field_op(quantity).is_some() =>
-                    {
-                        *n
-                    }
-                    _ => return None,
-                };
-                let gradient_quantity = dim_quotient_type_for_field_op(
-                    scalar_dimension_for_field_op(codomain),
-                    domain_dimension_for_field_op(domain),
-                    1,
-                    dimensionless_fallback_for_field_op(codomain),
-                );
-                let result_codomain = if n == 1 {
-                    gradient_quantity
-                } else {
-                    Type::Vector {
-                        n,
-                        quantity: Box::new(gradient_quantity),
-                    }
-                };
-                Some(Type::Field {
-                    domain: domain.clone(),
-                    codomain: Box::new(result_codomain),
-                })
+                differential_codomain(DifferentialOp::Gradient, domain, codomain)
+                    .map(|cod| Type::Field {
+                        domain: domain.clone(),
+                        codomain: Box::new(cod),
+                    })
             } else {
                 None
             }
@@ -940,35 +833,11 @@ pub(crate) fn field_op_result_type(
         // divergence(Field<Point{n,scalar}, Vector{n,scalar}>) → Field<D, scalar_codomain>
         "divergence" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                // Domain must be Point{n, scalar}
-                let n = match domain.as_ref() {
-                    Type::Point { n, quantity }
-                        if scalar_dimension_for_field_op(quantity).is_some() =>
-                    {
-                        *n
-                    }
-                    _ => return None,
-                };
-                // Codomain must be Vector{n, scalar}
-                let codomain_quantity = match codomain.as_ref() {
-                    Type::Vector {
-                        n: vec_n,
-                        quantity,
-                    } if *vec_n == n && scalar_dimension_for_field_op(quantity).is_some() => {
-                        quantity.as_ref()
-                    }
-                    _ => return None,
-                };
-                let result_codomain = dim_quotient_type_for_field_op(
-                    scalar_dimension_for_field_op(codomain_quantity),
-                    domain_dimension_for_field_op(domain),
-                    1,
-                    dimensionless_fallback_for_field_op(codomain_quantity),
-                );
-                Some(Type::Field {
-                    domain: domain.clone(),
-                    codomain: Box::new(result_codomain),
-                })
+                differential_codomain(DifferentialOp::Divergence, domain, codomain)
+                    .map(|cod| Type::Field {
+                        domain: domain.clone(),
+                        codomain: Box::new(cod),
+                    })
             } else {
                 None
             }
@@ -977,31 +846,11 @@ pub(crate) fn field_op_result_type(
         // curl(Field<Point{3,scalar}, Vector{3,scalar}>) → Field<D, Vector{3,result}>
         "curl" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                // Domain must be Point{3, scalar}
-                match domain.as_ref() {
-                    Type::Point { n: 3, quantity }
-                        if scalar_dimension_for_field_op(quantity).is_some() => {}
-                    _ => return None,
-                }
-                // Codomain must be Vector{3, scalar}
-                let codomain_quantity = match codomain.as_ref() {
-                    Type::Vector { n: 3, quantity }
-                        if scalar_dimension_for_field_op(quantity).is_some() =>
-                    {
-                        quantity.as_ref()
-                    }
-                    _ => return None,
-                };
-                let result_component = dim_quotient_type_for_field_op(
-                    scalar_dimension_for_field_op(codomain_quantity),
-                    domain_dimension_for_field_op(domain),
-                    1,
-                    dimensionless_fallback_for_field_op(codomain_quantity),
-                );
-                Some(Type::Field {
-                    domain: domain.clone(),
-                    codomain: Box::new(Type::vec3(result_component)),
-                })
+                differential_codomain(DifferentialOp::Curl, domain, codomain)
+                    .map(|cod| Type::Field {
+                        domain: domain.clone(),
+                        codomain: Box::new(cod),
+                    })
             } else {
                 None
             }
@@ -1010,27 +859,11 @@ pub(crate) fn field_op_result_type(
         // laplacian(Field<D, scalar_codomain>) → Field<D, scalar_codomain/domain²>
         "laplacian" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                // Domain: scalar or Point{n, scalar}
-                let domain_ok = scalar_dimension_for_field_op(domain).is_some()
-                    || matches!(domain.as_ref(),
-                        Type::Point { quantity, .. }
-                            if scalar_dimension_for_field_op(quantity).is_some()
-                    );
-                if !domain_ok {
-                    return None;
-                }
-                // Codomain must be scalar
-                scalar_dimension_for_field_op(codomain)?;
-                let result_codomain = dim_quotient_type_for_field_op(
-                    scalar_dimension_for_field_op(codomain),
-                    domain_dimension_for_field_op(domain),
-                    2,
-                    dimensionless_fallback_for_field_op(codomain),
-                );
-                Some(Type::Field {
-                    domain: domain.clone(),
-                    codomain: Box::new(result_codomain),
-                })
+                differential_codomain(DifferentialOp::Laplacian, domain, codomain)
+                    .map(|cod| Type::Field {
+                        domain: domain.clone(),
+                        codomain: Box::new(cod),
+                    })
             } else {
                 None
             }
