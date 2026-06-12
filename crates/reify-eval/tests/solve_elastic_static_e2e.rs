@@ -475,6 +475,158 @@ fn e2e_cantilever_second_eval_hits_cache() {
             v2
         );
     }
+
+    // ── (step-5/4564) Both evals: divergence SampledField.data bit-identical ──
+    let div1_data = extract_sampled_field_data(&result1, "divergence");
+    let div2_data = extract_sampled_field_data(&result2, "divergence");
+    assert_eq!(
+        div1_data.len(),
+        div2_data.len(),
+        "divergence data length differs between eval1 ({}) and eval2 ({})",
+        div1_data.len(),
+        div2_data.len()
+    );
+    for (i, (v1, v2)) in div1_data.iter().zip(div2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "divergence data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i,
+            v1,
+            v2
+        );
+    }
+}
+
+// ── step-5 (task 4564): RED — divergence field contract ──────────────────────
+//
+// Asserts:
+//   (CONTRACT)  divergence is Value::Field{source:Sampled}, codomain = Real
+//               (dimensionless_scalar), data.len() == n_grid_nodes.
+//   (NUMERIC)   Exact cross-field trace identity: div[k] ≈ (1−2ν)/E · tr(σ)[k]
+//               with rel-tol 1e-6 (same linear weights → machine precision).
+//   (NUMERIC)   max|div| ≈ (1−2ν)·σ_max/E within ±50% (PRD G2 signal).
+//
+// Fails (extract_field panics — field absent) until step-6.
+
+/// Divergence field: type contract, trace identity against stress, magnitude.
+#[test]
+fn e2e_cantilever_divergence_field_contract() {
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found"));
+
+    // ── (CONTRACT) divergence must be Value::Field{source:Sampled} ────────────
+    let div_val = extract_field(result_val, "divergence")
+        .unwrap_or_else(|| panic!("field 'divergence' not found in result"));
+
+    let (div_domain, div_codomain) = match &div_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "divergence source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("divergence must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        div_domain,
+        Type::point3(Type::length()),
+        "divergence domain must be Point3<Length>"
+    );
+    assert_eq!(
+        div_codomain,
+        Type::dimensionless_scalar(),
+        "divergence codomain must be Real (dimensionless_scalar)"
+    );
+
+    // ── (CONTRACT) data length == displacement node count ─────────────────────
+    let div_data = extract_sampled_field_data(result_val, "divergence");
+    let disp_data = extract_sampled_field_data(result_val, "displacement");
+    let n_grid_nodes = disp_data.len() / 3;
+    assert_eq!(
+        div_data.len(),
+        n_grid_nodes,
+        "divergence data.len() = {} but displacement grid has {} nodes",
+        div_data.len(),
+        n_grid_nodes
+    );
+
+    // ── (CONTRACT) all samples finite ─────────────────────────────────────────
+    for (k, &d) in div_data.iter().enumerate() {
+        assert!(d.is_finite(), "divergence data[{}] = {} is not finite", k, d);
+    }
+
+    // ── (NUMERIC) Exact cross-field trace identity: div[k] = (1−2ν)/E · tr(σ)[k]
+    //
+    // Steel_AISI_1045: E = 205e9 Pa, ν = 0.29 (materials_fea.ri:154-156).
+    // Both fields recovered and resampled with the same linear weights ⇒
+    // identity holds to floating-point accumulation (machine precision).
+    // Rel-tol 1e-6 is generous; failure indicates a wiring error, not rounding.
+    let e_pa = 205e9_f64;
+    let nu = 0.29_f64;
+    let factor = (1.0 - 2.0 * nu) / e_pa; // (1−2ν)/E
+
+    let stress_data = extract_sampled_field_data(result_val, "stress");
+    assert_eq!(
+        stress_data.len(),
+        n_grid_nodes * 9,
+        "stress data must have 9 components per grid node"
+    );
+
+    let mut max_div = 0.0_f64;
+    for k in 0..n_grid_nodes {
+        // tr(σ) = σ_xx + σ_yy + σ_zz = stride-9 entries [0], [4], [8].
+        let tr_sigma = stress_data[9 * k] + stress_data[9 * k + 4] + stress_data[9 * k + 8];
+        let expected_div = factor * tr_sigma;
+        let got_div = div_data[k];
+
+        // Mixed absolute/relative tolerance: rel-tol 1e-6 or abs 1e-18 floor.
+        let scale = expected_div.abs().max(1e-18);
+        assert!(
+            (got_div - expected_div).abs() < 1e-6 * scale,
+            "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, \
+             rel-err={:e}",
+            k, got_div, expected_div,
+            (got_div - expected_div).abs() / scale,
+        );
+        if got_div.abs() > max_div { max_div = got_div.abs(); }
+    }
+
+    // ── (NUMERIC) PRD G2 magnitude: max|div| ≈ (1−2ν)·σ_max/E within ±50% ──
+    //
+    // σ_max = 6PL/(bh²) = 6×1000×1/(0.1×0.01) = 6e6 Pa (analytical Euler-Bernoulli).
+    // Inherits the validated ±50% coarse-P1 method-error budget.
+    let sigma_max_analytical = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1); // 6e6 Pa
+    let div_max_analytical = factor * sigma_max_analytical;
+    let lo = div_max_analytical * 0.5;
+    let hi = div_max_analytical * 1.5;
+    assert!(
+        max_div >= lo && max_div <= hi,
+        "max|div| = {:e} is outside ±50% of analytic {:e} (expected [{:e}, {:e}])",
+        max_div, div_max_analytical, lo, hi
+    );
 }
 
 // ── step-5: RED — tet trampoline I-1/I-3 ─────────────────────────────────────
