@@ -212,6 +212,13 @@ structure def TensegritySurface {
 //                     trampoline returns ComputeOutcome::Failed with an
 //                     `E_FormFindInfeasible` diagnostic rather than a result
 //                     with `converged: false`.
+//   surface_stresses — per-triangle echo of the prescribed isotropic surface
+//                     stress σ (in `structure.surfaces` declaration order), the
+//                     value the equilibrium membrane was solved for. Mirrors the
+//                     `force_densities` line echo. Populated with real values
+//                     (non-Undef) only when the structure carries surfaces;
+//                     otherwise an empty list (NEVER Undef) on the line-only path.
+//                     (γ / NFDM surfaces.)
 //
 // All params are required (no defaults) — a `FormFindResult` is only ever
 // constructed by the solver trampoline (or, in the never-run fallback below,
@@ -222,6 +229,7 @@ structure def FormFindResult {
     param member_forces : List<Force>
     param force_densities : List<Real>
     param converged : Bool
+    param surface_stresses : List<Real>
 }
 
 // ── form_find_free ────────────────────────────────────────────────────────────
@@ -319,11 +327,23 @@ pub fn form_find_free(
 //   anchors : List<Int>
 //     0-based indices into `structure.nodes` of the anchored (fixed) nodes.
 //     Every other node is free; an empty free set is infeasible input.
+//
+//   surface_stresses : List<Real> = []
+//     One isotropic surface stress σ per triangle, in `structure.surfaces`
+//     declaration order (the surface analogue of per-member `force_densities`;
+//     connectivity itself lives on `structure.surfaces`, so this carries only
+//     the per-triangle σ). Each σ must be > 0 (tension) — a non-tension surface
+//     is infeasible prestress and surfaces as an E_FormFindInfeasible
+//     diagnostic. Defaults to `[]`, the line-only / no-membrane path: with an
+//     empty list (or fewer inputs than 4) the solve is the landed cable/strut
+//     FDM unchanged, so existing 3-arg callers keep working via default
+//     padding. (γ / NFDM surfaces — D = CᵀQC + Σ_T σ_T·L_T.)
 @optimized("solver::form_find")
 pub fn form_find(
     structure : Tensegrity,
     force_densities : List<Real>,
-    anchors : List<Int>
+    anchors : List<Int>,
+    surface_stresses : List<Real> = []
 ) -> FormFindResult {
     FormFindResult()
 }
