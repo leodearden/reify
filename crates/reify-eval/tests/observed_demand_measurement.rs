@@ -6,12 +6,25 @@
 //! (b) the zero-behavior-change contract — registering observed demand must not
 //! change the production eval-set produced by `edit_param`.
 
-use reify_core::ValueCellId;
+use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
-use reify_eval::{Engine, WouldPruneByKind};
+use reify_eval::{Engine, EvalResult, WouldPruneByKind};
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{bracket_compiled_module, cnid, vcid};
+
+/// Collect an `EvalResult`'s values into a deterministically-ordered
+/// `Vec<(cell-id-string, Value)>` for equality comparison (`ValueMap` has no
+/// `PartialEq`).
+fn sorted_values(r: &EvalResult) -> Vec<(String, Value)> {
+    let mut v: Vec<(String, Value)> = r
+        .values
+        .iter()
+        .map(|(id, val)| (id.to_string(), val.clone()))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
 
 /// Build a freshly-eval'd bracket engine.
 fn bracket_engine() -> Engine {
@@ -160,5 +173,97 @@ fn edit_param_records_exact_would_prune_measurement() {
         m.observed_retained + m.would_prune.total(),
         m.eval_set_size,
         "observed_retained + Σwould_prune == eval_set_size"
+    );
+}
+
+#[test]
+fn observed_registration_is_zero_behavior_change_leaf_lock() {
+    // LEAF regression lock: a scripted bracket session run on two engines —
+    // engine_a (no observed registration) and engine_b (observed demand =
+    // {R0, thickness} registered BEFORE the script). For EVERY edit the
+    // production results must be byte-identical; engine_b additionally records a
+    // real would-prune measurement. Pins the task's zero-behavior-change signal.
+    let edits: Vec<(ValueCellId, Value)> = vec![
+        (vcid("Bracket", "width"), Value::length(0.1)),
+        (vcid("Bracket", "thickness"), Value::length(0.02)),
+        (vcid("Bracket", "hole_diameter"), Value::length(0.006)),
+        (vcid("Bracket", "width"), Value::length(0.09)),
+    ];
+
+    let mut engine_a = bracket_engine();
+
+    let mut engine_b = bracket_engine();
+    engine_b.add_observed_demand(NodeId::Realization(RealizationNodeId::new("Bracket", 0)));
+    engine_b.add_observed_demand(NodeId::Value(vcid("Bracket", "thickness")));
+    engine_b.rebuild_observed_cone();
+
+    let thickness_id = vcid("Bracket", "thickness");
+    let mut saw_real_pruning = false;
+
+    for (i, (id, val)) in edits.iter().enumerate() {
+        let ra = engine_a
+            .edit_param(id.clone(), val.clone())
+            .unwrap_or_else(|e| panic!("engine_a edit {i} failed: {e:?}"));
+        let rb = engine_b
+            .edit_param(id.clone(), val.clone())
+            .unwrap_or_else(|e| panic!("engine_b edit {i} failed: {e:?}"));
+
+        // (1) values byte-identical.
+        assert_eq!(
+            sorted_values(&ra),
+            sorted_values(&rb),
+            "edit {i}: EvalResult.values must match"
+        );
+        // (2) resolved_params equal.
+        assert_eq!(
+            ra.resolved_params, rb.resolved_params,
+            "edit {i}: resolved_params must match"
+        );
+        // (3) diagnostics length equal.
+        assert_eq!(
+            ra.diagnostics.len(),
+            rb.diagnostics.len(),
+            "edit {i}: diagnostics length must match"
+        );
+        // (4) last_eval_set byte-identical.
+        assert_eq!(
+            engine_a.last_eval_set(),
+            engine_b.last_eval_set(),
+            "edit {i}: last_eval_set must be byte-identical"
+        );
+
+        // engine_b records a measurement on every edit.
+        let mb = engine_b
+            .last_demand_prune_measurement()
+            .unwrap_or_else(|| panic!("edit {i}: engine_b measurement must be Some"));
+        assert_eq!(
+            mb.observed_retained + mb.would_prune.total(),
+            mb.eval_set_size,
+            "edit {i}: measurement conservation law"
+        );
+
+        if id == &thickness_id {
+            // Observed cone is closure of {R0, thickness} = {R0, width, height,
+            // thickness}; the thickness edit's eval-set {volume,C0,C1,C2,R0}
+            // retains R0 and would-prune the rest.
+            assert!(
+                mb.would_prune.total() > 0,
+                "edit {i}: thickness edit must show real pruning"
+            );
+            assert_eq!(
+                mb.would_prune.realization, 0,
+                "edit {i}: R0 is registered/retained, never pruned"
+            );
+            assert!(
+                mb.observed_retained >= 1,
+                "edit {i}: at least R0 retained"
+            );
+            saw_real_pruning = true;
+        }
+    }
+
+    assert!(
+        saw_real_pruning,
+        "the scripted session must include the thickness edit"
     );
 }
