@@ -183,13 +183,13 @@ use reify_ir::{
 use crate::persistent_cache::ShellChannels;
 use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
-    ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
-    OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
+    ConstantField, DirichletBc, ElementOrder, FaceOrder, GradientElement, GridSpec,
+    IsotropicElastic, OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
-    assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
-    element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
-    resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
-    tet_volume_p1,
+    assemble_global_stiffness, element_gradient_p1, element_stiffness,
+    element_stiffness_p1_with_field, element_stress_p1, recover_nodal_gradient_p1,
+    recover_nodal_stress_p1, resample_multi_nodal_to_grid, resolve_execution_modes,
+    solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
 };
 
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -249,6 +249,10 @@ pub(crate) struct CantileverFeaSolve {
     /// Each entry is the recovered 3×3 Cauchy stress at that node.
     /// Added by task 4084/α: fed stride-9 row-major into resample_nodal_to_grid.
     pub nodal_stress: Vec<[[f64; 3]; 3]>,
+    /// Volume-weighted nodal displacement-gradient field (length n_nodes).
+    /// Each entry is the recovered 3×3 ∇u tensor at that node.
+    /// Added by task 4564/α: trace = divergence, fed stride-1 into resample.
+    pub nodal_gradient: Vec<[[f64; 3]; 3]>,
     /// Number of element intervals along x (beam length axis).
     pub nx: usize,
     /// Number of element intervals along y (beam width axis).
@@ -494,6 +498,10 @@ pub fn solve_elastic_static_trampoline(
             // `frame` field stays Undef.
             ("frame".to_string(), Value::Undef),
             ("shell_channels".to_string(), shell_channels),
+            // Derivative channels (divergence, gradient, curl) are out of scope
+            // for the shell path (PRD §7). Undef = honest-absence sentinel,
+            // consistent with the tet convention for frame/shell_channels.
+            ("divergence".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -633,29 +641,41 @@ pub fn solve_elastic_static_trampoline(
     // Layout: σ_xx,σ_xy,σ_xz, σ_yx,σ_yy,σ_yz, σ_zx,σ_zy,σ_zz per node.
     let nodal_stress_flat = super::flatten_nodal_stress(&fea.nodal_stress);
 
+    // Project nodal_gradient → divergence = trace(∇u) = ∇u[0][0]+∇u[1][1]+∇u[2][2].
+    // Stored as stride-1 scalar per node; the full 3×3 tensor rides on
+    // fea.nodal_gradient for PRD task β (gradient/curl channels).
+    let nodal_divergence: Vec<f64> = fea
+        .nodal_gradient
+        .iter()
+        .map(|g| g[0][0] + g[1][1] + g[2][2])
+        .collect();
+
     // Single geometry pass: locate the containing tet once per grid point,
-    // then interpolate both displacement (stride 3) and stress (stride 9).
-    // This halves the O(grid·elems) point-location cost vs. two separate calls.
+    // then interpolate displacement (stride 3), stress (stride 9), and
+    // divergence (stride 1). One BVH query per grid node covers all three fields.
     let mut sampled = resample_multi_nodal_to_grid(
         &fea.coords,
         &fea.tet_connectivity,
         &[
             (&fea.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
             (&nodal_stress_flat, 9, "stress"),
+            (&nodal_divergence, 1, "divergence"),
         ],
         &grid,
         1e-9,
     );
     debug_assert_eq!(
         sampled.len(),
-        2,
-        "expected 2 sampled fields (displacement + stress)"
+        3,
+        "expected 3 sampled fields (displacement + stress + divergence)"
     );
+    let div_sf = sampled.pop().unwrap(); // index 2
     let stress_sf = sampled.pop().unwrap(); // index 1
     let disp_sf = sampled.pop().unwrap(); // index 0
 
     let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
+    let div_field = super::sampled_divergence_field(div_sf);
 
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
@@ -666,6 +686,9 @@ pub fn solve_elastic_static_trampoline(
         // elements). The shell path emits a real ShellStress via
         // shell_channels_to_value(Some(_), mid) in the §3b early return (task 3594/δ).
         ("shell_channels".to_string(), Value::Undef),
+        // task 4564/α: divergence = tr(ε) = volumetric strain, Sampled Field.
+        // Shell path emits Undef (PRD §7: derivative channels out of scope for shells).
+        ("divergence".to_string(), div_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
@@ -1142,6 +1165,7 @@ pub(crate) fn solve_cantilever_fea(
                 iterations,
                 tet_connectivity,
                 nodal_stress: Vec::new(),
+                nodal_gradient: Vec::new(),
                 nx,
                 ny,
                 nz,
@@ -1169,6 +1193,7 @@ pub(crate) fn solve_cantilever_fea(
     let u_disp = cg_result.u();
     let mut max_von_mises = 0.0f64;
     let mut stress_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
+    let mut gradient_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
 
     for conn in &tet_connectivity {
         let phys: [[f64; 3]; 4] = [
@@ -1210,6 +1235,11 @@ pub(crate) fn solve_cantilever_fea(
         );
 
         stress_elements.push(sigma);
+        // Kinematic displacement-gradient (task 4564/α): material-independent,
+        // serves both isotropic and anisotropic paths. Stored full 3×3 tensor;
+        // divergence = trace is derived at wrap time (PRD §10 OQ: store tensor,
+        // project at wrap — sets up β reuse for gradient/curl channels).
+        gradient_elements.push(element_gradient_p1(&phys, &u_e));
         if vm > max_von_mises {
             max_von_mises = vm;
         }
@@ -1240,6 +1270,31 @@ pub(crate) fn solve_cantilever_fea(
 
     let nodal_stress = recover_nodal_stress_p1(n_nodes, &se_refs);
 
+    // ── Recover nodal gradient field (volume-weighted averaging) ─────────────
+    //
+    // Mirrors the stress recovery: build GradientElement refs (borrowing
+    // connectivity) and call recover_nodal_gradient_p1. Stored full 3×3 tensor
+    // on CantileverFeaSolve; divergence = trace projected at wrap time.
+    let ge_refs: Vec<GradientElement<'_>> = tet_connectivity
+        .iter()
+        .zip(gradient_elements.iter())
+        .map(|(conn, grad)| {
+            let phys4: [[f64; 3]; 4] = [
+                coords[conn[0]],
+                coords[conn[1]],
+                coords[conn[2]],
+                coords[conn[3]],
+            ];
+            GradientElement {
+                connectivity: conn.as_slice(),
+                gradient: *grad,
+                volume: tet_volume_p1(&phys4),
+            }
+        })
+        .collect();
+
+    let nodal_gradient = recover_nodal_gradient_p1(n_nodes, &ge_refs);
+
     // `converged` and `iterations` were hoisted before the cancel short-circuit
     // above (task 4366); no re-declaration needed here.
     let fea = CantileverFeaSolve {
@@ -1251,6 +1306,7 @@ pub(crate) fn solve_cantilever_fea(
         iterations,
         tet_connectivity,
         nodal_stress,
+        nodal_gradient,
         nx,
         ny,
         nz,

@@ -88,6 +88,20 @@ pub(crate) fn sampled_stress_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as a divergence `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Real` (dimensionless scalar, stride 1)
+/// — matches `solver_elastic.ri` `divergence : Field<Point3<Length>, Real>`
+/// (PRD differential-field-operators.md task α).
+pub(crate) fn sampled_divergence_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
 // ── Scalar / point / list builders (form-find result encoding) ──────────────
 //
 // The form-find trampoline emits its result as plain dimensioned `Value::Scalar`
