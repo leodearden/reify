@@ -3238,6 +3238,112 @@ mod tests {
         );
     }
 
+    /// Pins the non-panicking fallback of `extract_density`:
+    ///
+    /// - A `StructureInstance` with a well-formed `Scalar density` field returns
+    ///   the SI value.
+    /// - A `StructureInstance` missing the `density` field returns `0.0`.
+    /// - A non-`StructureInstance` value (e.g. `Value::Real`) returns `0.0`.
+    ///
+    /// This test makes the defensive fallback explicit so it is distinguishable
+    /// from a latent bug.  Every `ElasticMaterial` conformer declares `density`,
+    /// so the fallback paths arise only from malformed or absent material values.
+    #[test]
+    fn extract_density_fallback_returns_zero_when_field_absent() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // (a) Well-formed material → correct SI density
+        let fields_a: PersistentMap<String, Value> = [(
+            "density".to_string(),
+            Value::Scalar {
+                si_value: 7850.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let material_a = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Steel_AISI_1045".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: fields_a,
+        }));
+        assert!(
+            (extract_density(&material_a) - 7850.0).abs() < 1e-9,
+            "(a) well-formed material → density 7850.0"
+        );
+
+        // (b) StructureInstance with no density field → 0.0 (intentional silent fallback)
+        let fields_b: PersistentMap<String, Value> = [].into_iter().collect();
+        let material_b = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "NoFieldMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: fields_b,
+        }));
+        assert_eq!(
+            extract_density(&material_b),
+            0.0,
+            "(b) absent density field → 0.0"
+        );
+
+        // (c) Non-StructureInstance value → 0.0
+        assert_eq!(
+            extract_density(&Value::Real(42.0)),
+            0.0,
+            "(c) non-StructureInstance → 0.0"
+        );
+    }
+
+    /// Pins the density=0 + Gravity-present fallback: when `density` resolves to
+    /// `0.0`, `extract_loads` silently returns a zero body-force vector.
+    ///
+    /// Combined with the all-zero guard in `assemble_body_force`, a scene with a
+    /// `Gravity` load whose material density is missing/malformed produces
+    /// zero gravitational displacement — indistinguishable from a gravity-free
+    /// solve.  This behavior is intentional and matches `extract_loads`' silent-
+    /// skip convention; it is covered here so the fallback is documented rather
+    /// than a hidden side-effect.
+    #[test]
+    fn extract_loads_gravity_zero_density_produces_zero_body_force() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: 9.80665,
+                    dimension: DimensionVector::ACCELERATION,
+                },
+            ),
+            (
+                "direction".to_string(),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(-1.0),
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let gravity = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Gravity".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+        let loads = Value::List(vec![gravity]);
+
+        // density=0.0 → body_force = ρ·magnitude·direction = 0·anything = [0,0,0]
+        let (_, _, body_force) = extract_loads(&loads, 0.0);
+        assert_eq!(
+            body_force,
+            [0.0, 0.0, 0.0],
+            "density=0 + Gravity → body_force must be [0,0,0] (intentional silent fallback)"
+        );
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns

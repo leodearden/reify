@@ -11,11 +11,10 @@
 // Mesh nz=6 → nx=60, ny=1 → n_nodes = 61×2×7 = 854 → n_dofs = 2562 < 10k
 // (Deterministic mode) → CG results are reproducible across solves.
 //
-// RED (step-4): the trampoline captures `_body_force` but does NOT yet pass it
-// into `solve_cantilever_fea` (step-2 left it unused).  Gravity solves therefore
-// return all-zero displacement → tests (1), (2), (3) fail on the
-// "nonzero / net-negative" / "linearity" / "density-scaling" assertions.
-// Test (4) ("zero magnitude → zero disp") trivially passes even before step-5.
+// All four tests are GREEN: the full gravity pipeline is wired end-to-end —
+// extract_loads (Gravity arm) → solve_cantilever_fea (body_force param) →
+// assemble_body_force → per-element apply_body_force.  The tests assert
+// physically meaningful displacement fields, not a RED intermediate state.
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::{FieldSourceKind, Value};
@@ -143,9 +142,6 @@ fn eval_gravity_displacement(source: &str, struct_name: &str) -> Vec<f64> {
 
 /// (1) Sign/downward: `[Gravity()]` produces nonzero displacement and the
 /// net sum of uz components (data[3i+2]) is strictly negative.
-///
-/// RED before step-5: body force is not yet applied → all-zero displacement →
-/// "at least one finite non-zero sample" assertion fails.
 #[test]
 fn gravity_self_weight_sign_downward() {
     let data = eval_gravity_displacement(SOURCE_GRAVITY_STD, "GravityStd");
@@ -177,11 +173,6 @@ fn gravity_self_weight_sign_downward() {
 ///
 /// Exact consequence of K·u=f with f_body ∝ magnitude; ratio tolerance 1e-3
 /// covers float/CG noise only.
-///
-/// RED before step-5: both solves return all-zero → 2×0 = 0 but the
-/// "sign_downward" check (which this test implicitly relies on) fails first.
-/// When solves are all-zero, the ratio check also fails because the reference
-/// displacement is zero (division-by-zero / NaN path).
 #[test]
 fn gravity_self_weight_linearity() {
     let disp_std = eval_gravity_displacement(SOURCE_GRAVITY_STD, "GravityStd");
@@ -223,8 +214,6 @@ fn gravity_self_weight_linearity() {
 /// (3) Density-scaling: `disp(density: 15700kg/m³)` ≈ 2·disp(density: 7850kg/m³).
 ///
 /// Exact consequence of K·u=f with f_body ∝ ρ; ratio tolerance 1e-3.
-///
-/// RED before step-5: same as linearity test above.
 #[test]
 fn gravity_self_weight_density_scaling() {
     let disp_std = eval_gravity_displacement(SOURCE_GRAVITY_STD, "GravityStd");
