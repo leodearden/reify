@@ -173,3 +173,138 @@ fn moment_of_inertia_box_evals_to_analytic_tensor() {
         );
     }
 }
+
+/// Pins task 4486 (type-hygiene γ, Contract A): `moment_of_inertia` must accept
+/// a `material.density` field — a `Value::Scalar{MASS_DENSITY}` — and evaluate
+/// to the same analytic centroidal tensor as the bare-Real fixture.
+///
+/// Inline source (probe-5 shape, LetBoundFieldDensity):
+/// ```ri
+/// structure def MoiViaMaterial {
+///     param material : Material = Material(name: "steel", density: 7850kg/m^3,
+///                                          youngs_modulus: 200GPa)
+///     let b = box(50mm, 30mm, 10mm)
+///     let d = material.density
+///     let i = moment_of_inertia(b, d)
+/// }
+/// ```
+///
+/// Asserts compile-time clean unconditionally; under OCCT asserts `i` is a
+/// non-Undef rank-2 3×3 `MOMENT_OF_INERTIA` tensor matching the same analytic
+/// values as `moment_of_inertia_box_evals_to_analytic_tensor` (same box + density).
+#[test]
+fn moment_of_inertia_via_material_density_evals_to_tensor() {
+    const SOURCE: &str = r#"
+structure def MoiViaMaterial {
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let b = box(50mm, 30mm, 10mm)
+    let d = material.density
+    let i = moment_of_inertia(b, d)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "MoiViaMaterial should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+
+    let cell = ValueCellId::new("MoiViaMaterial", "i");
+    let actual = result.values.get(&cell);
+
+    // Same analytic values as moment_of_inertia_box_evals_to_analytic_tensor.
+    let w = 0.05_f64;
+    let h = 0.03_f64;
+    let d = 0.01_f64;
+    let mass = 7850.0 * w * h * d;
+    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
+    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
+    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
+    let tol = 1e-9_f64;
+
+    let rows = match actual {
+        Some(Value::Tensor(rows))
+            if rows.len() == 3
+                && rows
+                    .iter()
+                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
+        {
+            rows
+        }
+        other => panic!(
+            "MoiViaMaterial.i should be a rank-2 Value::Tensor (3×3) of \
+             MOMENT_OF_INERTIA-dimensioned scalars (task 4486 Contract A), got: {other:?}"
+        ),
+    };
+
+    fn extract_moi(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
+            other => panic!(
+                "MoiViaMaterial.i[{label}] should be \
+                 Value::Scalar {{ dimension: MOMENT_OF_INERTIA, .. }}, got: {other:?}"
+            ),
+        }
+    }
+
+    fn get_row_moi(row: &Value) -> &Vec<Value> {
+        match row {
+            Value::Tensor(cols) => cols,
+            _ => unreachable!("already validated rank-2 shape"),
+        }
+    }
+
+    let r0 = get_row_moi(&rows[0]);
+    let r1 = get_row_moi(&rows[1]);
+    let r2 = get_row_moi(&rows[2]);
+
+    let v00 = extract_moi(&r0[0], "0,0");
+    let v11 = extract_moi(&r1[1], "1,1");
+    let v22 = extract_moi(&r2[2], "2,2");
+
+    assert!(
+        (v00 - i_xx).abs() < tol,
+        "MoiViaMaterial I_xx=[0,0]: expected {i_xx:.3e}, got {v00:.3e} (delta {:.3e}, tol {tol:.0e})",
+        (v00 - i_xx).abs()
+    );
+    assert!(
+        (v11 - i_yy).abs() < tol,
+        "MoiViaMaterial I_yy=[1,1]: expected {i_yy:.3e}, got {v11:.3e} (delta {:.3e}, tol {tol:.0e})",
+        (v11 - i_yy).abs()
+    );
+    assert!(
+        (v22 - i_zz).abs() < tol,
+        "MoiViaMaterial I_zz=[2,2]: expected {i_zz:.3e}, got {v22:.3e} (delta {:.3e}, tol {tol:.0e})",
+        (v22 - i_zz).abs()
+    );
+
+    let off_diag_entries = [
+        (extract_moi(&r0[1], "0,1"), "0,1"),
+        (extract_moi(&r0[2], "0,2"), "0,2"),
+        (extract_moi(&r1[0], "1,0"), "1,0"),
+        (extract_moi(&r1[2], "1,2"), "1,2"),
+        (extract_moi(&r2[0], "2,0"), "2,0"),
+        (extract_moi(&r2[1], "2,1"), "2,1"),
+    ];
+    for (v, label) in &off_diag_entries {
+        assert!(
+            v.abs() < tol,
+            "MoiViaMaterial off-diagonal [{label}]: expected 0, got {v:.3e} (tol {tol:.0e})"
+        );
+    }
+}
