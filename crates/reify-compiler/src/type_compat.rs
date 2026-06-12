@@ -845,6 +845,31 @@ pub(crate) fn modulo_operands_are_int(left: &Type, right: &Type) -> bool {
     matches!(left, Type::Int) && matches!(right, Type::Int)
 }
 
+/// Returns `true` if `expr` is a syntactic literal zero as defined in §7.2:
+///
+/// - `NumberLiteral { value == 0.0 }` — covers both `0` (`is_real:false`) and
+///   `0.0` (`is_real:true`).
+/// - `UnOp { op: "-", operand }` where `operand` is itself a syntactic zero
+///   (recursive) — covers `-0`, `-0.0`, and double-negated forms like `--0`.
+///
+/// HARD BOUND: a constant-folded zero written as `1 - 1` is an
+/// `ExprKind::BinOp`, NOT a `NumberLiteral`, so it returns `false` here.
+/// This preserves the §7.2 contract that coercion applies only to syntactic
+/// literal zeros, not to computed expressions that happen to evaluate to zero.
+///
+/// Colocated with `is_comparison_op` / `modulo_operands_are_int` as a pure,
+/// unit-testable predicate; diagnostic emission / rewrite lives in
+/// `expr.rs::compile_binop` (task-4485/β).
+pub(crate) fn is_syntactic_zero_literal(expr: &reify_ast::Expr) -> bool {
+    match &expr.kind {
+        reify_ast::ExprKind::NumberLiteral { value, .. } => *value == 0.0,
+        reify_ast::ExprKind::UnOp { op, operand } if op == "-" => {
+            is_syntactic_zero_literal(operand)
+        }
+        _ => false,
+    }
+}
+
 /// Parse a string unary operator into a `UnOp`.
 pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
     match op {
