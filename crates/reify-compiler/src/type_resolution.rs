@@ -1631,25 +1631,45 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// that catches any future arm that synthesises `None` directly without pushing a
 /// diagnostic first.
 
-/// Shared classifier for Scalar/Vector3/Point3 dim-param detection (task ε).
+/// Outcome of classifying a dimension-slot type argument (task ε).
 ///
-/// If `type_arg` is a bare `Named` type-expression (no inner type-args) whose
-/// name is present in `dim_param_names`, returns `Some(name)`.  Otherwise returns
-/// `None`, indicating the arm should fall through to the concrete dimension path.
+/// Used by [`classify_dim_slot`] to decide whether a `Scalar<_>`/`Vector3<_>`/
+/// `Point3<_>` dimension argument is a dimension-kinded param, a kind-misuse
+/// (non-dimension param in a dimension slot), or a concrete expression.
+enum DimSlotClass<'a> {
+    /// The arg is a bare `Named` type whose name is in `dim_param_names`.
+    /// Value: the param name; the arm returns `ScalarParam(name)` (wrapped).
+    DimParam(&'a str),
+    /// The arg is a bare `Named` type whose name is in `type_param_names` but
+    /// NOT in `dim_param_names`.  The arm should push `DimParamKind` + return
+    /// `Some(Type::Error)` (anti-cascade poison).
+    KindMisuse(&'a str),
+    /// Not a bare Named dim/type-param — fall through to the concrete dimension
+    /// path (`resolve_type_alias_expr_to_dimension`).
+    Concrete,
+}
+
+/// Shared classifier for Scalar/Vector3/Point3 dimension-slot detection (task ε).
 ///
-/// Factored here so all three quantity-slot arms (`Scalar`, `Vector3`, `Point3`)
-/// stay in lock-step: adding a third check only requires editing this one fn.
-fn try_dim_param_slot<'a>(
+/// Factored so all three quantity-slot arms stay in lock-step: any future
+/// change to the classification logic needs only one edit here.
+fn classify_dim_slot<'a>(
     type_arg: &'a reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
     dim_param_names: &HashSet<String>,
-) -> Option<&'a str> {
-    if let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind
-        && inner.is_empty()
-        && dim_param_names.contains(n.as_str())
-    {
-        Some(n.as_str())
+) -> DimSlotClass<'a> {
+    let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind else {
+        return DimSlotClass::Concrete;
+    };
+    if !inner.is_empty() {
+        return DimSlotClass::Concrete;
+    }
+    if dim_param_names.contains(n.as_str()) {
+        DimSlotClass::DimParam(n.as_str())
+    } else if type_param_names.contains(n.as_str()) {
+        DimSlotClass::KindMisuse(n.as_str())
     } else {
-        None
+        DimSlotClass::Concrete
     }
 }
 
@@ -1746,45 +1766,91 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
-            // Scalar<Q>: if Q is a bare Named dim-param, return ScalarParam(Q).
-            // Otherwise fall through to the concrete dimension path.
-            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
-                Some(Type::ScalarParam(n.to_string()))
-            } else {
-                let dim = resolve_type_alias_expr_to_dimension(
-                    &type_args[0],
-                    alias_registry,
-                    diagnostics,
-                )?;
-                Some(Type::Scalar { dimension: dim })
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                // Dimension-kinded param in the slot → ScalarParam (signature-level).
+                DimSlotClass::DimParam(n) => Some(Type::ScalarParam(n.to_string())),
+                // Non-dimension-kinded type param used in a dimension slot → single
+                // root-cause DimParamKind Error + poison Type::Error (anti-cascade).
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Scalar`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                // Concrete expression → existing dimension-resolver path.
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::Scalar { dimension: dim })
+                }
             }
         }
         "Vector3" if type_args.len() == 1 => {
-            // Vector3<Q>: if Q is a bare Named dim-param, wrap ScalarParam in vec3.
-            // Otherwise resolve Q to a concrete DimensionVector.
-            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
-                Some(Type::vec3(Type::ScalarParam(n.to_string())))
-            } else {
-                let dim = resolve_type_alias_expr_to_dimension(
-                    &type_args[0],
-                    alias_registry,
-                    diagnostics,
-                )?;
-                Some(Type::vec3(Type::Scalar { dimension: dim }))
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                DimSlotClass::DimParam(n) => Some(Type::vec3(Type::ScalarParam(n.to_string()))),
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Vector3`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::vec3(Type::Scalar { dimension: dim }))
+                }
             }
         }
         "Point3" if type_args.len() == 1 => {
-            // Point3<Q>: if Q is a bare Named dim-param, wrap ScalarParam in point3.
-            // Otherwise resolve Q to a concrete DimensionVector.
-            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
-                Some(Type::point3(Type::ScalarParam(n.to_string())))
-            } else {
-                let dim = resolve_type_alias_expr_to_dimension(
-                    &type_args[0],
-                    alias_registry,
-                    diagnostics,
-                )?;
-                Some(Type::point3(Type::Scalar { dimension: dim }))
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                DimSlotClass::DimParam(n) => Some(Type::point3(Type::ScalarParam(n.to_string()))),
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Point3`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::point3(Type::Scalar { dimension: dim }))
+                }
             }
         }
         "Tensor" if type_args.len() == 3 => {
