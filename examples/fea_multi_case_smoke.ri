@@ -40,4 +40,14 @@ structure FeaMultiCaseSmoke {
 
     // Geometry realization (deferred — no kernel call at eval time).
     let body = box(length, width, height)
+
+    // Live self-weight solve — β/4440 integration signal.
+    // Mirrors SOURCE_GRAVITY_STD in gravity_self_weight_e2e.rs byte-for-byte:
+    // same geometry, default Gravity() (-Z, STANDARD_GRAVITY), deterministic mode.
+    let self_weight = solve_elastic_static(
+        material, length, width, height,
+        [Gravity()],
+        [FixedSupport(target: "root")],
+        ElasticOptions(deterministic: true)
+    )
 }
