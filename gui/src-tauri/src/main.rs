@@ -298,6 +298,25 @@ fn set_parameter(
     result
 }
 
+/// Register the GUI's PASSIVE observed-demand sources (selective-demand
+/// precondition, task 4532). OBSERVATIONAL ONLY — never perturbs evaluation, so
+/// it emits no status/delta: the recorded would-prune measurement rides back on
+/// the next `set_parameter` response's `GuiState.demand_prune_measurement`.
+#[tauri::command]
+fn sync_observed_demand(
+    state: tauri::State<'_, AppState>,
+    visible_realizations: Vec<String>,
+    displayed_cells: Vec<String>,
+    panel_constraints: Vec<String>,
+) -> Result<(), String> {
+    reify_gui::commands::sync_observed_demand_impl(
+        &state.engine,
+        &visible_realizations,
+        &displayed_cells,
+        &panel_constraints,
+    )
+}
+
 #[tauri::command]
 fn update_source(
     app: tauri::AppHandle,
@@ -806,6 +825,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_initial_state,
             set_parameter,
+            sync_observed_demand,
             update_source,
             save_file,
             open_file,
