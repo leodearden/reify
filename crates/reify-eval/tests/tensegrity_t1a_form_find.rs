@@ -907,3 +907,254 @@ fn cli_cable_net_prints_solved_z() {
          in `reify eval` stdout; got:\n{stdout}"
     );
 }
+
+// ── step-11 (γ): membrane form-find e2e + cache-hit + CLI ─────────────────────
+//
+// The cable_net trio above proves the LINE form-find slice end-to-end. This
+// mirrors it for the γ SURFACE slice over a NEW curved-boundary membrane example
+// (examples/tensegrity_membrane_formfind.ri, created in step-12 — a *separate*
+// file from task-α's flat examples/tensegrity_membrane_patch.ri, which cannot
+// form-find: an all-boundary planar patch yields EmptyFreeSet). It asserts the
+// same three signals — @optimized→ComputeNode lowering, Final-gate cache hit,
+// and a CLI exit-0 smoke — plus the γ-specific non-empty per-triangle
+// `surface_stresses` echo. RED until step-12 creates the example file
+// (`include_str!` of a missing path is a compile error).
+
+/// The committed curved-boundary membrane form-find example (step-12).
+/// `include_str!` makes a *missing* file a compile error — the step-11 RED signal
+/// until step-12 creates it.
+fn membrane_formfind_source() -> &'static str {
+    include_str!("../../../examples/tensegrity_membrane_formfind.ri")
+}
+
+/// Crack a `MembraneFormFind.form` FormFindResult cell into its `converged` flag
+/// and per-triangle `surface_stresses` echoes (one f64 per triangle). Reuses
+/// `surface_stress_echoes`, which panics unless the field is a `Value::List`
+/// (never Undef / absent) — the γ field-population invariant.
+fn form_converged_and_surface_stresses(form: &Value) -> (bool, Vec<f64>) {
+    let data = match form {
+        Value::StructureInstance(d) => d,
+        other => panic!("form cell must be a FormFindResult StructureInstance, got {other:?}"),
+    };
+    assert_eq!(
+        data.type_name, "FormFindResult",
+        "form cell should be a FormFindResult, got {:?}",
+        data.type_name
+    );
+    let converged = matches!(
+        data.fields.get(&"converged".to_string()),
+        Some(Value::Bool(true))
+    );
+    (converged, surface_stress_echoes(&data.fields))
+}
+
+/// (a) End-to-end: the curved-boundary membrane example compiles + evals with no
+/// Error diagnostics, `@optimized("solver::form_find")` lowers to a ComputeNode
+/// (proof of lowering, not body-inlining), and the trampoline solves the
+/// fixed-boundary membrane to a converged equilibrium whose `surface_stresses` is
+/// a non-empty, non-Undef per-triangle echo (each finite and in tension, σ > 0).
+#[test]
+fn e2e_membrane_lowers_to_compute_node_and_solves() {
+    let compiled = compile_source_with_stdlib(membrane_formfind_source());
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // No Error-severity diagnostics from the full compile + eval pipeline.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:#?}"
+    );
+
+    // A ComputeNode with target == "solver::form_find" must be in the graph —
+    // proof the @optimized call lowered to a ComputeNode and was NOT inlined.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let targets: Vec<&str> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .map(|(_, d)| d.target.as_str())
+        .collect();
+    assert!(
+        targets.contains(&"solver::form_find"),
+        "expected a ComputeNode with target==\"solver::form_find\"; found {targets:?}"
+    );
+
+    // The result cell form-finds to a converged equilibrium with a non-empty,
+    // non-Undef per-triangle surface_stresses echo.
+    let form = eval_result
+        .values
+        .get(&ValueCellId::new("MembraneFormFind", "form"))
+        .unwrap_or_else(|| panic!("MembraneFormFind.form cell missing from eval result"));
+    let (converged, stresses) = form_converged_and_surface_stresses(form);
+    assert!(
+        converged,
+        "a well-posed σ>0 fixed-boundary membrane must report converged == true"
+    );
+    assert!(
+        !stresses.is_empty(),
+        "surfaces present ⇒ a non-empty per-triangle surface_stresses echo, got {stresses:?}"
+    );
+    for (t, &s) in stresses.iter().enumerate() {
+        assert!(
+            s.is_finite() && s > 0.0,
+            "surface_stresses[{t}] = {s} must be finite and in tension (σ > 0)"
+        );
+    }
+}
+
+/// Dispatch counter for the membrane cache-hit wrapper. Kept SEPARATE from the
+/// cable-net `DISPATCH_COUNT` so the two cache tests never race on a shared
+/// global under the default parallel test runner.
+static MEMBRANE_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Counting wrapper around the production trampoline — increments
+/// MEMBRANE_DISPATCH_COUNT then delegates, so a re-dispatch is observable.
+fn membrane_counting_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    MEMBRANE_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    reify_eval::compute_targets::form_find::solve_form_find_trampoline(
+        value_inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// (b) Cache hit: a second `eval()` of the same compiled membrane module must NOT
+/// re-dispatch the trampoline — the §8-η Final-gate short-circuits when all
+/// inputs and the output VC are already Final (the surface form-find is a pure
+/// ComputeNode, same as the line case).
+#[test]
+fn e2e_membrane_second_eval_hits_cache() {
+    MEMBRANE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+
+    let compiled = compile_source_with_stdlib(membrane_formfind_source());
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("solver::form_find", membrane_counting_wrapper as ComputeFn);
+
+    // First eval: cold start — exactly one dispatch.
+    let eval1 = engine.eval(&compiled);
+    let errors1: Vec<_> = eval1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors1.is_empty(),
+        "first eval must have no Error diagnostics, got: {errors1:#?}"
+    );
+    assert_eq!(
+        MEMBRANE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "first eval must dispatch the trampoline exactly once"
+    );
+
+    // Second eval on the same module: Final-gate cache hit — no re-dispatch.
+    let eval2 = engine.eval(&compiled);
+    let errors2: Vec<_> = eval2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "second eval must have no Error diagnostics, got: {errors2:#?}"
+    );
+    assert_eq!(
+        MEMBRANE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "second eval must hit the cache and NOT re-dispatch (count must stay at 1)"
+    );
+}
+
+/// Resolve the prebuilt `reify` binary from this test binary's own location —
+/// the profile-local `…/target/<profile>/reify`, falling back to the
+/// debug-profile sibling when the release pass did not build `reify-cli`. The
+/// full rationale (merge-gate profile scoping, why not `cargo run`) is documented
+/// at length on `cli_cable_net_prints_solved_z` above; this factors just the path
+/// resolution for the second CLI smoke.
+fn resolve_reify_bin() -> std::path::PathBuf {
+    let test_bin = std::env::current_exe().expect("current_exe");
+    let profile_dir = test_bin
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary lives in target/<profile>/deps");
+    let profile_local = profile_dir.join("reify");
+    if profile_local.exists() {
+        profile_local
+    } else {
+        profile_dir
+            .parent()
+            .map(|target_dir| target_dir.join("debug").join("reify"))
+            .filter(|p| p.exists())
+            .unwrap_or(profile_local)
+    }
+}
+
+/// (c) CLI smoke: `reify eval examples/tensegrity_membrane_formfind.ri` exits zero
+/// and prints the form-found membrane result — `FormFindResult { converged: true,
+/// … }`. No exact coordinate is asserted (the curved minimal-surface shape is a
+/// MEASURED mesh-convergence bound that lives only in the kernel golden, never at
+/// the .ri level); `converged: true` is the honest user-observable γ signal.
+#[test]
+fn cli_membrane_prints_converged() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_membrane_formfind.ri");
+
+    let reify_bin = resolve_reify_bin();
+
+    let output = std::process::Command::new(&reify_bin)
+        .current_dir(&workspace_root)
+        .arg("eval")
+        .arg(&example)
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
+                 The gated verify pass builds it when it compiles `reify-cli` \
+                 (the merge gate's debug `--workspace` pass builds all `[[bin]]` \
+                 targets).",
+                reify_bin.display()
+            )
+        });
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_membrane_formfind.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    // The form cell renders as `MembraneFormFind.form = FormFindResult { converged:
+    // true, … }` (fields alphabetised, so `converged` leads). Asserting the
+    // `FormFindResult { converged: true,` prefix ties the convergence flag to the
+    // form-find result — the user-observable γ signal — without pinning any
+    // (non-honest) solved coordinate.
+    assert!(
+        stdout.contains("FormFindResult { converged: true,"),
+        "expected a form-found `FormFindResult {{ converged: true, … }}` in \
+         `reify eval` stdout; got:\n{stdout}"
+    );
+}
