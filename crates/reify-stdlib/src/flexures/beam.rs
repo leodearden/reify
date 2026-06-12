@@ -259,6 +259,7 @@ fn neutral_length_si(v: &Value) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::angle_range_half_si;
     use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -392,37 +393,6 @@ mod tests {
                 ..
             } => (lo.as_ref(), up.as_ref()),
             other => panic!("expected a both-bounded Range, got {other:?}"),
-        }
-    }
-
-    /// Assert `v` is a symmetric ANGLE `Range` `[−h, +h]` (both-inclusive) and
-    /// return the half-width in radians (task 4576: `prb_validity_range` is now
-    /// `Range<Angle>` instead of `Value::Real`).
-    fn angle_range_half_si(v: &Value, label: &str) -> f64 {
-        match v {
-            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
-                assert!(*lower_inclusive, "{label}: lower_inclusive should be true");
-                assert!(*upper_inclusive, "{label}: upper_inclusive should be true");
-                let lo = lower.as_deref().unwrap_or_else(|| panic!("{label}: lower bound missing"));
-                let hi = upper.as_deref().unwrap_or_else(|| panic!("{label}: upper bound missing"));
-                let lo_si = match lo {
-                    Value::Scalar { si_value, dimension } => {
-                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: lower dimension");
-                        *si_value
-                    }
-                    other => panic!("{label}: lower bound expected ANGLE Scalar, got {other:?}"),
-                };
-                let hi_si = match hi {
-                    Value::Scalar { si_value, dimension } => {
-                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: upper dimension");
-                        *si_value
-                    }
-                    other => panic!("{label}: upper bound expected ANGLE Scalar, got {other:?}"),
-                };
-                assert!(lo_si + hi_si == 0.0, "{label}: range not symmetric ([{lo_si}, {hi_si}])");
-                hi_si
-            }
-            other => panic!("{label}: expected Value::Range{{ANGLE}}, got {other:?}"),
         }
     }
 
