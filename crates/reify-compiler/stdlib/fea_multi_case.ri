@@ -302,7 +302,7 @@ structure def PointLoad : Load {
     // (task 3015's non-colinear superposition). Inserting `direction` first
     // would shift `point`/`force` and silently mis-bind every existing caller.
     //
-    // TODO(vec3-type): tighten to `Vec3` once a real 3-vector type exists.
+    // TODO(vec3-type, #4575): tighten to `Vec3` once a real 3-vector type exists.
     // Vec3 is currently a scalar alias (trajectory.ri:96) and is declared in
     // std.trajectory which loads after std.fea — both make it unusable here.
     param direction : List<Real> = [0.0, 0.0, -1.0]
@@ -430,7 +430,7 @@ structure def BodyForce : Load {
 //                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
 //   `direction`  — unit vector pointing in the direction gravity acts.
 //                  `List<Real>` is a placeholder for `Vec3` until a real
-//                  dimensionless 3-vector type is available (TODO(vec3-type)).
+//                  dimensionless 3-vector type is available (TODO(vec3-type, #4575)).
 //                  Default [0, 0, -1] = −Z (canonical downward direction).
 //                  Caller is responsible for supplying a unit vector; non-unit
 //                  vectors silently scale effective gravity by |direction|.

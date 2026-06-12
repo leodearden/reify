@@ -91,7 +91,7 @@ pub type Pose3 = Real
 // type) has not landed yet. Same placeholder convention as `pub type
 // JointValue = Real` above.
 //
-// TODO(vec3-type): retarget to the geometry/pose PRD's `Vec3` type when
+// TODO(vec3-type, #4575): retarget to the geometry/pose PRD's `Vec3` type when
 // that PRD lands.
 pub type Vec3 = Real
 
