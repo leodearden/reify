@@ -310,6 +310,93 @@ fn bt4_index_access_coercion_realizes_face() {
     }
 }
 
+// ── BT5: single() coercion golden ────────────────────────────────────────────
+
+/// BT5 (consumer / `single()` coercion golden).
+///
+/// Fixture: `bt5_single_face_by_normal.ri`
+/// ```ri
+/// structure def BT5SingleFace {
+///     let b   = box(10mm, 10mm, 10mm)
+///     let dir = vec3(0.0, 0.0, 1.0)
+///     let tol = 1deg
+///     let top = single(faces_by_normal(b, dir, tol))
+/// }
+/// ```
+///
+/// **PRD §5 BT5:** "`single(<selector>)` coercion — `single(faces_by_normal(b,
+/// +Z, 1°))` coerces Selector(Face) → List<Geometry> → single face
+/// Value::GeometryHandle (OCCT-gated golden)."
+///
+/// ## Assertions
+///
+/// ### Always-on (compile-level)
+///
+/// 1. The fixture compiles with **zero** error-severity diagnostics
+///    (`single` accepts the `Selector(Face)` arg via the β coercion rule —
+///    the compiled `single(...)` argument is wrapped in `ResolveSelector` with
+///    `result_type == List<Geometry>`).
+///
+/// ### OCCT-gated (reify_kernel_occt::OCCT_AVAILABLE)
+///
+/// 2. Building with a real `OcctKernelHandle` realizes `top` to a
+///    `Value::GeometryHandle` with a non-zero `upstream_values_hash` (the
+///    single +Z face — fixture golden, mirroring `selector_coercion_golden.rs`).
+///
+/// Mirrors the γ golden in `selector_coercion_golden.rs` using the task-local
+/// fixture path and the gate's shared helpers.
+///
+/// RED when fixture `bt5_single_face_by_normal.ri` is absent.
+#[test]
+fn bt5_single_face_by_normal_coercion() {
+    let source = std::fs::read_to_string(fixture_path("bt5_single_face_by_normal.ri")).expect(
+        "fixture bt5_single_face_by_normal.ri must exist (create in step-18 to turn GREEN)",
+    );
+
+    // ── (1) compile with zero errors (always-on) ─────────────────────────────
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "BT5: bt5_single_face_by_normal.ri must compile with zero error diagnostics \
+         (single() accepts Selector(Face) via the β coercion rule), got:\n{:#?}",
+        errors
+    );
+
+    // ── (2) OCCT-gated geometry golden ───────────────────────────────────────
+    if !occt_available() {
+        eprintln!("BT5: skipping OCCT geometry assertion (OCCT not available on this runner)");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // `top = single(faces_by_normal(b, +Z, 1°))` must coerce
+    // (Selector → List<Geometry> → single) to the single +Z face handle.
+    let top_id = ValueCellId::new("BT5SingleFace", "top");
+    match result.values.get(&top_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => {
+            assert_ne!(
+                upstream_values_hash,
+                &[0u8; 32],
+                "BT5: top face handle upstream_values_hash must be non-zero \
+                 (fixture golden, not baseline-diff; single(+Z face) realized)"
+            );
+        }
+        other => panic!(
+            "BT5: BT5SingleFace.top = single(faces_by_normal(b, +Z, 1°)) must coerce \
+             (Selector → List<Geometry> → single) to Value::GeometryHandle, got: {other:?}"
+        ),
+    }
+}
+
 // ── BT4b: fillet call-site transparency (compile-only) ───────────────────────
 
 /// BT4b (consumer / call-site transparency / D4): `fillet(b,
