@@ -142,14 +142,13 @@ structure def App {
     }
 }
 
-// ─── test (b): elastic def-site + consumption (RED until step-4) ─────────────
+// ─── test (b): elastic def-site + consumption ────────────────────────────────
 
 /// `solve_elastic_static`'s `options` param must carry a StructureInstanceCtor
 /// default (`= ElasticOptions()`), AND a 6-arg call omitting `options` must
 /// compile with zero Error-severity diagnostics.
 ///
-/// RED until step-4 adds `= ElasticOptions()` to solver_elastic.ri —
-/// currently no default exists so both assertions fail.
+/// GREEN after step-4 adds `= ElasticOptions()` to solver_elastic.ri.
 #[test]
 fn solve_elastic_static_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("ElasticOptions") ──
@@ -231,6 +230,98 @@ structure ElasticDefaultsTest {
         errors.is_empty(),
         "6-arg call to solve_elastic_static (omitting options) must compile \
          with zero Error diagnostics once = ElasticOptions() default is added; \
+         got: {:#?}",
+        errors
+    );
+}
+
+// ─── test (c): buckling def-site + consumption (RED until step-6) ────────────
+
+/// `solve_buckling`'s `options` param must carry a StructureInstanceCtor default
+/// (`= BucklingOptions()`), AND a 6-arg call omitting `options` must compile
+/// with zero Error-severity diagnostics.
+///
+/// RED until step-6 adds `= BucklingOptions()` to solver_buckling_fns.ri.
+#[test]
+fn solve_buckling_options_defaults_and_omittable() {
+    // ── (1) def-site: param_default is StructureInstanceCtor("BucklingOptions") ──
+    let buckling_module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/solver/buckling/fns")
+        .unwrap_or_else(|| {
+            panic!(
+                "stdlib must contain std/solver/buckling/fns; available paths: {:?}",
+                stdlib_loader::load_stdlib()
+                    .iter()
+                    .map(|m| m.path.to_string())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let solve_fn = buckling_module
+        .functions
+        .iter()
+        .find(|f| f.name == "solve_buckling")
+        .unwrap_or_else(|| {
+            panic!(
+                "fn solve_buckling not found in std/solver/buckling/fns; \
+                 available functions: {:?}",
+                buckling_module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        solve_fn.params.len(),
+        7,
+        "solve_buckling must have 7 params; got: {:?}",
+        solve_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    let options_default = solve_fn.param_defaults[6]
+        .as_ref()
+        .expect(
+            "solve_buckling's `options` param must carry a compiled default \
+             (= BucklingOptions()); currently None — add the default in step-6",
+        );
+    match &options_default.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+            assert_eq!(
+                type_name, "BucklingOptions",
+                "options param default must be StructureInstanceCtor(\"BucklingOptions\"); \
+                 got type_name: {}",
+                type_name
+            );
+        }
+        other => panic!(
+            "options param default must be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+
+    // ── (2) call-site: 6-arg call (omitting options) compiles clean ──────────
+    let src = r#"
+structure BucklingDefaultsTest {
+    let result = solve_buckling(
+        Steel_AISI_1045(),
+        1000mm,
+        100mm,
+        100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")]
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "6-arg call to solve_buckling (omitting options) must compile \
+         with zero Error diagnostics once = BucklingOptions() default is added; \
          got: {:#?}",
         errors
     );
