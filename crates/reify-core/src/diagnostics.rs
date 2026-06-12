@@ -761,6 +761,48 @@ pub enum DiagnosticCode {
     /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
     /// decisions").
     AutoTypeParamCrossProductSizeExceeded,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter BFS fallback assignment is jointly infeasible:
+    /// parameters [<names>] exceed <bound> (depth bound max_depth=<N>|cross-product
+    /// cap max_cross_product_size=<C>); BFS assignment [<T=fqn>, …] violates
+    /// constraint(s) [<id>, …] under joint check. No substitution produced."`
+    ///
+    /// Where:
+    /// - `<names>` lists the `auto:` type-parameter names (declared order).
+    /// - The `<bound>` clause identifies which fallback fired: either
+    ///   `depth bound max_depth=<N>` (from `AutoTypeParamDepthBoundExceeded`)
+    ///   or `cross-product cap max_cross_product_size=<C>` (from
+    ///   `AutoTypeParamCrossProductSizeExceeded`) — derived from the `code`
+    ///   argument passed to the helper.
+    /// - `[<T=fqn>, …]` is the per-param assignment BFS returned.
+    /// - `[<id>, …]` are the `ConstraintNodeId`s that returned `Violated`
+    ///   in the single joint `check_constraints_leaf` call.
+    ///
+    /// Emitted as `Severity::Error` when:
+    /// 1. The v0.2 DFS-over-cross-product falls back to v0.1 BFS (depth-bound
+    ///    or cross-product-cap guard fires).
+    /// 2. BFS returns a COMPLETE assignment (`substitution.len() == params.len()`).
+    /// 3. The joint recheck (`check_constraints_leaf` with a full ValueMap seeded
+    ///    from all candidates' literal defaults via `seed_candidate_value_map`)
+    ///    finds at least one `Violated` constraint.
+    ///
+    /// On this path **no substitution is produced** for the declaration — the
+    /// BFS assignment is discarded entirely because it is jointly infeasible.
+    /// The caller returns a `MultiParamResolutionOutcome` with an empty
+    /// `substitution`.  The Error is emitted INSTEAD of (not in addition to)
+    /// the depth-bound/cap `Warning`.
+    ///
+    /// Severity is `Error` (not `Warning`) because the BFS assignment is
+    /// unsound: accepting it would substitute a cross-product-infeasible
+    /// combination into the parameterized template.  A Warning would
+    /// mis-signal that compilation succeeded.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §6.2).
+    AutoTypeParamBoundedInfeasible,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
