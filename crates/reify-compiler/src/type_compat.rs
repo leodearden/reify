@@ -1934,4 +1934,28 @@ mod tests {
             "generic candidate with a Field<T, Real> param should resolve"
         );
     }
+
+    // ── Step-3 RED: α behavioural contract for infer_binop_type ──────────────
+    //
+    // infer_binop_type(Div, length(), length()) must return dimensionless_scalar(),
+    // not Type::Real (the old special-case). RED today: returns Type::Real.
+    #[test]
+    fn infer_div_length_by_length_returns_dimensionless_scalar() {
+        assert_eq!(
+            infer_binop_type(BinOp::Div, &Type::length(), &Type::length()),
+            Type::dimensionless_scalar(),
+            "Length / Length should produce dimensionless_scalar(), not Type::Real"
+        );
+    }
+
+    // type_compatible(dimensionless_scalar, Int) must return true (Int-widening
+    // for the canonical dimensionless type). RED today: returns false (only
+    // the (Type::Real, Type::Int) guard matches).
+    #[test]
+    fn type_compatible_dimensionless_scalar_accepts_int() {
+        assert!(
+            type_compatible(&Type::dimensionless_scalar(), &Type::Int),
+            "dimensionless_scalar() should be compatible with Type::Int (Int-widening)"
+        );
+    }
 }

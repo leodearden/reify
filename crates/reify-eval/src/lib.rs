@@ -2435,4 +2435,19 @@ structure S {
             "real checker must produce identical diagnostics to stub at compile time"
         );
     }
+
+    // ── Step-3 RED: α behavioural contract for value_type_kind_matches ───────
+    //
+    // After α, a dimensionless cell is statically typed Scalar{DL} but holds
+    // Value::Real — the runtime bridge MUST accept this combination.
+    // RED today: Value::Real(_) matches only Type::Real | Type::Int (line 247),
+    // so value_type_kind_matches(Real, Scalar{DL}) returns false.
+    #[test]
+    fn value_real_matches_dimensionless_scalar_type() {
+        assert!(
+            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
+             (the runtime bridge after α)"
+        );
+    }
 }
