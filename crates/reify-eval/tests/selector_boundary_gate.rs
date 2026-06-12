@@ -169,6 +169,79 @@ fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
 
+// ── BT3: difference and intersect set semantics ───────────────────────────────
+
+/// BT3 (producer / resolve): difference and intersect set semantics.
+///
+/// - `d = difference(faces(b), faces_by_normal(b,+Z,1deg))` →
+///   all 6 box faces EXCEPT the +Z face (5 handles: [2,3,4,5,7]).
+/// - `i = intersect(faces_by_normal(b,+Z,1deg), faces_by_normal(b,-Z,1deg))` →
+///   disjoint → `[]` (empty selection).
+///
+/// PRD §5 BT3: "difference/intersect set semantics".
+///
+/// Strategy: build kernel-free → get both selector cells → resolve each
+/// against `staged_box_kernel()` (always-on, no OCCT).
+///
+/// Staged kernel face layout (±X/±Y/±Z, ids 2–7):
+///   2=+X, 3=−X, 4=+Y, 5=−Y, 6=+Z, 7=−Z
+///
+/// RED when fixture `bt3_difference_intersect.ri` is absent.
+#[test]
+fn bt3_difference_and_intersect_set_semantics() {
+    let source = std::fs::read_to_string(fixture_path("bt3_difference_intersect.ri")).expect(
+        "fixture bt3_difference_intersect.ri must exist (create in step-10 to turn GREEN)",
+    );
+
+    let result = build_with_unstaged_kernel(&source);
+
+    // ── difference: all faces EXCEPT +Z ─────────────────────────────────────
+    let sv_d = selector_cell(&result, "BT3SetOps", "d");
+    assert_eq!(sv_d.kind, SelectorKind::Face, "BT3: d must be Selector(Face)");
+
+    let mut staged_d = staged_box_kernel();
+    let mut diags_d: Vec<Diagnostic> = Vec::new();
+    let handles_d = topology_selectors::resolve(sv_d, &mut staged_d, &mut diags_d)
+        .expect("BT3: resolve() on difference must not return a QueryError");
+
+    // faces(b) extracts [2,3,4,5,6,7]; faces_by_normal(+Z) = [6];
+    // difference = [2,3,4,5,7] (face 6 excluded, order preserved from `a`).
+    assert_eq!(
+        handles_d,
+        vec![
+            GeometryHandleId(2), // +X
+            GeometryHandleId(3), // -X
+            GeometryHandleId(4), // +Y
+            GeometryHandleId(5), // -Y
+            GeometryHandleId(7), // -Z  (face 6 = +Z is excluded)
+        ],
+        "BT3: difference(faces(b), +Z-face) must be all 5 non-+Z faces in canonical order"
+    );
+    assert!(
+        diags_d.is_empty(),
+        "BT3: difference resolve() must emit no diagnostics, got: {diags_d:#?}"
+    );
+
+    // ── intersect: +Z ∩ -Z = empty (disjoint) ────────────────────────────────
+    let sv_i = selector_cell(&result, "BT3SetOps", "i");
+    assert_eq!(sv_i.kind, SelectorKind::Face, "BT3: i must be Selector(Face)");
+
+    let mut staged_i = staged_box_kernel();
+    let mut diags_i: Vec<Diagnostic> = Vec::new();
+    let handles_i = topology_selectors::resolve(sv_i, &mut staged_i, &mut diags_i)
+        .expect("BT3: resolve() on intersect must not return a QueryError");
+
+    assert!(
+        handles_i.is_empty(),
+        "BT3: intersect(+Z-face, -Z-face) must be empty (disjoint face sets), \
+         got: {handles_i:?}"
+    );
+    assert!(
+        diags_i.is_empty(),
+        "BT3: intersect resolve() must emit no diagnostics, got: {diags_i:#?}"
+    );
+}
+
 // ── BT2: same-kind union resolves to set-union with K3 dedup ─────────────────
 
 /// BT2 (producer / resolve): `union(faces_by_normal(b,+Z,1deg), faces_by_normal(b,-Z,1deg))`
