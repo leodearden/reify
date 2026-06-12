@@ -835,8 +835,8 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
         oob_emitted: AtomicBool::new(false),
     };
     Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(fallback_sf)),
     }

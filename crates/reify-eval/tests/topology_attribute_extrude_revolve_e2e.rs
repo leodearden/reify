@@ -177,7 +177,7 @@ fn mm_literal(v: f64) -> CompiledExpr {
 }
 
 fn real_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), Type::Real)
+    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
 /// Build a synthesised `CompiledModule` with two ops:

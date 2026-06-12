@@ -168,7 +168,7 @@ fn conforming_joints_have_driving_joint_bound() {
 // Catch regressions that delete a field or change its type to another
 // still-resolvable type (e.g. Vec3→Int, dropping one of Planar's two axes).
 // Vec3 and JointValue are `Real` aliases (trajectory.ri:96/76); they resolve
-// to Type::Real here.
+// to Type::dimensionless_scalar() here.
 
 #[test]
 fn cylindrical_has_one_vec3_axis_param() {
@@ -188,8 +188,8 @@ fn cylindrical_has_one_vec3_axis_param() {
     );
     assert_eq!(
         params[0].cell_type,
-        Type::Real,
-        "Cylindrical.axis should be Type::Real (Vec3 = Real alias, trajectory.ri:96)"
+        Type::dimensionless_scalar(),
+        "Cylindrical.axis should be Type::dimensionless_scalar() (Vec3 = Real alias, trajectory.ri:96)"
     );
 }
 
@@ -212,8 +212,8 @@ fn revolute_has_four_params_with_correct_types() {
     // axis: Vec3 = Real alias
     assert_eq!(
         params[0].cell_type,
-        Type::Real,
-        "Revolute.axis should be Type::Real (Vec3 = Real alias)"
+        Type::dimensionless_scalar(),
+        "Revolute.axis should be Type::dimensionless_scalar() (Vec3 = Real alias)"
     );
 
     // spring_rate: Option<RotationalStiffness>
@@ -274,8 +274,8 @@ fn prismatic_has_four_params_with_correct_types() {
     // axis: Vec3 = Real alias
     assert_eq!(
         params[0].cell_type,
-        Type::Real,
-        "Prismatic.axis should be Type::Real (Vec3 = Real alias)"
+        Type::dimensionless_scalar(),
+        "Prismatic.axis should be Type::dimensionless_scalar() (Vec3 = Real alias)"
     );
 
     // spring_rate: Option<TranslationalStiffness>
@@ -332,8 +332,8 @@ fn planar_has_two_vec3_axis_params() {
     for p in &params {
         assert_eq!(
             p.cell_type,
-            Type::Real,
-            "Planar.{} should be Type::Real (Vec3 = Real alias, trajectory.ri:96)",
+            Type::dimensionless_scalar(),
+            "Planar.{} should be Type::dimensionless_scalar() (Vec3 = Real alias, trajectory.ri:96)",
             p.id.member
         );
     }
@@ -366,14 +366,14 @@ fn mechanism_has_three_placeholder_params() {
     let bodies = params.iter().find(|p| p.id.member == "bodies").unwrap();
     assert_eq!(
         bodies.cell_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder)"
     );
 
     let jp = params.iter().find(|p| p.id.member == "joint_parents").unwrap();
     assert_eq!(
         jp.cell_type,
-        Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+        Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
         "Mechanism.joint_parents should be Type::Map(String, Real) \
          (Map<BodyId,JointParent> placeholder)"
     );
@@ -381,7 +381,7 @@ fn mechanism_has_three_placeholder_params() {
     let lc = params.iter().find(|p| p.id.member == "loop_closures").unwrap();
     assert_eq!(
         lc.cell_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "Mechanism.loop_closures should be Type::List(Real) \
          (List<LoopClosureRecord> placeholder)"
     );
@@ -401,7 +401,7 @@ fn snapshot_has_correct_params() {
     let fv = params.iter().find(|p| p.id.member == "free_values").unwrap();
     assert_eq!(
         fv.cell_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "Snapshot.free_values should be Type::List(Real) \
          (JointValue = Real alias, trajectory.ri:76)"
     );
@@ -428,15 +428,15 @@ fn sweep_dim_has_correct_params() {
     let joint = params.iter().find(|p| p.id.member == "joint").unwrap();
     assert_eq!(
         joint.cell_type,
-        Type::Real,
-        "SweepDim.joint should be Type::Real (DrivingJoint placeholder)"
+        Type::dimensionless_scalar(),
+        "SweepDim.joint should be Type::dimensionless_scalar() (DrivingJoint placeholder)"
     );
 
     let range = params.iter().find(|p| p.id.member == "range").unwrap();
     assert_eq!(
         range.cell_type,
-        Type::Real,
-        "SweepDim.range should be Type::Real (Range<T> not yet a surface type)"
+        Type::dimensionless_scalar(),
+        "SweepDim.range should be Type::dimensionless_scalar() (Range<T> not yet a surface type)"
     );
 
     let steps = params.iter().find(|p| p.id.member == "steps").unwrap();

@@ -40,7 +40,7 @@ use crate::graph::EvaluationGraph;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterClass {
     /// The cell holds a dimensioned or numeric quantity whose change cannot
-    /// affect feature topology. Includes `Type::Scalar { .. }`, `Type::Real`,
+    /// affect feature topology. Includes `Type::Scalar { .. }`, `Type::dimensionless_scalar()`,
     /// and `Type::Int` (subject to the `structure_controlling` and
     /// `collection_subs` overrides in [`classify_cell`]).
     Dimensional,
@@ -91,7 +91,7 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 ///    `graph.collection_subs` → `Structural`. Pattern/array counts have
 ///    `Type::Int` but drive topology via the collection-elaboration path in
 ///    `EvaluationGraph::from_templates`.
-/// 4. **Type dispatch** — `Type::Scalar { .. } | Type::Real | Type::Int`
+/// 4. **Type dispatch** — `Type::Scalar { .. } | Type::dimensionless_scalar() | Type::Int`
 ///    → `Dimensional`; everything else → `Structural`.
 pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> ParameterClass {
     // Rule 1: missing cell → Structural.
@@ -120,7 +120,7 @@ pub fn classify_cell(graph: &EvaluationGraph, cell_id: &ValueCellId) -> Paramete
 
     // Rule 4: type-based dispatch.
     match &node.cell_type {
-        Type::Scalar { .. } | Type::Real | Type::Int => ParameterClass::Dimensional,
+        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
@@ -154,7 +154,7 @@ fn classify_cell_with_count_cache(
 
     // Rule 4: type-based dispatch.
     match &node.cell_type {
-        Type::Scalar { .. } | Type::Real | Type::Int => ParameterClass::Dimensional,
+        Type::Scalar { .. } | Type::Int => ParameterClass::Dimensional,
         _ => ParameterClass::Structural,
     }
 }
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn classify_cell_real_returns_dimensional() {
         let id = ValueCellId::new("Part", "scale");
-        let g = graph_with_cell(&id, Type::Real);
+        let g = graph_with_cell(&id, Type::dimensionless_scalar());
         assert_eq!(classify_cell(&g, &id), ParameterClass::Dimensional);
     }
 

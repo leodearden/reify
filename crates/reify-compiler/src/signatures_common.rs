@@ -14,18 +14,18 @@
 
 use reify_core::{DimensionVector, Type};
 
-/// Route the dimensionless case to `Type::Real` (NOT `Scalar{DIMENSIONLESS}`).
+/// Route the dimensionless case to `Type::dimensionless_scalar()` (NOT `Scalar{DIMENSIONLESS}`).
 ///
 /// This matches the eval boundary: a dimensionless result produces
 /// `Value::Real`, and `value_type_kind_matches(Value::Real,
 /// Scalar{DIMENSIONLESS})` is `false` — so a dimensionless arm MUST return
-/// `Type::Real` to keep the compile-type and eval-value in agreement.
+/// `Type::dimensionless_scalar()` to keep the compile-type and eval-value in agreement.
 ///
 /// Identical to `math_signatures::scalar_or_real` (task 2884 δ: extracted from
 /// `analysis_signatures.rs` where it was a verbatim copy of the math helper).
 pub(crate) fn scalar_or_real(dim: DimensionVector) -> Type {
     if dim.is_dimensionless() {
-        Type::Real
+        Type::dimensionless_scalar()
     } else {
         Type::Scalar { dimension: dim }
     }
@@ -36,13 +36,13 @@ mod tests {
     use super::*;
     use reify_core::DimensionVector;
 
-    /// Dimensionless input → `Type::Real` (NOT `Type::Scalar{DIMENSIONLESS}`).
+    /// Dimensionless input → `Type::dimensionless_scalar()` (NOT `Type::Scalar{DIMENSIONLESS}`).
     #[test]
     fn dimensionless_routes_to_real() {
         assert_eq!(
             scalar_or_real(DimensionVector::DIMENSIONLESS),
-            Type::Real,
-            "scalar_or_real(DIMENSIONLESS) must be Type::Real"
+            Type::dimensionless_scalar(),
+            "scalar_or_real(DIMENSIONLESS) must be Type::dimensionless_scalar()"
         );
     }
 

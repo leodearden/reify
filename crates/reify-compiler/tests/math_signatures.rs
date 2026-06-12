@@ -165,7 +165,7 @@ fn sqrt_area_two_way_is_length() {
 #[test]
 fn sqrt_real_two_way_is_real() {
     let (ty, val) = two_way("sq_real");
-    assert_eq!(ty, Type::Real, "sqrt(4.0) forward type must be Real");
+    assert_eq!(ty, Type::dimensionless_scalar(), "sqrt(4.0) forward type must be Real");
     match val {
         Value::Real(x) => assert!((x - 2.0).abs() < EPS, "sqrt(4.0) eval value, got {x}"),
         other => panic!("sqrt(4.0) eval should be Value::Real, got {other:?}"),
@@ -212,7 +212,7 @@ fn normalize_two_way_is_dimensionless_vector() {
         ty,
         Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real)
+            quantity: Box::new(Type::dimensionless_scalar())
         },
         "normalize forward type"
     );
@@ -441,7 +441,7 @@ fn complex_eigenvalues_two_way_is_list_of_complex() {
     let (ty, val) = two_way("ceigs");
     assert_eq!(
         ty,
-        Type::List(Box::new(Type::Complex(Box::new(Type::Real)))),
+        Type::List(Box::new(Type::Complex(Box::new(Type::dimensionless_scalar())))),
         "complex_eigenvalues forward type"
     );
     match val {

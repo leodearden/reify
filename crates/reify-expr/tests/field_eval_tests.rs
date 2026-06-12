@@ -47,7 +47,7 @@ fn make_value_lambda(
 ///
 /// The four `sample_multi_param_lambda_*` tests share this construction — the only
 /// variation between them is whether the domain is `point3(Real)` or `vec3(Real)`.
-/// Codomain is always `Type::Real` and the source is always `Analytical`.
+/// Codomain is always `Type::dimensionless_scalar()` and the source is always `Analytical`.
 ///
 /// Returns `(Value::Field { .. }, Type::Field { .. })` ready for use in a
 /// `make_function_call("sample", …)` expression.
@@ -59,15 +59,15 @@ fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
     // Lambda body: (x + y) + z  (left-associative; BinOp is binary)
     let xy = CompiledExpr::binop(
         reify_ir::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Add,
         xy,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(
@@ -76,7 +76,7 @@ fn make_xyz_sum_field(domain_type: Type) -> (Value, Type) {
         ValueMap::new(),
     );
 
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -109,7 +109,7 @@ fn build_string_codomain_grad_expr() -> CompiledExpr {
     let body = CompiledExpr::literal(Value::String("not_a_number".to_string()), Type::String);
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
     let codomain_type = Type::String;
 
     let field = Value::Field {
@@ -143,7 +143,7 @@ fn build_string_codomain_grad_expr() -> CompiledExpr {
 #[test]
 fn sample_field_with_undef_lambda() {
     let domain_type = Type::point3(Type::length());
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -165,7 +165,7 @@ fn sample_field_with_undef_lambda() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(point, Type::point3(Type::length())),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -188,9 +188,9 @@ fn sample_temperature_over_length_field() {
     // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
@@ -220,7 +220,7 @@ fn sample_temperature_over_length_field() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(Value::Real(3.0), domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -373,7 +373,7 @@ fn sample_one_param_lambda_binds_entire_point_as_single_value() {
 ///
 /// # Intentional type-incoherence
 ///
-/// This `Field` uses `domain_type: Type::Real` with a 3-param lambda — a
+/// This `Field` uses `domain_type: Type::dimensionless_scalar()` with a 3-param lambda — a
 /// combination the compiler would never emit. The mismatch is intentional: it
 /// directly exercises the runtime's defensive arity-check path without
 /// requiring a Point input. `sample()`'s analytical dispatch does not consult
@@ -385,15 +385,15 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
     // Lambda: |x, y, z| 42.0  (constant body; unreachable due to arity check)
-    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let body = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
         ValueMap::new(),
     );
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -416,7 +416,7 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(Value::Real(1.0), domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -432,25 +432,25 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
     // lambda (arity matches).  This proves that Undef above is caused solely by
     // the arity check, not by anything in the body.
     let x_id2 = ValueCellId::new("$lambda0.S", "x");
-    let body2 = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let body2 = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
     let lambda2 = make_value_lambda(vec![("x", x_id2)], body2, ValueMap::new());
     let field2 = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Analytical,
         lambda: Arc::new(lambda2),
     };
     let field2_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sample_expr2 = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(field2, field2_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let positive_result = eval_expr(&sample_expr2, &EvalContext::simple(&values));
     assert_eq!(
@@ -487,12 +487,12 @@ fn sample_multi_param_lambda_with_scalar_input_returns_undef() {
 ///
 /// # Type choice
 ///
-/// Uses `Type::point3(Type::Real)` domain and `Value::Real` Point components so
+/// Uses `Type::point3(Type::dimensionless_scalar())` domain and `Value::Real` Point components so
 /// that the body `x + y + z` evaluates via the `Real + Real = Real` arm in eval_add
 /// and returns exactly `Value::Real(6.0)` (not `Value::Scalar { .. }`).
 #[test]
 fn sample_multi_param_lambda_binds_unpacked_point_components() {
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // sample(field, Point([1.0, 2.0, 3.0])) -> Real(6.0)
@@ -506,7 +506,7 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(point_val, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -542,7 +542,7 @@ fn sample_multi_param_lambda_binds_unpacked_point_components() {
 ///   (non-Point) + 3-param lambda → `Undef` because the Point-guard never fires.
 #[test]
 fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // Point has 2 elements but lambda expects 3 params → guard condition (3) fails.
@@ -554,7 +554,7 @@ fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(mismatched_point, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -586,12 +586,12 @@ fn sample_multi_param_lambda_with_mismatched_point_returns_undef() {
 /// # Test specifics
 ///
 /// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
-/// - Domain type: `Type::vec3(Type::Real)` (Vector3<Real>)
+/// - Domain type: `Type::vec3(Type::dimensionless_scalar())` (Vector3<Real>)
 /// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
 /// - Expected: `Real(6.0)` — vector unpacked into x=1.0, y=2.0, z=3.0; (1+2)+3=6
 #[test]
 fn sample_multi_param_lambda_with_vector_input() {
-    let domain_type = Type::vec3(Type::Real);
+    let domain_type = Type::vec3(Type::dimensionless_scalar());
     let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // sample(field, Vector([1.0, 2.0, 3.0])) -> Real(6.0)
@@ -605,7 +605,7 @@ fn sample_multi_param_lambda_with_vector_input() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(vector_val, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -632,7 +632,7 @@ fn sample_multi_param_lambda_with_vector_input() {
 /// # Test specifics
 ///
 /// - Field lambda: 1-param identity `|x| → x`
-/// - Domain type: `Type::vec3(Type::Real)`
+/// - Domain type: `Type::vec3(Type::dimensionless_scalar())`
 /// - Input: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])`
 /// - Expected: `Value::Vector([Real(1.0), Real(2.0), Real(3.0)])` — the whole
 ///   Vector returned unchanged
@@ -640,7 +640,7 @@ fn sample_multi_param_lambda_with_vector_input() {
 fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
-    let domain_type = Type::vec3(Type::Real);
+    let domain_type = Type::vec3(Type::dimensionless_scalar());
 
     // Lambda: |x| -> x  (identity body — returns whatever x is bound to)
     let body = CompiledExpr::value_ref(x_id.clone(), domain_type.clone());
@@ -671,7 +671,7 @@ fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(vector_val.clone(), domain_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let values = ValueMap::new();
@@ -698,13 +698,13 @@ fn sample_one_param_lambda_binds_entire_vector_as_single_value() {
 /// # Test specifics
 ///
 /// - Field lambda: 3-param `|x, y, z| → (x + y) + z`
-/// - Domain type: `Type::vec3(Type::Real)` (3-element Vector)
+/// - Domain type: `Type::vec3(Type::dimensionless_scalar())` (3-element Vector)
 /// - Input: `Value::Vector([Real(1.0), Real(2.0)])` — only 2 elements
 /// - Expected: `Value::Undef` — length mismatch causes fallback to 1-arg path,
 ///   which then fails the arity check in `apply_lambda`
 #[test]
 fn sample_multi_param_lambda_with_mismatched_vector_returns_undef() {
-    let domain_type = Type::vec3(Type::Real);
+    let domain_type = Type::vec3(Type::dimensionless_scalar());
     let (field, field_type) = make_xyz_sum_field(domain_type.clone());
 
     // Vector has 2 elements but lambda expects 3 params → guard condition (3) fails.
@@ -716,7 +716,7 @@ fn sample_multi_param_lambda_with_mismatched_vector_returns_undef() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(mismatched_vector, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -745,7 +745,7 @@ fn sample_gradient_of_constant_field_near_zero() {
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
     // Lambda: |x, y, z| 42.0  (constant field)
-    let body = CompiledExpr::literal(Value::Real(42.0), Type::Real);
+    let body = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -753,7 +753,7 @@ fn sample_gradient_of_constant_field_near_zero() {
     );
 
     let domain_type = Type::point3(Type::length());
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -776,7 +776,7 @@ fn sample_gradient_of_constant_field_near_zero() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -806,7 +806,7 @@ fn sample_gradient_of_constant_field_near_zero() {
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
@@ -815,7 +815,7 @@ fn sample_gradient_of_constant_field_near_zero() {
             CompiledExpr::literal(grad_result, grad_field_type),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -855,14 +855,14 @@ fn gradient_of_gradient_returns_undef() {
     // Lambda: |x| x * x  (simple scalar field)
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -901,7 +901,7 @@ fn gradient_of_gradient_returns_undef() {
     let outer_gradient = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(inner_result, grad_field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let outer_result = eval_expr(&outer_gradient, &EvalContext::simple(&values));
@@ -921,7 +921,7 @@ fn gradient_of_gradient_returns_undef() {
 #[test]
 fn gradient_field_with_undef_lambda() {
     let domain_type = Type::point3(Type::length());
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -939,7 +939,7 @@ fn gradient_field_with_undef_lambda() {
     let gradient_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -966,9 +966,9 @@ fn gradient_temperature_over_length_returns_field() {
     // Lambda: |x| 2.0 * x  (linear temperature field over length domain)
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
@@ -1023,7 +1023,7 @@ fn gradient_temperature_over_length_returns_field() {
             CompiledExpr::literal(gradient_result, grad_field_type),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1085,16 +1085,16 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
         codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::Real),
+            CompiledExpr::literal(point, Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     assert_eq!(
@@ -1127,16 +1127,16 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
 
     let point = Value::Real(1.0);
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
         codomain: Box::new(Type::String),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::Real),
+            CompiledExpr::literal(point, Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     // In debug mode the result_dim debug_assert fires before any numeric work.
     let _sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1147,12 +1147,12 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug() {
 ///
 /// Verifies that:
 /// - The returned `Value` is a `Value::Field` with `source=Analytical` and
-///   `codomain_type=Type::Real`.
-/// - The returned `Type` is a `Type::Field` with `domain=Type::point3(Type::Real)`
-///   and `codomain=Type::Real`.
+///   `codomain_type=Type::dimensionless_scalar()`.
+/// - The returned `Type` is a `Type::Field` with `domain=Type::point3(Type::dimensionless_scalar())`
+///   and `codomain=Type::dimensionless_scalar()`.
 #[test]
 fn xyz_sum_field_helper_returns_expected_structure() {
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let (field_val, field_type) = make_xyz_sum_field(domain_type);
 
     // Check the Value side
@@ -1165,10 +1165,10 @@ fn xyz_sum_field_helper_returns_expected_structure() {
         } => {
             assert_eq!(
                 d,
-                &Type::point3(Type::Real),
+                &Type::point3(Type::dimensionless_scalar()),
                 "domain_type must be point3(Real)"
             );
-            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(c, &Type::dimensionless_scalar(), "codomain_type must be Real");
             assert_eq!(
                 source,
                 &FieldSourceKind::Analytical,
@@ -1183,12 +1183,12 @@ fn xyz_sum_field_helper_returns_expected_structure() {
         Type::Field { domain, codomain } => {
             assert_eq!(
                 domain.as_ref(),
-                &Type::point3(Type::Real),
+                &Type::point3(Type::dimensionless_scalar()),
                 "field_type domain must be point3(Real)"
             );
             assert_eq!(
                 codomain.as_ref(),
-                &Type::Real,
+                &Type::dimensionless_scalar(),
                 "field_type codomain must be Real"
             );
         }
@@ -1212,14 +1212,14 @@ fn sample_propagates_undef_point_argument() {
     // Lambda: |x| x + 1.0  (well-defined for any Real input)
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1241,7 +1241,7 @@ fn sample_propagates_undef_point_argument() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(Value::Undef, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -1270,14 +1270,14 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
     // Lambda: |x| 1.0 / x  (Undef when x == 0.0 due to division-by-zero)
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Div,
-        CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1299,7 +1299,7 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
             CompiledExpr::literal(field, field_type),
             CompiledExpr::literal(Value::Real(0.0), domain_type.clone()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -1315,15 +1315,15 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
     // Positive control: non-zero x gives a well-defined result.
     let field2 = Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::Real,
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Analytical,
         lambda: {
             let x_id2 = ValueCellId::new("$lambda0.S", "x");
             let body2 = CompiledExpr::binop(
                 reify_ir::BinOp::Div,
-                CompiledExpr::literal(Value::Real(1.0), Type::Real),
-                CompiledExpr::value_ref(x_id2.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(x_id2.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             );
             Arc::new(make_value_lambda(
                 vec![("x", x_id2)],
@@ -1334,7 +1334,7 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
     };
     let field2_type = Type::Field {
         domain: Box::new(domain_type.clone()),
-        codomain: Box::new(Type::Real),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sample_nonzero = make_function_call(
         "sample",
@@ -1342,7 +1342,7 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
             CompiledExpr::literal(field2, field2_type),
             CompiledExpr::literal(Value::Real(2.0), domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let nonzero_result = eval_expr(&sample_nonzero, &EvalContext::simple(&values));
     assert_eq!(
@@ -1353,14 +1353,14 @@ fn sample_propagates_undef_from_lambda_body_division_by_zero() {
 }
 
 /// Verifies that `make_xyz_sum_field` produces the correct structure when
-/// called with `Type::vec3(Type::Real)` as the domain type.
+/// called with `Type::vec3(Type::dimensionless_scalar())` as the domain type.
 ///
 /// This guards against a regression where the helper might accidentally
 /// hardcode a domain type (e.g., always returning `point3`) regardless of
 /// the argument passed.
 #[test]
 fn xyz_sum_field_helper_with_vec3_domain() {
-    let domain_type = Type::vec3(Type::Real);
+    let domain_type = Type::vec3(Type::dimensionless_scalar());
     let (field_val, field_type) = make_xyz_sum_field(domain_type);
 
     // Check the Value side
@@ -1371,8 +1371,8 @@ fn xyz_sum_field_helper_with_vec3_domain() {
             source,
             ..
         } => {
-            assert_eq!(d, &Type::vec3(Type::Real), "domain_type must be vec3(Real)");
-            assert_eq!(c, &Type::Real, "codomain_type must be Real");
+            assert_eq!(d, &Type::vec3(Type::dimensionless_scalar()), "domain_type must be vec3(Real)");
+            assert_eq!(c, &Type::dimensionless_scalar(), "codomain_type must be Real");
             assert_eq!(
                 source,
                 &FieldSourceKind::Analytical,
@@ -1387,12 +1387,12 @@ fn xyz_sum_field_helper_with_vec3_domain() {
         Type::Field { domain, codomain } => {
             assert_eq!(
                 domain.as_ref(),
-                &Type::vec3(Type::Real),
+                &Type::vec3(Type::dimensionless_scalar()),
                 "field_type domain must be vec3(Real)"
             );
             assert_eq!(
                 codomain.as_ref(),
-                &Type::Real,
+                &Type::dimensionless_scalar(),
                 "field_type codomain must be Real"
             );
         }

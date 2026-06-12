@@ -499,14 +499,14 @@ mod tests {
     /// Any name registered in scope is accepted regardless of the resolved type.
     ///
     /// The validator checks name presence only — it does not inspect the
-    /// resolved type at all.  Using a non-`List` type (`Type::Real`) here makes
+    /// resolved type at all.  Using a non-`List` type (`Type::dimensionless_scalar()`) here makes
     /// that contract visually obvious: if the type were inspected, this test
     /// would produce a diagnostic and fail.
     #[test]
     fn validate_collections_accepts_name_in_scope() {
         let hints = vec![make_hint(SolverHintKind::DiscreteSet, "my_collection")];
         let mut scope = CompilationScope::new("Test");
-        scope.register("my_collection", Type::Real);
+        scope.register("my_collection", Type::dimensionless_scalar());
         let functions: &[CompiledFunction] = &[];
         let mut diagnostics = Vec::new();
         validate_solver_hint_collections(&hints, &scope, functions, &mut diagnostics);
@@ -535,12 +535,12 @@ mod tests {
             is_pub: false,
             param_defaults: reify_ir::CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: reify_ir::CompiledExpr::literal(
                     reify_ir::Value::Real(0.0),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: reify_core::ContentHash::of_str("fn_collection_stub"),

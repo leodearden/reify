@@ -37,24 +37,24 @@ fn three_cell_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
                 .let_binding(
                     e,
                     "b",
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     binop(
                         BinOp::Mul,
-                        value_ref_typed(e, "a", Type::Real),
+                        value_ref_typed(e, "a", Type::dimensionless_scalar()),
                         literal(Value::Real(2.0)),
                     ),
                 )
                 .let_binding(
                     e,
                     "c",
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     binop(
                         BinOp::Add,
-                        value_ref_typed(e, "b", Type::Real),
+                        value_ref_typed(e, "b", Type::dimensionless_scalar()),
                         literal(Value::Real(1.0)),
                     ),
                 )

@@ -58,13 +58,13 @@ pub(crate) fn is_analysis_typed_fn(name: &str) -> bool {
 ///   Mirrors `trace` / `magnitude` in `math_fn_result_type`.
 /// - `principal_stresses` → `List(scalar_or_real(tensor_quantity(arg0)))`.
 ///   Mirrors the `eigenvalues` arm (matrix → List of eigenvalues).
-/// - `safety_factor` → `Type::Real` (dimensionless yield/von_mises ratio).
+/// - `safety_factor` → `Type::dimensionless_scalar()` (dimensionless yield/von_mises ratio).
 /// - `stress_invariants` → `Type::StructureRef("StressInvariants")` (the
 ///   struct def in `std.fea`). Mirrors `is_dynamics_query` → `MassProperties`.
 ///
 /// Only reached for names in [`ANALYSIS_FN_NAMES`] (the caller gates on
 /// [`is_analysis_typed_fn`]); the `_` arm is therefore unreachable in practice
-/// and returns a harmless `Type::Real`.
+/// and returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     match name {
         // von_mises / max_shear: scalar reduction of the tensor quantity.
@@ -81,7 +81,7 @@ pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type
 
         // safety_factor: yield / von_mises → dimensionless Real regardless of
         // input dimensions (pressure cancels).
-        "safety_factor" => Type::Real,
+        "safety_factor" => Type::dimensionless_scalar(),
 
         // stress_invariants: returns a StressInvariants StructureInstance.
         // The struct def lives in std.fea (`crates/reify-compiler/stdlib/fea.ri`).
@@ -89,7 +89,7 @@ pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type
         "stress_invariants" => Type::StructureRef("StressInvariants".to_string()),
 
         // Unreachable in practice — the caller gates on is_analysis_typed_fn.
-        _ => Type::Real,
+        _ => Type::dimensionless_scalar(),
     }
 }
 
@@ -219,7 +219,7 @@ mod tests {
             Type::Tensor {
                 rank: 2,
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
         )
     }
@@ -237,14 +237,14 @@ mod tests {
         );
     }
 
-    /// `von_mises(Tensor<dimensionless>)` → `Type::Real`.
+    /// `von_mises(Tensor<dimensionless>)` → `Type::dimensionless_scalar()`.
     #[test]
     fn von_mises_over_dimensionless_tensor_is_real() {
         let arg = dimensionless_tensor_arg();
         assert_eq!(
             analysis_fn_result_type("von_mises", &[arg]),
-            Type::Real,
-            "von_mises over a dimensionless tensor must yield Type::Real (NOT Scalar<DIMENSIONLESS>)"
+            Type::dimensionless_scalar(),
+            "von_mises over a dimensionless tensor must yield Type::dimensionless_scalar() (NOT Scalar<DIMENSIONLESS>)"
         );
     }
 
@@ -280,24 +280,24 @@ mod tests {
         let arg = dimensionless_tensor_arg();
         assert_eq!(
             analysis_fn_result_type("principal_stresses", &[arg]),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             "principal_stresses over dimensionless tensor must yield List(Real)"
         );
     }
 
-    /// `safety_factor(...)` → `Type::Real` regardless of args.
+    /// `safety_factor(...)` → `Type::dimensionless_scalar()` regardless of args.
     #[test]
     fn safety_factor_is_always_real() {
         let arg = pressure_tensor_arg();
         assert_eq!(
             analysis_fn_result_type("safety_factor", &[arg]),
-            Type::Real,
-            "safety_factor must always return Type::Real (dimensionless ratio)"
+            Type::dimensionless_scalar(),
+            "safety_factor must always return Type::dimensionless_scalar() (dimensionless ratio)"
         );
         assert_eq!(
             analysis_fn_result_type("safety_factor", &[]),
-            Type::Real,
-            "safety_factor with no args must still return Type::Real"
+            Type::dimensionless_scalar(),
+            "safety_factor with no args must still return Type::dimensionless_scalar()"
         );
     }
 

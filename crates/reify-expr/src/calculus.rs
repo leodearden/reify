@@ -8,18 +8,18 @@ use super::{EvalContext, apply_lambda};
 /// Unify scalar-quantity validation with dimension extraction.
 ///
 /// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
-/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`,
+/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::dimensionless_scalar() | Type::Int`,
 /// since those are inherently dimensionless scalars.
 ///
 /// Returns `None` for all other types (Point, Vector, Bool, etc.).
 ///
-/// Using `scalar_dimension(ty).is_some()` replaces `matches!(ty, Type::Real | Type::Int |
+/// Using `scalar_dimension(ty).is_some()` replaces `matches!(ty, Type::dimensionless_scalar() | Type::Int |
 /// Type::Scalar { .. })` at every call site, yielding both the validation result and the
 /// dimension in a single call.
 fn scalar_dimension(ty: &Type) -> Option<DimensionVector> {
     match ty {
         Type::Scalar { dimension } => Some(*dimension),
-        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+        Type::Int => Some(DimensionVector::DIMENSIONLESS),
         _ => None,
     }
 }
@@ -44,7 +44,7 @@ fn domain_dimension(ty: &Type) -> Option<DimensionVector> {
 /// Given optional codomain and domain dimensions and an exponent, returns:
 /// - `Scalar { dimension: cd / dd^exponent }` when both dimensions are present and
 ///   neither is DIMENSIONLESS and the resulting quotient is not DIMENSIONLESS.
-/// - `Type::Real` when both dimensions are present, neither is DIMENSIONLESS, but
+/// - `Type::dimensionless_scalar()` when both dimensions are present, neither is DIMENSIONLESS, but
 ///   the quotient itself is DIMENSIONLESS.
 /// - `fallback` in all other cases (either dimension absent or DIMENSIONLESS).
 ///
@@ -70,7 +70,7 @@ fn dim_quotient_type(
                     dimension: result_dim,
                 }
             } else {
-                Type::Real
+                Type::dimensionless_scalar()
             }
         }
         _ => fallback,
@@ -79,7 +79,7 @@ fn dim_quotient_type(
 
 /// Compute the "dimensionless fallback" type for a differential operator result.
 ///
-/// Returns `Type::Real` if `ty` is `Scalar { dimension: DIMENSIONLESS }`,
+/// Returns `Type::dimensionless_scalar()` if `ty` is `Scalar { dimension: DIMENSIONLESS }`,
 /// otherwise clones and returns `ty` unchanged.
 ///
 /// This is the shared pattern used by all 4 type-level differential operators
@@ -88,7 +88,7 @@ fn dim_quotient_type(
 /// `Real` so the operator result has no spurious dimensionless-scalar wrapping.
 fn dimensionless_fallback(ty: &Type) -> Type {
     match ty {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::dimensionless_scalar(),
         _ => ty.clone(),
     }
 }
@@ -96,14 +96,14 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// Wrap a raw `f64` result as the appropriate `Value` variant for a scalar-valued operator.
 ///
 /// - `Type::Scalar { dimension }` → `Value::Scalar { si_value: value, dimension }`
-/// - Any other type (typically `Type::Real`) → `Value::Real(value)`
+/// - Any other type (typically `Type::dimensionless_scalar()`) → `Value::Real(value)`
 ///
 /// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
-/// to `Type::Real`.  This is intentional: all three callers (`compute_divergence`,
+/// to `Type::dimensionless_scalar()`.  This is intentional: all three callers (`compute_divergence`,
 /// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
 /// [`dimensionless_fallback`] before stamping the `Field`, so by the time
 /// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
-/// collapsed to `Type::Real`.  Re-normalising here would be redundant work and, worse,
+/// collapsed to `Type::dimensionless_scalar()`.  Re-normalising here would be redundant work and, worse,
 /// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
 /// `compute_numerical_divergence_at_point`, `compute_numerical_curl_at_point`, and
 /// `compute_numerical_laplacian_at_point`.
@@ -118,7 +118,7 @@ fn dimensionless_fallback(ty: &Type) -> Type {
 /// non-normalising variant used by the differential operators.
 fn wrap_scalar_result(value: f64, codomain_type: &Type) -> Value {
     match codomain_type {
-        Type::Scalar { dimension } => Value::Scalar {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
             si_value: value,
             dimension: *dimension,
         },
@@ -377,7 +377,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
         Type::Point { n: 3, quantity }
             if matches!(
                 quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
+                Type::Int | Type::Scalar { .. }
             ) => {}
         _ => {
             #[cfg(debug_assertions)]
@@ -394,7 +394,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
         Type::Vector { n: 3, quantity }
             if matches!(
                 quantity.as_ref(),
-                Type::Real | Type::Int | Type::Scalar { .. }
+                Type::Int | Type::Scalar { .. }
             ) =>
         {
             quantity.as_ref()
@@ -531,7 +531,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 /// - `Type::Point { quantity: Type::Scalar { dimension }, .. }` — a multi-dimensional
 ///   domain with a dimensioned scalar quantity
 ///
-/// Returns `None` for `Type::Real`, `Type::Int`, `Type::Point { quantity: Type::Real/Int }`,
+/// Returns `None` for `Type::dimensionless_scalar()`, `Type::Int`, `Type::Point { quantity: Type::dimensionless_scalar()/Int }`,
 /// and all other types.
 ///
 /// This differs from [`domain_dimension`] which returns `Some(DIMENSIONLESS)` for `Real`/`Int`.
@@ -539,9 +539,9 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 /// is the calling convention used by all 4 numerical differential operator functions.
 fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
     match domain_type {
-        Type::Scalar { dimension } => Some(*dimension),
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
         Type::Point { quantity, .. } => match quantity.as_ref() {
-            Type::Scalar { dimension } => Some(*dimension),
+            Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
             _ => None,
         },
         _ => None,
@@ -833,7 +833,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
             Type::Scalar { dimension } => *dimension,
             _ => {
                 debug_assert!(
-                    matches!(quantity.as_ref(), Type::Real),
+                    matches!(quantity.as_ref(), Type::Int),
                     "[reify-expr] gradient: unexpected Vector quantity variant in result_dim catch-all: {:?}",
                     quantity
                 );
@@ -843,7 +843,7 @@ pub(crate) fn compute_numerical_gradient_at_point(
         Type::Scalar { dimension } => *dimension,
         _ => {
             debug_assert!(
-                matches!(codomain_type, Type::Real),
+                matches!(codomain_type, Type::Int),
                 "[reify-expr] gradient: unexpected codomain_type variant in result_dim catch-all: {:?}",
                 codomain_type
             );
@@ -1047,7 +1047,7 @@ pub(crate) fn compute_numerical_divergence_at_point(
     ctx: &EvalContext,
 ) -> Value {
     debug_assert!(
-        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        matches!(codomain_type, Type::Scalar { .. }),
         "divergence/laplacian codomain must be scalar, got {:?}",
         codomain_type
     );
@@ -1340,7 +1340,7 @@ pub(crate) fn compute_numerical_laplacian_at_point(
     ctx: &EvalContext,
 ) -> Value {
     debug_assert!(
-        matches!(codomain_type, Type::Real | Type::Scalar { .. }),
+        matches!(codomain_type, Type::Scalar { .. }),
         "divergence/laplacian codomain must be scalar, got {:?}",
         codomain_type
     );
@@ -1470,7 +1470,7 @@ mod tests {
     /// parameter names (e.g. `"pt"`) can use their own.
     fn make_scalar_lambda(param_name: &str) -> Value {
         let id = ValueCellId::new("$lambda0.S", param_name);
-        let body = CompiledExpr::value_ref(id.clone(), Type::Real);
+        let body = CompiledExpr::value_ref(id.clone(), Type::dimensionless_scalar());
         Value::Lambda {
             params: vec![(param_name.to_string(), id)],
             body: Box::new(body),
@@ -1499,7 +1499,7 @@ mod tests {
     #[test]
     fn scalar_dimension_real_returns_dimensionless() {
         assert_eq!(
-            scalar_dimension(&Type::Real),
+            scalar_dimension(&Type::dimensionless_scalar()),
             Some(DimensionVector::DIMENSIONLESS)
         );
     }
@@ -1514,12 +1514,12 @@ mod tests {
 
     #[test]
     fn scalar_dimension_point3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::point3(Type::Real)), None);
+        assert_eq!(scalar_dimension(&Type::point3(Type::dimensionless_scalar())), None);
     }
 
     #[test]
     fn scalar_dimension_vec3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::vec3(Type::Real)), None);
+        assert_eq!(scalar_dimension(&Type::vec3(Type::dimensionless_scalar())), None);
     }
 
     #[test]
@@ -1540,7 +1540,7 @@ mod tests {
     #[test]
     fn domain_dimension_real_returns_dimensionless() {
         assert_eq!(
-            domain_dimension(&Type::Real),
+            domain_dimension(&Type::dimensionless_scalar()),
             Some(DimensionVector::DIMENSIONLESS)
         );
     }
@@ -1564,7 +1564,7 @@ mod tests {
     #[test]
     fn domain_dimension_point3_real_returns_dimensionless() {
         assert_eq!(
-            domain_dimension(&Type::point3(Type::Real)),
+            domain_dimension(&Type::point3(Type::dimensionless_scalar())),
             Some(DimensionVector::DIMENSIONLESS)
         );
     }
@@ -1579,7 +1579,7 @@ mod tests {
 
     #[test]
     fn domain_dimension_vec3_real_returns_none() {
-        assert_eq!(domain_dimension(&Type::vec3(Type::Real)), None);
+        assert_eq!(domain_dimension(&Type::vec3(Type::dimensionless_scalar())), None);
     }
 
     #[test]
@@ -1597,7 +1597,7 @@ mod tests {
             Some(DimensionVector::LENGTH),
             Some(DimensionVector::TIME),
             1,
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         assert_eq!(
             result,
@@ -1609,14 +1609,14 @@ mod tests {
 
     #[test]
     fn dim_quotient_both_dimensional_quotient_dimensionless_returns_real() {
-        // LENGTH / LENGTH → DIMENSIONLESS → Type::Real
+        // LENGTH / LENGTH → DIMENSIONLESS → Type::dimensionless_scalar()
         let result = dim_quotient_type(
             Some(DimensionVector::LENGTH),
             Some(DimensionVector::LENGTH),
             1,
             Type::Int,
         );
-        assert_eq!(result, Type::Real);
+        assert_eq!(result, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1660,7 +1660,7 @@ mod tests {
             Some(DimensionVector::VOLUME),
             Some(DimensionVector::LENGTH),
             2,
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         assert_eq!(
             result,
@@ -1697,7 +1697,7 @@ mod tests {
         let _result = compute_numerical_gradient_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1722,7 +1722,7 @@ mod tests {
         let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
 
         // domain: Point3<Real>, codomain: Vector3<Bool> — Bool is unexpected in the inner arm
-        let domain_type = Type::point3(Type::Real);
+        let domain_type = Type::point3(Type::dimensionless_scalar());
         let codomain_type = Type::vec3(Type::Bool);
 
         let values = ValueMap::new();
@@ -1740,7 +1740,7 @@ mod tests {
     // --- divergence/laplacian codomain guard tests ---
 
     /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
-    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    /// `codomain_type` is not `Type::dimensionless_scalar()` or `Type::Scalar`.
     ///
     /// `Type::Bool` is not a valid divergence codomain. The debug_assert fires before any
     /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
@@ -1755,16 +1755,16 @@ mod tests {
         let _result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
     }
 
     /// Verify that `compute_numerical_divergence_at_point` panics (in debug mode) when
-    /// `codomain_type` is `Type::vec3(Type::Real)` — a non-scalar Vector type.
+    /// `codomain_type` is `Type::vec3(Type::dimensionless_scalar())` — a non-scalar Vector type.
     ///
-    /// `Type::vec3(Type::Real)` is a `Vector` type: it is neither `Type::Real` nor
+    /// `Type::vec3(Type::dimensionless_scalar())` is a `Vector` type: it is neither `Type::dimensionless_scalar()` nor
     /// `Type::Scalar`, so it trips the same `debug_assert` as `Type::Bool` but via the
     /// Vector shape of the non-scalar branch.  This complements the existing `Type::Bool`
     /// test by covering a structurally distinct kind of invalid codomain (a non-scalar
@@ -1783,14 +1783,14 @@ mod tests {
         let _result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
-            &Type::vec3(Type::Real),
+            &Type::dimensionless_scalar(),
+            &Type::vec3(Type::dimensionless_scalar()),
             &ctx,
         );
     }
 
     /// Verify that `compute_numerical_laplacian_at_point` panics (in debug mode) when
-    /// `codomain_type` is not `Type::Real` or `Type::Scalar`.
+    /// `codomain_type` is not `Type::dimensionless_scalar()` or `Type::Scalar`.
     ///
     /// Same pattern as the divergence test above. The debug_assert fires before any
     /// coordinate extraction, so the lambda/point/domain_type need not be functionally correct.
@@ -1805,7 +1805,7 @@ mod tests {
         let _result = compute_numerical_laplacian_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1827,7 +1827,7 @@ mod tests {
         let _result = compute_numerical_curl_at_point(
             &lambda,
             &Value::Real(1.0),
-            &Type::Real,
+            &Type::dimensionless_scalar(),
             &Type::Bool,
             &ctx,
         );
@@ -1949,8 +1949,8 @@ mod tests {
     /// Helper: build a minimal valid Analytical Field with the given lambda.
     fn make_analytical_field(lambda: Value) -> Value {
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(lambda),
         }
@@ -1963,16 +1963,16 @@ mod tests {
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_some());
         let (domain, codomain) = result.unwrap();
-        assert_eq!(domain, &Type::Real);
-        assert_eq!(codomain, &Type::Real);
+        assert_eq!(domain, &Type::dimensionless_scalar());
+        assert_eq!(codomain, &Type::dimensionless_scalar());
     }
 
     #[test]
     fn validate_differentiable_field_composed_with_lambda_returns_some() {
         let lambda = make_scalar_lambda("x");
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Composed,
             lambda: Arc::new(lambda),
         };
@@ -1989,8 +1989,8 @@ mod tests {
     #[test]
     fn validate_differentiable_field_sampled_source_returns_none() {
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef),
         };
@@ -2004,8 +2004,8 @@ mod tests {
         let lambda = make_scalar_lambda("x");
         let original_field = make_analytical_field(lambda);
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Gradient,
             lambda: Arc::new(original_field),
         };
@@ -2017,8 +2017,8 @@ mod tests {
     fn validate_differentiable_field_imported_source_returns_none() {
         let lambda = make_scalar_lambda("x");
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Imported,
             lambda: Arc::new(lambda),
         };
@@ -2029,8 +2029,8 @@ mod tests {
     #[test]
     fn validate_differentiable_field_non_lambda_slot_returns_none() {
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -2045,7 +2045,7 @@ mod tests {
         let ty = Type::Scalar {
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        assert_eq!(dimensionless_fallback(&ty), Type::Real);
+        assert_eq!(dimensionless_fallback(&ty), Type::dimensionless_scalar());
     }
 
     #[test]
@@ -2056,7 +2056,7 @@ mod tests {
 
     #[test]
     fn dimensionless_fallback_real_returns_real() {
-        assert_eq!(dimensionless_fallback(&Type::Real), Type::Real);
+        assert_eq!(dimensionless_fallback(&Type::dimensionless_scalar()), Type::dimensionless_scalar());
     }
 
     #[test]
@@ -2088,7 +2088,7 @@ mod tests {
     #[test]
     fn extract_explicit_domain_dim_real_returns_none() {
         // Real is dimensionless — numerical functions pass Value::Real, not Value::Scalar
-        assert_eq!(extract_explicit_domain_dim(&Type::Real), None);
+        assert_eq!(extract_explicit_domain_dim(&Type::dimensionless_scalar()), None);
     }
 
     #[test]
@@ -2098,7 +2098,7 @@ mod tests {
 
     #[test]
     fn extract_explicit_domain_dim_point_real_returns_none() {
-        assert_eq!(extract_explicit_domain_dim(&Type::point3(Type::Real)), None);
+        assert_eq!(extract_explicit_domain_dim(&Type::point3(Type::dimensionless_scalar())), None);
     }
 
     #[test]
@@ -2139,7 +2139,7 @@ mod tests {
         let a_id = ValueCellId::new("$lambda0.S", "a");
         let b_id = ValueCellId::new("$lambda0.S", "b");
         let c_id = ValueCellId::new("$lambda0.S", "c");
-        let body = CompiledExpr::value_ref(a_id.clone(), Type::Real);
+        let body = CompiledExpr::value_ref(a_id.clone(), Type::dimensionless_scalar());
         let lambda = Value::Lambda {
             params: vec![
                 ("a".to_string(), a_id),
@@ -2330,28 +2330,10 @@ mod tests {
     /// Real codomain wraps as Value::Real.
     #[test]
     fn wrap_scalar_result_real_returns_real() {
-        let result = wrap_scalar_result(42.0, &Type::Real);
+        let result = wrap_scalar_result(42.0, &Type::dimensionless_scalar());
         assert_eq!(result, Value::Real(42.0));
     }
 
-    /// Dimensionless Scalar codomain wraps as Value::Scalar{DIMENSIONLESS}, NOT Value::Real.
-    /// The helper wraps blindly — callers pre-normalize if they want Real for dimensionless.
-    #[test]
-    fn wrap_scalar_result_dimensionless_scalar_returns_dimensionless_scalar() {
-        let result = wrap_scalar_result(
-            7.0,
-            &Type::Scalar {
-                dimension: DimensionVector::DIMENSIONLESS,
-            },
-        );
-        assert_eq!(
-            result,
-            Value::Scalar {
-                si_value: 7.0,
-                dimension: DimensionVector::DIMENSIONLESS,
-            }
-        );
-    }
 
     // --- Integration tests for refactored differential operators ---
     //
@@ -2379,7 +2361,7 @@ mod tests {
     /// dimensionless codomain/domain is `Real` (via the dimensionless fallback).
     #[test]
     fn compute_gradient_analytical_real_to_real_returns_gradient_field() {
-        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let field = make_analytical_field_with_types(Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let result = compute_gradient(&field);
         match result {
             Value::Field {
@@ -2389,9 +2371,9 @@ mod tests {
                 lambda: _,
             } => {
                 assert_eq!(source, FieldSourceKind::Gradient);
-                assert_eq!(domain_type, Type::Real);
+                assert_eq!(domain_type, Type::dimensionless_scalar());
                 // 1D dimensionless domain + dimensionless codomain → Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2401,7 +2383,7 @@ mod tests {
     /// in `Vector{3, ...}`, exercising the nD branch of the refactored logic.
     #[test]
     fn compute_gradient_analytical_point3_to_real_returns_vector3_gradient() {
-        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let field = make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let result = compute_gradient(&field);
         match result {
             Value::Field {
@@ -2410,7 +2392,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Gradient);
-                assert_eq!(codomain_type, Type::vec3(Type::Real));
+                assert_eq!(codomain_type, Type::vec3(Type::dimensionless_scalar()));
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2420,7 +2402,7 @@ mod tests {
     #[test]
     fn compute_divergence_analytical_point3_to_vec3_returns_scalar_divergence_field() {
         let field =
-            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+            make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::vec3(Type::dimensionless_scalar()));
         let result = compute_divergence(&field);
         match result {
             Value::Field {
@@ -2430,9 +2412,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Divergence);
-                assert_eq!(domain_type, Type::point3(Type::Real));
+                assert_eq!(domain_type, Type::point3(Type::dimensionless_scalar()));
                 // Divergence of a dimensionless vector field collapses to scalar Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2442,7 +2424,7 @@ mod tests {
     #[test]
     fn compute_curl_analytical_point3_to_vec3_returns_vec3_curl_field() {
         let field =
-            make_analytical_field_with_types(Type::point3(Type::Real), Type::vec3(Type::Real));
+            make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::vec3(Type::dimensionless_scalar()));
         let result = compute_curl(&field);
         match result {
             Value::Field {
@@ -2452,9 +2434,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Curl);
-                assert_eq!(domain_type, Type::point3(Type::Real));
+                assert_eq!(domain_type, Type::point3(Type::dimensionless_scalar()));
                 // Curl of a dimensionless Vec3 field is still a dimensionless Vec3.
-                assert_eq!(codomain_type, Type::vec3(Type::Real));
+                assert_eq!(codomain_type, Type::vec3(Type::dimensionless_scalar()));
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2464,7 +2446,7 @@ mod tests {
     /// field. Exercises the scalar-domain branch and the `domain_exponent=2` quotient.
     #[test]
     fn compute_laplacian_analytical_real_to_real_returns_scalar_laplacian_field() {
-        let field = make_analytical_field_with_types(Type::Real, Type::Real);
+        let field = make_analytical_field_with_types(Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let result = compute_laplacian(&field);
         match result {
             Value::Field {
@@ -2474,9 +2456,9 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Laplacian);
-                assert_eq!(domain_type, Type::Real);
+                assert_eq!(domain_type, Type::dimensionless_scalar());
                 // Dimensionless domain² / dimensionless codomain → Real.
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2486,7 +2468,7 @@ mod tests {
     /// branch.
     #[test]
     fn compute_laplacian_analytical_point3_to_real_returns_scalar_laplacian_field() {
-        let field = make_analytical_field_with_types(Type::point3(Type::Real), Type::Real);
+        let field = make_analytical_field_with_types(Type::point3(Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let result = compute_laplacian(&field);
         match result {
             Value::Field {
@@ -2495,7 +2477,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(source, FieldSourceKind::Laplacian);
-                assert_eq!(codomain_type, Type::Real);
+                assert_eq!(codomain_type, Type::dimensionless_scalar());
             }
             other => panic!("expected Value::Field, got {:?}", other),
         }
@@ -2518,8 +2500,8 @@ mod tests {
         let result = compute_numerical_gradient_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
@@ -2528,7 +2510,7 @@ mod tests {
     /// Pin that `compute_numerical_divergence_at_point` returns `Value::Undef` without
     /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
     ///
-    /// Divergence codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Divergence codomain must be scalar (Type::dimensionless_scalar()) per the function's debug_assert.
     /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
     /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
     /// independent defense-in-depth — the Undef contract holds regardless of which
@@ -2541,8 +2523,8 @@ mod tests {
         let result = compute_numerical_divergence_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
@@ -2551,7 +2533,7 @@ mod tests {
     /// Pin that `compute_numerical_laplacian_at_point` returns `Value::Undef` without
     /// panicking when handed an empty `Value::Point(vec![])` (zero-dimension path).
     ///
-    /// Laplacian codomain must be scalar (Type::Real) per the function's debug_assert.
+    /// Laplacian codomain must be scalar (Type::dimensionless_scalar()) per the function's debug_assert.
     /// `Value::Undef` is produced via `extract_coords` returning `None` for the empty
     /// Point; the `if n == 0` guard at the function boundary (task 3749) provides
     /// independent defense-in-depth — the Undef contract holds regardless of which
@@ -2564,8 +2546,8 @@ mod tests {
         let result = compute_numerical_laplacian_at_point(
             &lambda,
             &Value::Point(vec![]),
-            &Type::Real,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
             &ctx,
         );
         assert_eq!(result, Value::Undef);
@@ -2608,7 +2590,7 @@ mod tests {
     fn gradient_sampled_1d_affine_returns_sampled_field_with_exact_gradient() {
         let sf = make_sampled_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
         let n_nodes = sf.axis_grids[0].len(); // 5
-        let field = make_sampled_field_value(sf, Type::Real, Type::Real);
+        let field = make_sampled_field_value(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
         let result = compute_gradient(&field);
 
@@ -2646,7 +2628,7 @@ mod tests {
         }
 
         // codomain_type for dimensionless 1D field is Real
-        assert_eq!(*codomain, Type::Real, "1D gradient codomain must be Real");
+        assert_eq!(*codomain, Type::dimensionless_scalar(), "1D gradient codomain must be Real");
     }
 
     /// compute_gradient on a Sampled field whose lambda slot is a Value::Lambda (malformed)
@@ -2659,8 +2641,8 @@ mod tests {
     fn gradient_sampled_malformed_lambda_slot_returns_undef() {
         // Sampled source but lambda slot is a Value::Lambda — not a SampledField.
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(make_scalar_lambda("x")),
         };
@@ -2682,7 +2664,7 @@ mod tests {
         let a = 3.0_f64;
         let sf = make_sampled_1d_scalar(5, 1.0, |x| a * x * x + 2.0 * x + 1.0);
         let n_nodes = sf.axis_grids[0].len(); // 5
-        let field = make_sampled_field_value(sf, Type::Real, Type::Real);
+        let field = make_sampled_field_value(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
         let result = compute_laplacian(&field);
 
@@ -2721,7 +2703,7 @@ mod tests {
         }
 
         // codomain_type for dimensionless 1D scalar field is Real
-        assert_eq!(*codomain, Type::Real, "1D laplacian codomain must be Real");
+        assert_eq!(*codomain, Type::dimensionless_scalar(), "1D laplacian codomain must be Real");
     }
 
     /// compute_laplacian on a Sampled field whose lambda slot is a Value::Lambda (malformed)
@@ -2730,8 +2712,8 @@ mod tests {
     #[test]
     fn laplacian_sampled_malformed_lambda_slot_returns_undef() {
         let field = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(make_scalar_lambda("x")),
         };

@@ -179,7 +179,7 @@ fn assert_evaluator_signature(name: &str) {
 
     assert_eq!(
         func.return_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "{} return type should be List<Real> (= List<JointValue>); got: {:?}",
         name,
         func.return_type
@@ -364,7 +364,7 @@ fn spline_kind_enum_has_cubic_and_quintic_variants() {
 ///   - `accels : Option<List<JointValue>>`      (optional per-joint q̈)
 ///
 /// `JointValue` is the module-level alias for `Real` (see header §1), so
-/// `List<JointValue>` compiles to `Type::List(Box::new(Type::Real))`.
+/// `List<JointValue>` compiles to `Type::List(Box::new(Type::dimensionless_scalar()))`.
 /// `Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }`
 /// via the same dimensional-type path that `lead_time : Time` in
 /// `stdlib/io.ri:77` already uses.
@@ -395,14 +395,14 @@ fn waypoint_struct_has_correct_param_shape() {
                 dimension: DimensionVector::TIME,
             },
         ),
-        ("values", Type::List(Box::new(Type::Real))),
+        ("values", Type::List(Box::new(Type::dimensionless_scalar()))),
         (
             "vels",
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "accels",
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
     ];
 
@@ -545,8 +545,8 @@ fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("start_velocity", Type::List(Box::new(Type::Real))),
-        ("end_velocity", Type::List(Box::new(Type::Real))),
+        ("start_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
+        ("end_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
     ];
 
     // Param declaration order is part of the contract — pin it explicitly
@@ -695,7 +695,7 @@ fn piecewise_polynomial_profile_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("mechanism", Type::Real),
+        ("mechanism", Type::dimensionless_scalar()),
         (
             "waypoints",
             Type::List(Box::new(Type::StructureRef("Waypoint".to_string()))),
@@ -1050,8 +1050,8 @@ fn joint_limit_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("joint", Type::Real),
-        ("max_force", Type::Real),
+        ("joint", Type::dimensionless_scalar()),
+        ("max_force", Type::dimensionless_scalar()),
     ];
 
     // Param declaration order is part of the contract.
@@ -1240,11 +1240,11 @@ fn tots_shaper_struct_has_correct_param_shape() {
             "actuator_limits",
             Type::List(Box::new(Type::StructureRef("JointLimit".to_string()))),
         ),
-        ("velocity_limit", Type::Real),
-        ("acceleration_limit", Type::Real),
-        ("vibration_tolerance", Type::Real),
+        ("velocity_limit", Type::dimensionless_scalar()),
+        ("acceleration_limit", Type::dimensionless_scalar()),
+        ("vibration_tolerance", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
-        ("tol", Type::Real),
+        ("tol", Type::dimensionless_scalar()),
     ];
 
     // (c) Param declaration order is part of the contract.
@@ -1473,7 +1473,7 @@ fn tots_shaper_constrains_design_param_invariants() {
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — the dimensioned
-/// literal is required per the esc-3115 rule; a bare `0` is Type::Real
+/// literal is required per the esc-3115 rule; a bare `0` is Type::dimensionless_scalar()
 /// and dim-incompatible with Frequency).
 ///
 /// Uses the HarmonicForce Frequency-constraint pattern
@@ -1513,7 +1513,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -1621,7 +1621,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — dimensioned literal
-/// required per esc-3115 rule; bare `0` is Type::Real, dim-incompatible
+/// required per esc-3115 rule; bare `0` is Type::dimensionless_scalar(), dim-incompatible
 /// with Frequency).
 ///
 /// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
@@ -1659,7 +1659,7 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -1793,8 +1793,8 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
-        ("vibration_tolerance", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
+        ("vibration_tolerance", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -2071,7 +2071,7 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 ///   - `combined_pose    : List<List<Pose3>>`       (outer: time, inner: locations)
 ///
 /// `Pose3` and `Vec3` are module-level aliases for `Real`; so all three nested
-/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::Real))))`.
+/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar()))))`.
 /// `t_samples : List<Time>` compiles to `Type::List(Box::new(Type::Scalar
 /// { dimension: DimensionVector::TIME }))`.
 ///
@@ -2102,8 +2102,8 @@ fn end_effector_track_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("mechanism", Type::Real),
-        ("modal_result", Type::Real),
+        ("mechanism", Type::dimensionless_scalar()),
+        ("modal_result", Type::dimensionless_scalar()),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
@@ -2112,15 +2112,15 @@ fn end_effector_track_struct_has_correct_param_shape() {
         ),
         (
             "nominal_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "vibration_offset",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "combined_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
     ];
 
@@ -2184,7 +2184,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::Real` (LocationId = Real alias).
+/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real alias).
 /// Return type `List<Pose3>` = `List<Real>` via the Pose3 = Real alias.
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
@@ -2216,7 +2216,7 @@ fn end_effector_track_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "end_effector_track param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]
@@ -2224,7 +2224,7 @@ fn end_effector_track_fn_has_correct_signature() {
 
     assert_eq!(
         func.return_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "end_effector_track return type should be List<Real> (= List<Pose3>); \
          got: {:?}",
         func.return_type
@@ -2269,7 +2269,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "deviation_from_nominal param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]
@@ -2326,7 +2326,7 @@ fn peak_deviation_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "peak_deviation param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]

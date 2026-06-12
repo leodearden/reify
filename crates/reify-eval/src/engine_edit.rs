@@ -3507,7 +3507,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_param"),
             },
@@ -3539,7 +3539,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("param"),
             },
@@ -3821,7 +3821,7 @@ mod tests {
             make_cell(
                 &auto_else_id,
                 ValueCellKind::Auto { free: false },
-                Type::Real,
+                Type::dimensionless_scalar(),
                 None,
             ),
         );
@@ -4089,7 +4089,7 @@ mod tests {
             make_cell(
                 &auto_member_id,
                 ValueCellKind::Auto { free: false },
-                Type::Real,
+                Type::dimensionless_scalar(),
                 None,
             ),
         );

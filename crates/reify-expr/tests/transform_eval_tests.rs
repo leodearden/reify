@@ -229,8 +229,8 @@ fn transform_mul_dimensionless_vector_preserves_real() {
         identity_transform(),
         Type::Transform(3),
         v.clone(),
-        Type::vec3(Type::Real),
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     // Verify the result is a Vector (not Undef)
     match &result {

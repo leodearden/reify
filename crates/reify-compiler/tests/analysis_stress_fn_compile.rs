@@ -145,7 +145,7 @@ fn max_shear_cell_type_is_scalar_pressure() {
     );
 }
 
-/// `safety_factor(stress, yield)` must compile-type as `Type::Real`
+/// `safety_factor(stress, yield)` must compile-type as `Type::dimensionless_scalar()`
 /// (dimensionless yield/von_mises ratio) — NOT the first-arg `Tensor<PRESSURE>` drift.
 ///
 /// The yield argument (`250.0e6Pa`) has `Scalar<PRESSURE>` type; the result
@@ -156,7 +156,7 @@ fn safety_factor_cell_type_is_real() {
     let ty = cell_type(&module, "sf");
     assert_eq!(
         ty,
-        Type::Real,
-        "safety_factor(Tensor<Pressure>, Scalar<Pressure>) must compile as Type::Real, got {ty:?}"
+        Type::dimensionless_scalar(),
+        "safety_factor(Tensor<Pressure>, Scalar<Pressure>) must compile as Type::dimensionless_scalar(), got {ty:?}"
     );
 }

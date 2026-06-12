@@ -218,7 +218,7 @@ mod tests {
             ValueCellNode {
                 id,
                 kind: ValueCellKind::Let,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash,
             },

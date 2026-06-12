@@ -212,12 +212,12 @@ const GRID_SAMPLES_PER_AXIS: usize = 11;
 
 /// Return the number of domain dimensions for a supported field domain type.
 ///
-/// - `Type::Real` / `Type::Scalar { .. }` → `Some(1)` (1-D scalar domain)
+/// - `Type::dimensionless_scalar()` / `Type::Scalar { .. }` → `Some(1)` (1-D scalar domain)
 /// - `Type::Point { n, .. }` → `Some(n)` (n-D point domain)
 /// - Anything else → `None` (unsupported domain)
 fn domain_dim(domain_type: &Type) -> Option<usize> {
     match domain_type {
-        Type::Real | Type::Scalar { .. } => Some(1),
+        Type::Scalar { .. } => Some(1),
         Type::Point { n, .. } => Some(*n),
         _ => None,
     }
@@ -1148,11 +1148,11 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
 /// Wrap per-axis SI coords as a `Value` per the field's `domain_type`.
 ///
 /// Supported domains:
-/// - **1-D scalar domain** (`Type::Real`, `Type::Scalar { dim }`):
+/// - **1-D scalar domain** (`Type::dimensionless_scalar()`, `Type::Scalar { dim }`):
 ///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
 ///   (dimensioned). Requires `coords_si.len() == 1`.
 /// - **N-D Point domain** (`Type::Point { n, quantity }` where
-///   `quantity ∈ { Type::Real, Type::Scalar { .. } }`): returns
+///   `quantity ∈ { Type::dimensionless_scalar(), Type::Scalar { .. } }`): returns
 ///   `Value::Point(per-axis-coords)` where each component follows the
 ///   same per-quantity wrap rule. Requires `coords_si.len() == n`.
 ///
@@ -1187,7 +1187,7 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
         }
         // 1-D scalar/dimensionless domain: single coord. `Type::Int` is
         // intentionally NOT in this arm — see doc-comment above.
-        Type::Real | Type::Scalar { .. } if coords_si.len() == 1 => {
+        Type::Scalar { .. } if coords_si.len() == 1 => {
             wrap_scalar_coord(coords_si[0], domain_type)
         }
         _ => Value::Undef,
@@ -1197,12 +1197,12 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
 /// Predicate: is `quantity` a supported per-axis scalar quantity for
 /// `Point`-domain wrapping?
 ///
-/// Returns true only for `Type::Real` and `Type::Scalar { .. }`.
+/// Returns true only for `Type::dimensionless_scalar()` and `Type::Scalar { .. }`.
 /// `Type::Int` and other types are rejected — see [`wrap_coord_for_domain`]
 /// for the rationale (no precise integer round-trip from `axis_grids`'
 /// `f64` storage).
 fn is_supported_scalar_quantity(ty: &Type) -> bool {
-    matches!(ty, Type::Real | Type::Scalar { .. })
+    matches!(ty, Type::Scalar { .. })
 }
 
 /// Wrap a single SI coord per a scalar quantity type.
@@ -1210,14 +1210,14 @@ fn is_supported_scalar_quantity(ty: &Type) -> bool {
 /// Contract:
 /// - `Type::Scalar { dimension }` with non-dimensionless `dimension`
 ///   → `Value::Scalar { si_value, dimension }`.
-/// - `Type::Real` and `Type::Scalar` with dimensionless `dimension`
+/// - `Type::dimensionless_scalar()` and `Type::Scalar` with dimensionless `dimension`
 ///   → `Value::Real(coord_si)`.
 ///
 /// Callers MUST pre-filter `quantity` via [`is_supported_scalar_quantity`]
 /// — passing any other type (e.g. `Type::Int`) hits the catch-all arm
 /// and silently returns `Value::Real`, which is incorrect for the caller's
 /// contract. The `wrap_coord_for_domain` Point arm performs this check.
-/// The 1-D scalar arm only routes `Type::Real` / `Type::Scalar` here, so
+/// The 1-D scalar arm only routes `Type::dimensionless_scalar()` / `Type::Scalar` here, so
 /// it is also safe.
 fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
     match quantity {
@@ -1236,7 +1236,7 @@ fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
 ///   (e.g. `PRESSURE`, `LENGTH`) → `Value::Scalar { si_value, dimension }`,
 ///   preserving the field's codomain dimension on the reduction result so
 ///   `max(von_mises(stress)) < yield_stress` etc. unify dimensionally.
-/// - `Type::Real`, `Type::Int`, dimensionless `Type::Scalar`, and any
+/// - `Type::dimensionless_scalar()`, `Type::Int`, dimensionless `Type::Scalar`, and any
 ///   other codomain → `Value::Real(v)` (the `_` arm is the dimensionless
 ///   default; the codomain type is otherwise unused for max/min).
 fn wrap_codomain(v: f64, codomain_type: &Type) -> Value {

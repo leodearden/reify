@@ -292,7 +292,7 @@ fn is_out_of_bounds(coords: &[f64], min: &[f64], max: &[f64]) -> bool {
 }
 
 /// Wrap an interpolated f64 in the field's codomain shape. Dimensionless
-/// codomain (`Type::Real` or `Type::Int`) → `Value::Real`; otherwise
+/// codomain (`Type::dimensionless_scalar()` or `Type::Int`) → `Value::Real`; otherwise
 /// `Value::Scalar { si_value, dimension: codomain.dim }`.
 fn wrap_result(v: f64, codomain_type: &Type) -> Value {
     match codomain_type {
@@ -378,7 +378,7 @@ mod tests {
         let sf = make_1d_scalar(5, 1.0, |x| 2.0 * x + 3.0);
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
-        let result = sample_at_point(&sf, &Value::Real(2.0), &Type::Real, &ctx);
+        let result = sample_at_point(&sf, &Value::Real(2.0), &Type::dimensionless_scalar(), &ctx);
         assert_eq!(result, Value::Real(7.0), "stride-1 scalar sample must return Real(7.0)");
     }
 
@@ -394,7 +394,7 @@ mod tests {
         // codomain = Vector{2, Real} — the stride-2 type produced by 2D gradient
         let codomain = Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);
@@ -420,7 +420,7 @@ mod tests {
         let sf = make_2d_stride2(3, 3, 1.0, 1.0, |x, y| [x, y]);
         let codomain = Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         let values = ValueMap::new();
         let ctx = EvalContext::simple(&values);

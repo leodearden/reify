@@ -337,7 +337,7 @@ impl CompiledFunction {
     /// and any producer that does not need to supply defaults:
     ///
     /// ```ignore
-    /// let params = vec![("x".to_string(), Type::Real)];
+    /// let params = vec![("x".to_string(), Type::dimensionless_scalar())];
     /// CompiledFunction {
     ///     name: "f".to_string(),
     ///     is_pub: false,
@@ -2253,14 +2253,14 @@ mod tests {
         let unrelated = ValueCellId::new("U", "z");
 
         // ValueRef(old) → BinOp ValueRef(old) > ValueRef(other)
-        let lhs = CompiledExpr::value_ref(old.clone(), Type::Real);
-        let rhs = CompiledExpr::value_ref(other.clone(), Type::Real);
+        let lhs = CompiledExpr::value_ref(old.clone(), Type::dimensionless_scalar());
+        let rhs = CompiledExpr::value_ref(other.clone(), Type::dimensionless_scalar());
         let binop = CompiledExpr::binop(BinOp::Gt, lhs, rhs, Type::Bool);
 
         // Quantifier with variable_id == old, predicate references determinacy on old
         let det =
             CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, old.clone());
-        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar())));
         let quant = CompiledExpr::quantifier(
             QuantifierKind::ForAll,
             "p".to_string(),
@@ -2270,13 +2270,13 @@ mod tests {
         );
 
         // Lambda with captures = [old, unrelated] and param_ids = [old]
-        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::Real);
+        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::dimensionless_scalar());
         let lambda = CompiledExpr::lambda(
-            vec![("p".to_string(), Some(Type::Real))],
+            vec![("p".to_string(), Some(Type::dimensionless_scalar()))],
             vec![old.clone()],
             lambda_body,
             vec![old.clone(), unrelated.clone()],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
 
         // Combine all under a top-level BinOp so a single remap_cell call walks them.
@@ -2284,14 +2284,14 @@ mod tests {
         // since they have different result types and BinOp wants matching children.
         let cond_then = CompiledExpr::list_literal(
             vec![binop, quant, lambda],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
-        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar())));
         let mut tree = make_conditional(
             CompiledExpr::literal(Value::Bool(true), Type::Bool),
             cond_then,
             cond_else,
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         tree.remap_cell(&old, &new_id);
@@ -2381,7 +2381,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         match &expr.kind {
@@ -2394,7 +2394,7 @@ mod tests {
             }
             other => panic!("expected PurposeReflectiveAggregation, got {other:?}"),
         }
-        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
     }
 
     /// step-3 (task-2289): `walk` visits the placeholder node itself but has no
@@ -2404,7 +2404,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let mut count = 0;
         expr.walk(&mut |_| count += 1);
@@ -2418,7 +2418,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         assert!(expr.collect_value_refs().is_empty());
     }
@@ -2439,9 +2439,9 @@ mod tests {
 
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
-        let elem_x = CompiledExpr::value_ref(cell_x.clone(), Type::Real);
-        let elem_y = CompiledExpr::value_ref(cell_y.clone(), Type::Real);
-        let result_type = Type::List(Box::new(Type::Real));
+        let elem_x = CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar());
+        let elem_y = CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar());
+        let result_type = Type::List(Box::new(Type::dimensionless_scalar()));
 
         let rcl = CompiledExpr::reflective_cell_list(
             vec![elem_x.clone(), elem_y.clone()],
@@ -2479,8 +2479,8 @@ mod tests {
         // RCL must differ from ListLiteral with the same elements (tag-byte isolation).
         let ll = CompiledExpr::list_literal(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
             result_type.clone(),
         );
@@ -2502,9 +2502,9 @@ mod tests {
     #[test]
     fn reflective_cell_list_walk_traverses_elements() {
         let elements: Vec<CompiledExpr> = (0..3)
-            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::Real))
+            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::dimensionless_scalar()))
             .collect();
-        let rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::dimensionless_scalar())));
         let mut count = 0;
         rcl.walk(&mut |_| count += 1);
         assert_eq!(count, 4, "walk must visit root + 3 element nodes");
@@ -2520,10 +2520,10 @@ mod tests {
         let cell_b = ValueCellId::new("E", "b");
         let rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_a.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_a.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_b.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let refs = rcl.collect_value_refs();
         assert_eq!(
@@ -2543,10 +2543,10 @@ mod tests {
         let cell_y = ValueCellId::new("E", "y");
         let mut rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         rcl.remap_entity("E", "F");
 
@@ -2575,10 +2575,10 @@ mod tests {
         let cell_new = ValueCellId::new("E2", "x_new");
         let mut rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         rcl.remap_cell(&cell_x, &cell_new);
 
@@ -2612,12 +2612,12 @@ mod tests {
     fn reflective_cell_list_panics_in_debug_when_element_is_not_value_ref() {
         let cell_a = ValueCellId::new("E", "a");
         let elements = vec![
-            CompiledExpr::value_ref(cell_a, Type::Real),
+            CompiledExpr::value_ref(cell_a, Type::dimensionless_scalar()),
             CompiledExpr::literal(Value::Int(0), Type::Int),
         ];
         // Must panic in debug builds because the second element is a Literal,
         // not a ValueRef.
-        let _rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let _rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::dimensionless_scalar())));
     }
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
@@ -2748,22 +2748,22 @@ mod tests {
         let a = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let b = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let different_kind = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "geometric_params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let different_param = CompiledExpr::purpose_reflective_aggregation(
             "other".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         assert_eq!(
@@ -2886,7 +2886,7 @@ mod tests {
         );
 
         // arity 1
-        let params1 = vec![("x".to_string(), Type::Real)];
+        let params1 = vec![("x".to_string(), Type::dimensionless_scalar())];
         let defaults1 = CompiledFunction::no_defaults_for(&params1);
         assert_eq!(
             defaults1.len(),
@@ -2900,8 +2900,8 @@ mod tests {
 
         // arity 2
         let params2 = vec![
-            ("x".to_string(), Type::Real),
-            ("y".to_string(), Type::Real),
+            ("x".to_string(), Type::dimensionless_scalar()),
+            ("y".to_string(), Type::dimensionless_scalar()),
         ];
         let defaults2 = CompiledFunction::no_defaults_for(&params2);
         assert_eq!(

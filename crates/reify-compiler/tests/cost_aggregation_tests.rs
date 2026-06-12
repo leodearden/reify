@@ -81,12 +81,12 @@ fn cost_aggregation_costed_trait_present_in_std_io_with_required_quantity_produc
     match &req.kind {
         RequirementKind::Param(ty) => assert_eq!(
             *ty,
-            Type::Real,
-            "Costed.quantity_produced should be RequirementKind::Param(Type::Real), got Param({:?})",
+            Type::dimensionless_scalar(),
+            "Costed.quantity_produced should be RequirementKind::Param(Type::dimensionless_scalar()), got Param({:?})",
             ty
         ),
         other => panic!(
-            "Costed.quantity_produced should be RequirementKind::Param(Type::Real), got {:?}",
+            "Costed.quantity_produced should be RequirementKind::Param(Type::dimensionless_scalar()), got {:?}",
             other
         ),
     }

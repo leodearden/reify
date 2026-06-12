@@ -243,8 +243,8 @@ fn value_type_kind_matches(
         // diagnostic rather than a hard error, so the kind check must not reject
         // them.  This is intentional and mirrors the pre-existing collection
         // count behaviour (see edit_param_non_int_*_count_emits_warning tests).
-        Value::Int(_) => matches!(ty, Type::Int | Type::Real),
-        Value::Real(_) => matches!(ty, Type::Real | Type::Int),
+        Value::Int(_) => matches!(ty, Type::Int | Type::Scalar { .. }),
+        Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
         Value::Enum { .. } => matches!(ty, Type::Enum(_)),
@@ -1283,7 +1283,7 @@ mod tests {
         let t = Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1305,7 +1305,7 @@ mod tests {
         let t = Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1313,7 +1313,7 @@ mod tests {
         );
     }
 
-    /// Value::Tensor supplied to Type::Real must return false.
+    /// Value::Tensor supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path: Tensor values are rejected by
     /// non-Tensor/non-Matrix types, confirming the `matches!` guard cannot be
     /// trivially widened to `_ => true` without breaking this assertion.
@@ -1322,14 +1322,14 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Tensor(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
+            "Value::Tensor should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
-    /// Value::Matrix supplied to Type::Real must return false.
+    /// Value::Matrix supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path for Matrix, symmetric to the
     /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
     #[test]
@@ -1337,10 +1337,10 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Matrix(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
+            "Value::Matrix should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
@@ -1697,7 +1697,7 @@ mod tests {
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
         use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
-        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+        for t in [Type::Int, Type::dimensionless_scalar(), Type::Bool, Type::String] {
             assert!(
                 !value_type_kind_matches(&v, &t, Some(&reg)),
                 "StructureInstance must be rejected by unrelated type {t:?}"
@@ -1748,7 +1748,7 @@ mod tests {
         };
         for t in [
             Type::Int,
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::StructureRef("X".to_string()),
             Type::List(Box::new(Type::Int)),
             Type::Bool,
@@ -1931,7 +1931,7 @@ structure S {
                     .param(
                         "Widget",
                         "width",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         Some(literal(Value::Real(1.0))),
                     )
                     .build(),
@@ -2433,6 +2433,21 @@ structure S {
             real_diags,
             stub_diags,
             "real checker must produce identical diagnostics to stub at compile time"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for value_type_kind_matches ───────
+    //
+    // After α, a dimensionless cell is statically typed Scalar{DL} but holds
+    // Value::Real — the runtime bridge MUST accept this combination.
+    // RED today: Value::Real(_) matches only Type::dimensionless_scalar() | Type::Int (line 247),
+    // so value_type_kind_matches(Real, Scalar{DL}) returns false.
+    #[test]
+    fn value_real_matches_dimensionless_scalar_type() {
+        assert!(
+            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
+             (the runtime bridge after α)"
         );
     }
 }

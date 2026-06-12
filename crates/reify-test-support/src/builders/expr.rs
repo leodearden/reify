@@ -328,20 +328,13 @@ fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
                 dimension: ld.mul(rd),
             },
             (Type::Scalar { .. }, _) | (_, Type::Scalar { .. }) => left.clone(),
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Div => match (left, right) {
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                let result = ld.div(rd);
-                if result.is_dimensionless() {
-                    Type::Real
-                } else {
-                    Type::Scalar { dimension: result }
-                }
+                Type::Scalar { dimension: ld.div(rd) }
             }
             (Type::Scalar { .. }, _) => left.clone(),
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Mod => left.clone(),
@@ -412,7 +405,7 @@ mod tests {
     #[test]
     fn literal_empty_list_uses_real_fallback() {
         let expr = literal(Value::List(vec![]));
-        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
     }
 
     #[test]
@@ -420,7 +413,7 @@ mod tests {
         let expr = literal(Value::Set(BTreeSet::new()));
         assert_eq!(
             expr.result_type,
-            Type::Set(Box::new(Type::Real)),
+            Type::Set(Box::new(Type::dimensionless_scalar())),
             "empty Set should produce Set(Real)"
         );
     }
@@ -430,7 +423,7 @@ mod tests {
         let expr = literal(Value::Map(BTreeMap::new()));
         assert_eq!(
             expr.result_type,
-            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
             "empty Map should produce Map(String, Real)"
         );
     }
@@ -481,8 +474,8 @@ mod tests {
     #[test]
     fn fn_call_produces_function_call_with_resolved_function() {
         let arg = literal(Value::Real(1.0));
-        let expr = fn_call("sin", "std::math::sin", vec![arg], Type::Real);
-        assert_eq!(expr.result_type, Type::Real);
+        let expr = fn_call("sin", "std::math::sin", vec![arg], Type::dimensionless_scalar());
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
             assert_eq!(function.name, "sin");
             assert_eq!(function.qualified_name, "std::math::sin");
@@ -527,12 +520,12 @@ mod tests {
     #[test]
     fn lambda_expr_produces_lambda_with_function_type() {
         let body = literal(Value::Real(1.0));
-        let expr = lambda_expr(vec![("x", Type::Real)], body);
+        let expr = lambda_expr(vec![("x", Type::dimensionless_scalar())], body);
         assert_eq!(
             expr.result_type,
             Type::Function {
-                params: vec![Type::Real],
-                return_type: Box::new(Type::Real),
+                params: vec![Type::dimensionless_scalar()],
+                return_type: Box::new(Type::dimensionless_scalar()),
             }
         );
         if let CompiledExprKind::Lambda {
@@ -554,20 +547,20 @@ mod tests {
     fn sample_call_produces_function_call_with_std_field_sample() {
         let field_e = literal(Value::Real(0.0)); // dummy field expr
         let point_e = literal(Value::Real(1.0));
-        let expr = sample_call(field_e, point_e, Type::Real);
+        let expr = sample_call(field_e, point_e, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
             assert_eq!(function.qualified_name, "std::field::sample");
             assert_eq!(args.len(), 2);
         } else {
             panic!("expected FunctionCall kind for sample_call");
         }
-        assert_eq!(expr.result_type, Type::Real);
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
     }
 
     #[test]
     fn gradient_call_produces_function_call_with_std_field_gradient() {
         let field_e = literal(Value::Real(0.0));
-        let expr = gradient_call(field_e, Type::Real);
+        let expr = gradient_call(field_e, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
             assert_eq!(function.qualified_name, "std::field::gradient");
             assert_eq!(args.len(), 1);
@@ -579,7 +572,7 @@ mod tests {
     #[test]
     fn divergence_call_produces_function_call_with_std_field_divergence() {
         let field_e = literal(Value::Real(0.0));
-        let expr = divergence_call(field_e, Type::Real);
+        let expr = divergence_call(field_e, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, .. } = &expr.kind {
             assert_eq!(function.qualified_name, "std::field::divergence");
         } else {
@@ -590,7 +583,7 @@ mod tests {
     #[test]
     fn curl_call_produces_function_call_with_std_field_curl() {
         let field_e = literal(Value::Real(0.0));
-        let expr = curl_call(field_e, Type::Real);
+        let expr = curl_call(field_e, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, .. } = &expr.kind {
             assert_eq!(function.qualified_name, "std::field::curl");
         } else {
@@ -603,8 +596,8 @@ mod tests {
     #[test]
     fn laplacian_call_produces_function_call_with_std_field_laplacian() {
         let field_e = literal(Value::Real(0.0));
-        let expr = laplacian_call(field_e, Type::Real);
-        assert_eq!(expr.result_type, Type::Real);
+        let expr = laplacian_call(field_e, Type::dimensionless_scalar());
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
         if let CompiledExprKind::FunctionCall { function, args } = &expr.kind {
             assert_eq!(function.name, "laplacian");
             assert_eq!(function.qualified_name, "std::field::laplacian");
@@ -620,7 +613,7 @@ mod tests {
     fn field_literal_expr_produces_literal_with_field_type() {
         use reify_ir::FieldSourceKind;
         let domain = Type::Geometry;
-        let codomain = Type::Real;
+        let codomain = Type::dimensionless_scalar();
         let lambda = Value::Undef;
         let expr = field_literal_expr(
             domain.clone(),
@@ -645,7 +638,7 @@ mod tests {
     fn field_literal_expr_wraps_lambda() {
         use reify_ir::FieldSourceKind;
         let domain = Type::Geometry;
-        let codomain = Type::Real;
+        let codomain = Type::dimensionless_scalar();
         let lambda = Value::Int(42);
         let expr = field_literal_expr(
             domain.clone(),

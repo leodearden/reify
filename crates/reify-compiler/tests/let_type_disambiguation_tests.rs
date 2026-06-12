@@ -4,8 +4,8 @@
 //! annotation in `DefaultKind::Let { cell_type, .. }`:
 //!   - annotated `let x : Length = …` → `cell_type = Some(Type::length())`
 //!   - unannotated `let x = …`        → `cell_type = None`
-//!   - explicitly `let x : Real = …`  → `cell_type = Some(Type::Real)`
-//!   - unknown annotation `let x : Nonexistent = …` → diagnostic + `Some(Type::Real)` fallback
+//!   - explicitly `let x : Real = …`  → `cell_type = Some(Type::dimensionless_scalar())`
+//!   - unknown annotation `let x : Nonexistent = …` → diagnostic + `Some(Type::dimensionless_scalar())` fallback
 //!
 //! Steps 8 and 9 add integration tests for the conformance check path that
 //! produced a false type-mismatch before this fix.
@@ -107,7 +107,7 @@ trait HasUntyped {
 }
 
 /// A trait with `let x : Real = 5.0` must produce a DefaultKind::Let whose
-/// cell_type is Some(Type::Real).
+/// cell_type is Some(Type::dimensionless_scalar()).
 #[test]
 fn let_with_real_annotation_carries_cell_type_real() {
     let source = r#"
@@ -123,16 +123,16 @@ trait HasReal {
     );
     assert_eq!(
         extract_let_cell_type(source, "HasReal"),
-        Some(Type::Real),
-        "let x : Real should have cell_type = Some(Type::Real)"
+        Some(Type::dimensionless_scalar()),
+        "let x : Real should have cell_type = Some(Type::dimensionless_scalar())"
     );
 }
 
 /// When the annotation names an unknown type, a diagnostic is emitted and
-/// cell_type falls back to Some(Type::Real) for error-recovery (not None).
+/// cell_type falls back to Some(Type::dimensionless_scalar()) for error-recovery (not None).
 ///
 /// This guards against a silent regression where someone changes the fallback
-/// from `Some(Type::Real)` to `None`, which would alter conformance semantics.
+/// from `Some(Type::dimensionless_scalar())` to `None`, which would alter conformance semantics.
 #[test]
 fn let_with_unknown_annotation_emits_diagnostic_and_falls_back_to_real() {
     let source = r#"
@@ -155,8 +155,8 @@ trait HasBadType {
     );
     assert_eq!(
         extract_let_cell_type(source, "HasBadType"),
-        Some(Type::Real),
-        "error-recovery fallback must be Some(Type::Real), not None"
+        Some(Type::dimensionless_scalar()),
+        "error-recovery fallback must be Some(Type::dimensionless_scalar()), not None"
     );
 }
 
@@ -165,7 +165,7 @@ trait HasBadType {
 /// Trait A provides `let x : Length = 5mm`, trait B requires `let x : Length`.
 /// Structure S : A + B should compile without errors.
 ///
-/// Before the fix, available_defaults used Type::Real for all Let defaults,
+/// Before the fix, available_defaults used Type::dimensionless_scalar() for all Let defaults,
 /// so the conformance check compared Real vs Scalar{LENGTH} → false type-mismatch.
 #[test]
 fn annotated_let_default_satisfies_let_requirement() {
@@ -406,7 +406,7 @@ structure S : HasX {
 #[test]
 fn annotated_let_compatible_expr_no_diagnostic() {
     // Exact match: Real annotation, Real expression.
-    // `5.5` is a fractional literal → `Type::Real` (whole-number `.0` literals
+    // `5.5` is a fractional literal → `Type::dimensionless_scalar()` (whole-number `.0` literals
     // are typed as `Int` by the compiler and would trip the cross-check).
     let real_source = r#"
 trait HasR {
@@ -511,7 +511,7 @@ trait B {
 /// `unresolved name: b` diagnostic — a silent regression vs. the pre-1834
 /// code, which registered every annotated type up front.  The two-pass
 /// structure (annotated-first, then unannotated-with-compile) restores the
-/// old tolerance without re-introducing the `Type::Real` fallback.
+/// old tolerance without re-introducing the `Type::dimensionless_scalar()` fallback.
 ///
 /// Flip-guard for the sibling limitation test: this scenario is `mixed`
 /// (one annotated, one unannotated).  The purely-unannotated mutual case
@@ -628,7 +628,7 @@ structure S : WithParam {
 /// Trait T has an unannotated `let x = 5mm` and a co-trait constraint
 /// `x + 1mm > 2mm` that references `x`.  The constraint expression compiles in
 /// the scope built during the pre-register pass: before task 1834 that scope
-/// registered `x : Real` for every unannotated let (the `.unwrap_or(Type::Real)`
+/// registered `x : Real` for every unannotated let (the `.unwrap_or(Type::dimensionless_scalar())`
 /// fallback), so the addition `x + 1mm` became `Real + Length` which trips the
 /// "dimensioned + dimensionless" dimension-mismatch check in expr.rs:290.
 ///
@@ -661,7 +661,7 @@ structure S : T {
         errors.is_empty(),
         "structure S : T with unannotated `let x = 5mm` and constraint \
          `x + 1mm > 2mm` should compile without dimension-mismatch errors — the \
-         pre-register pass must infer `x : Length`, not fall back to `Type::Real` \
+         pre-register pass must infer `x : Length`, not fall back to `Type::dimensionless_scalar()` \
          (got: {:?})",
         errors
     );
@@ -684,7 +684,7 @@ structure S : T {
             dimension: DimensionVector::LENGTH,
         },
         "unannotated `let x = 5mm` must infer `cell_type = Type::length()` on \
-         the injected cell, not fall back to Type::Real"
+         the injected cell, not fall back to Type::dimensionless_scalar()"
     );
 }
 
@@ -777,9 +777,9 @@ structure S : MutualLets {
 /// ## Pre-fix behaviour (task 1914 step-2 fixes this)
 ///
 /// Before the fix, Pass 2 of `check_phase_pre_register_default_types` inserted the
-/// poisoned `compile_expr` result (Type::Real or Type::Error) into
+/// poisoned `compile_expr` result (Type::dimensionless_scalar() or Type::Error) into
 /// `inferred_let_exprs`, and `check_phase_build_available_defaults_map` advertised a
-/// phantom `("a", Let) → Type::Real` entry.  Any trait requirement matching against
+/// phantom `("a", Let) → Type::dimensionless_scalar()` entry.  Any trait requirement matching against
 /// that phantom entry would then emit a spurious "available default has Real"
 /// type-mismatch cascade on top of the original root-cause diagnostic.
 #[test]
@@ -830,7 +830,7 @@ structure S : HasA {
     }
 
     // (b) No cascade "available default has Real" diagnostic.
-    // A phantom `("a", Let) -> Type::Real` advertisement would cause
+    // A phantom `("a", Let) -> Type::dimensionless_scalar()` advertisement would cause
     // check_phase_check_members_against_requirements to emit this substring
     // when comparing against any requirement with a non-Real expected type.
     let cascade_diags: Vec<_> = errors
@@ -983,7 +983,7 @@ structure S : T {
     );
 
     // (c) No cascade "available default has Real" diagnostic.
-    // A phantom `("a", Let) -> Type::Real` advertisement would cause
+    // A phantom `("a", Let) -> Type::dimensionless_scalar()` advertisement would cause
     // check_phase_check_members_against_requirements to emit this substring.
     let cascade_diags: Vec<_> = errors
         .iter()
@@ -1017,7 +1017,7 @@ structure S : T {
 // ── task 3184: int-vs-real AST distinction — compiler-level tests ─────────────
 
 /// RED test for task 3184: `1.0` (a whole-number decimal literal) must lower to
-/// `Value::Real(1.0)` with `result_type == Type::Real`, not `Value::Int(1)`.
+/// `Value::Real(1.0)` with `result_type == Type::dimensionless_scalar()`, not `Value::Int(1)`.
 ///
 /// Before the fix, `expr.rs` used a value-based heuristic: any f64 that equals
 /// its integer cast becomes `Int`. So `1.0` → `Int(1)`. This test FAILS until
@@ -1054,8 +1054,8 @@ structure S : HasX {
 
     assert_eq!(
         x_cell.cell_type,
-        Type::Real,
-        "cell_type must be Type::Real (annotation authoritative)"
+        Type::dimensionless_scalar(),
+        "cell_type must be Type::dimensionless_scalar() (annotation authoritative)"
     );
 
     let default_expr = x_cell
@@ -1065,8 +1065,8 @@ structure S : HasX {
 
     assert_eq!(
         default_expr.result_type,
-        Type::Real,
-        "default_expr.result_type must be Type::Real for `1.0`; \
+        Type::dimensionless_scalar(),
+        "default_expr.result_type must be Type::dimensionless_scalar() for `1.0`; \
          before task 3184 step-4 it was Type::Int (value-based heuristic). Got: {:?}",
         default_expr.result_type
     );
@@ -1127,8 +1127,8 @@ structure S : HasX {
 
     assert_eq!(
         x_cell.cell_type,
-        Type::Real,
-        "cell_type must be Type::Real (annotation authoritative)"
+        Type::dimensionless_scalar(),
+        "cell_type must be Type::dimensionless_scalar() (annotation authoritative)"
     );
 
     let default_expr = x_cell
@@ -1157,8 +1157,8 @@ structure S : HasX {
 /// compiles it, and asserts:
 ///
 /// 1. Zero error diagnostics.
-/// 2. `x_cell.cell_type == Type::Real` (annotation authoritative; sanity only).
-/// 3. `default_expr.result_type == Type::Real` (catches Int re-classification).
+/// 2. `x_cell.cell_type == Type::dimensionless_scalar()` (annotation authoritative; sanity only).
+/// 3. `default_expr.result_type == Type::dimensionless_scalar()` (catches Int re-classification).
 /// 4. `default_expr.kind == Literal(Value::Real(expected_value))` (catches
 ///    value-typed regression with the most specific signal).
 ///
@@ -1190,8 +1190,8 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
 
     assert_eq!(
         x_cell.cell_type,
-        Type::Real,
-        "cell_type must be Type::Real (annotation authoritative) for `{}`",
+        Type::dimensionless_scalar(),
+        "cell_type must be Type::dimensionless_scalar() (annotation authoritative) for `{}`",
         label
     );
 
@@ -1202,8 +1202,8 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
 
     assert_eq!(
         default_expr.result_type,
-        Type::Real,
-        "default_expr.result_type must be Type::Real for `{}`; \
+        Type::dimensionless_scalar(),
+        "default_expr.result_type must be Type::dimensionless_scalar() for `{}`; \
          a regression dropping a character check from the `is_real` classifier in \
          `lower_number_literal` in reify-syntax/src/ts_parser.rs would emit Type::Int \
          for integer-equal exponent forms. Got: {:?}",
@@ -1230,7 +1230,7 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
 }
 
 /// Regression guard for esc-3184-54: lowercase-e exponent form `1e6` must lower
-/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::dimensionless_scalar()`.
 ///
 /// Production code under test: the `is_real` classifier in `lower_number_literal`
 /// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('e')`).
@@ -1252,7 +1252,7 @@ fn exponent_form_lowercase_e_real_literal_compiles_as_real() {
 }
 
 /// Regression guard for esc-3184-54: uppercase-E exponent form `1E6` must lower
-/// to `Value::Real(1_000_000.0)` with `result_type == Type::Real`.
+/// to `Value::Real(1_000_000.0)` with `result_type == Type::dimensionless_scalar()`.
 ///
 /// Production code under test: the `is_real` classifier in `lower_number_literal`
 /// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('E')`).
@@ -1274,7 +1274,7 @@ fn exponent_form_uppercase_e_real_literal_compiles_as_real() {
 }
 
 /// Value-preservation sanity check for esc-3184-54: negative-exponent form `1e-5`
-/// must lower to `Value::Real(1e-5_f64)` with `result_type == Type::Real`.
+/// must lower to `Value::Real(1e-5_f64)` with `result_type == Type::dimensionless_scalar()`.
 ///
 /// Production code under test: the `is_real` classifier in `lower_number_literal`
 /// in `crates/reify-syntax/src/ts_parser.rs` (look for `text.contains('e')`).
@@ -1284,7 +1284,7 @@ fn exponent_form_uppercase_e_real_literal_compiles_as_real() {
 /// so a regression dropping `'e'` from the `is_real` disjunction would set
 /// `is_real = false`, but the literal would still reach `Value::Real(0.00001)` via
 /// the non-integer-equal Real fallback in the NumberLiteral lowering arm of
-/// `reify-compiler/src/expr.rs` — both `result_type == Type::Real` and
+/// `reify-compiler/src/expr.rs` — both `result_type == Type::dimensionless_scalar()` and
 /// `Value::Real(0.00001)` would still hold. This test is a **value-preservation
 /// sanity check** for the negative-exponent code path, not a regression tripwire.
 #[test]

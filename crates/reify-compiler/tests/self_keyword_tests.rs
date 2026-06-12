@@ -1130,7 +1130,7 @@ structure S {
 fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
     // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
     // have a cell type matching Bolt's diameter type (Scalar with length dimension),
-    // NOT Type::Real.
+    // NOT Type::dimensionless_scalar().
     let source = r#"structure Bolt {
     param diameter : Length = 10mm
 }
@@ -1221,7 +1221,7 @@ structure S {
 fn self_dot_collection_sub_no_cascading_diagnostics() {
     // `self.items.diameter` used in a constraint should produce exactly 1 error
     // (the collection sub error), not additional type-mismatch diagnostics from
-    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    // d being Type::dimensionless_scalar() and then being compared with 5mm (Scalar{Length}).
     let source = r#"structure Bolt {
     param diameter : Length = 10mm
 }

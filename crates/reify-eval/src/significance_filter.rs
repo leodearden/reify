@@ -436,8 +436,8 @@ mod tests {
 
     fn make_sampled_field(name: &str, data: &[f64]) -> Value {
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::SampledField(SampledField {
                 name: name.to_string(),
@@ -755,8 +755,8 @@ mod tests {
 
         // (d) new's displacement Field has source: Analytical (not Sampled).
         let analytical_field = Value::Field {
-            domain_type: reify_core::ty::Type::Real,
-            codomain_type: reify_core::ty::Type::Real,
+            domain_type: reify_core::ty::Type::dimensionless_scalar(),
+            codomain_type: reify_core::ty::Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -834,8 +834,8 @@ mod tests {
         fn make_shifted_disp(data: &[f64], grid_offset: f64) -> Value {
             let n = data.len();
             Value::Field {
-                domain_type: Type::Real,
-                codomain_type: Type::Real,
+                domain_type: Type::dimensionless_scalar(),
+                codomain_type: Type::dimensionless_scalar(),
                 source: FieldSourceKind::Sampled,
                 lambda: Arc::new(Value::SampledField(SampledField {
                     name: "displacement".to_string(),

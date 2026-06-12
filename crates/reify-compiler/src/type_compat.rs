@@ -38,7 +38,6 @@ fn is_scalar_like_leaf(ty: &Type) -> bool {
         ty,
         Type::Bool
             | Type::Int
-            | Type::Real
             | Type::String
             | Type::Scalar { .. }
             | Type::Enum(_)
@@ -59,7 +58,7 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     //
     // CONSUMER side (`to.is_error()`): declared annotations are resolved via
     // `resolve_type_with_aliases`, which always falls back to a concrete type
-    // (e.g. Type::Real, Type::StructureRef) — Type::Error never legitimately
+    // (e.g. Type::dimensionless_scalar(), Type::StructureRef) — Type::Error never legitimately
     // appears as the expected/declared type. The debug_assert below catches any
     // call site that accidentally passes Error as `to` (a bug, not a cascade).
     // In release builds the short-circuit preserves cascade safety as a
@@ -212,7 +211,7 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 ///
 /// `param_ty.is_error()` **must never legitimately occur**: production call sites
 /// pass types that originate from `resolve_type_with_aliases`, which always falls
-/// back to a concrete type (e.g. `Type::Real`, `Type::StructureRef`) and never
+/// back to a concrete type (e.g. `Type::dimensionless_scalar()`, `Type::StructureRef`) and never
 /// returns `Type::Error`. The debug_assert below catches any future regression,
 /// including the two recursive calls in the body below (both safe by the same
 /// invariants). In release builds the short-circuit preserves cascade safety as
@@ -229,8 +228,10 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty.is_error() || arg_ty.is_error() {
         return true;
     }
-    // Allow Int→Real widening coercion
-    if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
+    // Allow Int→dimensionless-scalar widening coercion
+    if let (Type::Scalar { dimension }, Type::Int) = (param_ty, arg_ty)
+        && dimension.is_dimensionless()
+    {
         return true;
     }
     // PRD §4.4 (task 4117 β): Selector(_) arg coerces ONE-DIRECTIONALLY to a
@@ -285,7 +286,7 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 ///
 /// Call-site overload resolution (`resolve_function_overload`) and
 /// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
-/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::Real`.
+/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::dimensionless_scalar()`.
 /// A default value is conceptually inserted at the padded call site, so the
 /// definition-site check must be at least as strict as the call-site check;
 /// otherwise a default could synthesize an argument that an explicit call would
@@ -297,7 +298,7 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 /// and `type_compatible` (task-448 / task-1918 cascade-safety contract).
 ///
 /// Note: `param_ty` is always a concrete resolved type (never `Type::Error`) in
-/// production — `resolve_type_expr_with_aliases` always falls back to `Type::Real`
+/// production — `resolve_type_expr_with_aliases` always falls back to `Type::dimensionless_scalar()`
 /// on failure. The `param_ty.is_error()` branch is therefore dead code in practice
 /// but is included for symmetry and belt-and-braces safety.
 pub(crate) fn fn_param_default_compatible(param_ty: &Type, default_ty: &Type) -> bool {
@@ -400,7 +401,6 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         // All remaining leaves carry no inner `Type`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -588,7 +588,6 @@ pub(crate) fn unify(
         // True leaves (no inner `Type` to bind):
         (Type::Bool, _)
         | (Type::Int, _)
-        | (Type::Real, _)
         | (Type::String, _)
         | (Type::Scalar { .. }, _)
         | (Type::Enum(_), _)
@@ -883,20 +882,13 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
                     right.clone()
                 }
             }
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Div => match (left, right) {
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                let result = ld.div(rd);
-                if result.is_dimensionless() {
-                    Type::Real
-                } else {
-                    Type::Scalar { dimension: result }
-                }
+                Type::Scalar { dimension: ld.div(rd) }
             }
             (Type::Scalar { .. }, _) => left.clone(),
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Mod => left.clone(),
@@ -989,7 +981,7 @@ mod tests {
     fn stub_body() -> CompiledFnBody {
         CompiledFnBody {
             let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         }
     }
 
@@ -1006,7 +998,7 @@ mod tests {
             is_pub: false,
             params,
             param_defaults,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body(),
             content_hash: ContentHash::of_str(name),
             annotations: vec![],
@@ -1050,7 +1042,7 @@ mod tests {
             "g",
             vec![
                 ("j", Type::TraitObject("DrivingJoint".to_string())),
-                ("k", Type::Real),
+                ("k", Type::dimensionless_scalar()),
             ],
         )];
         // arg k is Int, not Real → no match
@@ -1069,8 +1061,8 @@ mod tests {
     /// Must hold both before and after step-2 (no regression).
     #[test]
     fn overload_all_concrete_fn_unchanged() {
-        let fns = vec![make_fn("h", vec![("x", Type::Real)])];
-        let resolved = resolve_function_overload("h", &[Type::Real], &fns);
+        let fns = vec![make_fn("h", vec![("x", Type::dimensionless_scalar())])];
+        let resolved = resolve_function_overload("h", &[Type::dimensionless_scalar()], &fns);
         assert!(
             matches!(resolved, OverloadResolution::Resolved(_)),
             "h(Real) should resolve on Real arg"
@@ -1200,19 +1192,19 @@ mod tests {
     fn fmt_dim_mismatch_non_scalar_does_not_panic() {
         // Left non-Scalar, right Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::Real, &force_ty(), test_span());
+            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &force_ty(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Left Scalar, right non-Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::Real, test_span());
+            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::dimensionless_scalar(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Both non-Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::Real, &Type::Real, test_span());
+            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &Type::dimensionless_scalar(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }
@@ -1228,7 +1220,7 @@ mod tests {
     #[test]
     fn binop_mul_right_error_yields_error() {
         assert_eq!(
-            infer_binop_type(BinOp::Mul, &Type::Real, &Type::Error),
+            infer_binop_type(BinOp::Mul, &Type::dimensionless_scalar(), &Type::Error),
             Type::Error,
         );
     }
@@ -1296,14 +1288,14 @@ mod tests {
         ];
         for (op, label) in ops {
             assert_eq!(
-                infer_binop_type(*op, &Type::Error, &Type::Real),
+                infer_binop_type(*op, &Type::Error, &Type::dimensionless_scalar()),
                 Type::Error,
                 "BinOp::{:?} ({}) failed to propagate Type::Error from LEFT operand",
                 op,
                 label,
             );
             assert_eq!(
-                infer_binop_type(*op, &Type::Real, &Type::Error),
+                infer_binop_type(*op, &Type::dimensionless_scalar(), &Type::Error),
                 Type::Error,
                 "BinOp::{:?} ({}) failed to propagate Type::Error from RIGHT operand",
                 op,
@@ -1356,7 +1348,7 @@ mod tests {
     fn stub_body_real() -> CompiledFnBody {
         CompiledFnBody {
             let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         }
     }
 
@@ -1377,17 +1369,17 @@ mod tests {
     /// task-3702 (tighten try_default_padding signature)
     #[test]
     fn try_default_padding_new_signature_returns_padded_fn() {
-        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "f".to_string(),
             doc: None,
             is_pub: false,
             params: vec![
-                ("x".to_string(), Type::Real),
-                ("y".to_string(), Type::Real),
+                ("x".to_string(), Type::dimensionless_scalar()),
+                ("y".to_string(), Type::dimensionless_scalar()),
             ],
             param_defaults: vec![None, Some(default_expr.clone())],
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("f_stub_3702"),
             annotations: vec![],
@@ -1396,7 +1388,7 @@ mod tests {
         };
 
         // New signature: no compiled_args — only arg_types.
-        let result = try_default_padding(&[&cand], &[Type::Real]);
+        let result = try_default_padding(&[&cand], &[Type::dimensionless_scalar()]);
 
         let (matched_fn, defaults) = result.expect("should find a matching candidate");
         assert!(
@@ -1435,19 +1427,19 @@ mod tests {
     /// `(Real, Int)` is rejected (left is Real) → `false`.
     #[test]
     fn modulo_operands_real_int_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Real, &Type::Int));
+        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::Int));
     }
 
     /// `(Int, Real)` is rejected (right is Real) → `false`.
     #[test]
     fn modulo_operands_int_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Int, &Type::Real));
+        assert!(!modulo_operands_are_int(&Type::Int, &Type::dimensionless_scalar()));
     }
 
     /// `(Real, Real)` — both wrong → `false`.
     #[test]
     fn modulo_operands_real_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Real, &Type::Real));
+        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()));
     }
 
     /// `(Scalar{LENGTH}, Scalar{LENGTH})` — dimensioned types are not Int → `false`.
@@ -1578,7 +1570,7 @@ mod tests {
         use reify_core::ty::SelectorKind;
         assert!(
             !type_compatible(
-                &Type::List(Box::new(Type::Real)),
+                &Type::List(Box::new(Type::dimensionless_scalar())),
                 &Type::Selector(SelectorKind::Face)
             ),
             "List<Real> param with Selector(Face) arg must be incompatible (only List<Geometry> coerces)"
@@ -1633,7 +1625,7 @@ mod tests {
     #[test]
     fn type_compatible_any_selector_param_real_arg_is_false() {
         assert!(
-            !type_compatible(&Type::AnySelector, &Type::Real),
+            !type_compatible(&Type::AnySelector, &Type::dimensionless_scalar()),
             "AnySelector param with Real arg must be incompatible"
         );
     }
@@ -1685,9 +1677,9 @@ mod tests {
             name: "bad".to_string(),
             doc: None,
             is_pub: false,
-            params: vec![("x".to_string(), Type::Real)],
+            params: vec![("x".to_string(), Type::dimensionless_scalar())],
             param_defaults: Vec::new(), // invariant violation — intentional for this test
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("bad_stub_3702"),
             annotations: vec![],
@@ -1715,8 +1707,8 @@ mod tests {
     fn unify_binds_bare_type_param() {
         // (a) unify(TypeParam("T"), Real) → Ok, subst == {T: Real}.
         let mut subst = HashMap::new();
-        assert!(unify(&tp("T"), &Type::Real, &mut subst).is_ok());
-        assert_eq!(subst.get("T"), Some(&Type::Real));
+        assert!(unify(&tp("T"), &Type::dimensionless_scalar(), &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::dimensionless_scalar()));
         assert_eq!(subst.len(), 1);
     }
 
@@ -1747,14 +1739,14 @@ mod tests {
                     codomain: Box::new(tp("C")),
                 },
                 &Type::Field {
-                    domain: Box::new(Type::Real),
+                    domain: Box::new(Type::dimensionless_scalar()),
                     codomain: Box::new(Type::length()),
                 },
                 &mut subst,
             )
             .is_ok()
         );
-        assert_eq!(subst.get("B"), Some(&Type::Real));
+        assert_eq!(subst.get("B"), Some(&Type::dimensionless_scalar()));
         assert_eq!(subst.get("C"), Some(&Type::length()));
         assert_eq!(subst.len(), 2);
     }
@@ -1765,11 +1757,11 @@ mod tests {
         //     conflict.param == "T".
         let mut subst = HashMap::new();
         assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
-        let err = unify(&tp("T"), &Type::Real, &mut subst)
+        let err = unify(&tp("T"), &Type::dimensionless_scalar(), &mut subst)
             .expect_err("re-binding T to a different type must conflict");
         assert_eq!(err.param, "T");
         assert_eq!(err.existing, Type::Int);
-        assert_eq!(err.incoming, Type::Real);
+        assert_eq!(err.incoming, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1842,16 +1834,16 @@ mod tests {
     fn overload_concrete_beats_generic_on_exact_match() {
         // Tie-break (INV-6 guard): concrete f(Real)->Real + generic f<T>(x:T)->T
         // called with Real resolves to the CONCRETE overload (exact match wins).
-        let concrete = make_fn("f", vec![("x", Type::Real)]); // non-generic, returns Real
+        let concrete = make_fn("f", vec![("x", Type::dimensionless_scalar())]); // non-generic, returns Real
         let generic = make_generic_fn("f", vec![("x", tp("T"))], &["T"], tp("T"));
         let fns = vec![concrete, generic];
-        match resolve_function_overload("f", &[Type::Real], &fns) {
+        match resolve_function_overload("f", &[Type::dimensionless_scalar()], &fns) {
             OverloadResolution::Resolved(matched) => {
                 assert!(
                     matched.type_params.is_empty(),
                     "exact concrete overload should win over the generic one"
                 );
-                assert_eq!(matched.return_type, Type::Real);
+                assert_eq!(matched.return_type, Type::dimensionless_scalar());
             }
             OverloadResolution::NoMatch(_) => panic!("expected Resolved(concrete), got NoMatch"),
             OverloadResolution::Ambiguous(_) => {
@@ -1874,18 +1866,18 @@ mod tests {
         assert!(type_carries_type_param(&tp("T")));
         assert!(type_carries_type_param(&Type::Field {
             domain: Box::new(tp("D")),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         }));
         assert!(
             type_carries_type_param(&Type::List(Box::new(Type::Field {
                 domain: Box::new(tp("D")),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }))),
             "recursion must pass through List into Field"
         );
         assert!(type_carries_type_param(&Type::Function {
-            params: vec![Type::Real, tp("T")],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar(), tp("T")],
+            return_type: Box::new(Type::dimensionless_scalar()),
         }));
         assert!(type_carries_type_param(&Type::Union(vec![Type::Int, tp("T")])));
         assert!(type_carries_type_param(&Type::Tensor {
@@ -1898,9 +1890,9 @@ mod tests {
         assert!(type_carries_type_param(&Type::Range(Box::new(tp("T")))));
 
         // Negative: no type-param anywhere → false (leaves + concrete nesting).
-        assert!(!type_carries_type_param(&Type::Real));
+        assert!(!type_carries_type_param(&Type::dimensionless_scalar()));
         assert!(!type_carries_type_param(&Type::Field {
-            domain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::length()),
         }));
         assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
@@ -1914,17 +1906,17 @@ mod tests {
         // because recursion stopped at Option/List/Set/Map.
         let field_param = Type::Field {
             domain: Box::new(tp("D")),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         let fns = vec![make_generic_fn(
             "sample",
             vec![("f", field_param)],
             &["D"],
-            Type::Real,
+            Type::dimensionless_scalar(),
         )];
         let arg = Type::Field {
             domain: Box::new(Type::length()),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             matches!(
@@ -1932,6 +1924,30 @@ mod tests {
                 OverloadResolution::Resolved(_)
             ),
             "generic candidate with a Field<T, Real> param should resolve"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for infer_binop_type ──────────────
+    //
+    // infer_binop_type(Div, length(), length()) must return dimensionless_scalar(),
+    // not Type::dimensionless_scalar() (the old special-case). RED today: returns Type::dimensionless_scalar().
+    #[test]
+    fn infer_div_length_by_length_returns_dimensionless_scalar() {
+        assert_eq!(
+            infer_binop_type(BinOp::Div, &Type::length(), &Type::length()),
+            Type::dimensionless_scalar(),
+            "Length / Length should produce dimensionless_scalar(), not Type::dimensionless_scalar()"
+        );
+    }
+
+    // type_compatible(dimensionless_scalar, Int) must return true (Int-widening
+    // for the canonical dimensionless type). RED today: returns false (only
+    // the (Type::dimensionless_scalar(), Type::Int) guard matches).
+    #[test]
+    fn type_compatible_dimensionless_scalar_accepts_int() {
+        assert!(
+            type_compatible(&Type::dimensionless_scalar(), &Type::Int),
+            "dimensionless_scalar() should be compatible with Type::Int (Int-widening)"
         );
     }
 }

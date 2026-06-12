@@ -205,7 +205,7 @@ mod tests {
 
     /// Build a one-cell `PersistentMap` entry shaped like the existing
     /// `engine_purposes.rs` unit-test fixtures: a `Param` cell typed
-    /// `Type::Real`, with a content_hash derived from the member name.
+    /// `Type::dimensionless_scalar()`, with a content_hash derived from the member name.
     fn insert_param_cell(
         cells: &mut PersistentMap<ValueCellId, ValueCellNode>,
         entity: &str,
@@ -217,7 +217,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str(&format!("{}.{}", entity, member)),
             },
@@ -292,8 +292,8 @@ mod tests {
         // (b) BinOp(Gt, ValueRef(...), Literal(Real(0.0))) — wrong outer node kind.
         let binop_constraint = CompiledExpr::binop(
             BinOp::Gt,
-            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             Type::Bool,
         );
 

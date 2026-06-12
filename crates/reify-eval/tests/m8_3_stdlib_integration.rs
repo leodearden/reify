@@ -445,14 +445,14 @@ fn m8_tolerancing_smoke() {
 // ── task #3116 step-7: tolerancing_m8_feature_type_is_geometry (RED) ─────────
 
 /// RED (step-7): m8_tolerancing.ri's local `Position` and `Flatness` struct
-/// definitions must declare `feature` with `Type::Geometry` (not `Type::Real`).
+/// definitions must declare `feature` with `Type::Geometry` (not `Type::dimensionless_scalar()`).
 ///
 /// Assertions:
 ///   - `Position.feature`  cell_type == `Type::Geometry`
 ///   - `Flatness.feature`  cell_type == `Type::Geometry`
 ///
 /// Fails before step-8 because both local structs still bind
-/// `param feature : Real = 0.0` → cell_type is `Type::Real`.
+/// `param feature : Real = 0.0` → cell_type is `Type::dimensionless_scalar()`.
 /// Passes after step-8 flips them to `param feature : Geometry`.
 #[test]
 fn tolerancing_m8_feature_type_is_geometry() {

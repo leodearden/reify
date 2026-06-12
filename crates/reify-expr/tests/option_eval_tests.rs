@@ -49,8 +49,8 @@ fn eval_some_wraps_bool() {
 /// `some(3.14)` should evaluate to `Value::Option(Some(Box::new(Value::Real(3.14))))`.
 #[test]
 fn eval_some_wraps_real() {
-    let inner = CompiledExpr::literal(Value::Real(2.78), Type::Real);
-    let expr = CompiledExpr::option_some(inner, Type::Option(Box::new(Type::Real)));
+    let inner = CompiledExpr::literal(Value::Real(2.78), Type::dimensionless_scalar());
+    let expr = CompiledExpr::option_some(inner, Type::Option(Box::new(Type::dimensionless_scalar())));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Option(Some(Box::new(Value::Real(2.78)))));

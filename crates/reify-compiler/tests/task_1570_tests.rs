@@ -7,7 +7,7 @@
 //!     and sub_member_types population.
 //!
 //! (2) expr.rs ICE fallback: in the `QualifiedAccess` match arm, the `None` branch of
-//!     `scope.resolve(member)` should return `CompiledExpr::literal(Value::Undef, Type::Real)`
+//!     `scope.resolve(member)` should return `CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())`
 //!     rather than fabricating a `ValueCellId`.
 
 use reify_test_support::{compile_source, errors_only, warnings_only};
@@ -128,7 +128,7 @@ fn deprecated_sub_resolves_members_and_emits_warning() {
     }
     assert_eq!(
         d_expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "expected 'd' to have result_type Real, got {:?}",
         d_expr.result_type
     );
@@ -225,7 +225,7 @@ fn collection_sub_bare_identifier_populates_member_types() {
 
 /// Test: when a structure claims trait conformance (`: MechTrait`) but does NOT
 /// define the required member, `TraitName::member` (QualifiedAccess syntax) in the
-/// structure body should produce `CompiledExpr::literal(Value::Undef, Type::Real)`
+/// structure body should produce `CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())`
 /// rather than a fabricated `ValueRef`.
 ///
 /// This is the ICE fallback path in the `QualifiedAccess` match arm of expr.rs:
@@ -236,7 +236,7 @@ fn collection_sub_bare_identifier_populates_member_types() {
 /// Expected behaviour (after fix):
 ///   - At least one conformance error exists (missing member).
 ///   - The `let` binding's compiled expression is `Literal(Value::Undef)` with
-///     `result_type == Type::Real`.
+///     `result_type == Type::dimensionless_scalar()`.
 ///
 /// This test FAILS with current code (which returns ValueRef with a fabricated id)
 /// and PASSES after the fix in step-4.
@@ -310,7 +310,7 @@ fn qualified_access_ice_fallback_returns_undef_literal() {
     }
     assert_eq!(
         d_expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "expected 'd' to have result_type Real, got {:?}",
         d_expr.result_type
     );

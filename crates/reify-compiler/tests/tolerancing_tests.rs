@@ -2244,7 +2244,7 @@ structure def ProbeInvSym {
 /// - `OrientationTolerance.datum_refs` required member must be `Type::Geometry`
 /// - `LocationTolerance.datum_refs` required member must be `Type::Geometry`
 ///
-/// Fails before step-4 because all four sites still resolve to `Type::Real`.
+/// Fails before step-4 because all four sites still resolve to `Type::dimensionless_scalar()`.
 #[test]
 fn stdlib_feature_datum_refs_have_geometry_type() {
     let module = load_stdlib_module();

@@ -361,7 +361,7 @@ fn form_find_free_param_types_match_contract() {
     let expected: &[(&str, Type)] = &[
         ("structure", Type::StructureRef("Tensegrity".to_string())),
         ("group_ids", Type::List(Box::new(Type::Int))),
-        ("seed_ratios", Type::List(Box::new(Type::Real))),
+        ("seed_ratios", Type::List(Box::new(Type::dimensionless_scalar()))),
         ("reference_group", Type::Int),
     ];
 

@@ -501,8 +501,8 @@ fn format_value_matrix() {
 #[test]
 fn format_value_field() {
     let v = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Analytical,
         lambda: Arc::new(Value::Undef),
     };
@@ -516,7 +516,7 @@ fn format_value_field() {
 fn format_value_lambda() {
     let v = Value::Lambda {
         params: vec![],
-        body: Box::new(reify_ir::CompiledExpr::literal(Value::Undef, Type::Real)),
+        body: Box::new(reify_ir::CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())),
         captures: reify_ir::ValueMap::default(),
     };
     assert_eq!(format_value(&v), ("<lambda>".to_string(), String::new()));
