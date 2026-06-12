@@ -160,6 +160,19 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
+        // fillet_all(target, radius) — all-edges alias: identical to 2-arg fillet.
+        // Uses compile_modify_2arg with ModifyKind::Fillet → CompiledGeometryOp::Modify{Fillet}
+        // with NO "edges" arg, so it reaches the same eval None-edges branch as 2-arg fillet.
+        "fillet_all" => compile_modify_2arg(
+            "fillet_all",
+            ModifyKind::Fillet,
+            "radius",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }
 }

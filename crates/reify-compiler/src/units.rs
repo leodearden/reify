@@ -37,6 +37,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "draft",
     "chamfer",
     "fillet",
+    "fillet_all",
     "union",
     "intersection",
     "difference",

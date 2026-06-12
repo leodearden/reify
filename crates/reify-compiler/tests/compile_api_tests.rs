@@ -1849,8 +1849,18 @@ fn compile_fillet_all_structurally_identical_to_2arg_fillet() {
     // identical CompiledGeometryOp::Modify{kind:Fillet, args:[target,radius]}
     // as 2-arg fillet(solid, r). Both must have NO "edges" arg — proving they
     // reach the same eval None-edges branch → GeometryOp::Fillet{edges:vec![]}.
-    let fillet_all_src = r#"structure S { let f = fillet_all(box(10mm, 10mm, 10mm), 2mm) }"#;
-    let fillet_src = r#"structure S { let f = fillet(box(10mm, 10mm, 10mm), 2mm) }"#;
+    //
+    // Use a `param` target (mirrors thicken/offset_solid tests) so the
+    // realization has exactly 1 op — the Modify op itself — making operations[0]
+    // unambiguous (inline box(…) would add a Box op at index 0).
+    let fillet_all_src = r#"structure S {
+    param w: Length = 10mm
+    let f = fillet_all(w, 2mm)
+}"#;
+    let fillet_src = r#"structure S {
+    param w: Length = 10mm
+    let f = fillet(w, 2mm)
+}"#;
 
     // Compile fillet_all
     let parsed_fa = reify_syntax::parse(

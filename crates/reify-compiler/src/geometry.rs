@@ -238,7 +238,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
         | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" => &[0],
+        | "fillet" | "fillet_all" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1694,7 +1694,7 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // All five modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1842,6 +1842,7 @@ mod tests {
         "draft",
         "chamfer",
         "fillet",
+        "fillet_all",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1892,11 +1893,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    20  (added offset_solid)
+    /// GEOM_ARG_FUNCTIONS    21  (added fillet_all)
     /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 45
+    /// Total                 46
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1908,7 +1909,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 45;
+    const EXPECTED_DISPATCH_COUNT: usize = 46;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
