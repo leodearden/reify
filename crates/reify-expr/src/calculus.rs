@@ -13,8 +13,8 @@ use super::{EvalContext, apply_lambda};
 ///
 /// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
 /// to `Type::dimensionless_scalar()`.  This is intentional: all three callers (`compute_divergence`,
-/// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
-/// `reify_core::field_calculus`'s private `dimensionless_fallback` before stamping the `Field`, so by the time
+/// `compute_curl`, `compute_laplacian`) receive an already-normalised codomain type from
+/// `differential_codomain` (in `reify_core::field_calculus`) before stamping the `Field`, so by the time
 /// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
 /// collapsed to `Type::dimensionless_scalar()`.  Re-normalising here would be redundant work and, worse,
 /// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
@@ -369,8 +369,8 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
 /// Returns `None` for `Type::dimensionless_scalar()`, `Type::Int`, `Type::Point { quantity: Type::dimensionless_scalar()/Int }`,
 /// and all other types.
 ///
-/// This differs from `reify_core::field_calculus`'s private `domain_dimension` helper which
-/// returns `Some(DIMENSIONLESS)` for `Real`/`Int`.
+/// This differs from the domain-dimension extraction used inside `differential_codomain`
+/// (in `reify_core::field_calculus`), which returns `Some(DIMENSIONLESS)` for dimensionless types.
 /// Here, `None` means "construct perturbed args as `Value::Real`, not `Value::Scalar`", which
 /// is the calling convention used by all 4 numerical differential operator functions.
 fn extract_explicit_domain_dim(domain_type: &Type) -> Option<DimensionVector> {
@@ -2621,9 +2621,9 @@ mod tests {
     /// compute_divergence with a declared/actual stride mismatch:
     /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
     ///
-    /// The eager-lower dispatch passes `divergence_result_codomain` (type-check succeeds:
-    /// n=3, vec_n=3), then calls `sampled_differential(sf, Divergence)` where the actual
-    /// grid has `in_stride=1` vs `n_axes=3`.  The totality path (`in_stride != n_axes`)
+    /// The eager-lower dispatch calls `differential_codomain(FieldDiffOp::Divergence, ...)`
+    /// (type-check succeeds: n=3, vec_n=3), then calls `sampled_differential(sf, Divergence)`
+    /// where the actual grid has `in_stride=1` vs `n_axes=3`.  The totality path (`in_stride != n_axes`)
     /// returns a zero-filled stride-1 degenerate field without panicking.
     ///
     /// **Contract pinned here:** the result is a zero-filled `Sampled` scalar `Field`, NOT
@@ -2686,8 +2686,8 @@ mod tests {
     /// compute_curl with a declared/actual stride mismatch:
     /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
     ///
-    /// The eager-lower dispatch passes `curl_result_codomain` (type-check succeeds: domain
-    /// `Point{3}`, codomain `Vector{3}`), then calls `sampled_differential(sf, Curl)` where
+    /// The eager-lower dispatch calls `differential_codomain(FieldDiffOp::Curl, ...)` (type-check
+    /// succeeds: domain `Point{3}`, codomain `Vector{3}`), then calls `sampled_differential(sf, Curl)` where
     /// the actual grid has `in_stride=1` vs the required `3`.  The totality path
     /// (`in_stride != 3`) returns a zero-filled stride-3 degenerate field without panicking.
     ///
