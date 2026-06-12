@@ -45,9 +45,10 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
+use reify_core::Type;
 use reify_eval::{topology_selectors, BuildResult, Engine};
 use reify_ir::value::{LeafQuery, SelectorNode, SelectorValue};
-use reify_ir::{ExportFormat, GeometryHandleId, Value};
+use reify_ir::{CompiledExprKind, ExportFormat, GeometryHandleId, Value};
 use reify_test_support::{
     compile_source_with_stdlib, errors_only, parse_and_compile_with_stdlib, CountingMockKernel,
     MockGeometryKernel,
@@ -167,6 +168,146 @@ fn build_with_unstaged_kernel(source: &str) -> BuildResult {
 /// so they are skipped on runners without OCCT without failing the suite.
 fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
+}
+
+// ── BT4: IndexAccess coercion realizes face geometry ─────────────────────────
+
+/// BT4 (consumer / eager coercion / fixture golden via wired IndexAccess shape).
+///
+/// Fixture: `bt4_index_access_coercion.ri`
+/// ```ri
+/// structure def BT4IndexAccess {
+///     let b  = box(10mm, 10mm, 10mm)
+///     let f0 = faces(b)[0]
+/// }
+/// ```
+///
+/// **PRD §5 BT4:** "eager coercion realizes the asserted geometry (fixture
+/// golden) — delivered through the wired `faces(b)[0]` IndexAccess shape
+/// (task-note esc-4118-55 requirement); fillet appears only as a separate
+/// BT4b compile-only transparency fixture."
+///
+/// ## Assertions
+///
+/// ### Always-on (compile-level)
+///
+/// 1. The fixture compiles with **zero** error-severity diagnostics.
+/// 2. The `BT4IndexAccess.f0` value cell has `cell_type == Type::Geometry`
+///    (the coercion is inserted and `sel[i]` is typed `Geometry`, never a
+///    selector — task-note invariant, esc-4118-55).
+/// 3. Its `default_expr` is an `IndexAccess { object: ResolveSelector { .. },
+///    index: _ }` where the `ResolveSelector`'s `result_type` is
+///    `List<Geometry>` (the compiler inserts the bridge before the `[0]`
+///    subscript rather than at the outer IndexAccess level).
+///
+/// ### OCCT-gated (reify_kernel_occt::OCCT_AVAILABLE)
+///
+/// 4. Building with a real `OcctKernelHandle` realizes `f0` to a
+///    `Value::GeometryHandle` with a non-zero `upstream_values_hash` (the
+///    asserted face — fixture golden, NOT baseline-diff).
+///
+/// RED when fixture `bt4_index_access_coercion.ri` is absent.
+#[test]
+fn bt4_index_access_coercion_realizes_face() {
+    let source = std::fs::read_to_string(fixture_path("bt4_index_access_coercion.ri")).expect(
+        "fixture bt4_index_access_coercion.ri must exist (create in step-14 to turn GREEN)",
+    );
+
+    // ── (1) compile with zero errors (always-on) ─────────────────────────────
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "BT4: bt4_index_access_coercion.ri must compile with zero error diagnostics, \
+         got:\n{:#?}",
+        errors
+    );
+
+    // ── (2) & (3) compile-level IR shape (always-on) ─────────────────────────
+    // Find the BT4IndexAccess template.
+    let tmpl = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "BT4IndexAccess")
+        .expect("BT4: compiled module must contain template BT4IndexAccess");
+
+    // Find the f0 value cell.
+    let f0_cell = tmpl
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "f0")
+        .expect("BT4: BT4IndexAccess must have a value cell 'f0'");
+
+    // (2) result type is Geometry (the coercion converts Selector → Geometry
+    //     at the IndexAccess level, so f0 is typed Geometry, never a Selector).
+    assert_eq!(
+        f0_cell.cell_type,
+        Type::Geometry,
+        "BT4: f0.cell_type must be Type::Geometry (sel[i] is Geometry, never a selector)"
+    );
+
+    // (3) default_expr shape: IndexAccess { object: ResolveSelector, .. }
+    //     The compiler inserts a ResolveSelector(Selector(Face)) around the
+    //     faces(b) sub-expression before it becomes the IndexAccess object,
+    //     so the coerced list is List<Geometry> and the element is Geometry.
+    let expr = f0_cell
+        .default_expr
+        .as_ref()
+        .expect("BT4: f0 must have a default_expr (it is a let binding)");
+
+    match &expr.kind {
+        CompiledExprKind::IndexAccess { object, .. } => {
+            // The object must be the ResolveSelector bridge with result_type
+            // List<Geometry>.
+            match &object.kind {
+                CompiledExprKind::ResolveSelector { .. } => {
+                    assert_eq!(
+                        object.result_type,
+                        Type::List(Box::new(Type::Geometry)),
+                        "BT4: ResolveSelector object result_type must be List<Geometry>"
+                    );
+                }
+                other => panic!(
+                    "BT4: f0 IndexAccess object must be ResolveSelector{{..}}, got: {other:?}"
+                ),
+            }
+        }
+        other => panic!(
+            "BT4: f0 default_expr must be IndexAccess{{object: ResolveSelector, ..}}, \
+             got: {other:?}"
+        ),
+    }
+
+    // ── (4) OCCT-gated geometry golden ───────────────────────────────────────
+    if !occt_available() {
+        eprintln!("BT4: skipping OCCT geometry assertion (OCCT not available on this runner)");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let f0_id = ValueCellId::new("BT4IndexAccess", "f0");
+    match result.values.get(&f0_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => {
+            assert_ne!(
+                upstream_values_hash,
+                &[0u8; 32],
+                "BT4: f0 GeometryHandle upstream_values_hash must be non-zero \
+                 (fixture-golden, not baseline-diff; esc-4118-55 IndexAccess coverage)"
+            );
+        }
+        other => panic!(
+            "BT4: BT4IndexAccess.f0 = faces(b)[0] must realize to Value::GeometryHandle \
+             (Selector → List<Geometry> → [0] coercion), got: {other:?}"
+        ),
+    }
 }
 
 // ── BT8: named-leaf interim — resolve returns [] + one TopologyTagStale ──────
