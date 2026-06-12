@@ -21,7 +21,7 @@ extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
-use reify_core::{ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction};
 
 fn print_usage(out: &mut dyn std::io::Write) {
@@ -563,13 +563,26 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        finish_check(
+        let exit = finish_check(
             &outcome,
             &result.constraint_results,
             strict,
             &mut std::io::stdout(),
             &mut std::io::stderr(),
-        )
+        );
+
+        // Escalate to FAILURE when a GdtIllegalModifier error is present.
+        // Scoped strictly to this code so non-GD&T modules are byte-identical.
+        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        if result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        {
+            return ExitCode::FAILURE;
+        }
+
+        exit
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
