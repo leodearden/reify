@@ -259,7 +259,7 @@ fn neutral_length_si(v: &Value) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::angle_range_half_si;
+    use super::super::test_util::{angle_range_half_si, length_range_half_si};
     use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
@@ -1112,11 +1112,11 @@ mod tests {
             other => panic!("max_stress Scalar, got {other:?}"),
         }
 
-        // prb_validity_range is now Range<Angle> = [−δ_auto, +δ_auto] (task 4576;
-        // prismatic residual: δ_auto is a length stored as an angle si_value).
+        // prb_validity_range is now Range<Length> = [−δ_auto, +δ_auto] (task 4587:
+        // tightened from the Range<Angle> residual left by task 4576).
         let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
         let range_half = length_scalar_si(up, "auto range upper");
-        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        let prb_half = length_range_half_si(f("prb_validity_range"), "prb_validity_range");
         assert!(
             (prb_half - delta_auto).abs() / delta_auto < 1e-9
                 && (prb_half - range_half).abs() / range_half < 1e-9,
@@ -1185,9 +1185,9 @@ mod tests {
             Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
             other => panic!("yield_margin Real, got {other:?}"),
         }
-        // prb_validity_range still advertises the auto SAFE δ (not the declared
-        // one). Now Range<Angle> (task 4576; prismatic residual: δ stored as angle si).
-        let prb_half_y = angle_range_half_si(yg("prb_validity_range"), "prb_validity_range");
+        // prb_validity_range still advertises the auto SAFE δ (not the declared one),
+        // now as Range<Length> (task 4587).
+        let prb_half_y = length_range_half_si(yg("prb_validity_range"), "prb_validity_range");
         assert!(
             (prb_half_y - delta_auto).abs() / delta_auto < 1e-9,
             "prb_validity_range stays the auto safe δ {delta_auto}, got half {prb_half_y}"
