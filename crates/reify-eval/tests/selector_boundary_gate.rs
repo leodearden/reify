@@ -278,7 +278,14 @@ fn bt4_index_access_coercion_realizes_face() {
 
     // ── (4) OCCT-gated geometry golden ───────────────────────────────────────
     if !occt_available() {
-        eprintln!("BT4: skipping OCCT geometry assertion (OCCT not available on this runner)");
+        // Print to stdout so the skip is visible in `cargo test -- --nocapture` and
+        // in CI log parsers that scan stdout. The runtime coercion path
+        // (IndexAccess → GeometryHandle) is NOT exercised when OCCT is absent;
+        // ensure at least one CI lane has OCCT (reify_kernel_occt::OCCT_AVAILABLE).
+        println!(
+            "WARN BT4: OCCT geometry-golden SKIPPED — OCCT not available on this runner. \
+             IndexAccess coercion path (faces(b)[0] → Value::GeometryHandle) is NOT exercised."
+        );
         return;
     }
 
@@ -289,7 +296,7 @@ fn bt4_index_access_coercion_realizes_face() {
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let f0_id = ValueCellId::new("BT4IndexAccess", "f0");
-    match result.values.get(&f0_id) {
+    let f0_hash = match result.values.get(&f0_id) {
         Some(Value::GeometryHandle {
             upstream_values_hash,
             ..
@@ -300,12 +307,46 @@ fn bt4_index_access_coercion_realizes_face() {
                 "BT4: f0 GeometryHandle upstream_values_hash must be non-zero \
                  (fixture-golden, not baseline-diff; esc-4118-55 IndexAccess coverage)"
             );
+            *upstream_values_hash
         }
         other => panic!(
             "BT4: BT4IndexAccess.f0 = faces(b)[0] must realize to Value::GeometryHandle \
              (Selector → List<Geometry> → [0] coercion), got: {other:?}"
         ),
-    }
+    };
+
+    // Cross-check: build faces(b)[1] and assert it has a DIFFERENT hash than
+    // faces(b)[0]. This proves the coercion selected a specific element (index 0),
+    // not an arbitrary face — a wrong-index regression would not slip through the
+    // non-zero hash check alone.
+    let ref_src = r#"
+structure def BT4Ref {
+    let b  = box(10mm, 10mm, 10mm)
+    let f1 = faces(b)[1]
+}
+"#;
+    let ref_compiled = compile_source_with_stdlib(ref_src);
+    let ref_kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut ref_engine = Engine::new(Box::new(SimpleConstraintChecker), Some(ref_kernel));
+    let ref_result = ref_engine.build(&ref_compiled, ExportFormat::Step);
+    let f1_id = ValueCellId::new("BT4Ref", "f1");
+    let f1_hash = match ref_result.values.get(&f1_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "BT4 cross-check: BT4Ref.f1 = faces(b)[1] must realize to Value::GeometryHandle, \
+             got: {other:?}"
+        ),
+    };
+    assert_ne!(
+        f0_hash, f1_hash,
+        "BT4: faces(b)[0] must have a DIFFERENT upstream_values_hash than faces(b)[1] \
+         (proves IndexAccess coercion selected a distinct element; a wrong-index regression \
+         would realise a different face and this cross-check would catch it)"
+    );
 }
 
 // ── BT5: single() coercion golden ────────────────────────────────────────────
@@ -363,7 +404,14 @@ fn bt5_single_face_by_normal_coercion() {
 
     // ── (2) OCCT-gated geometry golden ───────────────────────────────────────
     if !occt_available() {
-        eprintln!("BT5: skipping OCCT geometry assertion (OCCT not available on this runner)");
+        // Print to stdout so the skip is visible in `cargo test -- --nocapture` and
+        // in CI log parsers that scan stdout. The single() coercion path
+        // (Selector → List<Geometry> → single face) is NOT exercised when OCCT is
+        // absent; ensure at least one CI lane has OCCT (reify_kernel_occt::OCCT_AVAILABLE).
+        println!(
+            "WARN BT5: OCCT geometry-golden SKIPPED — OCCT not available on this runner. \
+             single() coercion path (Selector → List<Geometry> → single face) is NOT exercised."
+        );
         return;
     }
 
@@ -376,7 +424,7 @@ fn bt5_single_face_by_normal_coercion() {
     // `top = single(faces_by_normal(b, +Z, 1°))` must coerce
     // (Selector → List<Geometry> → single) to the single +Z face handle.
     let top_id = ValueCellId::new("BT5SingleFace", "top");
-    match result.values.get(&top_id) {
+    let top_hash = match result.values.get(&top_id) {
         Some(Value::GeometryHandle {
             upstream_values_hash,
             ..
@@ -387,12 +435,75 @@ fn bt5_single_face_by_normal_coercion() {
                 "BT5: top face handle upstream_values_hash must be non-zero \
                  (fixture golden, not baseline-diff; single(+Z face) realized)"
             );
+            *upstream_values_hash
         }
         other => panic!(
             "BT5: BT5SingleFace.top = single(faces_by_normal(b, +Z, 1°)) must coerce \
              (Selector → List<Geometry> → single) to Value::GeometryHandle, got: {other:?}"
         ),
-    }
+    };
+
+    // Cross-check identity: build a combined structure in the SAME OCCT engine
+    // that also extracts all 6 box faces via faces(b)[0..5]. Then assert that
+    // `top`'s kernel_handle appears exactly once in the 6-face list — i.e.
+    // single(faces_by_normal(b,+Z)) selected exactly one of the box's real
+    // faces rather than an arbitrary or fabricated handle.
+    //
+    // NOTE: upstream_values_hash cannot distinguish single(+Z) from single(-Z)
+    // because resolve_selector_to_list enumerates results starting at i=0 for
+    // both — both single-element lists get compose_sub_handle_hash(parent, Face, 0).
+    // kernel_handle IS session-scoped (ephemeral) but within a single engine it
+    // uniquely identifies each face, so the within-engine comparison is valid.
+    let verify_src = r#"
+structure def BT5Verify {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let top = single(faces_by_normal(b, dir, tol))
+    let f0  = faces(b)[0]
+    let f1  = faces(b)[1]
+    let f2  = faces(b)[2]
+    let f3  = faces(b)[3]
+    let f4  = faces(b)[4]
+    let f5  = faces(b)[5]
+}
+"#;
+    let verify_compiled = compile_source_with_stdlib(verify_src);
+    let verify_kernel: Box<dyn reify_ir::GeometryKernel> =
+        Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
+    let mut verify_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(verify_kernel));
+    let verify_result = verify_engine.build(&verify_compiled, ExportFormat::Step);
+
+    // top's kernel_handle (session-scoped, valid within this engine instance).
+    let top_kh = match verify_result.values.get(&ValueCellId::new("BT5Verify", "top")) {
+        Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
+        other => panic!(
+            "BT5 verify: BT5Verify.top must realize to GeometryHandle, got: {other:?}"
+        ),
+    };
+
+    // Collect all 6 face kernel_handles from faces(b)[0..5].
+    let face_khs: Vec<GeometryHandleId> = (0..6_usize)
+        .map(|i| {
+            let member = format!("f{i}");
+            match verify_result.values.get(&ValueCellId::new("BT5Verify", &member)) {
+                Some(Value::GeometryHandle { kernel_handle, .. }) => *kernel_handle,
+                other => panic!(
+                    "BT5 verify: BT5Verify.{member} must realize to GeometryHandle, got: {other:?}"
+                ),
+            }
+        })
+        .collect();
+
+    // top must appear exactly once among f0..f5 — proves the +Z face selector
+    // resolved to a real box face (not a fabricated or wrong-kind handle).
+    let match_count = face_khs.iter().filter(|&&kh| kh == top_kh).count();
+    assert_eq!(
+        match_count, 1,
+        "BT5: single(faces_by_normal(b, +Z, 1°)) kernel_handle must appear exactly \
+         once in faces(b)[0..5]; got {match_count} matches among {face_khs:?}"
+    );
 }
 
 // ── BT4b: fillet call-site transparency (compile-only) ───────────────────────
