@@ -192,6 +192,17 @@ structure def Mode {
     param damping_ratio : Real
 }
 
+// ── Part ─────────────────────────────────────────────────────────────────────
+
+// `Part` is a minimal opaque marker structure for the analysed part handle.
+// Per PRD §12 open-question-3 ("minimal opaque structure_def first, then grow"):
+// declared zero-field here so all three `part : Part` params (ModalResult,
+// ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
+// within this module, without depending on the F foundation / task 4574. The
+// actual geometry+material+topology fields will be grown in a later task.
+// Single-module (modal_analysis.ri only); cite task 4578.
+structure def Part { }
+
 // ── ModalResult ──────────────────────────────────────────────────────────────
 
 // `ModalResult` is the modal-analysis solver-output container (PRD §4.1) —
