@@ -406,6 +406,240 @@ fn trampoline_short_value_inputs_is_failed() {
     assert_failed_infeasible(call_form_find(&value_inputs), "expects 3 inputs");
 }
 
+// ── step-9 (γ): surface / membrane trampoline tests ──────────────────────────
+//
+// The line-only tests above leave the γ surface path uncovered. These exercise
+// the additive membrane extension: surface CONNECTIVITY is read from
+// `structure.surfaces` (not a new arg), an OPTIONAL `surface_stresses` is the
+// 4th value_input, the FormFindResult gains a per-triangle `surface_stresses`
+// echo (real values when surfaces are present, an empty list — NEVER Undef — on
+// the line-only path), and the new infeasibility guards (DegenerateTriangle /
+// NonTensionSurfaceStress / SurfaceCountMismatch) surface as located
+// E_FormFindInfeasible diagnostics. RED until step-10 wires
+// `form_find_anchored_surfaces` into the trampoline `run()`.
+
+/// A `surfaces` field value: triangle corner index-triples `[[i,j,k], …]` into
+/// `nodes` (the `List<List<Int>>` shape task-α put on `Tensegrity`).
+fn surface_tris(tris: &[[i64; 3]]) -> Value {
+    Value::List(
+        tris.iter()
+            .map(|t| Value::List(vec![Value::Int(t[0]), Value::Int(t[1]), Value::Int(t[2])]))
+            .collect(),
+    )
+}
+
+/// "Tent" membrane Tensegrity: a planar diamond of 4 anchored corners (z=0) plus
+/// one free interior node seeded off-plane (z=0.3), fanned by 4 triangles, with
+/// empty struts/cables (a pure membrane). Mirrors the kernel's `tent_membrane()`
+/// golden (form_find.rs) — a proven-feasible σ>0 surface solve. The `surfaces`
+/// field is the γ connectivity source the trampoline reads from the structure
+/// (NOT passed as a call argument).
+fn membrane_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        node(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
+        node(1.0, 0.0, 0.0),  // 1: anchor
+        node(0.0, 1.0, 0.0),  // 2: anchor
+        node(-1.0, 0.0, 0.0), // 3: anchor
+        node(0.0, -1.0, 0.0), // 4: anchor
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), Value::List(vec![])),
+        ("cables".to_string(), Value::List(vec![])),
+        (
+            "surfaces".to_string(),
+            surface_tris(&[[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// A membrane whose single triangle (0,1,2) has three COLLINEAR corners (all on
+/// the x-axis) ⇒ zero area ⇒ the cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)`
+/// diverge. Node 0 is free, 1 & 2 anchored. The kernel must reject this as
+/// DegenerateTriangle rather than assemble a NaN/∞ stencil.
+fn degenerate_membrane_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        node(0.0, 0.0, 0.0), // 0: free — collinear with 1,2 (zero-area triangle)
+        node(1.0, 0.0, 0.0), // 1: anchor
+        node(2.0, 0.0, 0.0), // 2: anchor
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), Value::List(vec![])),
+        ("cables".to_string(), Value::List(vec![])),
+        ("surfaces".to_string(), surface_tris(&[[0, 1, 2]])),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Extract `FormFindResult.surface_stresses` as a list of f64 echoes, asserting
+/// it is a (possibly empty) `Value::List` — never `Undef` and never absent. Each
+/// entry is read via `coord` (accepts a dimensioned Scalar or a bare Real), so
+/// this stays agnostic to the trampoline's exact numeric encoding.
+fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
+    match fields.get(&"surface_stresses".to_string()) {
+        Some(Value::List(items)) => items.iter().map(coord).collect(),
+        other => panic!(
+            "FormFindResult.surface_stresses must be a Value::List \
+             (never Undef / absent), got {other:?}"
+        ),
+    }
+}
+
+/// (γ-a) A σ>0 membrane (connectivity from `structure.surfaces`, per-triangle σ
+/// from the 4th value_input) solves: `Completed` with `converged == true` and a
+/// `surface_stresses` list of one finite Scalar per triangle, each echoing the
+/// prescribed σ.
+#[test]
+fn trampoline_membrane_solves_and_echoes_surface_stresses() {
+    let sigma = 2.0;
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables ⇒ empty force_densities
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![Value::Real(sigma); 4]), // one σ per triangle
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => {
+                assert_eq!(
+                    d.type_name, "FormFindResult",
+                    "result should be a FormFindResult, got {:?}",
+                    d.type_name
+                );
+                d.fields
+            }
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed for a σ>0 membrane, got {other:?}"),
+    };
+
+    // One finite Scalar per triangle, echoing the prescribed σ (the per-triangle
+    // granularity contract — never Undef).
+    let echoes = surface_stress_echoes(&fields);
+    assert_eq!(echoes.len(), 4, "one surface_stress echo per triangle");
+    for (t, &s) in echoes.iter().enumerate() {
+        assert!(s.is_finite(), "surface_stresses[{t}] must be finite, got {s}");
+        assert!(
+            (s - sigma).abs() < 1e-12,
+            "surface_stresses[{t}] = {s}, expected echoed σ = {sigma}",
+        );
+    }
+
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "a well-posed σ>0 membrane solve must report converged == true",
+    );
+}
+
+/// (γ-b) The LEGACY 3-input line-only call (no surface arg, no `surfaces` field)
+/// still Completes, and its `surface_stresses` is an EMPTY `Value::List` — never
+/// `Undef` / absent. This is the additive-extension invariant: the now-5-field
+/// FormFindResult stays well-formed on the line-only path.
+#[test]
+fn trampoline_legacy_line_only_has_empty_surface_stresses() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    };
+    let echoes = surface_stress_echoes(&fields);
+    assert!(
+        echoes.is_empty(),
+        "line-only path ⇒ empty surface_stresses echo, got {echoes:?}",
+    );
+}
+
+/// (γ-c) A degenerate (collinear) surface triangle is rejected with a located
+/// `degenerate` diagnostic — never a NaN stencil or a silently-wrong solve.
+#[test]
+fn trampoline_degenerate_triangle_is_failed() {
+    let value_inputs = vec![
+        degenerate_membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables
+        Value::List(vec![Value::Int(1), Value::Int(2)]),
+        Value::List(vec![Value::Real(1.0)]), // one σ>0 (so degeneracy, not σ-sign, is the cause)
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "degenerate");
+}
+
+/// (γ-d) A non-tension surface stress (σ ≤ 0) is infeasible prestress — the
+/// surface analogue of the cable q>0 contract — surfaced with a `tension`
+/// diagnostic.
+#[test]
+fn trampoline_non_tension_surface_stress_is_failed() {
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(-0.5), // triangle 1 violates the σ>0 tension contract
+            Value::Real(1.0),
+            Value::Real(1.0),
+        ]),
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "tension");
+}
+
+/// (γ-e) `surface_stresses` shorter than the triangle count (4 triangles, 3 σ)
+/// is a count mismatch — each triangle needs exactly one isotropic σ.
+#[test]
+fn trampoline_surface_count_mismatch_is_failed() {
+    let value_inputs = vec![
+        membrane_tensegrity(), // 4 triangles
+        Value::List(vec![]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![Value::Real(1.0); 3]), // only 3 σ — one short
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "surface");
+}
+
 // ── step-11: e2e + cache-hit + CLI over examples/tensegrity_cable_net.ri ──────
 
 /// The committed anchored cable-net example. `include_str!` makes a *missing*
