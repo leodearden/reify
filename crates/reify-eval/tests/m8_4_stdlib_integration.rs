@@ -215,7 +215,7 @@ fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64,
                 *dimension, dim,
                 "{what}: expected dimension {dim:?}, got {dimension:?}"
             );
-            let rel = (si_value - expected).abs() / expected.abs();
+            let rel = (si_value - expected).abs() / expected.abs().max(f64::MIN_POSITIVE);
             assert!(
                 rel < 1e-6,
                 "{what}: si_value {si_value:.12} not within 1e-6 relative of \
@@ -609,7 +609,8 @@ fn io_export_smoke() {
 ///     → `mass ≈ 0.3925 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path — `post_process_geometry_queries` runs
-/// only on the build path with a registered kernel. Skips cleanly when OCCT is unavailable.
+/// only on the build path with a registered kernel. Skips with zero numeric coverage when
+/// OCCT is unavailable; CI must have `/opt/reify-deps` configured for this test to verify.
 #[test]
 fn io_export_mass_computed() {
     let source = std::fs::read_to_string(PATH_IO_EXPORT)

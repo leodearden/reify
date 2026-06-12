@@ -125,7 +125,7 @@ fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64,
                 *dimension, dim,
                 "{what}: expected dimension {dim:?}, got {dimension:?}"
             );
-            let rel = (si_value - expected).abs() / expected.abs();
+            let rel = (si_value - expected).abs() / expected.abs().max(f64::MIN_POSITIVE);
             assert!(
                 rel < 1e-6,
                 "{what}: si_value {si_value:.12} not within 1e-6 relative of \
@@ -250,7 +250,8 @@ fn assembly_has_50_plus_subs() {
 ///     → `mass ≈ 529.875 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
-/// Skips cleanly when OCCT is unavailable.
+/// Skips with zero numeric coverage when OCCT is unavailable; CI must have
+/// `/opt/reify-deps` configured for this test to verify.
 #[test]
 fn mass_propagation_steel_beam() {
     let Some(result) = build_canonical_occt() else {
@@ -267,7 +268,8 @@ fn mass_propagation_steel_beam() {
 ///     → `mass = 2.7 kg` (`Value::Scalar<MASS>`, rel < 1e-6).
 ///
 /// Requires the real-OCCT `Engine::build()` path via `build_canonical_occt()`.
-/// Skips cleanly when OCCT is unavailable.
+/// Skips with zero numeric coverage when OCCT is unavailable; CI must have
+/// `/opt/reify-deps` configured for this test to verify.
 #[test]
 fn mass_propagation_aluminum_plate() {
     let Some(result) = build_canonical_occt() else {
@@ -292,19 +294,9 @@ fn mass_propagation_aluminum_plate() {
 #[test]
 #[ignore = "Blocked on task 4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
 fn total_mass_computed() {
-    // Verification: confirm total_mass is indeed Undef on the build path (do not assert > 0 yet).
-    // When task 4358 lands, switch to build_canonical_occt() and assert total_mass > 0.
-    let Some(result) = build_canonical_occt() else {
-        return;
-    };
-    let id = ValueCellId::new("LargeAssembly", "total_mass");
-    let total = result.values.get(&id);
-    // Expected: Undef (cross-cell aggregation over geometry-query-derived sub masses not yet folded)
-    assert!(
-        !matches!(total, Some(Value::Scalar { .. })),
-        "LargeAssembly.total_mass should still be Undef (task 4358 not yet landed); \
-         if this assertion fails, task 4358 has landed — un-ignore and assert > 0",
-    );
+    // TODO(task 4358): when unified-dag ε lands, remove #[ignore], call
+    // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
+    // The Undef invariant is regression-pinned by cross_cell_factored_dependent_stays_undef.
 }
 
 // ── step-9: constraint, purpose, and performance tests ────────────────────────
