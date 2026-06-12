@@ -417,6 +417,54 @@ fn non_dim_kinded_param_in_scalar_slot_emits_dim_param_kind() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Step-9 / Step-10 (ε): kind-misuse case #2 — dim-kinded param as ordinary type
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A dimension-kinded type parameter used as an ordinary type (bare `Q` in a
+/// non-dimension position) emits exactly one `DimParamKind` Error, with no
+/// competing `FnUnknownTypeParam`/`UnresolvedType` Error.
+///
+/// RED until step-10: today `Q ∈ type_param_names` so bare `Q` resolves to
+/// `Type::TypeParam("Q")` via `resolve_type_with_aliases` with no diagnostic.
+#[test]
+fn dim_kinded_param_used_as_ordinary_type_emits_dim_param_kind() {
+    // Q: Dimension — but x: Q is a bare usage in an ordinary type position.
+    // `-> Real` surface syntax still resolves to dimensionless_scalar() post-4373.
+    let source = r#"
+        fn k<Q: Dimension>(x: Q) -> Real { 1.0 }
+    "#;
+    let module = compile_source(source);
+
+    let dim_kind_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimParamKind))
+        .collect();
+    assert_eq!(
+        dim_kind_errors.len(),
+        1,
+        "expected exactly one DimParamKind Error for bare Q in ordinary type position, got: {:?}",
+        module.diagnostics
+    );
+
+    // No competing FnUnknownTypeParam or UnresolvedType errors — single root-cause.
+    let competing: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.code == Some(DiagnosticCode::FnUnknownTypeParam)
+                    || d.code == Some(DiagnosticCode::UnresolvedType))
+        })
+        .collect();
+    assert!(
+        competing.is_empty(),
+        "expected no FnUnknownTypeParam/UnresolvedType errors alongside DimParamKind, got: {:?}",
+        competing
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Step-5 / Step-6 (ε): Vector3<Q> and Point3<Q> with a dimension-kinded param
 // ────────────────────────────────────────────────────────────────────────────
 
