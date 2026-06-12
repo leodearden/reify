@@ -117,7 +117,7 @@ pub fn sample_at_point(
     // and ε-produced fields.  A debug_assert catches mis-constructed fields in debug builds
     // rather than silently sampling with a truncated stride.
     debug_assert!(
-        grid_count == 0 || field.data.len() % grid_count == 0,
+        grid_count == 0 || field.data.len().is_multiple_of(grid_count),
         "SampledField data length {} is not a multiple of grid_count {}; field layout is corrupt",
         field.data.len(),
         grid_count,
