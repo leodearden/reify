@@ -1777,4 +1777,17 @@ mod tests {
         assert_eq!(map.get(&k_int_b), Some(&"k_int"));
         assert_eq!(map.get(&k_real), None);
     }
+
+    // Step-1 RED: dimensionless scalar Display prints "Real" (fails today: prints "Scalar").
+    #[test]
+    fn dimensionless_scalar_displays_real() {
+        assert_eq!(format!("{}", Type::dimensionless_scalar()), "Real");
+    }
+
+    // Step-1 guard: dimensioned scalars are not affected by the Display change.
+    #[test]
+    fn dimensioned_scalar_display_unchanged() {
+        assert_eq!(format!("{}", Type::length()), "Scalar[m]");
+        assert_eq!(format!("{}", Type::angle()), "Scalar[rad]");
+    }
 }
