@@ -213,7 +213,7 @@ structure def Mode {
 // `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
 //
 // Field semantics (PRD §4.1):
-//   part                 — the analysed part. FIXME(part-structdef): encoded
+//   part                 — the analysed part. FIXME(part-structdef, #4578): encoded
 //                          as `String` PLACEHOLDER for the future `Part`
 //                          structure_def from the v0.3 solver-elastic PRD
 //                          (not yet landed). `String` (not `Real`) because
@@ -679,7 +679,7 @@ structure def SampledForce : ForcingFunction {
 //
 // Param semantics (PRD §5.1):
 //   part    — the Part on which the forcing history acts.
-//             FIXME(part-structdef): encoded as `String` PLACEHOLDER for the
+//             FIXME(part-structdef, #4578): encoded as `String` PLACEHOLDER for the
 //             future `Part` topology type (not yet landed in Reify v0.3).
 //             Consistent with `ModalResult.part : String` (modal_analysis.ri:
 //             241) and `ModalOptions.part : String` using `String` as a
@@ -751,7 +751,7 @@ structure def ForcingTimeHistory {
 // (task ι), mirroring the `ModalResult.modes` discipline.
 //
 // Field semantics (PRD §5.2):
-//   part         — the analysed part. FIXME(part-structdef): encoded as `String`
+//   part         — the analysed part. FIXME(part-structdef, #4578): encoded as `String`
 //                  PLACEHOLDER for the future `Part` type, identical to
 //                  `ModalResult.part` (modal_analysis.ri:241) and
 //                  `ForcingTimeHistory.part`. The trampoline echoes it from the
