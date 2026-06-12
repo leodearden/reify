@@ -2804,6 +2804,44 @@ mod tests {
         );
     }
 
+    // --- AutoTypeParamBoundedInfeasible tests (task 4434 — E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) ---
+    // Pairs with the joint-recheck emitter in
+    // `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs` (not
+    // reify-ir) alongside the other AutoTypeParam* siblings, per the design decision
+    // recorded in task 4434's plan (reify-ir/src/diagnostics.rs does not exist).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // serde wire-form round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamBoundedInfeasible` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamBoundedInfeasible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the γ BFS-fallback joint-recheck hard error.
+    ///
+    /// Emitted (as `Severity::Error`) by
+    /// `emit_fallback_warning_and_delegate_to_bfs` when BFS returns a complete
+    /// assignment that the joint-recheck finds infeasible (any Violated
+    /// constraint after seeding the full joint ValueMap).  Produces NO
+    /// substitution (PRD §6.2 step 4 / mnemonic E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_bounded_infeasible_round_trips_via_serde() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::AutoTypeParamBoundedInfeasible).unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamBoundedInfeasible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamBoundedInfeasible,
+            "deserialize must round-trip back to AutoTypeParamBoundedInfeasible"
+        );
+    }
+
     // --- Multi-kernel dispatch failure variant tests (task 3434) ---
     //
     // Pairs with the five builders in

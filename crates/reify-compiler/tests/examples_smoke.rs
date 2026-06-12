@@ -46,6 +46,19 @@ const SKIP_SET: &[(&str, &str)] = &[
          Per-candidate ValueMap setup is delivered by task 4433 β \
          (seed_candidate_value_map); loop wiring by γ.",
     ),
+    (
+        "auto/bounded_fallback_unsound.ri",
+        "7 strict `auto: Layer` params (> max_depth=6 → depth-bound BFS fallback) with a \
+         joint constraint `l1.thickness + … + l7.thickness < max_stack` coupling all param \
+         member fields. Under the compile-time stub checker the TypeParam member reads \
+         emit code:None \"member access not yet supported\" Errors at structure-compile time; \
+         the zero-Error gate cannot pass. The joint-infeasibility hard error \
+         (E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) is a REAL-checker behaviour — γ's \
+         joint-recheck seeds the full ValueMap (7×LayerA.thickness=2mm → sum=14mm > \
+         max_stack=10mm → Violated) and is exercised by task ζ's reify-eval e2e. \
+         Task 4434 (γ) delivers the joint-recheck; task 4433 β delivers \
+         seed_candidate_value_map.",
+    ),
 ];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the
