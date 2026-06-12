@@ -987,13 +987,13 @@ mod tests {
     #[test]
     fn element_gradient_p1_zero_displacement_yields_zero_gradient() {
         let grad = element_gradient_p1(&UNIT_TET_P1, &[0.0_f64; 12]);
-        for r in 0..3 {
-            for c in 0..3 {
+        for (r, row) in grad.iter().enumerate() {
+            for (c, &val) in row.iter().enumerate() {
                 assert_eq!(
-                    grad[r][c],
+                    val,
                     0.0,
                     "∇u[{r}][{c}] = {} expected 0.0 for zero-displacement field",
-                    grad[r][c],
+                    val,
                 );
             }
         }
