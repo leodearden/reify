@@ -2723,4 +2723,139 @@ mod tests {
             "laplacian of Sampled field with non-SampledField lambda must return Undef"
         );
     }
+
+    // ─── ζ step-1: divergence eager-lower RED tests ───────────────────────────
+
+    /// Build a Regular3D stride-3 SampledField (interleaved node-major:
+    /// data[g*3+0]=cx, data[g*3+1]=cy, data[g*3+2]=cz).
+    /// Nodes are ordered x-major: for each x, for each y, for each z.
+    fn make_3d_vector_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> [f64; 3],
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz * 3);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    let v = f(x, y, z);
+                    data.push(v[0]);
+                    data.push(v[1]);
+                    data.push(v[2]);
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-vec".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// compute_divergence on a well-formed 3D Sampled vector field F=(x, 2y, 3z)
+    /// returns a Sampled field whose data equals the exact divergence (6.0 everywhere,
+    /// <1e-12) and whose codomain_type is Real (dimensionless strain quotient).
+    ///
+    /// Numeric premise: div F = ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z = 1 + 2 + 3 = 6.
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_divergence currently returns Value::Undef for Sampled source;
+    /// this test drives the step-2 Sampled eager-lower branch.
+    #[test]
+    fn divergence_sampled_3d_affine_returns_sampled_field_with_exact_divergence() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "divergence of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Divergence → scalar output: stride-1, data.len() == grid_count
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "divergence output must have stride-1 data (len=grid_count={grid_count}), got {}",
+            out_sf.data.len()
+        );
+
+        // Every node must be within 1e-12 of 6.0
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - 6.0).abs() < 1e-12,
+                "node {g}: divergence = {val}, expected 6.0 (error {})",
+                (val - 6.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is Real (dimensionless strain)
+        assert_eq!(
+            *result_codomain,
+            Type::dimensionless_scalar(),
+            "divergence codomain for dimensionless vector field must be Real, got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_divergence on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-2 adds the well-formed dispatch branch.
+    #[test]
+    fn divergence_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_divergence(&field),
+            Value::Undef,
+            "divergence of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
 }
