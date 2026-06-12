@@ -62,6 +62,10 @@ pub enum FormFindError {
     EmptyFreeSet,
     /// Input arrays disagree in length (`members`, `kinds`, `q`).
     DimensionMismatch,
+    /// A surface triangle is degenerate (collinear / zero-area corners), so its
+    /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge as `2·Area → 0`.
+    /// Surfaced instead of assembling a NaN/∞ stencil. (γ / NFDM surfaces.)
+    DegenerateTriangle,
 }
 
 /// Result of an anchored Force-Density form-find solve.
@@ -236,6 +240,112 @@ pub fn form_find_anchored(
         force_densities: q.to_vec(),
         converged: true,
     })
+}
+
+// ── NFDM surface assembly (γ / task 4414) ─────────────────────────────────────
+//
+// Natural Force-Density surface contributions add into the SAME global
+// force-density matrix D the line FDM builds (PRD §4, D1/D3): for an isotropic
+// membrane each triangle contributes a cotangent-Laplacian (discrete
+// Laplace–Beltrami operator) scaled by its surface stress σ, assembled with the
+// identical rank-1 edge pattern the line solve uses for the member q.
+
+/// Relative threshold below which a triangle is judged degenerate: when
+/// `2·Area ≤ ε · (max squared edge length)` the corners are effectively
+/// collinear and the cotangents diverge. Relative (not absolute) so the test is
+/// scale-free — a millimetre-scale and a kilometre-scale triangle of the same
+/// shape are judged identically.
+const DEGENERATE_AREA_EPS: f64 = 1e-10;
+
+#[inline]
+fn v_sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[inline]
+fn v_dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn v_cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Per-triangle cotangent-Laplacian (discrete Laplace–Beltrami) local
+/// contribution for an isotropic NFDM surface element.
+///
+/// For triangle `(i, j, k)` with isotropic surface stress `sigma`, the discrete
+/// Laplace–Beltrami edge weight on the edge *opposite* vertex `v` is
+/// `(σ/2)·cot(θ_v)`, with `cot(θ_v) = (e_a·e_b) / |e_a×e_b|` where `e_a`, `e_b`
+/// are the two triangle edges out of `v` and `|e_a×e_b| = 2·Area` (the same for
+/// every vertex). The returned local 3×3 `L` is assembled with the landed FDM
+/// rank-1 pattern — each edge weight `w` adds `+w` to its two incident diagonal
+/// entries and `−w` to the two symmetric off-diagonal slots — so `D_T = L` is
+/// symmetric and each row sums to zero (a graph Laplacian).
+///
+/// Rows/cols are indexed `0=i, 1=j, 2=k`, matching the argument order; the
+/// caller scatters `L[a][b]` into the global `D` at the triangle's global node
+/// indices, exactly as the line loop scatters its member rank-1 update.
+///
+/// Returns `Err(FormFindError::DegenerateTriangle)` when `2·Area` is negligible
+/// relative to the triangle's edge scale (collinear / zero-area corners), where
+/// the cotangents would diverge — a clean diagnostic rather than a NaN/∞ stencil
+/// that would silently poison the assembled system.
+fn triangle_cotangent_laplacian(
+    pi: [f64; 3],
+    pj: [f64; 3],
+    pk: [f64; 3],
+    sigma: f64,
+) -> Result<[[f64; 3]; 3], FormFindError> {
+    // The six directed edge vectors (two out of each vertex).
+    let eij = v_sub(pj, pi); // i → j
+    let eik = v_sub(pk, pi); // i → k
+    let eji = v_sub(pi, pj); // j → i
+    let ejk = v_sub(pk, pj); // j → k
+    let eki = v_sub(pi, pk); // k → i
+    let ekj = v_sub(pj, pk); // k → j
+
+    // 2·Area = |e_a × e_b| is invariant to which vertex's edge pair we cross.
+    let cross = v_cross(eij, eik);
+    let two_area = v_dot(cross, cross).sqrt();
+
+    // Degenerate guard (relative): reject before the divisions below blow up.
+    let scale = v_dot(eij, eij).max(v_dot(eik, eik)).max(v_dot(ejk, ejk));
+    if two_area <= DEGENERATE_AREA_EPS * scale {
+        return Err(FormFindError::DegenerateTriangle);
+    }
+
+    // cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges out of v.
+    let cot_i = v_dot(eij, eik) / two_area;
+    let cot_j = v_dot(eji, ejk) / two_area;
+    let cot_k = v_dot(eki, ekj) / two_area;
+
+    // Edge weight opposite vertex v is (σ/2)·cot(θ_v): edge (i,j) is opposite k,
+    // edge (j,k) opposite i, edge (k,i) opposite j.
+    let half_sigma = 0.5 * sigma;
+    let w_ij = half_sigma * cot_k;
+    let w_jk = half_sigma * cot_i;
+    let w_ki = half_sigma * cot_j;
+
+    // Assemble the symmetric local Laplacian via the rank-1 edge pattern
+    // (+w on the two incident diagonals, −w on the symmetric off-diagonal pair).
+    let mut l = [[0.0_f64; 3]; 3];
+    let mut add_edge = |a: usize, b: usize, w: f64| {
+        l[a][a] += w;
+        l[b][b] += w;
+        l[a][b] -= w;
+        l[b][a] -= w;
+    };
+    add_edge(0, 1, w_ij); // edge i–j
+    add_edge(1, 2, w_jk); // edge j–k
+    add_edge(2, 0, w_ki); // edge k–i
+
+    Ok(l)
 }
 
 #[cfg(test)]
