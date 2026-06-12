@@ -433,7 +433,7 @@ impl std::fmt::Display for Type {
             Type::String => write!(f, "String"),
             Type::Scalar { dimension } => {
                 if dimension.is_dimensionless() {
-                    write!(f, "Scalar")
+                    write!(f, "Real")
                 } else {
                     write!(f, "Scalar[{}]", dimension)
                 }
