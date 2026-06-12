@@ -86,7 +86,39 @@ pub fn density_spec() -> ArgSpec {
 ///   → [`Acceptance::Accepted`] carrying the SI f64.
 /// - Any other defined value → [`Acceptance::Rejected`].
 pub fn accept_arg(value: &reify_ir::Value, spec: &ArgSpec) -> Acceptance {
-    unimplemented!("accept_arg not yet implemented (step-2 will fill this in)")
+    match value {
+        reify_ir::Value::Undef => Acceptance::Undefined,
+        reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == spec.dimension => Acceptance::Accepted(*si_value),
+        other => Acceptance::Rejected(ArgRejection {
+            got: value_short_label(other),
+            expected: spec.type_name,
+            migration_hint: spec.migration_hint,
+        }),
+    }
+}
+
+/// Produce a short human-readable label for a `Value` used in rejection
+/// diagnostics (e.g. `"Real"`, `"Pressure Scalar"`, `"Bool"`).
+fn value_short_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => {
+            if dimension.is_dimensionless() {
+                "dimensionless Scalar".to_string()
+            } else if let Some(name) = dimension.canonical_name() {
+                format!("{name} Scalar")
+            } else {
+                "dimensioned Scalar".to_string()
+            }
+        }
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::Int(_) => "Int".to_string(),
+        reify_ir::Value::GeometryHandle { .. } => "GeometryHandle".to_string(),
+        _ => "unknown".to_string(),
+    }
 }
 
 #[cfg(test)]
