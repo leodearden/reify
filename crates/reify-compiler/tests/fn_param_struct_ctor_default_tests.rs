@@ -416,3 +416,49 @@ structure ModalDefaultsTest {
         errors
     );
 }
+
+// ─── test (e): non-conforming arg to trait-typed param still errors ───────────
+
+/// The wildcard relaxation in `try_default_padding` defers trait-conformance
+/// validation to `phase_fn_arg_conformance`, NOT skips it.  A padded call whose
+/// explicit leading arg does NOT conform to the trait-typed param must still
+/// produce at least one Error-severity diagnostic.
+///
+/// Uses `solve_buckling` (first param: `ElasticMaterial`) with a custom struct
+/// `NotAMaterial` that carries no trait conformance.  `options` is omitted —
+/// the wildcard prefix check passes (trait param → wildcard, any StructureRef
+/// accepted at prefix stage), the options default is padded in, but
+/// `phase_fn_arg_conformance` then rejects NotAMaterial at the ElasticMaterial
+/// slot.
+#[test]
+fn padded_call_nonconforming_arg_still_errors() {
+    let src = r#"
+structure def NotAMaterial {
+    param x : Int = 0
+}
+
+structure NonConformingPaddedCall {
+    let result = solve_buckling(
+        NotAMaterial(),
+        1000mm,
+        100mm,
+        100mm,
+        [PointLoad(point: "tip", force: 1000.0)],
+        [FixedSupport(target: "root")]
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "passing NotAMaterial (non-conforming) to solve_buckling's ElasticMaterial \
+         param must produce at least one Error diagnostic (conformance enforced \
+         downstream by phase_fn_arg_conformance even after wildcard prefix padding); \
+         got zero errors"
+    );
+}

@@ -909,7 +909,7 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///   `resolve_function_overload` (see below), and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
 ///
-/// **Prefix predicate (mirrors `resolve_function_overload` lines 662-667):**
+/// **Prefix predicate (mirrors `resolve_function_overload`):**
 /// For each `(param_ty, arg_ty)` pair in the provided prefix, the pair
 /// *matches* when any of:
 /// - `type_carries_trait_object(param_ty)` — trait-object param is a wildcard;
@@ -935,8 +935,11 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 /// to `compiled_args` by construction (task-3702).
 ///
 /// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+/// `CompiledExpr`s for the trailing params. When multiple candidates are satisfiable,
+/// prefers the subset whose prefix matches by strict `param_ty == arg_ty` (mirrors
+/// `resolve_function_overload`'s exact-match tie-break); if that subset has exactly
+/// one entry it is returned, otherwise `None`. Returns `None` when zero candidates
+/// are satisfiable (caller falls through to the existing NoMatch error).
 ///
 /// **Invariant:** every candidate in `named` must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
@@ -970,8 +973,8 @@ pub(crate) fn try_default_padding<'a>(
             continue;
         }
         // Provided prefix types must match candidate params using the same
-        // trait/type-param wildcard predicate as `resolve_function_overload`
-        // (lines 662-667). See the function-level doc for the full rationale.
+        // trait/type-param wildcard predicate as `resolve_function_overload`.
+        // See the function-level doc for the full rationale.
         let is_generic = !cand.type_params.is_empty();
         let prefix_matches = cand.params[..provided]
             .iter()
@@ -997,7 +1000,25 @@ pub(crate) fn try_default_padding<'a>(
 
     match satisfiable.len() {
         1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
+        0 => None,
+        _ => {
+            // Multiple candidates pass the wildcard prefix — prefer the subset
+            // whose prefix matches by strict equality (mirrors
+            // `resolve_function_overload`'s exact-match tie-break).
+            let exact: Vec<_> = satisfiable
+                .into_iter()
+                .filter(|(cand, _)| {
+                    cand.params[..provided]
+                        .iter()
+                        .zip(arg_types[..provided].iter())
+                        .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                })
+                .collect();
+            match exact.len() {
+                1 => Some(exact.into_iter().next().unwrap()),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -2041,6 +2062,75 @@ mod tests {
         assert_eq!(
             defaults[0].content_hash, default_expr.content_hash,
             "returned default must be the Real(1.0) literal"
+        );
+    }
+
+    /// Disambiguation: when two same-name candidates both pass the wildcard prefix
+    /// check (one has a trait-typed leading param, the other has a matching exact
+    /// concrete param), the exact-match one wins.
+    ///
+    /// Candidate A: `f(j: TraitObject("T"), y: Real=1.0)` — passes via wildcard for
+    ///   any StructureRef arg.
+    /// Candidate B: `f(x: StructureRef("X"), y: Real=2.0)` — passes via exact match
+    ///   for a StructureRef("X") arg.
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass the wildcard-inclusive prefix check,
+    /// so `satisfiable.len() == 2`. The tie-break prefers the exact-match subset
+    /// (only B), returning candidate B with default `Real(2.0)`.
+    #[test]
+    fn try_default_padding_exact_match_wins_over_wildcard() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("T".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::StructureRef("X".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "exact-match tie-break must resolve to candidate B; expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_b),
+            "tie-break must prefer the exact-match candidate (cand_b)"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_b.content_hash,
+            "returned default must be cand_b's Real(2.0)"
         );
     }
 
