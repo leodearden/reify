@@ -622,6 +622,13 @@ pub(crate) fn compile_entity(
     // geometry-let classification is order-sensitive (incremental accumulation).
     // Pinned by `let_scope_tests::cyclic_ident_alias_does_not_crash`.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+    // Parallel to `known_geometry_lets`: tracks which let names resolve to a
+    // selector expression (direct ctor / composition of already-known selectors).
+    // Populated incrementally in the Let arm's else branch (when is_selector_expr
+    // is true) so that subsequent selector-let ident references are recognised by
+    // is_selector_expr's Ident arm. Threaded into every is_geometry_let call
+    // and into register_guarded_names. (task 4527)
+    let mut known_selector_lets: HashSet<&str> = HashSet::new();
     // Tracks cluster logical names already registered in this pre-pass so that a
     // second MatchArmDeclGroup with the same logical name is skipped wholesale.
     // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
@@ -824,7 +831,7 @@ pub(crate) fn compile_entity(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -851,7 +858,7 @@ pub(crate) fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
@@ -860,6 +867,11 @@ pub(crate) fn compile_entity(
                     // be determined when we compile the expression. For now, use Real.
                     // We'll update this after the expression is compiled.
                     scope.register(&let_decl.name, Type::dimensionless_scalar());
+                    // Track selector lets so subsequent is_selector_expr Ident lookups
+                    // can classify compositions of these lets correctly. (task 4527)
+                    if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
+                        known_selector_lets.insert(let_decl.name.as_str());
+                    }
                 }
                 outside_decl_spans
                     .entry(let_decl.name.clone())
@@ -890,6 +902,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &mut known_geometry_lets,
+                    &mut known_selector_lets,
                 );
                 register_guarded_names(
                     &g.else_members,
@@ -901,6 +914,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &mut known_geometry_lets,
+                    &mut known_selector_lets,
                 );
             }
             reify_ast::MemberDecl::MatchArmDeclGroup(m) => {
@@ -1410,7 +1424,7 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::Let(let_decl) => {
                 // Skip geometry-producing function calls (and ident aliases to them)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                     continue;
                 }
 
@@ -1879,6 +1893,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &known_geometry_lets,
+                    &known_selector_lets,
                 );
             }
             reify_ast::MemberDecl::AssociatedType(_) => {
@@ -2266,7 +2281,7 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, functions, &mut map);
+        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &mut map);
         map
     };
 
@@ -2276,7 +2291,7 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
@@ -3545,13 +3560,14 @@ pub(crate) struct PendingSubOverrideAuto {
 fn collect_geometry_exprs<'a>(
     members: &'a [reify_ast::MemberDecl],
     known: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
     functions: &[CompiledFunction],
     out: &mut HashMap<&'a str, &'a reify_ast::Expr>,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, known) =>
+                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets) =>
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
@@ -3561,8 +3577,8 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, functions, out);
-                collect_geometry_exprs(&g.else_members, known, functions, out);
+                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, out);
+                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, out);
             }
             _ => {}
         }
@@ -4122,6 +4138,11 @@ pub(crate) fn build_structure_def_skeleton(
     // the first pass below (authoritative: entity.rs:822-831); geometry lets are
     // accumulated in the second pass.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+    // Parallel selector-let accumulator — mirrors the authoritative pre-pass
+    // (entity.rs:~631). Populated in the Let arm's else branch when
+    // is_selector_expr is true, enabling all-ident selector compositions to
+    // route correctly. (task 4527)
+    let mut known_selector_lets: HashSet<&str> = HashSet::new();
 
     for member in &structure.members {
         if let reify_ast::MemberDecl::Param(param) = member {
@@ -4159,7 +4180,7 @@ pub(crate) fn build_structure_def_skeleton(
                 && param
                     .default
                     .as_ref()
-                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
                     .unwrap_or(false)
             {
                 known_geometry_lets.insert(param.name.as_str());
@@ -4211,7 +4232,7 @@ pub(crate) fn build_structure_def_skeleton(
     //     identical metadata on both paths.
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                 // Accumulate this geometry let's name so subsequent lets that
                 // alias it (Ident/branch references) are also classified as
                 // geometry — matching the authoritative path (entity.rs:853-856).
@@ -4253,6 +4274,11 @@ pub(crate) fn build_structure_def_skeleton(
             let id = ValueCellId::new(&structure.name, &let_decl.name);
             // Register in scope so later lets can reference earlier lets.
             scope.register(&let_decl.name, cell_type.clone());
+            // Track selector lets so subsequent all-ident compositions route
+            // correctly — mirrors the authoritative pre-pass (task 4527).
+            if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
+                known_selector_lets.insert(let_decl.name.as_str());
+            }
             // Respect is_pub, matching the authoritative path (entity.rs:1434).
             let let_visibility = if let_decl.is_pub {
                 Visibility::Public
