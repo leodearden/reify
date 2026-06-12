@@ -12,7 +12,8 @@ use reify_ir::Value;
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, fixed_guided_delta_max,
     fixed_guided_sigma_at, length_si, make_compliance_record, make_flexure_joint,
-    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range, RangeKind,
+    material_field_si, neutral_angle_si, parse_declared_range, symmetric_angle_range,
+    symmetric_length_range, RangeKind,
     CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
@@ -237,7 +238,7 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
         max_stress_at_neutral,
         b.yield_si,
         None,
-        symmetric_angle_range(delta_auto),
+        symmetric_length_range(delta_auto),
     );
     attach_compliance(joint, record)
 }
