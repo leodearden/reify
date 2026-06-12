@@ -212,10 +212,14 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
     pairs
 }
 
-/// Returns `true` iff `expr` represents a dimensioned-zero BinOp chain of the
-/// form `0 * <unit_expr>` (optionally followed by `/` or `*` unit factors).
+/// Returns `true` iff `expr` has the structural shape of a dimensioned-zero
+/// BinOp chain: `0 * <anything>` (optionally followed by `/` or `*` factors).
 ///
-/// Examples that match:
+/// **Shape-only:** the right operand is NOT inspected — `0 * 5` (dimensionless)
+/// also returns `true`. Callers MUST pair this with an independent `result_type`
+/// check to confirm the actual dimension; see each call site below.
+///
+/// Examples that match (shape only — `result_type` supplies the dimension):
 ///   `0 * 1N`            → BinOp(Mul, Int(0), Scalar{..})                  ✓
 ///   `0 * 1m / 1s`       → BinOp(Div, BinOp(Mul, Int(0), ..), ..)          ✓
 ///   `0 * 1m / (1s*1s)`  → BinOp(Div, BinOp(Mul, Int(0), ..), BinOp(..))   ✓
