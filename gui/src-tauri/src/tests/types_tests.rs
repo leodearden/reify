@@ -17,6 +17,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -36,6 +37,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1654,6 +1656,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2381,6 +2384,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![wire],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2408,6 +2412,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
@@ -2726,6 +2731,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![surface],
+        demand_prune_measurement: None,
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2753,6 +2759,7 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(

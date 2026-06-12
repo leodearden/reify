@@ -12484,9 +12484,24 @@ fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
         synced_state.values, control_state.values,
         "observed-demand sync must NOT change GuiState parameter values"
     );
+    // Constraint DATA must be identical, compared ORDER-INSENSITIVELY. The
+    // `constraints` Vec order is derived from HashSet/HashMap iteration in the
+    // engine's constraint-check path, whose per-allocation RandomState seed is
+    // perturbed by the extra `HashSet` allocations `sync_observed_demand`
+    // performs (reset + rebuild of the side-channel observed-demand registry).
+    // That seed drift can reorder the Vec between the two independent engines
+    // WITHOUT changing any constraint's data — `observed_demand` never feeds the
+    // constraint check (it is read only by the passive measurement). Sorting
+    // both sides by `node_id` isolates the data-equality the zero-behavior-change
+    // contract actually guarantees.
+    let mut synced_constraints = synced_state.constraints.clone();
+    let mut control_constraints = control_state.constraints.clone();
+    synced_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    control_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     assert_eq!(
-        synced_state.constraints, control_state.constraints,
-        "observed-demand sync must NOT change GuiState constraint data"
+        synced_constraints, control_constraints,
+        "observed-demand sync must NOT change GuiState constraint data \
+         (order-insensitive: only HashSet-seeded Vec order may differ)"
     );
     assert_eq!(
         synced_eval_set, control_eval_set,

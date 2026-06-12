@@ -9,7 +9,10 @@ use tracing::warn;
 use reify_compiler::{CompiledModule, ValueCellKind};
 use reify_eval::cache::NodeId;
 use reify_eval::{CancellationHandle, CheckResult, Engine};
-use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, ValueCellId};
+use reify_core::{
+    ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
+    ValueCellId,
+};
 use reify_ir::{ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value};
 
 #[cfg(test)]
@@ -19,7 +22,8 @@ use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo
 
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
-    DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
+    DefInfo, DemandPruneMeasurementDto, EntityIdentity, EntityTreeNode, FileData, GuiState,
+    JointBinding, JointDescriptor,
     MechanismDescriptor, MeshData, SourceSpanInfo, TensegritySurfaceData, TensegrityWireData,
     ValueData, format_determinacy, format_freshness, format_value,
 };
@@ -1717,6 +1721,71 @@ impl EngineSession {
         self.build_gui_state()
     }
 
+    /// Synchronize the engine's PASSIVE observed-demand registry from the GUI's
+    /// current display state (selective-demand precondition, task 4532).
+    ///
+    /// The three inputs are the spec §3.2 observed-demand sources:
+    /// * `visible_realizations` — viewport mesh keys in `RealizationNodeId`
+    ///   Display form (`Entity#realization[N]`),
+    /// * `displayed_cells` — property-panel cell ids (`Entity.member`),
+    /// * `panel_constraints` — constraint-panel ids in `ConstraintNodeId`
+    ///   Display form (`Entity#constraint[N]`).
+    ///
+    /// Each is registered as a root on the engine's side-channel
+    /// `observed_demand` registry, then the observed cone is rebuilt. The NEXT
+    /// edit records a would-prune [`reify_eval::DemandPruneMeasurement`],
+    /// surfaced via [`crate::types::GuiState::demand_prune_measurement`].
+    ///
+    /// OBSERVATIONAL ONLY. This NEVER touches the production `demand` registry,
+    /// and the observed cone is NEVER fed to `compute_eval_set`; registering
+    /// observed demand therefore cannot perturb `EvalResult` / `last_eval_set`
+    /// (locked by the engine test
+    /// `sync_observed_demand_is_zero_behavior_change_and_records_measurement`).
+    /// Unparseable entries are skipped with a warning, never a panic. See
+    /// `docs/prds/v0_6/selective-demand.md` §G6.
+    pub fn sync_observed_demand(
+        &mut self,
+        visible_realizations: &[String],
+        displayed_cells: &[String],
+        panel_constraints: &[String],
+    ) {
+        let engine = self.core.engine_mut();
+        // The GUI always sends the COMPLETE current display state, so reset the
+        // observed roots first rather than accumulating across syncs.
+        engine.reset_observed_demand();
+
+        for key in visible_realizations {
+            match parse_realization_key(key) {
+                Some(rid) => engine.add_observed_demand(NodeId::Realization(rid)),
+                None => warn!(
+                    realization_key = %key,
+                    "sync_observed_demand: skipping unparseable realization key"
+                ),
+            }
+        }
+        for cell in displayed_cells {
+            match parse_cell_id(cell) {
+                Ok(vc) => engine.add_observed_demand(NodeId::Value(vc)),
+                Err(e) => warn!(
+                    cell = %cell,
+                    error = %e,
+                    "sync_observed_demand: skipping unparseable cell"
+                ),
+            }
+        }
+        for constraint in panel_constraints {
+            match parse_constraint_key(constraint) {
+                Some(cid) => engine.add_observed_demand(NodeId::Constraint(cid)),
+                None => warn!(
+                    constraint_id = %constraint,
+                    "sync_observed_demand: skipping unparseable constraint id"
+                ),
+            }
+        }
+
+        engine.rebuild_observed_cone();
+    }
+
     /// Load a .ri file from disk.
     ///
     /// Unlike `load_from_source`, this method wires multi-file import resolution:
@@ -2203,6 +2272,8 @@ impl EngineSession {
                 compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
                 tensegrity_surfaces: Vec::new(),
+                // No edit has run on this cold-start/early-return path.
+                demand_prune_measurement: None,
             });
         }
 
@@ -2401,6 +2472,18 @@ impl EngineSession {
             )
         };
 
+        // Passive selective-demand measurement (task 4532): surface the
+        // would-prune record produced by the most recent edit, if any.
+        // OBSERVATIONAL ONLY — reading `last_demand_prune_measurement` cannot
+        // affect evaluation, and it is `None` until the first edit populates it.
+        // The immutable engine borrow is released by `.map(..)` (owned result)
+        // before the `GuiState` literal moves the local fields.
+        let demand_prune_measurement = self
+            .core
+            .engine()
+            .last_demand_prune_measurement()
+            .map(DemandPruneMeasurementDto::from);
+
         Ok(GuiState {
             meshes,
             values,
@@ -2410,6 +2493,7 @@ impl EngineSession {
             compile_diagnostics,
             tensegrity_wires,
             tensegrity_surfaces,
+            demand_prune_measurement,
         })
     }
 
@@ -3965,6 +4049,9 @@ fn build_preview_gui_state(
         compile_diagnostics: Vec::new(),
         tensegrity_wires: Vec::new(),
         tensegrity_surfaces: Vec::new(),
+        // Single-definition previews are evaluated in isolation; no edit
+        // measurement is meaningful here.
+        demand_prune_measurement: None,
     }
 }
 
@@ -4412,6 +4499,31 @@ fn parse_cell_id(s: &str) -> Result<ValueCellId, String> {
         ));
     }
     Ok(ValueCellId::new(parts[0], parts[1]))
+}
+
+/// Parse a realization mesh key of the form `Entity#realization[N]` — the
+/// `RealizationNodeId` Display form (reify-core/identity.rs) — into a
+/// `RealizationNodeId`. Returns `None` for malformed keys so `sync_observed_demand`
+/// can skip-and-warn rather than panic on stale/foreign frontend input.
+fn parse_realization_key(key: &str) -> Option<RealizationNodeId> {
+    let (entity, rest) = key.split_once("#realization[")?;
+    let index: u32 = rest.strip_suffix(']')?.parse().ok()?;
+    if entity.is_empty() {
+        return None;
+    }
+    Some(RealizationNodeId::new(entity, index))
+}
+
+/// Parse a constraint-panel id of the form `Entity#constraint[N]` — the
+/// `ConstraintNodeId` Display form — into a `ConstraintNodeId`. Returns `None`
+/// for malformed ids (callers skip-and-warn).
+fn parse_constraint_key(key: &str) -> Option<ConstraintNodeId> {
+    let (entity, rest) = key.split_once("#constraint[")?;
+    let index: u32 = rest.strip_suffix(']')?.parse().ok()?;
+    if entity.is_empty() {
+        return None;
+    }
+    Some(ConstraintNodeId::new(entity, index))
 }
 
 /// Unit suffixes ordered by descending length — longest match first.
