@@ -1660,6 +1660,17 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Option(Box::new(inner)))
         }
+        "Range" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Range(Box::new(inner)))
+        }
         "Scalar" if type_args.len() == 1 => {
             // Scalar<Q>: resolve Q to a DimensionVector and wrap.
             let dim =
@@ -1787,7 +1798,7 @@ fn expect_integer_literal_type_arg(
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
 ///
-/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
+/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Range<T>`, `Scalar<Q>`, `Vector3<Q>`,
 /// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
@@ -1858,6 +1869,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Option(Box::new(inner)))
+        }
+        "Range" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
             let dim = resolve_type_alias_expr_to_dim_with_subst(
