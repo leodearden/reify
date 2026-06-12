@@ -941,6 +941,13 @@ pub(crate) fn compile_geometry_op(
                         offset,
                     })
                 }
+                reify_compiler::ModifyKind::ZoneSlab => {
+                    let width = eval_arg("width")?;
+                    Ok(reify_ir::GeometryOp::ZoneSlab {
+                        target: target_id,
+                        width,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
