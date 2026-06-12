@@ -2275,6 +2275,33 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     });
 }
 
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height) {
+    return wrap_occt_call("make_cylindrical_face", [&]() {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: radius must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: height must be finite and positive");
+        }
+        // Open lateral cylindrical face: axis = +Z, base at origin.
+        // U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+        gp_Ax3 axes(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+        Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(axes, radius);
+        BRepBuilderAPI_MakeFace faceBuilder(
+            cyl,
+            0.0, 2.0 * M_PI,  // U: full revolution
+            0.0, height,       // V: 0..height
+            /*tolerance=*/1e-7
+        );
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_cylindrical_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height) {
     return wrap_occt_call("make_rectangle_face", [&]() {
         if (!(std::isfinite(width) && width > 0.0)) {

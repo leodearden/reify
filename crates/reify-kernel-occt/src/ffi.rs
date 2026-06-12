@@ -609,6 +609,7 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_cylindrical_face(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_rectangle_face(
             width: f64,
             height: f64,

@@ -734,6 +734,11 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
 
+/// Create an open lateral cylindrical face (no caps) centred on the Z axis with
+/// base at the origin.  U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+/// Both radius and height must be finite and positive.
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height);
+
 /// Create a flat axis-aligned rectangular face centred at origin in the XY plane
 /// at the given Z height (for extrude profiles).
 /// Corners: (±width/2, ±height/2, z_height).  Both width and height must be
