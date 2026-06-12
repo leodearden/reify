@@ -3797,6 +3797,39 @@ mod tests {
             "compose with non-Field args must return None"
         );
 
+        // compose: middle type B must match — arg[0].domain must equal arg[1].codomain
+        //
+        // compose(Field<B=Real, C=Scalar<Temp>>, Field<A=Point3<Length>, B_actual=Bool>)
+        //   middle mismatch: arg[0].domain (Real) != arg[1].codomain (Bool)
+        //   → must return None (4219-S2 note: a mis-composed call must not be silently typed)
+        //
+        // RED on current main: the compose arm ignores middle B entirely and returns
+        // Some(Field<Point3<Length>, Scalar<Temperature>>).
+        // GREEN after step-4 tightens the arm to require b0 == b1.
+        {
+            use reify_core::DimensionVector;
+            let s_temp = Type::Scalar {
+                dimension: DimensionVector::TEMPERATURE,
+            };
+            let p3l = Type::point3(Type::length());
+            // arg[0]: Field<B=Real, C=Scalar<Temp>> — codomain Temp, domain Real
+            let arg0 = Type::Field {
+                domain: Box::new(Type::dimensionless_scalar()), // B (Real)
+                codomain: Box::new(s_temp),                     // C (Scalar<Temp>)
+            };
+            // arg[1]: Field<A=Point3<Length>, B_actual=Bool> — codomain Bool ≠ Real
+            let arg1 = Type::Field {
+                domain: Box::new(p3l),   // A (Point3<Length>)
+                codomain: Box::new(Type::Bool), // B_actual (Bool ≠ Real → mismatch)
+            };
+            assert_eq!(
+                field_op_result_type("compose", &[arg0, arg1]),
+                None,
+                "compose with mismatched middle type B (arg[0].domain=Real vs arg[1].codomain=Bool) \
+                 must return None — 4219-S2: a mis-composed call must not be silently typed"
+            );
+        }
+
         // fn_field: arg[0] must be Function
         assert_eq!(
             field_op_result_type("fn_field", &[Type::dimensionless_scalar()]),
