@@ -277,70 +277,103 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     }
 }
 
+/// Compute the result-codomain type for the divergence operator.
+///
+/// Returns `Some(result_codomain)` when:
+/// - `domain_type` is `Point { n, scalar }` (n ≥ 1), **and**
+/// - `codomain_type` is `Vector { n, scalar }` with matching dimension n.
+///
+/// The result codomain is always a scalar quotient: `codomain_component_dim / domain_dim`
+/// (i.e. `dim_quotient_type` with `domain_exponent = 1`), which is the dimensionless
+/// strain rate for dimensionless inputs.
+///
+/// Returns `None` for:
+/// - non-Point domain, non-Vector codomain, or mismatched dimensions (vec_n ≠ n)
+///
+/// Used by both the Sampled eager-lower path (ζ) and the existing
+/// Analytical/Composed path to guarantee identical D6 typing across both paths.
+fn divergence_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Domain must be Point{n, scalar}; extract n.
+    let n = match domain_type {
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
+        _ => return None,
+    };
+    // Codomain must be Vector{n, scalar}; extract the unwrapped quantity.
+    let (vec_n, codomain_quantity) = match codomain_type {
+        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
+            (*n, quantity.as_ref())
+        }
+        _ => return None,
+    };
+    // Vector dimension must match domain dimension.
+    if vec_n != n {
+        return None;
+    }
+    Some(dim_quotient_type(
+        scalar_dimension(codomain_quantity),
+        domain_dimension(domain_type),
+        1,
+        dimensionless_fallback(codomain_quantity),
+    ))
+}
+
 /// Compute the divergence of a vector field.
 ///
 /// Returns a new scalar Field with `FieldSourceKind::Divergence` whose lambda slot stores
 /// the original field. The sample handler dispatches to `compute_numerical_divergence_at_point`.
 ///
 /// Validation:
-/// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
 ///
-/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
-/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
-/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
-/// `Value::Undef`, which is the correct ζ-pending behaviour.
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Divergence)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled scalar field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // divergence_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = divergence_result_codomain(domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Divergence,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "divergence")
     {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain must be a Point with scalar quantity
-    let n = match domain_type {
-        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
-        _ => {
+    let result_codomain = match divergence_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] divergence: domain must be Point{{n}}, got {:?}",
-                domain_type
+                "[reify-expr] divergence: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
     };
-
-    // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
-    let (vec_n, codomain_quantity) = match codomain_type {
-        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
-            (*n, quantity.as_ref())
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] divergence: codomain must be Vector{{n}}, got {:?}",
-                codomain_type
-            );
-            return Value::Undef;
-        }
-    };
-
-    if vec_n != n {
-        #[cfg(debug_assertions)]
-        eprintln!("[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}");
-        return Value::Undef;
-    }
-
-    // Compute result codomain type: codomain_component_dim / domain_dim.
-    // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
-    // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
-    let result_codomain = dim_quotient_type(
-        scalar_dimension(codomain_quantity),
-        domain_dimension(domain_type),
-        1,
-        dimensionless_fallback(codomain_quantity),
-    );
 
     // Result: scalar field with dimensionally-correct codomain.
     // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
