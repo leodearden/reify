@@ -4,20 +4,19 @@
 // projection store.  See `docs/prds/v0_6/realization-read-api.md` §9 (task β),
 // contract §3.3/§3.4, decision D2 (lazy-at-lowering).
 //
-// γ (Mesh→tessellate, VolumeMesh→volume_mesh()) and δ (Sdf/Voxel→densify) will
-// REPLACE the content-bearing arms in `project_realization_read_handle` with
-// real kernel resolution (self.realization_handles / self.realization_cache →
-// KernelHandle) + real projection, and on success call
-// `self.realization_projection_store.insert(…)` to memoize the content.
+// γ (Mesh→tessellate, VolumeMesh→volume_mesh()) will REPLACE the Mesh/VolumeMesh
+// arms in `project_realization_read_handle` with real kernel projection + store
+// insert.  δ (Sdf/Voxel→densify) has already landed (task 4510).
 //
 // PRD §10 OQ-2 (eviction): the store is unbounded in v1; eviction is deferred
 // to a future task.  Content is immutable once keyed (realization identity is
 // content-addressed), so stale entries are unreachable rather than incorrect.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_core::{ContentHash, Diagnostic, RealizationNodeId};
-use reify_ir::ReprKind;
+use reify_ir::{GeometryKernel, ReprKind};
 
 use crate::engine_compute::{RealizedContent, RealizationReadHandle};
 use crate::graph::EvaluationGraph;
@@ -101,11 +100,13 @@ impl crate::Engine {
     /// * **Store miss, BRep** — returns a handle carrying `None` and **no
     ///   diagnostic** (BRep is identity-only by design; PRD §4 D1 — a None
     ///   here is expected, not a failure).
-    /// * **Store miss, content-bearing repr** (Mesh / VolumeMesh / Sdf /
-    ///   Voxel) — returns a handle carrying `None` and one
-    ///   `Severity::Warning` diagnostic (honest degradation §3.2-5; the
-    ///   per-repr arms with real kernel resolution land in γ/δ, which
-    ///   REPLACE these arms with `Some(content)` + store insert on success).
+    /// * **Store miss, Mesh / VolumeMesh** — returns a handle carrying `None`
+    ///   and one `Severity::Warning` diagnostic (honest degradation §3.2-5;
+    ///   γ replaces these arms with real kernel projection + store insert).
+    /// * **Store miss, Sdf / Voxel** — densifies the live openvdb grid via
+    ///   `GeometryKernel::densify_grid_to_sampled` (δ, task 4510); returns
+    ///   `Some(RealizedContent::Sdf)` + stores the content on success, or
+    ///   `None` + one warning on degradation (no kernel / chain-fail).
     /// * **Absent realization** (defensive; should not occur for a live
     ///   handle) — returns a handle with `content_hash = ContentHash(0)`,
     ///   `None` content, and one warning.
@@ -157,18 +158,10 @@ impl crate::Engine {
                             RealizationReadHandle::new(node_id.clone(), content_hash, None);
                         (handle, vec![])
                     }
-                    ReprKind::Mesh | ReprKind::VolumeMesh | ReprKind::Sdf | ReprKind::Voxel => {
+                    ReprKind::Mesh | ReprKind::VolumeMesh => {
                         // Content-bearing repr but no callable kernel at
-                        // eval-time (kernels are collected per-build, not a
-                        // persistent Engine field).  Honest degradation:
-                        // content=None + one warning.  γ/δ replace these
-                        // arms with real kernel projection + store insert.
-                        //
-                        // Note: this warning is dormant in β — no live
-                        // compute target currently receives GeometryHandle
-                        // args (Value::GeometryHandle is a post-eval
-                        // BUILD-time artifact; dispatch sees Undef for
-                        // geometry args until task 4091 wires the chain).
+                        // eval-time.  Honest degradation: content=None + one
+                        // warning.  γ replaces these arms.
                         let handle =
                             RealizationReadHandle::new(node_id.clone(), content_hash, None);
                         let diag = Diagnostic::warning(format!(
@@ -176,6 +169,71 @@ impl crate::Engine {
                              not yet available; handle carries no content"
                         ));
                         (handle, vec![diag])
+                    }
+                    ReprKind::Sdf | ReprKind::Voxel => {
+                        // δ: densify the live openvdb grid into a SampledField
+                        // via GeometryKernel::densify_grid_to_sampled (reification-
+                        // read-api.md §3.3 arm 3; D4 reuse of 4421's machinery).
+                        //
+                        // Borrow sequencing (no conflict):
+                        //   1. realization_handles — read only (copy handle_id)
+                        //   2. geometry_kernels    — get_mut (exclusive for densify)
+                        //   3. realization_projection_store — insert on success
+                        let handle_id = self
+                            .realization_handles
+                            .get(node_id)
+                            .copied();
+
+                        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+                        let kernel_opt = self.geometry_kernels.get_mut(openvdb_name);
+
+                        match (handle_id, kernel_opt) {
+                            (Some(hid), Some(kernel)) => {
+                                match kernel.densify_grid_to_sampled(hid) {
+                                    Ok(field) => {
+                                        let content =
+                                            RealizedContent::Sdf(Arc::new(field));
+                                        self.realization_projection_store.insert(
+                                            node_id.clone(),
+                                            content_hash,
+                                            content.clone(),
+                                        );
+                                        let handle = RealizationReadHandle::new(
+                                            node_id.clone(),
+                                            content_hash,
+                                            Some(content),
+                                        );
+                                        (handle, vec![])
+                                    }
+                                    Err(e) => {
+                                        let handle = RealizationReadHandle::new(
+                                            node_id.clone(),
+                                            content_hash,
+                                            None,
+                                        );
+                                        let diag = Diagnostic::warning(format!(
+                                            "realization {node_id}: {produced_repr:?} \
+                                             densify failed: {e:?}; handle carries no content"
+                                        ));
+                                        (handle, vec![diag])
+                                    }
+                                }
+                            }
+                            _ => {
+                                // No openvdb kernel registered (cfg(not(has_openvdb))
+                                // stub build or missing handle) — honest degradation.
+                                let handle = RealizationReadHandle::new(
+                                    node_id.clone(),
+                                    content_hash,
+                                    None,
+                                );
+                                let diag = Diagnostic::warning(format!(
+                                    "realization {node_id}: {produced_repr:?} densify \
+                                     unavailable (no openvdb kernel); handle carries no content"
+                                ));
+                                (handle, vec![diag])
+                            }
+                        }
                     }
                 }
             }
@@ -426,24 +484,29 @@ mod tests {
     ///
     /// RED: current arm returns `None + 1 warning`; step-8 replaces it with
     /// the densify projection.
+    ///
+    /// Uses make_engine() + manually inserts OpenVdbKernel to avoid invoking
+    /// the `unreachable!()` factories of the cfg(test) synthetic kernels that
+    /// `Engine::with_registered_kernels` would also instantiate.
     #[cfg(has_openvdb)]
     #[test]
     fn project_voxel_with_openvdb_kernel_returns_sampled_field() {
         use reify_ir::{GeometryKernel, SampledGridKind};
-        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
 
-        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        // Use make_engine() to avoid hitting cfg(test) synthetic kernel
+        // factories (they are unreachable!()), then insert the real openvdb
+        // kernel directly.
+        let mut engine = make_engine();
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
 
         // Ingest the closed box into the live openvdb kernel instance.
         let mesh = box_2mm();
-        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
-        let kernel = engine
-            .geometry_kernels
-            .get_mut(openvdb_name)
-            .expect("openvdb kernel must be present in with_registered_kernels engine");
-        let handle = kernel
+        let mut openvdb = OpenVdbKernel::new();
+        let handle = openvdb
             .ingest_mesh(&mesh)
             .expect("ingest_mesh must succeed for a valid closed box");
+        engine.geometry_kernels.insert(openvdb_name.to_string(), Box::new(openvdb));
 
         // Seed realization graph + handles.
         let r0 = RealizationNodeId::new("voxel-delta-test", 0);
@@ -509,22 +572,24 @@ mod tests {
     /// `Arc::ptr_eq` content — the second call is a store hit.
     ///
     /// RED: current arm returns `None + 1 warning` on every call (no insert).
+    ///
+    /// Uses make_engine() + manually inserts OpenVdbKernel (same rationale as
+    /// `project_voxel_with_openvdb_kernel_returns_sampled_field`).
     #[cfg(has_openvdb)]
     #[test]
     fn project_voxel_memoized_returns_ptr_eq_arc() {
         use reify_ir::GeometryKernel;
-        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
 
-        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        let mut engine = make_engine();
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
 
         let mesh = box_2mm();
-        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
-        let handle = engine
-            .geometry_kernels
-            .get_mut(openvdb_name)
-            .expect("openvdb kernel must be present")
+        let mut openvdb = OpenVdbKernel::new();
+        let handle = openvdb
             .ingest_mesh(&mesh)
             .expect("ingest_mesh must succeed");
+        engine.geometry_kernels.insert(openvdb_name.to_string(), Box::new(openvdb));
 
         let r0 = RealizationNodeId::new("memo-test", 0);
         let h = ContentHash::of_str("memo-hash");
