@@ -36,14 +36,18 @@
 //!   `CompileTimeIndeterminateChecker`).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use reify_compiler::auto_type_param::{
     AutoTypeParam, MultiParamResolutionOutcome, SelectionResult,
     resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan, Type};
-use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
+use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
+use reify_ir::{
+    CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
+    ConstraintResult, Satisfaction, Value, ValueMap,
+};
 use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -416,5 +420,386 @@ structure def S2B : T2 { param x : Real = 4.0 }
         1,
         "expected exactly one AutoTypeParamCrossProductSizeExceeded Warning; got:\n{:#?}",
         diagnostics
+    );
+}
+
+// ─── Step-5: Hoist-reversion wiring tests (RED before step-6) ────────────────
+//
+// These tests pin the PRD §11 "hoist reversion" — the three
+// NOTE(substitution-pass-trigger) sites in auto_type_param.rs must be reverted
+// so that per-candidate and per-leaf `checker.check()` calls receive a
+// ValueMap seeded from the candidate template's literal defaults (via
+// `seed_candidate_value_map`) instead of an empty map.
+//
+// **RED before step-6**: `filter_feasible_candidates` passes `empty_values` and
+// `dfs_search` passes `leaf_values = ValueMap::new()` to every `check()` call.
+// **GREEN after step-6**: `seed_candidate_value_map(candidate_template, param_member)`
+// is wired inside the per-candidate loop and the DFS leaf, and the spy captures
+// non-empty ValueMaps.
+
+/// Spy constraint checker that records a clone of `input.values` on every
+/// `check()` call. Returns `Satisfaction::Indeterminate` for every constraint
+/// so all candidates pass Phase B and the DFS resolves normally.
+struct ValueMapSpyChecker {
+    captured: Arc<Mutex<Vec<ValueMap>>>,
+}
+
+impl ValueMapSpyChecker {
+    /// Create a new spy; also returns the shared capture handle so the test can
+    /// read captured snapshots after the resolver returns.
+    fn new() -> (Self, Arc<Mutex<Vec<ValueMap>>>) {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        (Self { captured: Arc::clone(&captured) }, captured)
+    }
+}
+
+impl ConstraintChecker for ValueMapSpyChecker {
+    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
+        let snapshot = input.values.clone();
+        self.captured
+            .lock()
+            .expect("ValueMapSpyChecker: mutex poisoned")
+            .push(snapshot);
+        // Always Indeterminate so the spy never rejects a candidate.
+        input
+            .constraints
+            .iter()
+            .map(|(id, _)| ConstraintResult {
+                id: id.clone(),
+                satisfaction: Satisfaction::Indeterminate,
+                diagnostics: ConstraintDiagnostics::default(),
+            })
+            .collect()
+    }
+}
+
+/// Single-param Phase B path: after the hoist reversion in step-6,
+/// `filter_feasible_candidates` calls `checker.check()` with a ValueMap seeded
+/// from the candidate template's literal defaults (`seed_candidate_value_map`),
+/// NOT with an empty ValueMap as today.
+///
+/// Setup:
+/// - Trait `T1` + structure `S1 : T1 { param x : Real = 1.0 }`.
+/// - Parameterized template with one `Type::TypeParam("T1")` value cell named
+///   `"p1"` (→ `param_type_member("T1") == "p1"` via the param→member helper).
+/// - One trivial boolean constraint so `check()` is invoked with a non-empty
+///   constraints slice.
+/// - Single `AutoTypeParam` for `T1`; 1 param ≤ 6 max_depth → single-param DFS
+///   path → calls `filter_feasible_candidates` once for `S1`.
+///
+/// **RED before step-6**: `filter_feasible_candidates` passes `empty_values`
+/// — the captured ValueMap is empty, so `vm.get(&ValueCellId::new("p1", "x"))`
+/// returns `None` and the assertion fails.
+///
+/// **GREEN after step-6**: the seeded map contains `ValueCellId::new("p1","x")`
+/// → `Value::Real(1.0)` (S1's literal default).
+#[test]
+fn single_param_phase_b_spy_captures_seeded_value_map_after_hoist_reversion() {
+    let source = r#"
+trait T1 {}
+structure def S1 : T1 { param x : Real = 1.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+    let functions: &[CompiledFunction] = &[];
+
+    // Parameterized template: one value cell "p1 : TypeParam(T1)" + one
+    // trivial constraint so check() is always invoked.
+    let parameterized_template = TopologyTemplateBuilder::new("Stack")
+        .param(
+            "Stack",
+            "p1",
+            Type::TypeParam("T1".to_string()),
+            None,
+        )
+        .constraint(
+            "Stack",
+            0,
+            Some("trivial"),
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        )
+        .build();
+
+    let (spy, captured) = ValueMapSpyChecker::new();
+
+    let params = vec![AutoTypeParam {
+        name: "T1".to_string(),
+        bounds: vec!["T1".to_string()],
+        free: false,
+        use_site_span: SourceSpan::new(10, 15),
+    }];
+
+    let mut diagnostics = Vec::new();
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &parameterized_template,
+        &spy,
+        functions,
+        6,          // max_depth; 1 param ≤ 6 → single-param DFS path
+        usize::MAX, // cross-product cap: not relevant here
+        &mut diagnostics,
+    );
+
+    // Sanity: S1 was selected (no errors on the resolution path).
+    assert!(
+        diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "unexpected error diagnostics: {:#?}",
+        diagnostics
+    );
+    assert_eq!(
+        outcome.substitution.len(),
+        1,
+        "expected single-param substitution (S1); got: {:?}",
+        outcome.substitution
+    );
+
+    let captured = captured.lock().expect("spy mutex poisoned");
+    assert!(
+        !captured.is_empty(),
+        "expected at least one check() call to have been recorded by the spy"
+    );
+
+    // After step-6: the per-candidate ValueMap passed to check() must contain
+    // `ValueCellId::new("p1", "x")` — seeded from S1's `param x : Real = 1.0`
+    // via `seed_candidate_value_map(S1_template, "p1")`.
+    //
+    // Before step-6: every captured ValueMap is empty (uses `empty_values`),
+    // so the assertion below fails → RED.
+    let key = ValueCellId::new("p1", "x");
+    assert!(
+        captured.iter().any(|vm| vm.get(&key).is_some()),
+        "expected at least one check() call to receive a ValueMap containing \
+         the seeded key {key:?} (from S1's literal default x=1.0); \
+         actual captured maps: {:?}",
+        captured.iter().map(|m| m.iter().collect::<Vec<_>>()).collect::<Vec<_>>()
+    );
+}
+
+/// Multi-param DFS-leaf path: after the hoist reversion in step-6, the
+/// DFS leaf's `check_constraints_leaf` call receives a ValueMap seeded with
+/// ALL selected candidates' literal defaults, NOT the shared empty `leaf_values`.
+///
+/// Setup:
+/// - Traits `T1`, `T2` + structures `S1 : T1 { param x : Real = 1.0 }`,
+///   `S2 : T2 { param y : Real = 2.0 }`.
+/// - Parameterized template with TWO `TypeParam` cells: `"p1 : T1"` and
+///   `"p2 : T2"`, plus one trivial constraint.
+/// - Two `AutoTypeParam`s for `T1` and `T2`; 2 params ≤ 6 max_depth and
+///   1×1=1 ≤ cap → multi-param DFS path.
+/// - The DFS finds one feasible leaf `(S1, S2)` and calls `check_constraints_leaf`
+///   once for it.
+///
+/// **RED before step-6**: DFS leaf uses the pre-hoisted `leaf_values =
+/// ValueMap::new()` (empty); the spy captures no seeded entries.
+///
+/// **GREEN after step-6**: the leaf ValueMap is seeded with both candidates'
+/// literal defaults → `"p1.x"` and `"p2.y"` are present.
+#[test]
+fn multi_param_dfs_leaf_spy_captures_seeded_value_map_after_hoist_reversion() {
+    let source = r#"
+trait T1 {}
+trait T2 {}
+structure def S1 : T1 { param x : Real = 1.0 }
+structure def S2 : T2 { param y : Real = 2.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+    let functions: &[CompiledFunction] = &[];
+
+    // Parameterized template with two TypeParam cells and one trivial constraint.
+    let parameterized_template = TopologyTemplateBuilder::new("Assembly")
+        .param(
+            "Assembly",
+            "p1",
+            Type::TypeParam("T1".to_string()),
+            None,
+        )
+        .param(
+            "Assembly",
+            "p2",
+            Type::TypeParam("T2".to_string()),
+            None,
+        )
+        .constraint(
+            "Assembly",
+            0,
+            Some("trivial"),
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        )
+        .build();
+
+    let (spy, captured) = ValueMapSpyChecker::new();
+
+    let params = vec![
+        AutoTypeParam {
+            name: "T1".to_string(),
+            bounds: vec!["T1".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 15),
+        },
+        AutoTypeParam {
+            name: "T2".to_string(),
+            bounds: vec!["T2".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(20, 25),
+        },
+    ];
+
+    let mut diagnostics = Vec::new();
+    let outcome = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &parameterized_template,
+        &spy,
+        functions,
+        6,          // max_depth; 2 params ≤ 6 → multi-param DFS path
+        usize::MAX, // cross-product cap
+        &mut diagnostics,
+    );
+
+    // Sanity: both params selected, no errors.
+    assert!(
+        diagnostics.iter().all(|d| d.severity != Severity::Error),
+        "unexpected error diagnostics: {:#?}",
+        diagnostics
+    );
+    assert_eq!(
+        outcome.substitution.len(),
+        2,
+        "expected two-param substitution (S1, S2); got: {:?}",
+        outcome.substitution
+    );
+
+    let captured = captured.lock().expect("spy mutex poisoned");
+    assert!(
+        !captured.is_empty(),
+        "expected at least one check() call to have been recorded by the spy"
+    );
+
+    // After step-6: at least one check() call (the DFS leaf) must have
+    // received a ValueMap seeded with BOTH candidates' literal defaults.
+    // Key "p1.x" comes from `seed_candidate_value_map(S1, "p1")`,
+    // key "p2.y" from `seed_candidate_value_map(S2, "p2")`.
+    //
+    // Before step-6: `leaf_values` is always empty → both assertions below
+    // fail → RED.
+    let key_p1_x = ValueCellId::new("p1", "x");
+    let key_p2_y = ValueCellId::new("p2", "y");
+    assert!(
+        captured
+            .iter()
+            .any(|vm| vm.get(&key_p1_x).is_some() && vm.get(&key_p2_y).is_some()),
+        "expected at least one check() call to receive a ValueMap seeded with \
+         both {key_p1_x:?} (from S1) and {key_p2_y:?} (from S2); \
+         actual captured maps: {:?}",
+        captured.iter().map(|m| m.iter().collect::<Vec<_>>()).collect::<Vec<_>>()
+    );
+}
+
+/// Stub-path no-op guard (PRD §11.2): all-Indeterminate checker → outcomes
+/// are unchanged from before the hoist reversion.  Verified GREEN both before
+/// and after step-6 to pin "stub-path callers unchanged".
+///
+/// Uses `MockConstraintChecker::with_default(Indeterminate)` (functionally
+/// identical to `CompileTimeIndeterminateChecker`).
+///
+/// Single-param: expects `Selected("S1")`, no diagnostics.
+/// Multi-param: expects `Selected("S1"), Selected("S2")`, no diagnostics.
+#[test]
+fn stub_path_no_op_single_and_multi_param_outcomes_unchanged_by_hoist_reversion() {
+    let source = r#"
+trait T1 {}
+trait T2 {}
+structure def S1 : T1 { param x : Real = 1.0 }
+structure def S2 : T2 { param y : Real = 2.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+    let functions: &[CompiledFunction] = &[];
+    let checker = MockConstraintChecker::new().with_default(Satisfaction::Indeterminate);
+
+    let parameterized_template = TopologyTemplateBuilder::new("Assembly")
+        .param("Assembly", "p1", Type::TypeParam("T1".to_string()), None)
+        .param("Assembly", "p2", Type::TypeParam("T2".to_string()), None)
+        .constraint(
+            "Assembly",
+            0,
+            Some("trivial"),
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        )
+        .build();
+
+    // ── Single-param ──────────────────────────────────────────────────────────
+    let single_params = vec![AutoTypeParam {
+        name: "T1".to_string(),
+        bounds: vec!["T1".to_string()],
+        free: false,
+        use_site_span: SourceSpan::new(10, 15),
+    }];
+    let mut single_diags = Vec::new();
+    let single_outcome = resolve_auto_type_params_with_backtracking(
+        &single_params,
+        &template_registry,
+        &trait_registry,
+        &parameterized_template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut single_diags,
+    );
+    assert!(
+        single_diags.iter().all(|d| d.severity != Severity::Error),
+        "stub single-param: unexpected error diagnostics: {:#?}",
+        single_diags
+    );
+    assert_eq!(
+        single_outcome.substitution,
+        vec![("T1".to_string(), "S1".to_string())],
+        "stub single-param: expected S1 selected"
+    );
+
+    // ── Multi-param ───────────────────────────────────────────────────────────
+    let multi_params = vec![
+        AutoTypeParam {
+            name: "T1".to_string(),
+            bounds: vec!["T1".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(10, 15),
+        },
+        AutoTypeParam {
+            name: "T2".to_string(),
+            bounds: vec!["T2".to_string()],
+            free: false,
+            use_site_span: SourceSpan::new(20, 25),
+        },
+    ];
+    let mut multi_diags = Vec::new();
+    let multi_outcome = resolve_auto_type_params_with_backtracking(
+        &multi_params,
+        &template_registry,
+        &trait_registry,
+        &parameterized_template,
+        &checker,
+        functions,
+        6,
+        usize::MAX,
+        &mut multi_diags,
+    );
+    assert!(
+        multi_diags.iter().all(|d| d.severity != Severity::Error),
+        "stub multi-param: unexpected error diagnostics: {:#?}",
+        multi_diags
+    );
+    assert_eq!(
+        multi_outcome.substitution,
+        vec![
+            ("T1".to_string(), "S1".to_string()),
+            ("T2".to_string(), "S2".to_string()),
+        ],
+        "stub multi-param: expected S1, S2 selected"
     );
 }
