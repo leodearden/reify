@@ -57,6 +57,9 @@ Options:
                      §2 graduation. Opt-in per esc-3552-52 reviewer note.
   --repo-root DIR    Repository root (default: git rev-parse --show-toplevel).
                      Must be a git work tree; exits 1 with an error otherwise.
+  --print-registered Print the extracted registered-channel set (one per line)
+                     and exit 0.  Field-debug tool: loop this to detect a
+                     truncation drop without running the full check (task-4586).
   -h, --help         Show this message.
 
 Note: only git-tracked (staged) .rs files are scanned. A .emit("new-channel")
@@ -66,12 +69,14 @@ USAGE
 
 STRICT=0
 BIDIRECTIONAL=0
+PRINT_REGISTERED=0
 REPO_ROOT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --strict) STRICT=1; shift ;;
         --bidirectional) BIDIRECTIONAL=1; shift ;;
+        --print-registered) PRINT_REGISTERED=1; shift ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -117,12 +122,38 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 # Per the inventory format, §2a command rows use **bold** formatting (not
 # backticks) and are mechanically outside this regex; no special-case handling
 # needed here.
-registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
+#
+# extract_registered_channels: single awk pass over the inventory file.
+# Matches | `name` | rows (literal pipes + backticks), deduplicates in-process,
+# and prints without a downstream pipe — removing the grep -oP | sort -u two-
+# process pipeline that the task-4586 hypothesis names as the truncation point.
+# Membership tests are order-independent so output order does not matter.
+extract_registered_channels() {
+    local inv="$1"
+    awk '
+    {
+        line = $0
+        while (match(line, /\| `[a-z0-9-]+` \|/)) {
+            name = substr(line, RSTART + 3, RLENGTH - 6)
+            seen[name] = 1
+            line = substr(line, RSTART + RLENGTH - 1)
+        }
+    }
+    END { for (ch in seen) print ch }
+    ' "$inv"
+}
+registered=$(extract_registered_channels "$INVENTORY")
 
 # task-4586 fault-injection seam: drop one channel from registered to simulate
 # under-load single-line truncation (inert unless REIFY_EVENT_INVENTORY_DROP_REGISTERED is set).
 if [[ -n "${REIFY_EVENT_INVENTORY_DROP_REGISTERED:-}" ]]; then
     registered=$(printf '%s\n' "$registered" | grep -vx -- "$REIFY_EVENT_INVENTORY_DROP_REGISTERED" || true)
+fi
+
+# --print-registered: emit the extracted set and exit 0 (field-debug + test seam).
+if [[ $PRINT_REGISTERED -eq 1 ]]; then
+    printf '%s\n' "$registered"
+    exit 0
 fi
 
 # Extract literal channel names from .emit("name", …) call sites in Rust.
