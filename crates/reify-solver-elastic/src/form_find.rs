@@ -308,6 +308,15 @@ pub fn form_find_anchored_surfaces(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
+    // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense
+    // n×n `D` in `assemble_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
+    // partial-pivot LU in `solve_reduced`. That is O(iters·n²) allocation churn
+    // and O(iters·nf³) factorization — fine for the small DSL-level examples and
+    // goldens here, but on a refined membrane mesh (where ~1–2k iterations are
+    // expected, see MAX_SURFACE_ITERS) this dense, allocate-per-iter approach
+    // dominates. A scalable path would reuse pre-allocated D / D_ff / RHS buffers
+    // across iterations (clear-and-refill instead of `zeros()`) and move to a
+    // sparse assembly + factor-reuse strategy for large meshes.
     for _ in 0..max_iters {
         let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
 
