@@ -2010,6 +2010,10 @@ mod tests {
             Some(RealizedContent::Sdf(Arc::new(sf))),
         );
         assert!(h.sdf().is_some(), "sdf() must return Some for Sdf content");
+        assert!(
+            matches!(h.content(), Some(RealizedContent::Sdf(_))),
+            "content() must return Some(Sdf) for Sdf content",
+        );
         assert!(h.surface_mesh().is_none(), "surface_mesh() must return None for Sdf content");
         assert!(h.volume_mesh().is_none(), "volume_mesh() must return None for Sdf content");
     }
