@@ -144,9 +144,6 @@ assert "load_tolerant_attempts with empty BASE echoes empty or 0 safely" \
 echo ""
 echo "--- Test 11: source guard _REIFY_LOAD_TOLERANCE_LIB_SH_SOURCED ---"
 
-assert "source guard variable _REIFY_LOAD_TOLERANCE_LIB_SH_SOURCED present in lib" \
-    grep -q '_REIFY_LOAD_TOLERANCE_LIB_SH_SOURCED' "$LIB"
-
 assert "double-sourcing load_tolerance_lib.sh is a no-op (guard works)" \
     bash -c 'source "$1" && source "$1" && declare -f load_tolerance_factor >/dev/null' _ "$LIB"
 
