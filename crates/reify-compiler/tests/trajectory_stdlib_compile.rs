@@ -1450,36 +1450,71 @@ fn tots_shaper_constrains_design_param_invariants() {
             .collect::<Vec<_>>()
     );
 
-    // velocity_limit and acceleration_limit: positivity constraints with
-    // dimensioned-zero RHS (`0 * 1m / 1s` and `0 * 1m / (1s * 1s)`).
-    // These are required because the params are Scalar<Velocity>/Scalar<Acceleration>
-    // (esc-3115 rule: a bare `0` is dimensionless and dim-incompatible).
-    // The RHS compiles as a BinOp chain starting with `0 * unit`; walk the
-    // left spine to verify the coefficient is Int(0) or Real(0.0).
-    for required in &["velocity_limit", "acceleration_limit"] {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    *op == BinOp::Gt
-                        && collect_value_ref_members(left).iter().any(|m| m.as_str() == *required)
-                        && is_dimensioned_zero_binop(right)
-                }
-                _ => false,
+    // velocity_limit: positivity constraint with dimensioned-zero RHS
+    // (`0 * 1m / 1s` = Scalar<Velocity>). Two-layer check:
+    //   (1) structural shape: is_dimensioned_zero_binop — `0 * <unit>` chain.
+    //   (2) result_type == Scalar{VELOCITY} — catches a wrong-unit regression
+    //       (e.g. `0 * 1N`) that is_dimensioned_zero_binop alone would miss,
+    //       since esc-3115 only fires at module-load time.
+    // Mirrors the FORCE dimension-pin in joint_limit_constrains_max_force_positive.
+    let velocity_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                *op == BinOp::Gt
+                    && collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "velocity_limit")
+                    && is_dimensioned_zero_binop(right)
+                    && matches!(
+                        &right.result_type,
+                        Type::Scalar { dimension } if *dimension == DimensionVector::VELOCITY
+                    )
             }
-        });
-        assert!(
-            matched,
-            "TOTSShaper should declare `constraint {} > 0 * <dim_unit>` \
-             (dimensioned-zero BinOp RHS; task 4580); \
-             got constraints: {:?}",
-            required,
-            template
-                .constraints
-                .iter()
-                .map(|c| &c.expr.kind)
-                .collect::<Vec<_>>()
-        );
-    }
+            _ => false,
+        }
+    });
+    assert!(
+        velocity_matched,
+        "TOTSShaper should declare `constraint velocity_limit > 0 * 1m/1s` \
+         (dimensioned-zero BinOp, result_type=Scalar{{VELOCITY}}; task 4580); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // acceleration_limit: positivity constraint with dimensioned-zero RHS
+    // (`0 * 1m / (1s * 1s)` = Scalar<Acceleration>). Same two-layer check as
+    // velocity_limit above.
+    let accel_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                *op == BinOp::Gt
+                    && collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "acceleration_limit")
+                    && is_dimensioned_zero_binop(right)
+                    && matches!(
+                        &right.result_type,
+                        Type::Scalar { dimension } if *dimension == DimensionVector::ACCELERATION
+                    )
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        accel_matched,
+        "TOTSShaper should declare `constraint acceleration_limit > 0 * 1m/(1s*1s)` \
+         (dimensioned-zero BinOp, result_type=Scalar{{ACCELERATION}}; task 4580); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
 
     // vibration_tolerance, max_iters, tol: plain positivity constraints (> 0),
     // dimensionless params — plain `Literal(Int(0))` RHS.

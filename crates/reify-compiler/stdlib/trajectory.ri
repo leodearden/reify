@@ -599,8 +599,8 @@ structure def TOTSShaper : Shaper {
     // the velocity limit is zero, and a negative limit has no physical meaning).
     // Dimensioned-zero RHS required because these are Scalar<Velocity> /
     // Scalar<Acceleration> (esc-3115 rule; polymorphic-zero not yet landed).
-    //   `1m / 1s`         mirrors units.ri SPEED_OF_LIGHT (:138)
-    //   `1m / (1s * 1s)`  mirrors units.ri STANDARD_GRAVITY (:133)
+    //   `1m / 1s`         mirrors units.ri SPEED_OF_LIGHT
+    //   `1m / (1s * 1s)`  mirrors units.ri STANDARD_GRAVITY
     constraint velocity_limit > 0 * 1m / 1s
     constraint acceleration_limit > 0 * 1m / (1s * 1s)
 
