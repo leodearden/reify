@@ -68,17 +68,80 @@ pub fn element_stiffness_membrane_cst(
         }
     }
 
-    // S2: pack local-as-global (correct only for xy-plane triangles where R = I).
-    // The local→global block rotation is added in S4. Symmetrize on the way out —
-    // the BᵀDB block is symmetric in form, so the two triangles agree to within
-    // floating-point rounding; averaging minimises the residual asymmetry.
+    // Rotate the local-frame block into the global frame:
+    // K_glob[3a..,3b..] = Rᵀ·K_loc[3a..,3b..]·R over the three 3-DOF nodal blocks.
+    // For the xy-plane triangle R = I, so this is a no-op (S1 stays exact).
+    let k_glob = rotate_membrane_local_to_global(&k_loc, &frame.r);
+
+    // Symmetrize on the way out — the BᵀDB block is symmetric in form, so the two
+    // triangles agree to within floating-point rounding; averaging minimises the
+    // residual asymmetry.
     let mut ke = ElementStiffness::zeros(9);
     for i in 0..9 {
         for j in 0..9 {
-            ke.data[i * 9 + j] = 0.5 * (k_loc[i][j] + k_loc[j][i]);
+            ke.data[i * 9 + j] = 0.5 * (k_glob[i][j] + k_glob[j][i]);
         }
     }
     ke
+}
+
+/// Rotate a local-frame 9×9 membrane element matrix into the global frame:
+/// `K_glob[3a..3a+3, 3b..3b+3] = Rᵀ · K_loc[3a.., 3b..] · R` over the 3×3 grid of
+/// 3-DOF nodal blocks (a `blockdiag(R)` congruence).
+///
+/// `r` is `frame.r` — rows are the local basis vectors in global coordinates (the
+/// global→local rotation `R·v_global = v_local`), matching the shell's
+/// `rotate_local_to_global` convention. A global force/displacement therefore
+/// maps as `K_glob = Tᵀ K_loc T` with `T = blockdiag(R)`, so `u_globᵀ K_glob u_glob
+/// = u_locᵀ K_loc u_loc` — the strain-energy invariance the objectivity test pins.
+///
+/// Kept `pub(crate)` so the membrane K_g kernel
+/// ([`crate::geometric_stiffness::membrane`]) reuses the identical rotation.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn rotate_membrane_local_to_global(
+    k_loc: &[[f64; 9]; 9],
+    r: &[[f64; 3]; 3],
+) -> [[f64; 9]; 9] {
+    // Rᵀ (local-to-global): rt[i][j] = r[j][i].
+    let rt = [
+        [r[0][0], r[1][0], r[2][0]],
+        [r[0][1], r[1][1], r[2][1]],
+        [r[0][2], r[1][2], r[2][2]],
+    ];
+    let mut k_glob = [[0.0_f64; 9]; 9];
+    for bi in 0..3 {
+        for bj in 0..3 {
+            // Extract the 3×3 nodal block K_loc[3bi.., 3bj..].
+            let mut sub = [[0.0_f64; 3]; 3];
+            for p in 0..3 {
+                for q in 0..3 {
+                    sub[p][q] = k_loc[3 * bi + p][3 * bj + q];
+                }
+            }
+            // rt_sub = Rᵀ · sub.
+            let mut rt_sub = [[0.0_f64; 3]; 3];
+            for p in 0..3 {
+                for q in 0..3 {
+                    let mut s = 0.0;
+                    for m in 0..3 {
+                        s += rt[p][m] * sub[m][q];
+                    }
+                    rt_sub[p][q] = s;
+                }
+            }
+            // K_glob block = rt_sub · R.
+            for p in 0..3 {
+                for q in 0..3 {
+                    let mut s = 0.0;
+                    for m in 0..3 {
+                        s += rt_sub[p][m] * r[m][q];
+                    }
+                    k_glob[3 * bi + p][3 * bj + q] = s;
+                }
+            }
+        }
+    }
+    k_glob
 }
 
 #[cfg(test)]
