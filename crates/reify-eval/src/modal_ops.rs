@@ -2209,11 +2209,13 @@ mod tests {
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
         TransientCache, assemble_modal_km, build_beam_mesh, build_dirichlet_bcs,
+        degenerate_displacement_history, degenerate_modal_result,
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, read_real_list, read_scalar_si, resolve_location_node,
-        run_modal_analysis, run_transient_response, simply_supported_pin_pin_bcs,
-        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
+        resolve_location_node, run_modal_analysis, run_transient_response,
+        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+        solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -4971,5 +4973,68 @@ mod tests {
             has_water_warning,
             "dynamics water tail must emit W_DynamicsDefaultDensity; got {water_diags:?}",
         );
+    }
+
+    // ── Part-field echo migration (step-5 RED / step-6 GREEN) ────────────────
+
+    #[test]
+    fn echo_part_field_is_part_instance() {
+        // placeholder_part() must return a zero-field opaque Part StructureInstance.
+        let part_val = placeholder_part();
+        match &part_val {
+            Value::StructureInstance(si) => {
+                assert_eq!(si.type_name, "Part", "placeholder_part type_name must be Part");
+                assert!(
+                    si.fields.is_empty(),
+                    "placeholder_part must be zero-field; got {:?}",
+                    si.fields
+                );
+            }
+            other => panic!("placeholder_part() must be StructureInstance; got {other:?}"),
+        }
+
+        // degenerate_modal_result().fields["part"] must be a Part StructureInstance.
+        let modal_result = degenerate_modal_result();
+        match &modal_result {
+            Value::StructureInstance(si) => {
+                let part = si
+                    .fields
+                    .get("part")
+                    .expect("degenerate_modal_result must have a 'part' field");
+                match part {
+                    Value::StructureInstance(p) => {
+                        assert_eq!(p.type_name, "Part");
+                        assert!(p.fields.is_empty());
+                    }
+                    other => {
+                        panic!("degenerate_modal_result.part must be Part StructureInstance; got {other:?}")
+                    }
+                }
+            }
+            other => panic!("degenerate_modal_result() must be StructureInstance; got {other:?}"),
+        }
+
+        // degenerate_displacement_history().fields["part"] must also be Part.
+        let dth = degenerate_displacement_history();
+        match &dth {
+            Value::StructureInstance(si) => {
+                let part = si
+                    .fields
+                    .get("part")
+                    .expect("degenerate_displacement_history must have a 'part' field");
+                match part {
+                    Value::StructureInstance(p) => {
+                        assert_eq!(p.type_name, "Part");
+                        assert!(p.fields.is_empty());
+                    }
+                    other => {
+                        panic!("degenerate_displacement_history.part must be Part StructureInstance; got {other:?}")
+                    }
+                }
+            }
+            other => {
+                panic!("degenerate_displacement_history() must be StructureInstance; got {other:?}")
+            }
+        }
     }
 }
