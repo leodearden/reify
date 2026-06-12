@@ -2050,6 +2050,45 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
     EvalUnresolved,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"GD&T material modifier (MMC/LMC) is illegal for '<type_name>': this characteristic is RFS-only"`.
+    ///
+    /// Emitted as a `Severity::Error` when a callout instance (a `Value::StructureInstance`
+    /// conforming to `GeometricTolerance`) carries `material_condition ∈ {MMC, LMC}` for a
+    /// characteristic family that is RFS-only per ASME Y14.5-2018 — namely Form
+    /// (`Flatness`, `Straightness`, `Circularity`, `Cylindricity`), Runout
+    /// (`CircularRunout`, `TotalRunout`), and Profile (`ProfileOfSurface`,
+    /// `ProfileOfLine`, `ProfileOfSurfaceRelated`, `ProfileOfLineRelated`).
+    /// Orientation (`Parallelism`, `Perpendicularity`, `Angularity`) are FOS-eligible
+    /// only when `zone_shape == Cylindrical`; when `zone_shape == Width` (the default)
+    /// a modifier is also illegal and this code is emitted.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`),
+    /// which is the B7 "at the instantiation span" oracle.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_GdtIllegalModifier`
+    /// (severity convention: `E_*` → Error; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtIllegalModifier,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"'<type_name>' was removed in ASME Y14.5-2018; use Position, ProfileOfSurface, or CircularRunout/TotalRunout instead"`.
+    ///
+    /// Emitted as a `Severity::Warning` (non-fatal) when a callout instance is of type
+    /// `Concentricity` or `Symmetry`, both of which were removed from the standard in
+    /// ASME Y14.5-2018. The warning fires unconditionally (independent of
+    /// `material_condition`). `GdtIllegalModifier` is NOT additionally emitted for these
+    /// types — the removal supersedes the modifier-legality question.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_GdtRemoved2018`
+    /// (severity convention: `W_*` → Warning; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtRemoved2018,
 }
 
 /// A diagnostic message with location and optional labels.

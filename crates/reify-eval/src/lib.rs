@@ -32,6 +32,7 @@ pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
+pub use engine_constraints::GdtCallout;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
