@@ -880,33 +880,83 @@ fn is_non_rfs(modifier: Option<&str>) -> bool {
 
 /// Classify a single GDT callout against the C2 rule table and push diagnostics.
 ///
-/// Families implemented in step-4 (RFS-only Form):
-/// - Flatness, Straightness, Circularity, Cylindricity → RFS-only
+/// Family classification (β legality table):
+/// - Form (Flatness, Straightness, Circularity, Cylindricity): RFS-only.
+/// - FormAxis (StraightnessOfAxis): MMC-eligible (FOS axis variant).
+/// - Orientation (Parallelism, Perpendicularity, Angularity): MMC-eligible iff
+///   zone_shape == Cylindrical; Width zone is RFS-only.
+/// - Location Position: MMC-eligible (default Cylindrical zone).
+/// - Removed (Concentricity, Symmetry): emits GdtRemoved2018 warning (step-8).
+/// - Runout (CircularRunout, TotalRunout): RFS-only.
+/// - Profile (ProfileOfSurface, ProfileOfLine, …Related): RFS-only.
 ///
-/// All other families are left to later steps and silently skipped here.
+/// Unknown user-defined GeometricTolerance subtypes → skip (no false error).
 fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
     let mc = callout.material_condition.as_deref();
 
     match callout.type_name.as_str() {
-        // ── RFS-only Form family (step-4) ─────────────────────────────────
+        // ── RFS-only Form family ───────────────────────────────────────────
         "Flatness" | "Straightness" | "Circularity" | "Cylindricity" => {
             if is_non_rfs(mc) {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "`{}` is an RFS-only tolerance characteristic; \
-                         material condition modifiers (MMC/LMC) are not permitted",
-                        callout.type_name
-                    ))
-                    .with_code(DiagnosticCode::GdtIllegalModifier)
-                    .with_label(DiagnosticLabel::new(
-                        callout.span,
-                        "illegal material condition modifier applied here",
-                    )),
-                );
+                diags.push(illegal_modifier_error(callout));
             }
         }
 
-        // All other families — not yet implemented; skip (no false error).
+        // ── FOS-axis Form variant: MMC-eligible unconditionally ───────────
+        "StraightnessOfAxis" => {
+            // MMC/LMC is permitted on the FOS derived median line.
+        }
+
+        // ── Orientation: MMC-eligible only with Cylindrical zone ──────────
+        "Parallelism" | "Perpendicularity" | "Angularity" => {
+            let cylindrical = callout.zone_shape.as_deref() == Some("Cylindrical");
+            if is_non_rfs(mc) && !cylindrical {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // ── Location Position: MMC-eligible (default Cylindrical zone) ────
+        "Position" => {
+            // Cylindrical zone (the default) makes this FOS-eligible — permit MMC/LMC.
+        }
+
+        // ── Removed-in-2018 family: handled in step-8 ─────────────────────
+        "Concentricity" | "Symmetry" => {
+            // GdtRemoved2018 warning emitted in step-8; no GdtIllegalModifier here.
+        }
+
+        // ── RFS-only Runout family ────────────────────────────────────────
+        "CircularRunout" | "TotalRunout" => {
+            if is_non_rfs(mc) {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // ── RFS-only Profile family ───────────────────────────────────────
+        "ProfileOfSurface"
+        | "ProfileOfLine"
+        | "ProfileOfSurfaceRelated"
+        | "ProfileOfLineRelated" => {
+            if is_non_rfs(mc) {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // Unknown user-defined GeometricTolerance subtypes → no opinion.
         _ => {}
     }
+}
+
+/// Build a `GdtIllegalModifier` error diagnostic anchored at `callout.span`.
+fn illegal_modifier_error(callout: &GdtCallout) -> Diagnostic {
+    Diagnostic::error(format!(
+        "`{}` is an RFS-only tolerance characteristic; \
+         material condition modifiers (MMC/LMC) are not permitted",
+        callout.type_name
+    ))
+    .with_code(DiagnosticCode::GdtIllegalModifier)
+    .with_label(DiagnosticLabel::new(
+        callout.span,
+        "illegal material condition modifier applied here",
+    ))
 }
