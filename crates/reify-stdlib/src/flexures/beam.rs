@@ -395,6 +395,37 @@ mod tests {
         }
     }
 
+    /// Assert `v` is a symmetric ANGLE `Range` `[−h, +h]` (both-inclusive) and
+    /// return the half-width in radians (task 4576: `prb_validity_range` is now
+    /// `Range<Angle>` instead of `Value::Real`).
+    fn angle_range_half_si(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Range { lower, upper, lower_inclusive, upper_inclusive } => {
+                assert!(*lower_inclusive, "{label}: lower_inclusive should be true");
+                assert!(*upper_inclusive, "{label}: upper_inclusive should be true");
+                let lo = lower.as_deref().unwrap_or_else(|| panic!("{label}: lower bound missing"));
+                let hi = upper.as_deref().unwrap_or_else(|| panic!("{label}: upper bound missing"));
+                let lo_si = match lo {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: lower dimension");
+                        *si_value
+                    }
+                    other => panic!("{label}: lower bound expected ANGLE Scalar, got {other:?}"),
+                };
+                let hi_si = match hi {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(*dimension, DimensionVector::ANGLE, "{label}: upper dimension");
+                        *si_value
+                    }
+                    other => panic!("{label}: upper bound expected ANGLE Scalar, got {other:?}"),
+                };
+                assert!(lo_si + hi_si == 0.0, "{label}: range not symmetric ([{lo_si}, {hi_si}])");
+                hi_si
+            }
+            other => panic!("{label}: expected Value::Range{{ANGLE}}, got {other:?}"),
+        }
+    }
+
     /// Assert `actual` is an ANGLE-dimensioned Scalar whose si_value matches
     /// `expected_rad` to a relative tolerance of 1e-9 (closed-form reproduction).
     fn assert_angle_close(actual: &Value, expected_rad: f64, label: &str) {
@@ -550,19 +581,17 @@ mod tests {
         // at_yield == false at the auto (safe) endpoint.
         assert_eq!(f("at_yield"), &Value::Bool(false), "auto endpoint is not at yield");
 
-        // prb_validity_range (Real) == the joint range half-angle (θ_end).
+        // prb_validity_range is now Range<Angle> = [−θ_end, +θ_end] (task 4576).
         let (_, up) = range_lower_upper(map_get(&result, "range").expect("range present"));
         let range_half = match up {
             Value::Scalar { si_value, .. } => *si_value,
             other => panic!("range upper Scalar, got {other:?}"),
         };
-        match f("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - range_half).abs() / range_half < 1e-9,
-                "prb_validity_range {r} == joint range half-angle {range_half}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - range_half).abs() / range_half < 1e-9,
+            "prb_validity_range half {prb_half} == joint range half-angle {range_half}"
+        );
     }
 
     #[test]
@@ -1113,17 +1142,16 @@ mod tests {
             other => panic!("max_stress Scalar, got {other:?}"),
         }
 
-        // prb_validity_range (Real) == the auto δ == the joint range half-width.
+        // prb_validity_range is now Range<Angle> = [−δ_auto, +δ_auto] (task 4576;
+        // prismatic residual: δ_auto is a length stored as an angle si_value).
         let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
         let range_half = length_scalar_si(up, "auto range upper");
-        match f("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - delta_auto).abs() / delta_auto < 1e-9
-                    && (r - range_half).abs() / range_half < 1e-9,
-                "prb_validity_range {r} == δ_auto {delta_auto} == range half {range_half}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - delta_auto).abs() / delta_auto < 1e-9
+                && (prb_half - range_half).abs() / range_half < 1e-9,
+            "prb_validity_range half {prb_half} == δ_auto {delta_auto} == range half {range_half}"
+        );
 
         // ── Part 2: declared displacement BEYOND yield deflection → at_yield ──
         // δ = 1 mm > δ_auto (≈0.40 mm): σ(1mm) ≈ 769 MPa > 310 MPa yield. Arg
@@ -1187,14 +1215,13 @@ mod tests {
             Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
             other => panic!("yield_margin Real, got {other:?}"),
         }
-        // prb_validity_range still advertises the auto SAFE δ, not the declared one.
-        match yg("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - delta_auto).abs() / delta_auto < 1e-9,
-                "prb_validity_range stays the auto safe δ {delta_auto}, got {r}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range still advertises the auto SAFE δ (not the declared
+        // one). Now Range<Angle> (task 4576; prismatic residual: δ stored as angle si).
+        let prb_half_y = angle_range_half_si(yg("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half_y - delta_auto).abs() / delta_auto < 1e-9,
+            "prb_validity_range stays the auto safe δ {delta_auto}, got half {prb_half_y}"
+        );
 
         // ── Part 3: declared displacement BELOW yield deflection → safe ──────
         // δ = 0.2 mm < δ_auto: σ ≈ 154 MPa < 310 MPa ⇒ at_yield false.

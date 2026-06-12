@@ -1285,17 +1285,16 @@ mod tests {
             other => panic!("parasitic_error Option(Some(Length)), got {other:?}"),
         }
 
-        // prb_validity_range (Real) == the auto δ == the joint range half-width.
+        // prb_validity_range is now Range<Angle> = [−δ_auto, +δ_auto] (task 4576;
+        // prismatic residual: δ_auto is a length stored as an angle si_value).
         let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
         let range_half = length_scalar_si(up, "auto range upper");
-        match f("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - delta_auto).abs() / delta_auto < 1e-9
-                    && (r - range_half).abs() / range_half < 1e-9,
-                "prb_validity_range {r} == δ_auto {delta_auto} == range half {range_half}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - delta_auto).abs() / delta_auto < 1e-9
+                && (prb_half - range_half).abs() / range_half < 1e-9,
+            "prb_validity_range half {prb_half} == δ_auto {delta_auto} == range half {range_half}"
+        );
 
         // ── Part 2: declared displacement BEYOND yield deflection → at_yield ──
         // δ = 1 mm > δ_auto (≈0.40 mm): σ(1mm) ≈ 769 MPa > 310 MPa yield. Arg
@@ -1334,14 +1333,13 @@ mod tests {
             Value::Real(r) => assert!(*r < 0.0, "yielding ⇒ negative margin, got {r}"),
             other => panic!("yield_margin Real, got {other:?}"),
         }
-        // prb_validity_range still advertises the auto SAFE δ, not the declared one.
-        match yg("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - delta_auto).abs() / delta_auto < 1e-9,
-                "prb_validity_range stays the auto safe δ {delta_auto}, got {r}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range still advertises the auto SAFE δ (not the declared one).
+        // Now Range<Angle> (task 4576; prismatic residual: δ stored as angle si).
+        let prb_half_y = angle_range_half_si(yg("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half_y - delta_auto).abs() / delta_auto < 1e-9,
+            "prb_validity_range stays the auto safe δ {delta_auto}, got half {prb_half_y}"
+        );
 
         // ── Part 3: declared displacement BELOW yield deflection → safe ──────
         // δ = 0.2 mm < δ_auto: σ ≈ 154 MPa < 310 MPa ⇒ at_yield false.
@@ -1474,14 +1472,12 @@ mod tests {
         // at_yield false at the 5°-capped auto endpoint.
         assert_eq!(f("at_yield"), &Value::Bool(false), "5°-capped cartwheel is not at yield");
 
-        // prb_validity_range (Real) == θ_lim (5°), the auto safe angular bound.
-        match f("prb_validity_range") {
-            Value::Real(r) => assert!(
-                (r - prb_limit).abs() / prb_limit < 1e-9,
-                "prb_validity_range {r} == θ_lim {prb_limit}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range is now Range<Angle> = [−θ_lim, +θ_lim] (task 4576).
+        let prb_half_c = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half_c - prb_limit).abs() / prb_limit < 1e-9,
+            "prb_validity_range half {prb_half_c} == θ_lim {prb_limit}"
+        );
 
         // ── declared ±10° → at_yield (9-arg: …, neutral, declared_range) ─────
         // σ(10°) ≈ 447 MPa > 310 MPa yield.
