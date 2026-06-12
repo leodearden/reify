@@ -403,7 +403,7 @@ fn trampoline_short_value_inputs_is_failed() {
         Value::List(vec![Value::Real(1.0); 4]),
         // anchors omitted → only 2 inputs reach the trampoline
     ];
-    assert_failed_infeasible(call_form_find(&value_inputs), "expects 3 inputs");
+    assert_failed_infeasible(call_form_find(&value_inputs), "expects at least 3 inputs");
 }
 
 // ── step-9 (γ): surface / membrane trampoline tests ──────────────────────────

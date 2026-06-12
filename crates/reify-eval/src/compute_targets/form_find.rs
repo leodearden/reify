@@ -100,9 +100,10 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     // up here as a short input slice rather than mis-indexed data.
     if value_inputs.len() < 3 {
         return Err(format!(
-            "E_FormFindInfeasible: form_find expects 3 inputs \
-             (structure, force_densities, anchors); got {}. Let-bind all three \
-             call arguments so the ComputeNode captures them.",
+            "E_FormFindInfeasible: form_find expects at least 3 inputs \
+             (structure, force_densities, anchors; surface_stresses optional); \
+             got {}. Let-bind all three required call arguments so the \
+             ComputeNode captures them.",
             value_inputs.len()
         ));
     }
@@ -118,7 +119,14 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
     // surface-aware kernel with empty surfaces is byte-identical to the landed
     // line solve). When `surfaces` is non-empty the kernel cross-checks the two
     // lengths (SurfaceCountMismatch).
-    let surface_stresses = if value_inputs.len() >= 4 {
+    //
+    // A present-but-`Undef` 4th slot is treated as empty (line-only), mirroring
+    // how `crack_index_triples` tolerates a missing/Undef `surfaces` field. This
+    // keeps the optional surface path symmetric: if engine capture/default-padding
+    // ever materializes `value_inputs[3]` as `Value::Undef`, legacy 3-arg callers
+    // fall back to the line-only solve instead of failing with a spurious
+    // E_FormFindInfeasible.
+    let surface_stresses = if value_inputs.len() >= 4 && !matches!(value_inputs[3], Value::Undef) {
         crack_reals(&value_inputs[3], "surface_stresses")?
     } else {
         Vec::new()
