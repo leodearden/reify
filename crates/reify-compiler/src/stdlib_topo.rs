@@ -104,6 +104,17 @@ impl<'a> TopoSorter<'a> {
 ///
 /// Returns `Err(Diagnostic)` if a cycle is detected, with the chain named in
 /// the message ("circular dependency detected: a -> b -> a").
+///
+/// # Stack depth
+///
+/// The internal DFS is recursive; call-stack depth equals the longest import
+/// chain in the input graph.  For the embedded stdlib (no module currently
+/// declares an `import`) the depth is **0** — every node is a root.  For
+/// manually constructed test fixtures the depth equals the chain length.
+/// Default Rust thread stacks (8 MiB) handle chains of several thousand
+/// modules before overflowing.  If ever called with chains longer than a few
+/// hundred nodes in a constrained-stack context, convert `TopoSorter::dfs` to
+/// an explicit work-stack iterative form.
 fn stable_topo_sort(sources: &[(&str, &str)]) -> Result<Vec<usize>, Diagnostic> {
     let n = sources.len();
     let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
