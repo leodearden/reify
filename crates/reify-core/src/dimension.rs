@@ -1812,4 +1812,38 @@ mod tests {
             "STIFFNESS canonical_name must remain 'Stiffness' after TranslationalStiffness alias is added"
         );
     }
+
+    /// Pins the VELOCITY named dimension: m·s⁻¹ (LENGTH / TIME).
+    ///
+    /// Mirrors the canonical_name_force_returns_force (:987) and
+    /// acceleration_canonical_name_is_acceleration (:1394) test patterns.
+    /// Exponent shape: index 0 (Length) = +1, index 2 (Time) = -1.
+    #[test]
+    fn velocity_canonical_name_is_velocity() {
+        let v = DimensionVector::VELOCITY;
+        assert_eq!(v.canonical_name(), Some("Velocity"));
+    }
+
+    #[test]
+    fn velocity_equals_length_div_time() {
+        assert_eq!(
+            DimensionVector::VELOCITY,
+            DimensionVector::from_exps(&[(0, 1), (2, -1)]),
+            "VELOCITY must be m·s⁻¹ (index 0=Length +1, index 2=Time -1)"
+        );
+    }
+
+    #[test]
+    fn velocity_is_distinct_from_acceleration() {
+        // ACCELERATION is m·s⁻²; VELOCITY is m·s⁻¹.
+        // One extra negative time power separates them; pin the distinction.
+        assert_ne!(DimensionVector::VELOCITY, DimensionVector::ACCELERATION);
+    }
+
+    #[test]
+    fn velocity_is_distinct_from_angular_velocity() {
+        // ANGULAR_VELOCITY is rad·s⁻¹ (slot 2=-1, slot 7=+1);
+        // VELOCITY is m·s⁻¹ (slot 0=+1, slot 2=-1, no angle slot).
+        assert_ne!(DimensionVector::VELOCITY, DimensionVector::ANGULAR_VELOCITY);
+    }
 }
