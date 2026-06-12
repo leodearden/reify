@@ -160,16 +160,17 @@ describe('surfaceManager', () => {
     const posAttr = geom.getAttribute('position');
     expect(posAttr).toBeDefined();
     // 9 floats: x0,y0,z0, x1,y1,z1, x2,y2,z2
+    // Use approximate matching because Float32Array truncates 64-bit doubles.
     const arr = Array.from(posAttr.array as Float32Array);
-    expect(arr).toContain(facet.x0);
-    expect(arr).toContain(facet.y0);
-    expect(arr).toContain(facet.z0);
-    expect(arr).toContain(facet.x1);
-    expect(arr).toContain(facet.y1);
-    expect(arr).toContain(facet.z1);
-    expect(arr).toContain(facet.x2);
-    expect(arr).toContain(facet.y2);
-    expect(arr).toContain(facet.z2);
+    expect(arr.length).toBe(9);
+    const expected = [
+      facet.x0, facet.y0, facet.z0,
+      facet.x1, facet.y1, facet.z1,
+      facet.x2, facet.y2, facet.z2,
+    ];
+    for (let i = 0; i < expected.length; i++) {
+      expect(arr[i]).toBeCloseTo(expected[i], 3);
+    }
   });
 
   it('computeVertexNormals() is called on the geometry', async () => {
