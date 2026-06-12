@@ -2584,8 +2584,6 @@ mod tests {
 
     /// `evaluate_profile_ddot(profile, t)` returns `[cubic_ddp(t)]` within
     /// `SPLINE_TOL`. A clamped cubic reproduces p'' exactly.
-    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
-    /// `"evaluate_profile_ddot"`.
     #[test]
     fn evaluate_profile_ddot_eval_boundary() {
         let profile = clamped_cubic_profile();
@@ -2601,5 +2599,107 @@ mod tests {
                 (got - expected).abs()
             );
         }
+    }
+
+    // ── step-5 (task 4539): profile_duration + loud-failure on bad input ─────────
+
+    /// `profile_duration(profile)` returns a `Value::Scalar{TIME}` whose
+    /// `si_value` equals the knot span of `clamped_cubic_profile()` (0..4 = 4s).
+    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
+    /// `"profile_duration"`.
+    #[test]
+    fn profile_duration_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let result = eval_builtin("profile_duration", &[profile]);
+        let Value::Scalar { si_value, dimension } = result else {
+            panic!("profile_duration should return Value::Scalar, got {result:?}");
+        };
+        assert_eq!(
+            dimension,
+            reify_core::DimensionVector::TIME,
+            "profile_duration should carry TIME dimension"
+        );
+        assert!(
+            (si_value - 4.0).abs() < SPLINE_TOL,
+            "profile_duration: got {si_value}s, want 4.0s"
+        );
+    }
+
+    /// Bad inputs yield `Value::Undef` for all four public names — the loud
+    /// not-computed signal, not a numeric placeholder. Tested vectors:
+    /// - wrong arity (0 args for duration; 1 / 3 args for the position family)
+    /// - a non-`StructureInstance` first arg (`Value::Real(1.0)`)
+    /// - a degenerate `<2`-waypoint profile
+    #[test]
+    fn evaluate_profile_family_bad_args_return_undef() {
+        let good_t = time(0.5);
+        let bad_profile = Value::Real(1.0);
+        let degenerate_profile = pp_profile(
+            vec![waypoint(0.0, &[0.0], None, None)],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        );
+
+        // profile_duration — wrong arity
+        assert!(eval_builtin("profile_duration", &[]).is_undef(), "duration: 0 args");
+        assert!(
+            eval_builtin("profile_duration", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "duration: 2 args (wrong arity)"
+        );
+        // profile_duration — bad / degenerate profile
+        assert!(
+            eval_builtin("profile_duration", &[bad_profile.clone()]).is_undef(),
+            "duration: non-StructureInstance profile"
+        );
+        assert!(
+            eval_builtin("profile_duration", &[degenerate_profile.clone()]).is_undef(),
+            "duration: <2-waypoint profile"
+        );
+
+        // evaluate_profile — wrong arity
+        assert!(eval_builtin("evaluate_profile", &[]).is_undef(), "eval_profile: 0 args");
+        assert!(
+            eval_builtin("evaluate_profile", &[bad_profile.clone()]).is_undef(),
+            "eval_profile: 1 arg"
+        );
+        // evaluate_profile — bad profile
+        assert!(
+            eval_builtin("evaluate_profile", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "eval_profile: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin("evaluate_profile", &[degenerate_profile.clone(), good_t.clone()])
+                .is_undef(),
+            "eval_profile: <2-waypoint"
+        );
+
+        // evaluate_profile_dot — bad profile
+        assert!(
+            eval_builtin("evaluate_profile_dot", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "eval_dot: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin(
+                "evaluate_profile_dot",
+                &[degenerate_profile.clone(), good_t.clone()]
+            )
+            .is_undef(),
+            "eval_dot: <2-waypoint"
+        );
+
+        // evaluate_profile_ddot — bad profile
+        assert!(
+            eval_builtin("evaluate_profile_ddot", &[bad_profile.clone(), good_t.clone()])
+                .is_undef(),
+            "eval_ddot: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin(
+                "evaluate_profile_ddot",
+                &[degenerate_profile.clone(), good_t.clone()]
+            )
+            .is_undef(),
+            "eval_ddot: <2-waypoint"
+        );
     }
 }
