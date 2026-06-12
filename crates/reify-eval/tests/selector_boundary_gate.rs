@@ -469,14 +469,23 @@ fn bt8_named_leaf_interim_empty_with_one_warning() {
     );
 
     // (b) The node must be a Leaf with LeafQuery::Named("nope").
+    //     Also assert the leaf target references GeometryHandleId(1) (the box), so a
+    //     future handle-allocation change fails loudly instead of silently resolving
+    //     against the wrong parent and returning [] for the wrong reason.
     match &sv.node {
         SelectorNode::Leaf {
             query: LeafQuery::Named(tag),
-            ..
+            target,
         } => {
             assert_eq!(
                 tag, "nope",
                 "BT8: Named tag must be \"nope\", got: {tag:?}"
+            );
+            assert_eq!(
+                target.kernel_handle,
+                GeometryHandleId(1),
+                "BT8: Named leaf target.kernel_handle must be GeometryHandleId(1) \
+                 (the box handle); if this drifts, update staged_box_kernel() parent id to match"
             );
         }
         other => panic!(
@@ -544,6 +553,38 @@ fn bt3_difference_and_intersect_set_semantics() {
     let sv_d = selector_cell(&result, "BT3SetOps", "d");
     assert_eq!(sv_d.kind, SelectorKind::Face, "BT3: d must be Selector(Face)");
 
+    // Assert both difference children reference the box (GeometryHandleId(1)).
+    // Explicit check prevents a handle-id drift from causing staged_box_kernel()
+    // to silently return [] instead of the expected face set.
+    match &sv_d.node {
+        SelectorNode::Difference(a, b) => {
+            match &a.node {
+                SelectorNode::Leaf { target, .. } => {
+                    assert_eq!(
+                        target.kernel_handle,
+                        GeometryHandleId(1),
+                        "BT3: difference minuend (faces(b)) leaf target.kernel_handle must \
+                         be GeometryHandleId(1); update staged_box_kernel() if this drifts"
+                    );
+                }
+                other => panic!("BT3: difference minuend must be a Leaf, got: {other:?}"),
+            }
+            match &b.node {
+                SelectorNode::Leaf { target, .. } => {
+                    assert_eq!(
+                        target.kernel_handle,
+                        GeometryHandleId(1),
+                        "BT3: difference subtrahend (faces_by_normal(+Z)) leaf \
+                         target.kernel_handle must be GeometryHandleId(1); \
+                         update staged_box_kernel() if this drifts"
+                    );
+                }
+                other => panic!("BT3: difference subtrahend must be a Leaf, got: {other:?}"),
+            }
+        }
+        other => panic!("BT3: d must be SelectorNode::Difference(_,_), got: {other:?}"),
+    }
+
     let mut staged_d = staged_box_kernel();
     let mut diags_d: Vec<Diagnostic> = Vec::new();
     let handles_d = topology_selectors::resolve(sv_d, &mut staged_d, &mut diags_d)
@@ -570,6 +611,28 @@ fn bt3_difference_and_intersect_set_semantics() {
     // ── intersect: +Z ∩ -Z = empty (disjoint) ────────────────────────────────
     let sv_i = selector_cell(&result, "BT3SetOps", "i");
     assert_eq!(sv_i.kind, SelectorKind::Face, "BT3: i must be Selector(Face)");
+
+    // Assert each intersect child references the box (GeometryHandleId(1)).
+    match &sv_i.node {
+        SelectorNode::Intersect(children) => {
+            for (i, child) in children.iter().enumerate() {
+                match &child.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(
+                            target.kernel_handle,
+                            GeometryHandleId(1),
+                            "BT3: intersect child[{i}] leaf target.kernel_handle must be \
+                             GeometryHandleId(1); update staged_box_kernel() if this drifts"
+                        );
+                    }
+                    other => {
+                        panic!("BT3: intersect child[{i}] must be a Leaf, got: {other:?}")
+                    }
+                }
+            }
+        }
+        other => panic!("BT3: i must be SelectorNode::Intersect(_), got: {other:?}"),
+    }
 
     let mut staged_i = staged_box_kernel();
     let mut diags_i: Vec<Diagnostic> = Vec::new();
@@ -614,9 +677,26 @@ fn bt2_same_kind_union_resolves_to_set_union() {
     assert_eq!(sv.kind, SelectorKind::Face, "BT2: u must be Selector(Face)");
 
     // The Union must have two children (one per faces_by_normal call).
+    // Also assert each child leaf targets GeometryHandleId(1) (the box) so a
+    // future handle-allocation change fails loudly instead of silently returning []
+    // because staged_box_kernel() staged a different parent id.
     match &sv.node {
         SelectorNode::Union(children) => {
             assert_eq!(children.len(), 2, "BT2: union must have 2 children");
+            for (i, child) in children.iter().enumerate() {
+                match &child.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(
+                            target.kernel_handle,
+                            GeometryHandleId(1),
+                            "BT2: union child[{i}] leaf target.kernel_handle must be \
+                             GeometryHandleId(1) (box handle); if this drifts, update \
+                             staged_box_kernel() parent id to match"
+                        );
+                    }
+                    other => panic!("BT2: union child[{i}] must be a Leaf, got: {other:?}"),
+                }
+            }
         }
         other => panic!("BT2: u must be a Union selector, got: {other:?}"),
     }
