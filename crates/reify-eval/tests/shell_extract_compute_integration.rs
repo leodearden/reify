@@ -844,3 +844,114 @@ fn shell_extract_uses_realization_sdf_when_value_input_slab_absent() {
         ),
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-3 tests for task #4511 (ε dual-source: error arm + fallback regression)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assert that the trampoline fails with a dual-source diagnostic when neither
+/// a realization SDF nor a value_inputs[1] slab is present.
+///
+/// The failure diagnostic must:
+/// 1. Be `ComputeOutcome::Failed`.
+/// 2. Contain at least one diagnostic message that references BOTH
+///    "realization_inputs[0]" AND "value_inputs[1]" — the dual-source contract.
+/// 3. NOT contain "δ migrates" — the stale γ-only seam wording must be gone.
+///
+/// RED after step-2: step-2 deliberately kept the old
+/// "γ-only seam; δ migrates to realization_inputs[0]" wording in the diagnostic.
+/// GREEN after step-4 rewrites the diagnostic to the dual-source form.
+///
+/// Pins docs/prds/v0_6/realization-read-api.md §9 ε / D3.
+#[test]
+fn shell_extract_fails_when_neither_realization_nor_slab_present() {
+    // No realization handle (empty slice), no value_inputs[1] slab.
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // (1) Must return Failed.
+    let diagnostics = match outcome {
+        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        other => panic!(
+            "expected ComputeOutcome::Failed when neither realization SDF nor \
+             value_inputs[1] is present; got: {other:?}"
+        ),
+    };
+
+    // (2) At least one diagnostic must reference the dual-source contract:
+    // both "realization_inputs[0]" AND "value_inputs[1]" in the message.
+    let dual_source_msg = diagnostics.iter().find(|d| {
+        d.message.contains("realization_inputs[0]") && d.message.contains("value_inputs[1]")
+    });
+    assert!(
+        dual_source_msg.is_some(),
+        "expected at least one diagnostic referencing both 'realization_inputs[0]' \
+         and 'value_inputs[1]' (dual-source contract); got: {diagnostics:?}. \
+         (RED until step-4 rewrites the error diagnostic)"
+    );
+
+    // (3) The stale γ-only seam wording must be gone from all diagnostics.
+    let stale_msg = diagnostics.iter().find(|d| d.message.contains("δ migrates"));
+    assert!(
+        stale_msg.is_none(),
+        "expected no diagnostic containing 'δ migrates' (stale γ-only seam wording); \
+         got: {stale_msg:?}. (RED until step-4 rewrites the error diagnostic)"
+    );
+}
+
+/// Assert that the trampoline falls back to value_inputs[1] and completes
+/// successfully when the realization handle's content is None (sdf() == None).
+///
+/// This is a regression test pinning PRD §8 "consumes sdf() when present and
+/// falls back to slab when None" — the fallback path introduced in step-2.
+///
+/// The mid-surface vertex max x-coordinate must be ≤ ~1.0 (tracking the
+/// [0,1.0]² slab footprint), confirming the fallback arm was taken rather
+/// than some realization-derived geometry.
+///
+/// GREEN after step-2 because: realization handle has content=None → sdf()==None
+/// → fallback to value_inputs[1] slab → Completed, max x ≤ 1.0.
+///
+/// Pins docs/prds/v0_6/realization-read-api.md §8 / §9 ε / D3.
+#[test]
+fn shell_extract_falls_back_to_slab_when_realization_sdf_none() {
+    // Build a handle with content=None so sdf() returns None.
+    let none_handle = RealizationReadHandle::new(
+        RealizationNodeId::new("b", 0),
+        ContentHash(0),
+        None,
+    );
+
+    let slab = Value::SampledField(synthetic_slab_field());
+
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef, slab],
+        &[none_handle],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // Must succeed (fallback to value_inputs[1] slab).
+    let result = match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!(
+            "expected ComputeOutcome::Completed when realization sdf()==None and \
+             value_inputs[1] slab is present; got: {other:?}"
+        ),
+    };
+
+    // Max mid-surface vertex x must be within the [0,1.0]² slab footprint,
+    // confirming the fallback slab (not a realization field) was used.
+    let max_x = max_mid_surface_vertex_x(&result);
+    assert!(
+        max_x <= 1.01,
+        "expected max mid-surface vertex x ≤ 1.01 (slab [0,1.0]² fallback footprint); \
+         got max_x = {max_x:.4}. If max_x > 1.0, some other geometry source was used."
+    );
+}
