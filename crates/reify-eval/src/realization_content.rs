@@ -399,4 +399,228 @@ mod tests {
         assert_eq!(diags.len(), 1, "absent realization must emit one warning");
     }
 
+    // ── δ Sdf/Voxel densify projection tests ────────────────────────────────
+    //
+    // step-7 RED: success + memoization fail (arm returns None+warning today).
+    // Degradation tests should already PASS (None+1 diag from both old & new arm).
+
+    /// Closed box mesh (±1.0 mm on each axis, 12 triangles).
+    /// Same fixture as `ingest_mesh_densify_tests::box_2mm`.
+    #[cfg(has_openvdb)]
+    fn box_2mm() -> reify_ir::Mesh {
+        let v: Vec<f32> = vec![
+            -1.0, -1.0, -1.0,  1.0, -1.0, -1.0,  1.0,  1.0, -1.0, -1.0,  1.0, -1.0,
+            -1.0, -1.0,  1.0,  1.0, -1.0,  1.0,  1.0,  1.0,  1.0, -1.0,  1.0,  1.0,
+        ];
+        #[rustfmt::skip]
+        let i: Vec<u32> = vec![
+            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+            2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
+        ];
+        reify_ir::Mesh { vertices: v, indices: i, normals: None }
+    }
+
+    /// δ SUCCESS: `project_realization_read_handle` on a Voxel node backed by
+    /// a live ingested box mesh returns `Some(RealizedContent::Sdf(...))` with
+    /// structural integrity checks.
+    ///
+    /// RED: current arm returns `None + 1 warning`; step-8 replaces it with
+    /// the densify projection.
+    #[cfg(has_openvdb)]
+    #[test]
+    fn project_voxel_with_openvdb_kernel_returns_sampled_field() {
+        use reify_ir::{GeometryKernel, SampledGridKind};
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+
+        // Ingest the closed box into the live openvdb kernel instance.
+        let mesh = box_2mm();
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+        let kernel = engine
+            .geometry_kernels
+            .get_mut(openvdb_name)
+            .expect("openvdb kernel must be present in with_registered_kernels engine");
+        let handle = kernel
+            .ingest_mesh(&mesh)
+            .expect("ingest_mesh must succeed for a valid closed box");
+
+        // Seed realization graph + handles.
+        let r0 = RealizationNodeId::new("voxel-delta-test", 0);
+        let h = ContentHash::of_str("box-voxel-hash");
+        let mut graph = EvaluationGraph::default();
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+        engine.realization_handles.insert(r0.clone(), handle.id);
+
+        let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        // Success path: Some(SampledField) + no diagnostic.
+        assert!(
+            diags.is_empty(),
+            "Voxel/openvdb success path must emit no diagnostic; got: {diags:?}"
+        );
+        let field = read_handle
+            .sdf()
+            .expect("Voxel projection must return Some(SampledField) via sdf()");
+
+        // Structural checks (realization-read-api.md §3.3 δ; no numeric tolerance).
+        assert_eq!(field.kind, SampledGridKind::Regular3D, "kind must be Regular3D");
+        assert_eq!(field.spacing.len(), 3, "spacing must have 3 entries for Regular3D");
+        for (i, &s) in field.spacing.iter().enumerate() {
+            assert!(
+                s > 0.0 && s.is_finite(),
+                "spacing[{i}] = {s} must be positive and finite"
+            );
+        }
+        // Bounds must cover the box extents (±1.0 mm on each axis).
+        for i in 0..3 {
+            assert!(
+                field.bounds_min[i] <= -1.0,
+                "bounds_min[{i}] = {} must be ≤ -1.0 (box half-extent)",
+                field.bounds_min[i]
+            );
+            assert!(
+                field.bounds_max[i] >= 1.0,
+                "bounds_max[{i}] = {} must be ≥ 1.0 (box half-extent)",
+                field.bounds_max[i]
+            );
+        }
+        // Data must be non-empty and finite.
+        assert!(!field.data.is_empty(), "densified field data must not be empty");
+        assert!(
+            field.data.iter().all(|v| v.is_finite()),
+            "all SampledField data values must be finite"
+        );
+        // CPU-sampleable: interpolate at the box centre (0,0,0) → finite value.
+        let phi = reify_expr::interp::interpolate_3d(
+            reify_expr::interp::InterpolationMethod::Linear,
+            &field.axis_grids[0],
+            &field.axis_grids[1],
+            &field.axis_grids[2],
+            &field.data,
+            (0.0, 0.0, 0.0),
+        )
+        .value;
+        assert!(phi.is_finite(), "SDF at (0,0,0) must be finite; got {phi}");
+        assert!(phi < 0.0, "SDF at box centre must be negative (interior); got {phi}");
+    }
+
+    /// δ MEMOIZATION: two projections of the same (node, content_hash) return
+    /// `Arc::ptr_eq` content — the second call is a store hit.
+    ///
+    /// RED: current arm returns `None + 1 warning` on every call (no insert).
+    #[cfg(has_openvdb)]
+    #[test]
+    fn project_voxel_memoized_returns_ptr_eq_arc() {
+        use reify_ir::GeometryKernel;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+
+        let mesh = box_2mm();
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+        let handle = engine
+            .geometry_kernels
+            .get_mut(openvdb_name)
+            .expect("openvdb kernel must be present")
+            .ingest_mesh(&mesh)
+            .expect("ingest_mesh must succeed");
+
+        let r0 = RealizationNodeId::new("memo-test", 0);
+        let h = ContentHash::of_str("memo-hash");
+        let mut graph = EvaluationGraph::default();
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+        engine.realization_handles.insert(r0.clone(), handle.id);
+
+        let (h1, diags1) = engine.project_realization_read_handle(&r0, &graph);
+        assert!(diags1.is_empty(), "first projection must emit no diagnostic");
+        let arc1 = match h1.content() {
+            Some(RealizedContent::Sdf(a)) => std::sync::Arc::clone(a),
+            other => panic!("first projection must return Some(Sdf); got {other:?}"),
+        };
+
+        let (h2, diags2) = engine.project_realization_read_handle(&r0, &graph);
+        assert!(diags2.is_empty(), "second projection (store hit) must emit no diagnostic");
+        let arc2 = match h2.content() {
+            Some(RealizedContent::Sdf(a)) => std::sync::Arc::clone(a),
+            other => panic!("second projection must return Some(Sdf); got {other:?}"),
+        };
+
+        assert!(
+            std::sync::Arc::ptr_eq(&arc1, &arc2),
+            "two projections of the same (node, content_hash) must return Arc::ptr_eq \
+             content (store hit path)"
+        );
+    }
+
+    /// δ DEGRADATION (no-kernel engine): when no openvdb kernel is registered
+    /// (β's `make_engine`), projecting a Voxel node returns `None + 1 diag`.
+    #[test]
+    fn project_voxel_no_openvdb_kernel_returns_none_with_one_diagnostic() {
+        let mut engine = make_engine(); // no geometry kernel at all
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("voxel-degrade", 0);
+        let h = ContentHash::of_str("voxel-degrade-hash");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+        // No entry in realization_handles — kernel lookup will fail anyway.
+
+        let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            read_handle.sdf().is_none(),
+            "Voxel + no openvdb kernel must return None content"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "Voxel + no openvdb kernel must emit exactly one diagnostic; got {diags:?}"
+        );
+    }
+
+    /// δ DEGRADATION: Sdf node with no openvdb kernel returns `None + 1 diag`.
+    #[test]
+    fn project_sdf_no_openvdb_kernel_returns_none_with_one_diagnostic() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("sdf-degrade", 0);
+        let h = ContentHash::of_str("sdf-degrade-hash");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Sdf);
+
+        let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(read_handle.sdf().is_none(), "Sdf + no openvdb kernel must return None content");
+        assert_eq!(
+            diags.len(),
+            1,
+            "Sdf + no openvdb kernel must emit exactly one diagnostic; got {diags:?}"
+        );
+    }
+
+    /// δ DEGRADATION (cfg(not(has_openvdb)) stub build): the Voxel/Sdf arm
+    /// must return `None + 1 diag` even when `with_registered_kernels` is used
+    /// (openvdb is not registered in stub builds so the kernel lookup fails).
+    #[cfg(not(has_openvdb))]
+    #[test]
+    fn project_voxel_stub_build_returns_none_no_fabricated_field() {
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("stub-voxel", 0);
+        let h = ContentHash::of_str("stub-hash");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+
+        let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            read_handle.sdf().is_none(),
+            "cfg(not(has_openvdb)) Voxel projection must return None — no fabricated field"
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "cfg(not(has_openvdb)) Voxel projection must emit exactly 1 diagnostic; got {diags:?}"
+        );
+    }
+
 }
