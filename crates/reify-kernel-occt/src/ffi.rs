@@ -597,7 +597,8 @@ pub mod ffi {
             plane_shape: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
-        // --- Thicken / Shell ---
+        // --- Thicken / Shell / Offset Solid ---
+        fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
             shape: &OcctShape,

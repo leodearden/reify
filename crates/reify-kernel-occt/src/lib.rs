@@ -5726,6 +5726,23 @@ mod tests {
     }
 
     #[test]
+    fn offset_solid_shape_ffi_contract() {
+        let b = ffi::ffi::make_box(10.0, 10.0, 10.0).expect("make_box");
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, 2.0).is_ok(),
+            "outward offset should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -2.0).is_ok(),
+            "inward offset < inradius should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -100.0).is_err(),
+            "inward offset >> inradius should fail (degenerate)"
+        );
+    }
+
+    #[test]
     fn shell_box_hollow() {
         let mut kernel = OcctKernel::new();
         // Create a 20x20x20 box (volume = 8000)

@@ -2077,7 +2077,32 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     });
 }
 
-// --- Thicken / Shell ---
+// --- Thicken / Shell / Offset Solid ---
+
+std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance) {
+    return wrap_occt_call("offset_solid_shape", [&]() {
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformBySimple(shape.shape, distance);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("offset_solid_shape: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("offset_solid_shape: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("offset_solid_shape: result has degenerate (near-zero) volume");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
     return wrap_occt_call("thicken_shape", [&]() {

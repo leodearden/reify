@@ -712,7 +712,9 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms);
 
-// --- Thicken / Shell ---
+// --- Thicken / Shell / Offset Solid ---
+
+std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
 
