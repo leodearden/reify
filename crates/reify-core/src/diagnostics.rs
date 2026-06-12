@@ -1403,22 +1403,15 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SHELL_TOO_THICK` /
     /// `W_SHELL_TOO_THICK` depending on severity.
     ShellTooThick,
-    /// Origin: reserved for a future emission site in
-    /// `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline).
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs`
+    /// (`shell_extract_compute_fn`, medial-mask phase, empty-mask guard).
     ///
-    /// **Not yet emitted** — no clean synthetic trigger exists for the
-    /// "empty medial mask" state in the current pipeline.  This variant is
-    /// added for PRD §7 vocabulary completeness and to reserve the wire string
-    /// `"ShellNoMedial"` in the serde encoding, consistent with the
-    /// codebase's reserved-code convention (see also `MissingRequiredMember`,
-    /// `KinematicClosedChain`).
+    /// Emitted as `Severity::Error` when `compute_medial_mask` succeeds but
+    /// returns a mask with zero medial voxels (geometry fully solid or voxel
+    /// resolution too coarse), short-circuiting before mid-surface extraction.
     ///
-    /// When emitted in a future task: `Severity::Error` when the medial-axis
-    /// computation produces an empty mask (no interior voxels), preventing any
-    /// mid-surface extraction.
-    ///
-    /// Canonical message form (reserved):
-    /// `"shell-extract::extract: medial-mask phase: no medial axis found — body may be too degenerate for shell extraction"`.
+    /// Canonical message form:
+    /// `"shell-extract::extract: medial-mask phase: no medial axis found — body '<name>' may be too degenerate for shell extraction (geometry fully solid or voxel resolution too coarse)"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_NO_MEDIAL`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
