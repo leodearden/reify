@@ -2359,6 +2359,12 @@ impl OcctKernel {
                 ffi::ffi::zone_slab_shape(shape, w)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::OffsetSolid { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                ffi::ffi::offset_solid_shape(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Shell {
                 target,
                 thickness,
@@ -5810,6 +5816,110 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn offset_solid_shape_ffi_contract() {
+        let b = ffi::ffi::make_box(10.0, 10.0, 10.0).expect("make_box");
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, 2.0).is_ok(),
+            "outward offset should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -2.0).is_ok(),
+            "inward offset < inradius should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -100.0).is_err(),
+            "inward offset >> inradius should fail (degenerate)"
+        );
+    }
+
+    // --- OffsetSolid high-level execute tests ---
+
+    #[test]
+    fn offset_solid_outward_increases_volume() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box = volume 1000
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Outward offset 2.0 — same primitive as thicken, same 10³ box → vol > 1000
+        let grown_h = kernel
+            .execute(&GeometryOp::OffsetSolid {
+                target: box_h.id,
+                distance: Value::Real(2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(grown_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!(
+                v > 1000.0,
+                "outward-offset volume should exceed original 1000, got {v}"
+            ),
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_solid_inward_valid_shrinks_volume() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box = volume 1000; inradius = 5
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Inward offset -2.0 (< inradius 5) → valid smaller solid, 0 < vol < 1000
+        let shrunk_h = kernel
+            .execute(&GeometryOp::OffsetSolid {
+                target: box_h.id,
+                distance: Value::Real(-2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(shrunk_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "shrunk volume must be positive, got {v}");
+                assert!(
+                    v < 1000.0,
+                    "shrunk volume must be less than original 1000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_solid_degenerate_collapse_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box; inradius = 5
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Inward offset -100 >> inradius 5 → degenerate, must return Err
+        let result = kernel.execute(&GeometryOp::OffsetSolid {
+            target: box_h.id,
+            distance: Value::Real(-100.0),
+        });
+        assert!(
+            result.is_err(),
+            "degenerate inward offset should produce an error"
+        );
     }
 
     #[test]

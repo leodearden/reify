@@ -295,6 +295,8 @@ pub enum Operation {
     ModifyThicken,
     /// Offset a face ±width/2 and cap into a centered slab solid.
     ModifyZoneSlab,
+    /// Offset a solid outward/inward by distance.
+    ModifyOffsetSolid,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -807,6 +809,11 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         width: Value,
     },
+    /// Offset a solid outward (positive) or inward (negative) by distance.
+    OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
+    },
     /// Shell a solid (hollow it out, removing specified faces).
     Shell {
         target: GeometryHandleId,
@@ -900,6 +907,7 @@ impl GeometryOp {
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
             GeometryOp::ZoneSlab { .. } => "ZoneSlab",
+            GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
             GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
@@ -5750,13 +5758,14 @@ mod tests {
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
-            // Modify (6)
+            // Modify (7)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
+            Operation::ModifyOffsetSolid,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -5859,6 +5868,7 @@ mod tests {
             Operation::ModifyDraft => {}
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
+            Operation::ModifyOffsetSolid => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -6589,6 +6599,13 @@ mod tests {
                 GeometryOp::ZoneSlab {
                     target: GeometryHandleId(1),
                     width: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSolid",
+                GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
                 },
             ),
             (

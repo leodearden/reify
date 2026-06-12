@@ -120,9 +120,11 @@ pub(crate) fn compile_function(
 
     // Type-check default expressions against their declared param types.
     //
-    // Uses strict equality (via `fn_param_default_compatible`) matching the policy
-    // in `resolve_function_overload` and `try_default_padding`'s prefix check —
-    // a default value is conceptually inserted at the padded call site, so the
+    // Uses strict equality (via `fn_param_default_compatible`). The definition-
+    // site default-expression-vs-param-type check is strict; `try_default_padding`'s
+    // PREFIX check (provided args vs leading params) uses the same trait/type-param
+    // wildcard predicate as `resolve_function_overload` and is NOT strict equality.
+    // A default value is conceptually inserted at the padded call site, so the
     // definition-site check must be at least as strict as the call-site check.
     //
     // The zip over three lockstep collections (fn_def.params, param_defaults, params)

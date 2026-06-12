@@ -379,6 +379,51 @@ fn compile_thicken_produces_realization() {
 }
 
 #[test]
+fn compile_offset_solid_produces_realization() {
+    let source = r#"structure S {
+    param w: Length = 10mm
+    let grown = offset_solid(w, 2mm)
+}"#;
+    let parsed =
+        reify_syntax::parse(source, reify_core::ModulePath::single("test_offset_solid"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for offset_solid call, got {}",
+        template.realizations.len()
+    );
+    let op = &template.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op,
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::OffsetSolid,
+                ..
+            }
+        ),
+        "expected Modify(OffsetSolid), got {:?}",
+        op
+    );
+    // arg names must be exactly ["target", "distance"]
+    if let CompiledGeometryOp::Modify { args, .. } = op {
+        let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["target", "distance"],
+            "arg names mismatch: {:?}",
+            names
+        );
+    }
+}
+
+#[test]
 fn compile_draft_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm
@@ -1796,4 +1841,114 @@ fn compile_boolean_op_intersection_all_via_compile() {
             other
         ),
     }
+}
+
+#[test]
+fn compile_fillet_all_structurally_identical_to_2arg_fillet() {
+    // fillet_all(solid, r) is an all-edges alias: it must lower to the
+    // identical CompiledGeometryOp::Modify{kind:Fillet, args:[target,radius]}
+    // as 2-arg fillet(solid, r). Both must have NO "edges" arg — proving they
+    // reach the same eval None-edges branch → GeometryOp::Fillet{edges:vec![]}.
+    //
+    // Use a `param` target (mirrors thicken/offset_solid tests) so the
+    // realization has exactly 1 op — the Modify op itself — making operations[0]
+    // unambiguous (inline box(…) would add a Box op at index 0).
+    let fillet_all_src = r#"structure S {
+    param w: Length = 10mm
+    let f = fillet_all(w, 2mm)
+}"#;
+    let fillet_src = r#"structure S {
+    param w: Length = 10mm
+    let f = fillet(w, 2mm)
+}"#;
+
+    // Compile fillet_all
+    let parsed_fa = reify_syntax::parse(
+        fillet_all_src,
+        reify_core::ModulePath::single("test_fillet_all"),
+    );
+    assert!(
+        parsed_fa.errors.is_empty(),
+        "fillet_all parse errors: {:?}",
+        parsed_fa.errors
+    );
+    let compiled_fa = compile(&parsed_fa);
+    let template_fa = &compiled_fa.templates[0];
+    assert_eq!(
+        template_fa.realizations.len(),
+        1,
+        "fillet_all: expected 1 realization, got {}",
+        template_fa.realizations.len()
+    );
+    let op_fa = &template_fa.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op_fa,
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                ..
+            }
+        ),
+        "fillet_all: expected Modify(Fillet), got {:?}",
+        op_fa
+    );
+    let fa_arg_names: Vec<&str> = if let CompiledGeometryOp::Modify { args, .. } = op_fa {
+        args.iter().map(|(n, _)| n.as_str()).collect()
+    } else {
+        unreachable!()
+    };
+    assert_eq!(
+        fa_arg_names,
+        vec!["target", "radius"],
+        "fillet_all arg names: {:?}",
+        fa_arg_names
+    );
+
+    // Compile 2-arg fillet for parity comparison
+    let parsed_f = reify_syntax::parse(
+        fillet_src,
+        reify_core::ModulePath::single("test_fillet_2arg"),
+    );
+    assert!(
+        parsed_f.errors.is_empty(),
+        "fillet parse errors: {:?}",
+        parsed_f.errors
+    );
+    let compiled_f = compile(&parsed_f);
+    let template_f = &compiled_f.templates[0];
+    assert_eq!(
+        template_f.realizations.len(),
+        1,
+        "fillet: expected 1 realization, got {}",
+        template_f.realizations.len()
+    );
+    let op_f = &template_f.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op_f,
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Fillet,
+                ..
+            }
+        ),
+        "fillet: expected Modify(Fillet), got {:?}",
+        op_f
+    );
+    let f_arg_names: Vec<&str> = if let CompiledGeometryOp::Modify { args, .. } = op_f {
+        args.iter().map(|(n, _)| n.as_str()).collect()
+    } else {
+        unreachable!()
+    };
+    assert_eq!(
+        f_arg_names,
+        vec!["target", "radius"],
+        "fillet arg names: {:?}",
+        f_arg_names
+    );
+
+    // Structural parity: same kind (Fillet) + same arg names → identical all-edges ops
+    assert_eq!(
+        fa_arg_names, f_arg_names,
+        "fillet_all and fillet must be structurally identical (same arg names)"
+    );
 }

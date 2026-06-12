@@ -270,9 +270,12 @@ fn parse_declared_range_value(v: &Value, kind: &RangeKind) -> Option<f64> {
 ///   (maximally safe — no yield datum places no stress limit) when `yield_si` is
 ///   `None`.
 /// - `parasitic_error` → [`Value::Option`] of a LENGTH Scalar (`None` ⇒ `Option(None)`).
-/// - `prb_validity_range` → [`Value::Real`]: the SI half-angle (revolute) or
-///   half-displacement (prismatic) of the auto-computed SAFE range (the bare
-///   `Real` placeholder matches the `flexures.ri` `TODO(range-angle-type)`).
+/// - `prb_validity_range` → `Value::Range` of ANGLE via [`symmetric_angle_range`]:
+///   `[−h, +h]` where `h = prb_validity_half_si` (both-inclusive). For revolute /
+///   cantilever families `h` is a genuine half-angle (rad); for prismatic families
+///   `h` is a half-displacement (m) wrapped as an angle magnitude — a documented
+///   residual consistent with `Range<Length>` being scoped OUT
+///   (tolerancing-gdt-surface-completion.md §4 decision 6; tightening deferred).
 /// - `at_yield` → [`Value::Bool`]: `max_stress > yield·(1 + AT_YIELD_REL_TOL)`
 ///   (strict, with a tiny relative tolerance so operating exactly at the
 ///   yield-deflection endpoint — the SAFE-envelope boundary — is not flagged by
@@ -326,7 +329,7 @@ pub(super) fn make_compliance_record(
         ("parasitic_error".to_string(), parasitic_error),
         (
             "prb_validity_range".to_string(),
-            Value::Real(prb_validity_half_si),
+            symmetric_angle_range(prb_validity_half_si),
         ),
         ("at_yield".to_string(), Value::Bool(at_yield)),
     ]
@@ -476,6 +479,7 @@ fn thickness_vs_length(thickness: f64, length: f64) -> Option<GeometryViolation>
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_util::angle_range_half_si;
     use super::*;
     use reify_core::DimensionVector;
     use reify_ir::Value;
@@ -577,10 +581,11 @@ mod tests {
             "absent parasitic ⇒ Option(None)"
         );
 
-        // prb_validity_range stored as a Real (the SI half-angle/half-displacement).
+        // prb_validity_range is a symmetric ANGLE Range<Angle> = [−h, +h].
+        let half = angle_range_half_si(field(&rec, "prb_validity_range"), "prb_validity_range");
         assert!(
-            (real_of(field(&rec, "prb_validity_range"), "prb_validity_range") - 0.0872664626).abs()
-                < 1e-9
+            (half - 0.0872664626).abs() < 1e-9,
+            "prb_validity_range half-width {half} vs expected 0.0872664626"
         );
     }
 
@@ -610,6 +615,13 @@ mod tests {
             },
             other => panic!("expected Option(Some(Length)), got {other:?}"),
         }
+
+        // prb_validity_range is a symmetric ANGLE Range<Angle> = [−h, +h].
+        let half = angle_range_half_si(field(&rec, "prb_validity_range"), "prb_validity_range");
+        assert!(
+            (half - 0.17453293).abs() < 1e-9,
+            "prb_validity_range half-width {half} vs expected 0.17453293"
+        );
     }
 
     #[test]
@@ -626,5 +638,12 @@ mod tests {
         );
         let m = real_of(field(&rec, "yield_margin"), "yield_margin");
         assert_eq!(m, 1.0, "no-yield margin sentinel is 1.0 (maximally safe)");
+
+        // prb_validity_range is a symmetric ANGLE Range<Angle> = [−h, +h].
+        let half = angle_range_half_si(field(&rec, "prb_validity_range"), "prb_validity_range");
+        assert!(
+            (half - 0.0872664626).abs() < 1e-9,
+            "prb_validity_range half-width {half} vs expected 0.0872664626"
+        );
     }
 }

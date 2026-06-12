@@ -33,9 +33,11 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "revolve_full",
     "shell",
     "thicken",
+    "offset_solid",
     "draft",
     "chamfer",
     "fillet",
+    "fillet_all",
     "union",
     "intersection",
     "difference",
@@ -1587,6 +1589,16 @@ mod tests {
     #[test]
     fn compile_geometry_thicken_recognized() {
         assert!(is_geometry_function("thicken"));
+    }
+
+    #[test]
+    fn compile_geometry_offset_solid_recognized() {
+        assert!(is_geometry_function("offset_solid"));
+    }
+
+    #[test]
+    fn compile_geometry_fillet_all_recognized() {
+        assert!(is_geometry_function("fillet_all"));
     }
 
     #[test]

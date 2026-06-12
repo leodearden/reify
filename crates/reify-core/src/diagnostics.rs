@@ -257,8 +257,23 @@ pub enum DiagnosticCode {
     /// makes that non-breaking).
     ConstraintViolated,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
-    /// Replaces canonical message:
-    /// `"constraint <id> indeterminate: undefined inputs"` (Undef branch, Severity::Warning)
+    /// Replaces two canonical message forms (Undef branch, Severity::Warning):
+    ///
+    /// - `"constraint <id> indeterminate: undefined inputs: <cells>"` — emitted when
+    ///   ≥1 leaf `ValueRef` in the constraint expression resolves to `Value::Undef`
+    ///   (data is absent). `<cells>` is a comma-separated list of the undefined cell
+    ///   names (deduped, sorted alphabetically) via `ValueCellId::Display`
+    ///   (`"entity.member"` format). Note: `collect_value_refs()` also returns
+    ///   `CrossSubGeometryRef` IDs; those are treated the same as ordinary cell IDs
+    ///   and will appear here if absent from the `ValueMap`.
+    ///
+    /// - `"constraint <id> indeterminate: operator undefined for these operand kinds: <kinds>"`
+    ///   — emitted when all leaf `ValueRef`s are defined but the operator is undefined
+    ///   for the given operand kinds (e.g. comparing a Tensor to a Scalar, or comparing
+    ///   scalars of mismatched dimensions). `<kinds>` is a comma-separated list of the
+    ///   distinct operand kinds (deduped, sorted alphabetically) such as `"Tensor"`,
+    ///   `"Scalar<m>"`, `"Enum<MyType>"`. When the expression has no `ValueRef` leaves
+    ///   (literal-only), the `": <kinds>"` suffix is omitted.
     ConstraintIndeterminate,
     /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`,
     ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`, and

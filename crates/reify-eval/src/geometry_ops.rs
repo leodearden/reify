@@ -948,6 +948,13 @@ pub(crate) fn compile_geometry_op(
                         width,
                     })
                 }
+                reify_compiler::ModifyKind::OffsetSolid => {
+                    let distance = eval_arg("distance")?;
+                    Ok(reify_ir::GeometryOp::OffsetSolid {
+                        target: target_id,
+                        distance,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {

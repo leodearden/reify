@@ -703,7 +703,8 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
-        "fillet" | "chamfer" | "shell" | "draft" | "thicken" | "zone_slab" => {
+        "fillet" | "fillet_all" | "chamfer" | "shell" | "draft" | "thicken" | "offset_solid"
+        | "zone_slab" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }

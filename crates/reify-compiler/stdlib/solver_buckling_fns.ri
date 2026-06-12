@@ -41,11 +41,11 @@
 //     member access (or inline typed list literals).  Conformance is enforced
 //     at compile time for StructureInstanceCtor list elements.
 //
-//   `options : BucklingOptions` (no default):
-//     Even though `BucklingOptions` is now in the prelude (loaded earlier via
-//     `std.solver.buckling`), the TODO(phase-order) default is still deferred
-//     to a follow-up task.  Callers must pass `BucklingOptions()` explicitly.
-//     TODO(phase-order): add `= BucklingOptions()` default once confirmed safe.
+//   `options : BucklingOptions = BucklingOptions()`:
+//     `BucklingOptions` is in the prelude (loaded earlier via `std.solver.buckling`),
+//     so the cross-module ctor default compiles cleanly (task-4544 resolved).
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `BucklingOptions(...)` to override specific fields.
 @optimized("solver::buckling")
 pub fn solve_buckling(
     material  : ElasticMaterial,
@@ -54,7 +54,7 @@ pub fn solve_buckling(
     height    : Length,
     loads     : List<Load>,
     supports  : List<Support>,
-    options   : BucklingOptions
+    options   : BucklingOptions = BucklingOptions()
 ) -> BucklingResult {
     BucklingResult()
 }
