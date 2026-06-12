@@ -5725,6 +5725,58 @@ mod tests {
         }
     }
 
+    /// RED until step-2 adds GeometryOp::ZoneSlab.
+    #[test]
+    fn zone_slab_planar_face_volume_identity() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Rectangle face: width=0.040 m, height=0.020 m → A = 8e-4 m²
+        let face_h = kernel
+            .execute(&GeometryOp::RectangleProfile {
+                width: Value::Real(0.040),
+                height: Value::Real(0.020),
+            })
+            .unwrap();
+        let w = 0.002_f64; // 2 mm width
+        let slab_h = kernel
+            .execute(&GeometryOp::ZoneSlab {
+                target: face_h.id,
+                width: Value::Real(w),
+            })
+            .unwrap();
+        // B6 identity: V = w · A for a right prism, within 1e-9 rel
+        let expected = w * (0.040 * 0.020);
+        let vol = kernel.query(&GeometryQuery::Volume(slab_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - expected).abs() <= 1e-9 * expected,
+                    "zone_slab volume {v} should equal w·A={expected} within 1e-9 rel"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+        // Centering: centroid.z ≈ 0 (±w/2 symmetric offset)
+        let centroid = kernel.query(&GeometryQuery::Centroid(slab_h.id)).unwrap();
+        match centroid {
+            Value::String(s) => {
+                let z: f64 = {
+                    let z_part = s.split("\"z\":").nth(1).expect("centroid JSON has z field");
+                    let z_str = z_part.trim_end_matches('}').trim();
+                    z_str.parse().expect("z is a number")
+                };
+                assert!(
+                    z.abs() <= 1e-9,
+                    "zone_slab centroid z should be ≈0 (symmetric slab), got {z}"
+                );
+            }
+            other => panic!("expected Value::String (centroid JSON), got {:?}", other),
+        }
+    }
+
     #[test]
     fn shell_box_hollow() {
         let mut kernel = OcctKernel::new();
