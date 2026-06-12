@@ -1,0 +1,402 @@
+// Realization projection store and Engine::project_realization_read_handle.
+//
+// β: GeometryHandle-arg lowering → realization_inputs + memoized Engine
+// projection store.  See `docs/prds/v0_6/realization-read-api.md` §9 (task β),
+// contract §3.3/§3.4, decision D2 (lazy-at-lowering).
+//
+// γ (Mesh→tessellate, VolumeMesh→volume_mesh()) and δ (Sdf/Voxel→densify) will
+// REPLACE the content-bearing arms in `project_realization_read_handle` with
+// real kernel resolution (self.realization_handles / self.realization_cache →
+// KernelHandle) + real projection, and on success call
+// `self.realization_projection_store.insert(…)` to memoize the content.
+//
+// PRD §10 OQ-2 (eviction): the store is unbounded in v1; eviction is deferred
+// to a future task.  Content is immutable once keyed (realization identity is
+// content-addressed), so stale entries are unreachable rather than incorrect.
+
+use std::collections::HashMap;
+
+use reify_core::{ContentHash, Diagnostic, RealizationNodeId};
+use reify_ir::ReprKind;
+
+use crate::engine_compute::{RealizedContent, RealizationReadHandle};
+use crate::graph::EvaluationGraph;
+
+// ── Projection store ─────────────────────────────────────────────────────────
+
+/// Memoization store for realized geometry content.
+///
+/// Keyed by `RealizationNodeId → ContentHash → RealizedContent` (two-level map)
+/// so that two dispatches over the same realization identity but *different*
+/// content hashes are never conflated (e.g. after a parameter edit).
+///
+/// The two-level structure lets [`get`](RealizationProjectionStore::get) borrow
+/// `node_id` directly (no clone) for the outer lookup.
+///
+/// ## Arc-clone-on-get semantics
+///
+/// [`get`](RealizationProjectionStore::get) returns a *cloned* `RealizedContent`
+/// (which is cheap: `RealizedContent` is a thin enum over `Arc<T>`).  The Arc
+/// itself is shared, so both the store and the caller observe the same heap
+/// allocation — `Arc::ptr_eq` on the inner pointer holds.
+///
+/// ## Eviction (PRD §10 OQ-2)
+///
+/// The store is unbounded in v1.  Because realization identity is
+/// content-addressed, a stale entry (content_hash that is no longer current for
+/// a given node) is simply never looked up again — it is unreachable, not
+/// incorrect.  A future task may add an LRU cap.
+#[allow(dead_code)] // consumed by project_realization_read_handle / step-4
+pub(crate) struct RealizationProjectionStore {
+    memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,
+}
+
+impl RealizationProjectionStore {
+    pub(crate) fn new() -> Self {
+        Self { memo: HashMap::new() }
+    }
+
+    /// Look up content by `(node_id, content_hash)`.
+    ///
+    /// Borrows `node_id` for the outer lookup (no clone).  Returns a cloned
+    /// `RealizedContent` (cheap Arc-clone) when present, `None` on a miss.
+    /// Two calls with the same key return distinct enum values pointing to the
+    /// *same* inner Arc allocation.
+    #[allow(dead_code)] // used in step-2 tests; dead-code silenced until step-4 wires it
+    pub(crate) fn get(
+        &self,
+        node_id: &RealizationNodeId,
+        content_hash: ContentHash,
+    ) -> Option<RealizedContent> {
+        self.memo.get(node_id)?.get(&content_hash).cloned()
+    }
+
+    /// Insert (or overwrite) content for `(node_id, content_hash)`.
+    ///
+    /// Inserts are whole-value: a partial or cancelled dispatch must not call
+    /// `insert` — only fully-completed projections are stored.  This ensures the
+    /// store never contains partial content (cancellation-safety §3.2-4).
+    #[allow(dead_code)] // used in step-4 onwards
+    pub(crate) fn insert(
+        &mut self,
+        node_id: RealizationNodeId,
+        content_hash: ContentHash,
+        content: RealizedContent,
+    ) {
+        self.memo.entry(node_id).or_default().insert(content_hash, content);
+    }
+}
+
+// ── Engine projection method ─────────────────────────────────────────────────
+
+impl crate::Engine {
+    /// Project a single realization node into a [`RealizationReadHandle`].
+    ///
+    /// Looks up `node_id` in `graph.realizations` to obtain its
+    /// `content_hash` and `produced_repr`, then consults
+    /// `self.realization_projection_store`:
+    ///
+    /// * **Store hit** — returns a handle carrying `Some(content)` and an
+    ///   empty diagnostics vec.
+    /// * **Store miss, BRep** — returns a handle carrying `None` and **no
+    ///   diagnostic** (BRep is identity-only by design; PRD §4 D1 — a None
+    ///   here is expected, not a failure).
+    /// * **Store miss, content-bearing repr** (Mesh / VolumeMesh / Sdf /
+    ///   Voxel) — returns a handle carrying `None` and one
+    ///   `Severity::Warning` diagnostic (honest degradation §3.2-5; the
+    ///   per-repr arms with real kernel resolution land in γ/δ, which
+    ///   REPLACE these arms with `Some(content)` + store insert on success).
+    /// * **Absent realization** (defensive; should not occur for a live
+    ///   handle) — returns a handle with `content_hash = ContentHash(0)`,
+    ///   `None` content, and one warning.
+    ///
+    /// The `realization_ref` is contributed to `realization_inputs`
+    /// **unconditionally** (even when content degrades to `None`) — the ref
+    /// drives cache-key identity (PRD §3.4 / §10 OQ-4).
+    pub(crate) fn project_realization_read_handle(
+        &mut self,
+        node_id: &RealizationNodeId,
+        graph: &EvaluationGraph,
+    ) -> (RealizationReadHandle, Vec<Diagnostic>) {
+        match graph.realizations.get(node_id) {
+            None => {
+                // Defensive: a live GeometryHandle arg should always have a
+                // corresponding realization node — this arm guards against
+                // graph inconsistency.
+                let handle = RealizationReadHandle::new(
+                    node_id.clone(),
+                    ContentHash(0),
+                    None,
+                );
+                let diag = Diagnostic::warning(format!(
+                    "realization {node_id}: node absent from evaluation graph; \
+                     handle carries no content"
+                ));
+                (handle, vec![diag])
+            }
+            Some(node_data) => {
+                let content_hash = node_data.content_hash;
+                let produced_repr = node_data.produced_repr;
+
+                // Store hit — share the Arc without re-projecting.
+                if let Some(content) =
+                    self.realization_projection_store.get(node_id, content_hash)
+                {
+                    let handle =
+                        RealizationReadHandle::new(node_id.clone(), content_hash, Some(content));
+                    return (handle, vec![]);
+                }
+
+                // Store miss — degrade honestly.  γ/δ replace the
+                // content-bearing arms with real kernel projection.
+                match produced_repr {
+                    ReprKind::BRep => {
+                        // Identity-only by design (PRD §4 D1): no content,
+                        // no diagnostic.
+                        let handle =
+                            RealizationReadHandle::new(node_id.clone(), content_hash, None);
+                        (handle, vec![])
+                    }
+                    ReprKind::Mesh | ReprKind::VolumeMesh | ReprKind::Sdf | ReprKind::Voxel => {
+                        // Content-bearing repr but no callable kernel at
+                        // eval-time (kernels are collected per-build, not a
+                        // persistent Engine field).  Honest degradation:
+                        // content=None + one warning.  γ/δ replace these
+                        // arms with real kernel projection + store insert.
+                        //
+                        // Note: this warning is dormant in β — no live
+                        // compute target currently receives GeometryHandle
+                        // args (Value::GeometryHandle is a post-eval
+                        // BUILD-time artifact; dispatch sees Undef for
+                        // geometry args until task 4091 wires the chain).
+                        let handle =
+                            RealizationReadHandle::new(node_id.clone(), content_hash, None);
+                        let diag = Diagnostic::warning(format!(
+                            "realization {node_id}: {produced_repr:?} content projection \
+                             not yet available; handle carries no content"
+                        ));
+                        (handle, vec![diag])
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use reify_core::{ContentHash, RealizationNodeId};
+    use reify_ir::{Mesh, ReprKind};
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    use super::RealizationProjectionStore;
+    use crate::engine_compute::RealizedContent;
+    use crate::graph::{EvaluationGraph, RealizationNodeData};
+    use crate::Engine;
+
+    fn make_engine() -> Engine {
+        Engine::new(Box::new(MockConstraintChecker::new()), None)
+    }
+
+    fn make_mesh() -> Arc<Mesh> {
+        Arc::new(Mesh {
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0_u32, 1, 2],
+            normals: Some(vec![0.0_f32, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]),
+        })
+    }
+
+    // ── RealizationProjectionStore tests ────────────────────────────────────
+
+    // step-1 (RED): these tests fail to compile until step-2 implements
+    // get/insert.
+
+    #[test]
+    fn store_hit_returns_arc_ptr_eq_content() {
+        let mut store = RealizationProjectionStore::new();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-content-1");
+        let mesh = make_mesh();
+        let content = RealizedContent::SurfaceMesh(Arc::clone(&mesh));
+
+        store.insert(r0.clone(), h, content);
+
+        let retrieved = store.get(&r0, h).expect("should be a hit");
+        match retrieved {
+            RealizedContent::SurfaceMesh(got) => {
+                assert!(
+                    Arc::ptr_eq(&got, &mesh),
+                    "get must return the same Arc (ptr_eq), not a deep copy"
+                );
+            }
+            _ => panic!("expected SurfaceMesh"),
+        }
+    }
+
+    #[test]
+    fn store_miss_on_different_content_hash() {
+        let mut store = RealizationProjectionStore::new();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("hash-A");
+        let h2 = ContentHash::of_str("hash-B");
+        let content = RealizedContent::SurfaceMesh(make_mesh());
+        store.insert(r0.clone(), h, content);
+
+        assert!(
+            store.get(&r0, h2).is_none(),
+            "different ContentHash must be a miss"
+        );
+    }
+
+    #[test]
+    fn store_miss_on_different_node_id() {
+        let mut store = RealizationProjectionStore::new();
+        let r0 = RealizationNodeId::new("E", 0);
+        let r1 = RealizationNodeId::new("E", 1);
+        let h = ContentHash::of_str("shared-hash");
+        let content = RealizedContent::SurfaceMesh(make_mesh());
+        store.insert(r0.clone(), h, content);
+
+        assert!(
+            store.get(&r1, h).is_none(),
+            "different RealizationNodeId must be a miss"
+        );
+    }
+
+    // ── Engine::project_realization_read_handle tests ───────────────────────
+
+    // step-3 (RED): these tests fail to compile until step-4 implements
+    // project_realization_read_handle.
+
+    fn seed_realization(
+        graph: &mut EvaluationGraph,
+        node_id: RealizationNodeId,
+        content_hash: ContentHash,
+        produced_repr: ReprKind,
+    ) {
+        let data = RealizationNodeData {
+            id: node_id.clone(),
+            operations: vec![],
+            content_hash,
+            produced_repr,
+            geometry_cell: None,
+            produced_kernel: None,
+        };
+        graph.realizations.insert(node_id, data);
+    }
+
+    #[test]
+    fn project_brep_returns_none_content_no_diagnostic() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("brep-content");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::BRep);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert_eq!(handle.node_id, r0);
+        assert_eq!(handle.content_hash, h);
+        assert!(handle.content().is_none(), "BRep must carry no content");
+        assert!(diags.is_empty(), "BRep must emit no diagnostic");
+    }
+
+    #[test]
+    fn project_mesh_returns_none_content_with_warning() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-h");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Mesh);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(handle.content().is_none());
+        assert_eq!(diags.len(), 1, "Mesh repr must emit exactly one warning");
+    }
+
+    #[test]
+    fn project_volume_mesh_returns_none_content_with_warning() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("vmesh-h");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::VolumeMesh);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+        assert!(handle.content().is_none());
+        assert_eq!(diags.len(), 1, "VolumeMesh repr must emit exactly one warning");
+    }
+
+    #[test]
+    fn project_sdf_returns_none_content_with_warning() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("sdf-h");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Sdf);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+        assert!(handle.content().is_none());
+        assert_eq!(diags.len(), 1, "Sdf repr must emit exactly one warning");
+    }
+
+    #[test]
+    fn project_voxel_returns_none_content_with_warning() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("voxel-h");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+        assert!(handle.content().is_none());
+        assert_eq!(diags.len(), 1, "Voxel repr must emit exactly one warning");
+    }
+
+    #[test]
+    fn project_store_hit_returns_some_content_no_diagnostic() {
+        let mut engine = make_engine();
+        let mut graph = EvaluationGraph::default();
+        let r0 = RealizationNodeId::new("E", 0);
+        let h = ContentHash::of_str("mesh-h");
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Mesh);
+
+        // Pre-seed the store with a RealizedContent.
+        let mesh = make_mesh();
+        let content = RealizedContent::SurfaceMesh(Arc::clone(&mesh));
+        engine.realization_projection_store.insert(r0.clone(), h, content);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(diags.is_empty(), "store hit must emit no diagnostic");
+        match handle.content() {
+            Some(RealizedContent::SurfaceMesh(got)) => {
+                assert!(
+                    Arc::ptr_eq(got, &mesh),
+                    "store hit must return the same Arc"
+                );
+            }
+            _ => panic!("expected Some(SurfaceMesh)"),
+        }
+    }
+
+    #[test]
+    fn project_absent_node_returns_zero_hash_none_with_warning() {
+        let mut engine = make_engine();
+        let graph = EvaluationGraph::default(); // empty — no realizations
+        let r0 = RealizationNodeId::new("absent", 99);
+
+        let (handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert_eq!(handle.node_id, r0);
+        assert_eq!(handle.content_hash, ContentHash(0));
+        assert!(handle.content().is_none());
+        assert_eq!(diags.len(), 1, "absent realization must emit one warning");
+    }
+
+}

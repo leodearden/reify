@@ -261,6 +261,11 @@ impl Engine {
             test_registry_override: None,
             // GHR-δ §5: empty until the first build() populates it.
             realization_handles: HashMap::new(),
+            // β (task 4508): empty projection store; populated by
+            // project_realization_read_handle when γ/δ add per-repr kernel
+            // resolution.  Modelled on realization_cache (next to it below).
+            realization_projection_store:
+                crate::realization_content::RealizationProjectionStore::new(),
             geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),

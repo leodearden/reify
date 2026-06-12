@@ -20,6 +20,7 @@ mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
+pub(crate) mod realization_content;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
     RealizationReadHandle,
@@ -545,6 +546,16 @@ pub struct Engine {
     /// `post_process_geometry_handle_cells`; empty before the first build.
     /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// β (task 4508): memoization store for realized geometry content.
+    ///
+    /// Keyed by `(RealizationNodeId, ContentHash)`.  Populated by
+    /// `project_realization_read_handle` when γ/δ add per-repr projection;
+    /// consulted by that method before attempting (potentially expensive)
+    /// kernel re-projection.  Plain private field (crate-root visibility)
+    /// so `engine_compute` and `realization_content` child modules reach it
+    /// directly (same visibility model as `compute_registry` /
+    /// `realization_handles`).
+    realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
     /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
