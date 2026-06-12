@@ -489,6 +489,205 @@ fn form_find_free_return_type_is_form_find_result() {
     );
 }
 
+// ─── step-7 (task-4414): form_find (anchored) γ surface declaration ───────────
+
+/// Look up `form_find` in the `std/tensegrity` module's `functions` vec.
+///
+/// Panics if not found — used by the γ surface-extension pins below.
+fn find_form_find_fn() -> &'static CompiledFunction {
+    let module = load_stdlib_module();
+    module
+        .functions
+        .iter()
+        .find(|f| f.name == "form_find")
+        .unwrap_or_else(|| {
+            panic!(
+                "fn form_find not found in std/tensegrity; \
+                 available functions: {:?}",
+                module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Pin: `fn form_find` must keep `@optimized("solver::form_find")`. The γ
+/// surface extension is additive — the @optimized target (hence the
+/// ComputeNode lowering + trampoline dispatch) is unchanged.
+#[test]
+fn form_find_has_optimized_target() {
+    let f = find_form_find_fn();
+    assert_eq!(
+        f.optimized_target,
+        Some("solver::form_find".to_string()),
+        "fn form_find must be annotated @optimized(\"solver::form_find\")"
+    );
+}
+
+/// Pin: `fn form_find` must have exactly 4 parameters after the γ extension.
+///
+/// Expected signature:
+///   (structure: Tensegrity, force_densities: List<Real>,
+///    anchors: List<Int>, surface_stresses: List<Real> = [])
+///
+/// A param-count change here means the trampoline's `value_inputs` indexing
+/// must be updated in lock-step with this test.
+///
+/// RED (step-7): form_find currently has 3 params — fails until step-8 adds
+/// `surface_stresses : List<Real> = []`.
+#[test]
+fn form_find_has_four_params() {
+    let f = find_form_find_fn();
+    assert_eq!(
+        f.params.len(),
+        4,
+        "expected 4 params (structure, force_densities, anchors, surface_stresses), got {:?}",
+        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+/// Pin: `fn form_find` param names and types match the γ surface contract.
+///
+/// RED (step-7): the 4th param does not exist yet.
+#[test]
+fn form_find_param_types_match_contract() {
+    let f = find_form_find_fn();
+
+    let expected: &[(&str, Type)] = &[
+        ("structure", Type::StructureRef("Tensegrity".to_string())),
+        ("force_densities", Type::List(Box::new(Type::dimensionless_scalar()))),
+        ("anchors", Type::List(Box::new(Type::Int))),
+        ("surface_stresses", Type::List(Box::new(Type::dimensionless_scalar()))),
+    ];
+
+    assert_eq!(
+        f.params.len(),
+        expected.len(),
+        "form_find arity changed: expected {} params, got {:?}",
+        expected.len(),
+        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
+
+    for (i, (exp_name, exp_type)) in expected.iter().enumerate() {
+        let (got_name, got_type) = &f.params[i];
+        assert_eq!(
+            got_name.as_str(),
+            *exp_name,
+            "form_find params[{i}] name: expected {exp_name:?}, got {got_name:?}"
+        );
+        assert_eq!(
+            got_type, exp_type,
+            "form_find params[{i}] ({exp_name}) type: expected {exp_type:?}, got {got_type:?}"
+        );
+    }
+}
+
+/// Pin: the new 4th param `surface_stresses` carries a default expression
+/// (`= []`) so the existing 3-arg callers (examples/tensegrity_cable_net.ri and
+/// the landed direct-3-input trampoline unit tests) keep working via
+/// try_default_padding. The first three params remain required (no default).
+///
+/// `param_defaults` is parallel to `params` (strict length invariant), so it is
+/// indexed positionally.
+///
+/// RED (step-7): form_find has 3 params and no defaults — fails until step-8.
+#[test]
+fn form_find_surface_stresses_param_has_default() {
+    let f = find_form_find_fn();
+    assert_eq!(
+        f.param_defaults.len(),
+        f.params.len(),
+        "param_defaults must be parallel to params (length invariant)"
+    );
+    assert_eq!(
+        f.params.len(),
+        4,
+        "expected 4 params before checking defaults; got {:?}",
+        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+    );
+
+    // First three params are required — no default expression.
+    for i in 0..3 {
+        assert!(
+            f.param_defaults[i].is_none(),
+            "form_find params[{i}] ({}) should have NO default",
+            f.params[i].0
+        );
+    }
+    // surface_stresses (4th) defaults to [].
+    assert!(
+        f.param_defaults[3].is_some(),
+        "form_find.surface_stresses (params[3]) must have a default expression (= [])"
+    );
+}
+
+/// Pin: `fn form_find` return type is `FormFindResult` (unchanged by γ).
+#[test]
+fn form_find_return_type_is_form_find_result() {
+    let f = find_form_find_fn();
+    assert_eq!(
+        f.return_type,
+        Type::StructureRef("FormFindResult".to_string()),
+        "fn form_find must return FormFindResult, got {:?}",
+        f.return_type
+    );
+}
+
+/// Pin: `structure def FormFindResult` gains a `surface_stresses : List<Real>`
+/// field (per-triangle solved σ echo), bringing it to 5 fields:
+/// nodes, member_forces, force_densities, converged, surface_stresses.
+///
+/// Like the other four fields it is required (no default) — a FormFindResult is
+/// only ever constructed by the solver trampoline.
+///
+/// RED (step-7): FormFindResult has 4 fields — fails until step-8 adds the field.
+#[test]
+fn form_find_result_structure_has_surface_stresses_field() {
+    let template = find_structure("FormFindResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        5,
+        "FormFindResult should have exactly 5 param cells \
+         (nodes, member_forces, force_densities, converged, surface_stresses), got: {:?}",
+        names
+    );
+
+    // The four pre-existing fields must still be present.
+    for field in ["nodes", "member_forces", "force_densities", "converged"] {
+        assert!(
+            names.contains(&field),
+            "FormFindResult missing pre-existing field '{}'; got: {:?}",
+            field, names
+        );
+    }
+
+    let surface_stresses = params
+        .iter()
+        .find(|vc| vc.id.member == "surface_stresses")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'surface_stresses' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        surface_stresses.cell_type,
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        "FormFindResult.surface_stresses should be List<Real>, got {:?}",
+        surface_stresses.cell_type
+    );
+    // Required field (no default) — mirrors the other four FormFindResult fields.
+    assert!(
+        surface_stresses.default_expr.is_none(),
+        "FormFindResult.surface_stresses should have no default (solver-constructed only)"
+    );
+}
+
 // ─── TensegrityWire structure ─────────────────────────────────────────────────
 
 /// `TensegrityWire` has 9 params: `kind : String`, `from_index : Int`,
