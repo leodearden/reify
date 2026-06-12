@@ -950,10 +950,9 @@ fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
         "ProfileOfSurface"
         | "ProfileOfLine"
         | "ProfileOfSurfaceRelated"
-        | "ProfileOfLineRelated" => {
-            if is_non_rfs(mc) {
-                diags.push(illegal_modifier_error(callout));
-            }
+        | "ProfileOfLineRelated"
+            if is_non_rfs(mc) => {
+            diags.push(illegal_modifier_error(callout));
         }
 
         // Unknown user-defined GeometricTolerance subtypes → no opinion.
