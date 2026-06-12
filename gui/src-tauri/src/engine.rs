@@ -3023,6 +3023,15 @@ fn build_values(
 /// constraint for its expression text and value refs, and returns one
 /// `ConstraintData` per entry.  Extracting this logic ensures that changes to
 /// constraint formatting are applied consistently to both call sites.
+///
+/// The returned Vec is sorted by `node_id` ascending.  This imposes a
+/// deterministic order at the production boundary: the upstream
+/// `constraint_results` order can vary across independent engine constructions
+/// due to HashMap/HashSet iteration seed variance.  `node_id` is the same key
+/// `diff_gui_state` uses to match constraints and is unique per constraint, so
+/// this is a total, stable order.  `diff_gui_state` and `delta_to_events`
+/// preserve the Vec order, making `GuiState.constraints`, the diff deltas, and
+/// the emitted "constraint-update" events all deterministic.
 pub(crate) fn build_constraints(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -3052,6 +3061,8 @@ pub(crate) fn build_constraints(
             parameter_ids,
         });
     }
+    // Sort by node_id ascending for a deterministic GuiState.constraints order.
+    constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
 }
 
