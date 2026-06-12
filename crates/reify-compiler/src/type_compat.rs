@@ -284,13 +284,17 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 ///
 /// **Policy: strict equality, not bidirectional `type_compatible`.**
 ///
-/// Call-site overload resolution (`resolve_function_overload`) and
-/// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
-/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::dimensionless_scalar()`.
-/// A default value is conceptually inserted at the padded call site, so the
-/// definition-site check must be at least as strict as the call-site check;
-/// otherwise a default could synthesize an argument that an explicit call would
-/// refuse, creating a type-system inconsistency.
+/// The definition-site default-expression check must be at least as strict as
+/// the call-site check so that a default cannot synthesize an argument that an
+/// explicit call would refuse, creating a type-system inconsistency.  Strict
+/// equality is correct here because a struct-ctor default (e.g. `ElasticOptions()`)
+/// already produces exactly the param's `StructureRef` type — so the check
+/// passes without any relaxation.
+///
+/// Note: `try_default_padding`'s PREFIX check (whether the provided args match
+/// the leading params) uses the same trait/type-param wildcard predicate as
+/// `resolve_function_overload` — it is NOT strict equality.  Only this
+/// definition-site default-expression-vs-param-type check is strict.
 ///
 /// **Anti-cascade guard.** If either type is `Type::Error` (poison sentinel from
 /// a failed `compile_expr`), silently accept — the root-cause diagnostic was
@@ -900,16 +904,42 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///
 /// Searches `named` for the UNIQUE same-name candidate where:
 /// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]`
+///   using the same trait/type-param wildcard predicate as
+///   `resolve_function_overload` (see below), and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// **Prefix predicate (mirrors `resolve_function_overload`):**
+/// For each `(param_ty, arg_ty)` pair in the provided prefix, the pair
+/// *matches* when any of:
+/// - `type_carries_trait_object(param_ty)` — trait-object param is a wildcard;
+///   the concrete arg type's trait conformance is validated downstream by
+///   `phase_fn_arg_conformance`, not here.
+/// - `is_generic && type_carries_type_param(param_ty)` — type-param-carrying
+///   param in a generic candidate is a wildcard (gated on non-empty `type_params`
+///   so concrete candidates are unaffected — INV-6).
+/// - `type_carries_type_param(arg_ty)` — a TypeParam-typed arg (inside a
+///   generic fn body) matches any param type (D4, task-4232 γ).
+/// - `param_ty == arg_ty` — exact equality for concrete params.
+///
+/// This alignment is intentional: a call padded with defaults is compiled as a
+/// normal `UserFunctionCall` whose trait-arg conformance is checked by
+/// `phase_fn_arg_conformance`. Using stricter prefix semantics here than in the
+/// overload resolver created a gap where `options` defaults on solver functions
+/// were unreachable for any call involving trait-typed leading params (e.g. a
+/// `ConstitutiveLaw`/`ElasticMaterial` material arg or a `List<Load>` loads
+/// arg). (task-4544.)
 ///
 /// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
 /// because only its length was used and `arg_types` is always length-aligned
 /// to `compiled_args` by construction (task-3702).
 ///
 /// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+/// `CompiledExpr`s for the trailing params. When multiple candidates are satisfiable,
+/// prefers the subset whose prefix matches by strict `param_ty == arg_ty` (mirrors
+/// `resolve_function_overload`'s exact-match tie-break); if that subset has exactly
+/// one entry it is returned, otherwise `None`. Returns `None` when zero candidates
+/// are satisfiable (caller falls through to the existing NoMatch error).
 ///
 /// **Invariant:** every candidate in `named` must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
@@ -942,11 +972,19 @@ pub(crate) fn try_default_padding<'a>(
         if cand.param_defaults.len() != cand.params.len() {
             continue;
         }
-        // Provided prefix types must match candidate params exactly.
+        // Provided prefix types must match candidate params using the same
+        // trait/type-param wildcard predicate as `resolve_function_overload`.
+        // See the function-level doc for the full rationale.
+        let is_generic = !cand.type_params.is_empty();
         let prefix_matches = cand.params[..provided]
             .iter()
             .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+            .all(|((_, param_ty), arg_ty)| {
+                type_carries_trait_object(param_ty)
+                    || (is_generic && type_carries_type_param(param_ty))
+                    || type_carries_type_param(arg_ty)
+                    || param_ty == arg_ty
+            });
         if !prefix_matches {
             continue;
         }
@@ -962,7 +1000,34 @@ pub(crate) fn try_default_padding<'a>(
 
     match satisfiable.len() {
         1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
+        0 => None,
+        _ => {
+            // Multiple candidates pass the wildcard prefix — prefer the subset
+            // whose prefix matches by strict equality (mirrors
+            // `resolve_function_overload`'s exact-match tie-break).
+            //
+            // When the exact subset is empty (all wildcard) or has more than
+            // one entry (two exact matches), we return None and let the caller
+            // fall through to its generic NoMatch error.  This is an
+            // intentional UX trade-off: a genuinely ambiguous defaultable call
+            // surfaces "no matching overload" rather than a dedicated Ambiguous
+            // diagnostic.  Defaultable-overload ambiguity is rare in practice;
+            // if a clearer user-facing diagnostic is ever warranted, this arm
+            // could surface an Ambiguous result before returning None.
+            let exact: Vec<_> = satisfiable
+                .into_iter()
+                .filter(|(cand, _)| {
+                    cand.params[..provided]
+                        .iter()
+                        .zip(arg_types[..provided].iter())
+                        .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                })
+                .collect();
+            match exact.len() {
+                1 => Some(exact.into_iter().next().unwrap()),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -1948,6 +2013,240 @@ mod tests {
         assert!(
             type_compatible(&Type::dimensionless_scalar(), &Type::Int),
             "dimensionless_scalar() should be compatible with Type::Int (Int-widening)"
+        );
+    }
+
+    // ── task-4544: try_default_padding trait-carrying prefix wildcard ─────────
+
+    /// Positive: a TraitObject-typed leading param acts as a wildcard so that a
+    /// StructureRef arg (a concrete type satisfying the trait at runtime) passes
+    /// the prefix check and the trailing default is returned.
+    ///
+    /// Candidate: `f(j: TraitObject("DrivingJoint"), y: Real)` where `y` has
+    /// default `Real(1.0)`.  Call: `f(StructureRef("X"))` — 1 arg.
+    ///
+    /// Expected: `Some((&cand, [Real(1.0)]))`.
+    ///
+    /// RED before step-2: the strict `param_ty == arg_ty` prefix check rejects
+    /// `TraitObject("DrivingJoint") != StructureRef("X")` → returns None.
+    #[test]
+    fn try_default_padding_resolves_when_leading_param_is_trait_carrying() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                (
+                    "j".to_string(),
+                    Type::TraitObject("DrivingJoint".to_string()),
+                ),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_trait_prefix"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide ONE arg of type StructureRef("X") — the TraitObject param is
+        // a wildcard (concrete type conforms at runtime), so the trailing
+        // Real default must be returned.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "trait-carrying leading param must act as a wildcard: expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand),
+            "returned candidate must be the same object"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_expr.content_hash,
+            "returned default must be the Real(1.0) literal"
+        );
+    }
+
+    /// Disambiguation: when two same-name candidates both pass the wildcard prefix
+    /// check (one has a trait-typed leading param, the other has a matching exact
+    /// concrete param), the exact-match one wins.
+    ///
+    /// Candidate A: `f(j: TraitObject("T"), y: Real=1.0)` — passes via wildcard for
+    ///   any StructureRef arg.
+    /// Candidate B: `f(x: StructureRef("X"), y: Real=2.0)` — passes via exact match
+    ///   for a StructureRef("X") arg.
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass the wildcard-inclusive prefix check,
+    /// so `satisfiable.len() == 2`. The tie-break prefers the exact-match subset
+    /// (only B), returning candidate B with default `Real(2.0)`.
+    #[test]
+    fn try_default_padding_exact_match_wins_over_wildcard() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("T".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::StructureRef("X".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "exact-match tie-break must resolve to candidate B; expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_b),
+            "tie-break must prefer the exact-match candidate (cand_b)"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_b.content_hash,
+            "returned default must be cand_b's Real(2.0)"
+        );
+    }
+
+    /// Negative control: a concrete (non-trait) leading param that mismatches the
+    /// provided arg type must still return `None` — the loosening is scoped to
+    /// trait/type-param wildcards only.
+    ///
+    /// Candidate: `g(x: Int, y: Real)` where `y` has default `Real(1.0)`.
+    /// Call: `g(Real)` — Int ≠ Real, concrete param, no wildcard.
+    ///
+    /// Expected: `None` (both before and after step-2).
+    #[test]
+    fn try_default_padding_concrete_mismatch_still_returns_none() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "g".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Int),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("g_4544_concrete_mismatch"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide Real where Int is expected — concrete mismatch, must stay None.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::dimensionless_scalar()],
+        );
+        assert!(
+            result.is_none(),
+            "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
+        );
+    }
+
+    /// Ambiguity: two same-name candidates both pass the wildcard prefix check
+    /// but neither has an exact-match prefix — `try_default_padding` returns
+    /// `None`, falling through to the caller's generic NoMatch error.
+    ///
+    /// Candidate A: `f(j: TraitObject("Joint1"), y: Real=1.0)`
+    /// Candidate B: `f(k: TraitObject("Joint2"), y: Real=2.0)`
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass via wildcard (`TraitObject`
+    /// matches any arg); neither matches by strict equality.
+    /// `satisfiable.len() == 2`, exact subset is empty → returns `None`.
+    ///
+    /// This documents the intentional UX contract: genuinely ambiguous
+    /// defaultable padding degrades to NoMatch (not Ambiguous).  See the
+    /// multi-candidate arm comment in `try_default_padding` for rationale.
+    #[test]
+    fn try_default_padding_all_wildcard_ambiguity_returns_none() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("Joint1".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("k".to_string(), Type::TraitObject("Joint2".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Both candidates match via wildcard; neither matches by exact equality
+        // → exact subset is empty → None (ambiguous padding falls through to
+        // NoMatch, not Ambiguous).
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        assert!(
+            result.is_none(),
+            "two wildcard-only candidates must return None (ambiguous padding \
+             degrades to NoMatch — see multi-candidate arm of try_default_padding)"
         );
     }
 }
