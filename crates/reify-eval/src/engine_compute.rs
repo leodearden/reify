@@ -523,6 +523,58 @@ impl crate::Engine {
     }
 }
 
+impl crate::Engine {
+    /// Build the per-dispatch `realization_inputs` and `RealizationReadHandle` vec
+    /// by scanning `arg_values` for `Value::GeometryHandle` entries.
+    ///
+    /// For each `Value::GeometryHandle { realization_ref, .. }` encountered (in
+    /// argument order, **no dedup**), the method:
+    /// 1. Pushes `realization_ref` into the returned `inputs` vec.
+    /// 2. Calls [`project_realization_read_handle`](crate::Engine::project_realization_read_handle)
+    ///    to obtain the matching handle (possibly degraded to `None` content in β).
+    /// 3. Accumulates any degradation diagnostics.
+    ///
+    /// Non-`GeometryHandle` args are skipped; their values flow through
+    /// `value_inputs` unchanged (value identity via `Value`, content identity via
+    /// handle).
+    ///
+    /// ## No-dedup contract (PRD §3.4 / §10 OQ-4)
+    ///
+    /// The returned `inputs` preserve arg order and allow duplicates: if the same
+    /// `RealizationNodeId` appears twice in `arg_values`, it appears twice in the
+    /// returned `inputs`.  The compute-cache-key machinery is already
+    /// order/cardinality-aware (sorted-bucket hash in `compute_cache_key.rs`), so
+    /// no dedup is needed here.
+    ///
+    /// The returned `inputs` and `handles` are 1-to-1 (same length); each
+    /// `handles[i]` corresponds to `inputs[i]`.
+    pub(crate) fn build_compute_realization_inputs(
+        &mut self,
+        arg_values: &[Value],
+        graph: &crate::graph::EvaluationGraph,
+    ) -> (
+        Vec<reify_core::RealizationNodeId>,
+        Vec<RealizationReadHandle>,
+        Vec<reify_core::Diagnostic>,
+    ) {
+        let mut inputs = Vec::new();
+        let mut handles = Vec::new();
+        let mut diags = Vec::new();
+
+        for arg in arg_values {
+            if let Value::GeometryHandle { realization_ref, .. } = arg {
+                let (handle, arg_diags) =
+                    self.project_realization_read_handle(realization_ref, graph);
+                inputs.push(realization_ref.clone());
+                handles.push(handle);
+                diags.extend(arg_diags);
+            }
+        }
+
+        (inputs, handles, diags)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::RealizationNodeId;
@@ -2056,5 +2108,305 @@ mod tests {
             "cloned handle must share the same Arc allocation (ptr_eq)",
         );
         assert_eq!(h.content_hash, c.content_hash, "content_hash must match after clone");
+    }
+
+    // ── β / task 4508 step-5: RED — build_compute_realization_inputs ──────────
+    //
+    // These tests verify the lowering rule: only Value::GeometryHandle args
+    // contribute to realization_inputs (in arg order, no dedup).
+    // step-6 (impl) makes them pass by implementing build_compute_realization_inputs.
+
+    mod beta_lowering {
+        use reify_core::{ContentHash, ComputeNodeId, RealizationNodeId, ValueCellId, VersionId};
+        use reify_ir::{DeterminacyState, Freshness, ReprKind, Value};
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        use crate::Engine;
+        use crate::cache::{CachedResult, NodeCache, NodeId};
+        use crate::compute_cache_key::compute_cache_key;
+        use crate::deps::DependencyTrace;
+        use crate::engine_compute::{ComputeFn, ComputeOutcome, RealizationReadHandle};
+        use crate::graph::{CancellationHandle, ComputeNodeData, EvaluationGraph, RealizationNodeData};
+
+        fn make_engine() -> Engine {
+            Engine::new(Box::new(MockConstraintChecker::new()), None)
+        }
+
+        fn make_geometry_handle_value(
+            realization_ref: RealizationNodeId,
+        ) -> Value {
+            Value::GeometryHandle {
+                realization_ref,
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: reify_ir::GeometryHandleId(0),
+            }
+        }
+
+        fn seed_realization(
+            graph: &mut EvaluationGraph,
+            id: RealizationNodeId,
+            content_hash: ContentHash,
+            produced_repr: ReprKind,
+        ) {
+            graph.realizations.insert(
+                id.clone(),
+                RealizationNodeData {
+                    id,
+                    operations: vec![],
+                    content_hash,
+                    produced_repr,
+                    geometry_cell: None,
+                    produced_kernel: None,
+                },
+            );
+        }
+
+        // ── step-5: build_compute_realization_inputs lowering rule tests ──────
+
+        #[test]
+        fn lowering_extracts_geometry_handle_args_in_order_no_dedup() {
+            let mut engine = make_engine();
+            let mut graph = EvaluationGraph::default();
+
+            let r0 = RealizationNodeId::new("E", 0);
+            let r1 = RealizationNodeId::new("E", 1);
+            let h0 = ContentHash::of_str("mesh-h0");
+            let h1 = ContentHash::of_str("brep-h1");
+            seed_realization(&mut graph, r0.clone(), h0, ReprKind::Mesh);
+            seed_realization(&mut graph, r1.clone(), h1, ReprKind::BRep);
+
+            // Mixed arg_values: leading non-geometry, two distinct geometry args,
+            // then R0 REPEATED to pin no-dedup.
+            let arg_values = vec![
+                Value::Int(7),
+                make_geometry_handle_value(r0.clone()),
+                Value::Int(42), // non-geometry interleaved
+                make_geometry_handle_value(r1.clone()),
+                make_geometry_handle_value(r0.clone()),
+            ];
+
+            let (inputs, handles, diags) =
+                engine.build_compute_realization_inputs(&arg_values, &graph);
+
+            // (a) inputs in arg order, no dedup, non-geometry skipped
+            assert_eq!(
+                inputs,
+                vec![r0.clone(), r1.clone(), r0.clone()],
+                "realization_inputs must preserve arg order and allow duplicates"
+            );
+
+            // (b) handles parallel to inputs
+            assert_eq!(handles.len(), 3, "handles must be 1:1 with inputs");
+            assert_eq!(handles[0].node_id, r0, "handles[0] must reference R0");
+            assert_eq!(handles[0].content_hash, h0, "handles[0].content_hash must be H0");
+            assert_eq!(handles[1].node_id, r1, "handles[1] must reference R1");
+            assert_eq!(handles[1].content_hash, h1, "handles[1].content_hash must be H1");
+            assert_eq!(handles[2].node_id, r0, "handles[2] must reference R0 (repeated)");
+            assert_eq!(handles[2].content_hash, h0, "handles[2].content_hash must be H0");
+
+            // (c) BRep (handles[1]) emits no diagnostic; Mesh (handles[0,2]) each
+            //     emit one warning — accumulated across all geometry args.
+            //     Total diags = 2 (one for each Mesh handle, BRep is silent).
+            assert_eq!(
+                diags.len(),
+                2,
+                "two Mesh handles × one warning each = 2 total diags"
+            );
+        }
+
+        #[test]
+        fn lowering_all_non_geometry_returns_empty_triple() {
+            let mut engine = make_engine();
+            let graph = EvaluationGraph::default();
+
+            let arg_values = vec![Value::Int(7), Value::Bool(true), Value::Undef];
+            let (inputs, handles, diags) =
+                engine.build_compute_realization_inputs(&arg_values, &graph);
+
+            assert!(inputs.is_empty(), "no geometry args → empty inputs");
+            assert!(handles.is_empty(), "no geometry args → empty handles");
+            assert!(diags.is_empty(), "no geometry args → no diags");
+        }
+
+        #[test]
+        fn lowering_brep_repr_emits_no_diagnostic() {
+            let mut engine = make_engine();
+            let mut graph = EvaluationGraph::default();
+            let r0 = RealizationNodeId::new("E", 0);
+            let h0 = ContentHash::of_str("brep-h");
+            seed_realization(&mut graph, r0.clone(), h0, ReprKind::BRep);
+
+            let arg_values = vec![make_geometry_handle_value(r0.clone())];
+            let (inputs, handles, diags) =
+                engine.build_compute_realization_inputs(&arg_values, &graph);
+
+            assert_eq!(inputs, vec![r0.clone()]);
+            assert_eq!(handles.len(), 1);
+            assert_eq!(handles[0].content_hash, h0);
+            assert!(diags.is_empty(), "BRep repr must emit no diagnostic");
+        }
+
+        // ── step-7: end-to-end dispatch data-path + cache key ─────────────────
+        //
+        // Three user-observable β signals:
+        // (a) inserted ComputeNode.realization_inputs == [R0]
+        // (b) probe captures realization_inputs[0].content_hash == H0
+        // (c) cache key changes when R0.content_hash mutates
+
+        use std::sync::{Mutex, OnceLock};
+
+        /// Probe trampoline: captures realization_inputs.len() and, when
+        /// len>0, realization_inputs[0].content_hash into a file-scoped OnceLock.
+        static BETA_PROBE_OBSERVED: OnceLock<Mutex<Option<(usize, ContentHash)>>> = OnceLock::new();
+
+        fn beta_probe_fn(
+            _value_inputs: &[Value],
+            realization_inputs: &[RealizationReadHandle],
+            _options: &Value,
+            _prior_warm_state: Option<&reify_ir::OpaqueState>,
+            _cancellation: &CancellationHandle,
+        ) -> ComputeOutcome {
+            let capture = if realization_inputs.is_empty() {
+                None
+            } else {
+                Some((realization_inputs.len(), realization_inputs[0].content_hash))
+            };
+            *BETA_PROBE_OBSERVED
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap() = capture;
+            ComputeOutcome::Completed {
+                result: Value::Int(0),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![],
+            }
+        }
+
+        fn seed_output_cell(engine: &mut Engine, cell: &ValueCellId) {
+            engine.cache_store_mut().put(
+                NodeId::Value(cell.clone()),
+                NodeCache::new(
+                    CachedResult::Value(Value::Int(0), DeterminacyState::Determined),
+                    Freshness::Final,
+                    DependencyTrace::default(),
+                    VersionId(1),
+                ),
+            );
+        }
+
+        #[test]
+        fn dispatch_e2e_realization_handle_reaches_trampoline_and_cache_key_changes() {
+            // Reset the static for cross-test reuse safety.
+            if let Some(m) = BETA_PROBE_OBSERVED.get() {
+                *m.lock().unwrap() = None;
+            }
+
+            let mut engine = make_engine();
+            engine.register_compute_fn("test::beta_probe", beta_probe_fn as ComputeFn);
+
+            // Seed graph realization R0 (repr Mesh so it produces a warning
+            // in the degradation path; irrelevant to dispatch correctness).
+            let mut graph = EvaluationGraph::default();
+            let r0 = RealizationNodeId::new("BP", 0);
+            let h0 = ContentHash::of_str("beta-h0");
+            seed_realization(&mut graph, r0.clone(), h0, ReprKind::Mesh);
+
+            let arg_values = vec![make_geometry_handle_value(r0.clone())];
+            let (inputs, handles, diags) =
+                engine.build_compute_realization_inputs(&arg_values, &graph);
+
+            // (c) projection-precedes-invoke: the Mesh degradation Warning is
+            // present in diags BEFORE dispatch (not after).
+            assert_eq!(
+                diags.len(),
+                1,
+                "Mesh repr must emit exactly one degradation warning"
+            );
+
+            let cell = ValueCellId::new("BP", "out");
+            let c_id = ComputeNodeId::new("BP", 0);
+            seed_output_cell(&mut engine, &cell);
+
+            // (a) ComputeNode.realization_inputs == [R0]
+            let node = ComputeNodeData {
+                computation_id: c_id.clone(),
+                target: "test::beta_probe".to_string(),
+                value_inputs: vec![],
+                realization_inputs: inputs.clone(),
+                options_hash: ContentHash(0),
+                cache_key: ContentHash(0),
+                cached_result: None,
+                result_content_hash: None,
+                opaque_state: None,
+                running: Some(CancellationHandle::new()),
+                output_value_cells: vec![cell.clone()],
+            };
+            assert_eq!(
+                node.realization_inputs,
+                vec![r0.clone()],
+                "(a) inserted node.realization_inputs must be [R0]"
+            );
+
+            // Record the initial cache key (realization_inputs=[R0] with H0
+            // feeds into the key).
+            let key_before = compute_cache_key(&node, &graph);
+
+            graph.compute_nodes.insert(c_id.clone(), node);
+
+            let result = engine.run_compute_dispatch(
+                &c_id,
+                std::slice::from_ref(&cell),
+                "test::beta_probe",
+                &arg_values,
+                &handles,
+                &Value::Undef,
+                &CancellationHandle::new(),
+                VersionId(2),
+            );
+            result.expect("dispatch must Ok");
+
+            // (b) probe captured exactly one realization handle with content_hash==H0
+            let observed = *BETA_PROBE_OBSERVED
+                .get()
+                .expect("trampoline must have set the static")
+                .lock()
+                .unwrap();
+            let (obs_len, obs_hash) =
+                observed.expect("probe must have observed Some((len, hash))");
+            assert_eq!(obs_len, 1, "(b) probe must see exactly one realization handle");
+            assert_eq!(
+                obs_hash, h0,
+                "(b) probe must see content_hash == H0"
+            );
+
+            // (d) CACHE KEY: update R0.content_hash and recompute the key via a
+            // freshly-built node with the same realization_inputs.  The key must
+            // change because realization_inputs=[R0] carries R0's hash into the
+            // sorted-bucket fold.
+            let h0_prime = ContentHash::of_str("beta-h0-prime");
+            seed_realization(&mut graph, r0.clone(), h0_prime, ReprKind::Mesh);
+            // Build a fresh node (same realization_inputs; running=None is fine
+            // because compute_cache_key only inspects target + value_inputs +
+            // realization_inputs + options_hash).
+            let node_for_key = ComputeNodeData {
+                computation_id: c_id.clone(),
+                target: "test::beta_probe".to_string(),
+                value_inputs: vec![],
+                realization_inputs: inputs, // owns the Vec — no borrow conflict
+                options_hash: ContentHash(0),
+                cache_key: ContentHash(0),
+                cached_result: None,
+                result_content_hash: None,
+                opaque_state: None,
+                running: None,
+                output_value_cells: vec![cell.clone()],
+            };
+            let key_after = compute_cache_key(&node_for_key, &graph);
+            assert_ne!(
+                key_before, key_after,
+                "(d) cache key must change when R0.content_hash changes"
+            );
+        }
     }
 }
