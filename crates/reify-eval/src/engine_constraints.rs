@@ -7,10 +7,12 @@ use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Severity, ValueCellId};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, StructureInstanceData,
+    StructureTypeId, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
+use crate::topology_selectors;
 
 // ── DFM auto-measurement types (task 4408 γ) ─────────────────────────────────
 
@@ -752,6 +754,166 @@ impl Engine {
         (constraint_results, diagnostics)
     }
 
+    /// Auto-measurement check-time pass: identify DFM rule structure-instances
+    /// by duck-typing (from both top-level templates and sub-component values),
+    /// and emit `{W,E}_DFM_OVERHANG` / `_DRAFT` / `E_DFM_UNDERCUT` diagnostics
+    /// based on the realized solid's geometry (task 4408 γ).
+    ///
+    /// # C1 invariant — no false violations
+    ///
+    /// When no geometry kernel is present (`default_kernel_name` is `None`)
+    /// **or** the rule's `subject` did not re-hydrate to a live
+    /// `Value::GeometryHandle` (e.g. the module was never `build()`-ed),
+    /// the pass emits **nothing** — it is a complete no-op.  This mirrors the
+    /// `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path.
+    ///
+    /// # DFMRule discovery — two sources
+    ///
+    /// **(A) Top-level templates**: for each `module.templates` entry, the
+    /// evaluator stores individual field cells (e.g. `OverhangRule.severity`)
+    /// but no whole-structure `Value::StructureInstance`.  We synthesize one
+    /// from the cells so that `dfm_rule_spec` can duck-type the shape.  This
+    /// covers `structure def MyRule : DFMRule { ... }` at the module level.
+    ///
+    /// **(B) Sub-component instances**: task-3540 (SIR-α) emits a synthetic
+    /// `Value::StructureInstance` at `ValueCellId(parent, sub.name)` for every
+    /// non-collection sub.  Scanning `values.iter()` catches these, handling
+    /// the nested case `structure def Part { let rule = MyRule() }`.
+    ///
+    /// # Borrow order
+    ///
+    /// We collect OWNED specs (cloned rule `Value` + `Copy` `GeometryHandleId`)
+    /// from `&module` + `&values` first, then borrow `self.geometry_kernels`
+    /// mutably.  The two borrows never overlap.
+    pub(crate) fn measure_dfm_rules(&mut self, module: &CompiledModule, values: &ValueMap) -> Vec<Diagnostic> {
+        // C1 guard: no default kernel → nothing to measure.
+        let kernel_name = match self.default_kernel_name.as_deref() {
+            Some(n) => n.to_string(),
+            None => return Vec::new(),
+        };
+
+        // Collect specs with live handles (skip None subject_handle entries).
+        let mut specs: Vec<DfmRuleSpec> = Vec::new();
+
+        // (A) Top-level templates — synthesize a StructureInstance from their
+        // evaluated cell values so that dfm_rule_spec can duck-type the shape.
+        //
+        // Geometry cells (e.g. `param subject : Solid = box(...)`) are NOT
+        // present as live `Value::GeometryHandle` in `eval_result.values` after
+        // a fresh `eval()` call: the kernel is not invoked during pure evaluation
+        // (only `build()` calls the kernel and stamps `realization_handles`).
+        // To expose live handles, we additionally iterate the template's named
+        // realizations and inject the handle from `self.realization_handles` so
+        // that `dfm_rule_spec` can find a non-None `subject_handle`.
+        for template in &module.templates {
+            let mut fields = PersistentMap::new();
+            for cell_decl in &template.value_cells {
+                if let Some(val) = values.get(&cell_decl.id) {
+                    fields.insert(cell_decl.id.member.clone(), val.clone());
+                }
+            }
+            // Override / fill geometry fields from live realization_handles.
+            // This is safe because realization_handles is a disjoint Engine
+            // field from geometry_kernels — both accessed in sequence, not
+            // simultaneously.
+            for realization in &template.realizations {
+                let Some(ref name) = realization.name else { continue };
+                if let Some(&kernel_handle) = self.realization_handles.get(&realization.id) {
+                    fields.insert(
+                        name.clone(),
+                        Value::GeometryHandle {
+                            realization_ref: realization.id.clone(),
+                            upstream_values_hash: [0u8; 32],
+                            kernel_handle,
+                        },
+                    );
+                }
+            }
+            if !fields.is_empty() {
+                let si = Value::StructureInstance(Box::new(StructureInstanceData {
+                    type_id: StructureTypeId(0),
+                    type_name: template.name.clone(),
+                    version: template.version(),
+                    fields,
+                }));
+                if let Some(spec) = dfm_rule_spec(&si) {
+                    if spec.subject_handle.is_some() {
+                        specs.push(spec);
+                    }
+                }
+            }
+        }
+
+        // (B) Sub-component StructureInstance values (task-3540 synthetic cells).
+        for (_, v) in values.iter() {
+            if let Some(spec) = dfm_rule_spec(v) {
+                if spec.subject_handle.is_some() {
+                    specs.push(spec);
+                }
+            }
+        }
+
+        if specs.is_empty() {
+            return Vec::new();
+        }
+
+        // Now we can borrow self.geometry_kernels mutably.
+        let kernel = match self.geometry_kernels.get_mut(&kernel_name) {
+            Some(k) => k.as_mut(),
+            None => return Vec::new(),
+        };
+
+        let mut diags = Vec::new();
+        for spec in specs {
+            let handle = spec.subject_handle.expect("filtered above");
+            match spec.kind {
+                DfmRuleKind::Overhang { max_angle_rad } => {
+                    match topology_selectors::unsupported_overhang_faces(
+                        kernel,
+                        handle,
+                        [0.0, 0.0, 1.0],
+                        max_angle_rad,
+                    ) {
+                        Ok((faces, _worst_dip)) => {
+                            let verdict = Value::Bool(!faces.is_empty());
+                            diags.extend(reify_stdlib::dfm_diagnose(
+                                "unsupported_overhang_faces",
+                                &[spec.rule_value],
+                                &verdict,
+                            ));
+                        }
+                        Err(_) => {
+                            // Indeterminate — never a false violation.
+                        }
+                    }
+                }
+                DfmRuleKind::Draft { min_draft_rad } => {
+                    match topology_selectors::min_draft_angle(
+                        kernel,
+                        handle,
+                        [0.0, 0.0, 1.0],
+                    ) {
+                        Ok((signed_min_draft, has_undercut)) => {
+                            let verdict = Value::List(vec![
+                                Value::Bool(signed_min_draft < min_draft_rad),
+                                Value::Bool(has_undercut),
+                            ]);
+                            diags.extend(reify_stdlib::dfm_diagnose(
+                                "min_draft_angle",
+                                &[spec.rule_value],
+                                &verdict,
+                            ));
+                        }
+                        Err(_) => {
+                            // Indeterminate — never a false violation.
+                        }
+                    }
+                }
+            }
+        }
+        diags
+    }
+
     /// Evaluate and check constraints (guard-aware).
     ///
     /// Checks top-level (unguarded) constraints unconditionally, plus
@@ -769,6 +931,14 @@ impl Engine {
     /// When the map is empty (no prior tessellation, or no OCCT kernel),
     /// `dispatch_constraints` falls through to `Indeterminate` for every
     /// `RepresentationWithin` entry — never a false `Violated` (C1).
+    ///
+    /// ## DFM auto-measurement (task-4408 γ)
+    ///
+    /// After `check_constraints_against_templates`, `measure_dfm_rules` scans
+    /// the evaluated values for `DFMRule` structure-instances and emits
+    /// `{W,E}_DFM_OVERHANG` / `_DRAFT` / `E_DFM_UNDERCUT` diagnostics when a
+    /// live OCCT kernel is present and the rule's `subject` was realized by a
+    /// prior `build()` call.  No kernel or un-realized subject → no-op (C1).
     pub fn check(&mut self, module: &CompiledModule) -> CheckResult {
         let eval_result = self.eval(module);
         let mut diagnostics = eval_result.diagnostics;
@@ -782,6 +952,13 @@ impl Engine {
         let (constraint_results, constraint_diags) =
             self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));
         diagnostics.extend(constraint_diags);
+
+        // DFM auto-measurement pass (task 4408 γ).
+        // eval_result.values is a separate owned ValueMap — collect DFM specs
+        // from module + values before the mutable self.geometry_kernels borrow in
+        // measure_dfm_rules (no borrow conflict).
+        let dfm_diags = self.measure_dfm_rules(module, &eval_result.values);
+        diagnostics.extend(dfm_diags);
 
         CheckResult {
             values: eval_result.values,
