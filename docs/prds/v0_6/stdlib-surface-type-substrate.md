@@ -197,3 +197,24 @@ Dependency edges (filed): #4575→#4574, #4577→#4574, #4579→#4574, #4576→#
 3. **`Part` shape** — opaque handle vs structured (geometry + material + topology index). Suggested: minimal opaque structure_def first, matching the `String`-selector semantics, then grow. Decide in Pt.
 4. **Velocity dimension exponents** — `m·s⁻¹` = `from_exps(&[(0,1),(2,-1)])` (length idx 0, time idx 2). Confirm index convention against `ACCELERATION` (:513) at S authoring.
 5. **Where `Vec3`/`Pose3`/`ModalResult` physically live post-F** — a new foundational `std.geometry.types` module hoisted to the top of the prelude, vs distributed definitions resolved by forward-refs. Decide jointly in F + V/P/M.
+
+## 13. Re-citation closeout (task 4548 steps 9–15)
+
+Phase B steps 9–14 re-cited every task-4548-listed in-family marker to its owning child task (§10) in the reify-audit canonical `TODO(<label>, #NNNN):` / `FIXME(<label>, #NNNN):` form — the semantic label is preserved for humans, the on-line `#NNNN` satisfies the PTODO structural lane (α), and the cited id resolves to a live non-terminal task (liveness lane β). Line numbers below are the **post-Phase-A** values (drifted from §9's pre-citation estimates; re-cited by content).
+
+| Family | Owning task | Final cited form | Marker sites (file:line) | Step |
+|---|---|---|---|---|
+| `vec3-type` | **#4575** | `TODO(vec3-type, #4575)` | fea_multi_case.ri:305/:433; kinematic.ri:99/:113/:122/:129/:130; trajectory.ri:94; fdm.ri:105 | 9 |
+| `range-type` / `range-angle-type` | **#4576** | `TODO(range-type, #4576)` / `TODO(range-angle-type, #4576)` | kinematic.ri:211/:216; flexures.ri:127/:145 | 10 |
+| `pose3-type` + `location-id-type` | **#4577** | `TODO(pose3-type, #4577)` / `TODO(location-id-type, #4577)` / `FIXME(location-id-type, #4577)` | trajectory.ri:85/:104; modal_analysis.ri:438/:506/:558/:623 | 11 |
+| `force/velocity/acceleration-scalar` | **#4580** | `TODO(force-scalar, #4580)` / `TODO(velocity-scalar, #4580)` / `TODO(acceleration-scalar, #4580)` | trajectory.ri:490/:550/:553 (+ :536 prose) | 12 |
+| `part-structdef` | **#4578** | `FIXME(part-structdef, #4578)` | modal_analysis.ri:216/:682/:754 | 13 |
+| `modal-result-type` + `loop-closure-record-type` / `Map<BodyId,JointParent>` | **#4579** | `TODO(modal-result-type, #4579)` / `TODO(loop-closure-record-type, #4579)` / `TODO(map-bodyid-jointparent, #4579)` | trajectory.ri:322 (continuation :324 de-marked); kinematic.ri:190/:194 (Map), :191/:195 (loop-closure) | 14 |
+
+**Land-now markers DELETED (not re-cited):** `FIXME(impulse-dim)` (modal_analysis.ri — resolved by `Impulse` registration + `impulse : Impulse`, steps 1–4); `TODO(frequency-scalar)` ×2 (printer_print_envelope.ri — resolved by `Mode.frequency : Frequency`, step 6). Both confirmed absent from the tree.
+
+**trajectory.ri:324 handling.** The modal-result-type comment's continuation line carried a *prose* cross-reference "Same encoding rationale as `TODO(mechanism-type)` above" that the line-based PTODO detector mis-read as a standalone `mechanism-type` marker. It was reworded to "…as the mechanism-type TODO above" (de-marked, no longer a recognized marker), mirroring the parallel mechanism-type block's own prose tail (:320). The real `mechanism-type` marker (:318) is untouched — it stays with its existing owner (out-of-family, intentionally still detector-flagged).
+
+**Out-of-scope mirror-references** (NOT in task-4548's marker map, NOT in this task's write scope; owned by their file's line, to be swept by the routed child tasks at tightening time): doc-comment mirrors of these placeholders live in `crates/reify-compiler/tests/trajectory_stdlib_compile.rs` (`TODO(force-scalar)`:1021, `TODO(velocity-scalar)`:1183, `TODO(acceleration-scalar)`:1184, `TODO(modal-result-type)`:2067) and `crates/reify-stdlib/src/flexures/common.rs` (`TODO(range-angle-type)`:275). They describe the `.ri` placeholders and will retarget under S (#4580) / M (#4579) / R (#4576) when those tightenings land.
+
+**Invariant verification (§15).** `reify-audit --pattern PTODO` over the working tree (liveness lane active — ζ inverse-lane findings prove the task DB opened) reports **zero in-family findings** across all touched stdlib `.ri` modules; no `orphaned` / `unknown-id` / `malformed-cite` finding cites `#4575`–`#4580`. Every routed in-family marker is CITED to a live non-terminal task; every land-now marker is DELETED. **4548 project invariant satisfied: no task-listed marker ends this task uncited.**

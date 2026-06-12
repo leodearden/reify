@@ -30,3 +30,19 @@ Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verifie
 | (all) | re-citation detector contract | `crates/reify-audit/src/ptodo.rs` `has_canonical_cite`/`extract_cites` (`#` + 1..=5 non-zero ASCII digits, anywhere on line); liveness lane β requires live non-terminal task | PASS wired |
 
 Numeric-floor branch: N/A — no leaf asserts a tuned numeric bound (S's `> 0 * 1N` is a structural positivity contract; all signals are type-resolution / name-resolution / detector-recognition, not tolerance floors).
+
+## Re-citation closeout (task 4548 steps 9–15)
+
+All in-family markers re-cited to their owning child tasks and verified with `reify-audit --pattern PTODO` against the working tree (liveness lane active — ζ inverse-lane findings prove the task DB opened; #4575–#4580 all resolve live/non-terminal). Per-family final-cite verdicts:
+
+| Leaf | Re-cited marker → owner | Detector verdict (post-step-14) |
+|---|---|---|
+| V | `TODO(vec3-type, #4575)` ×9 | PASS — cited + live |
+| R | `TODO(range-type, #4576)` ×2 + `TODO(range-angle-type, #4576)` ×2 | PASS — cited + live |
+| P | `TODO(pose3-type, #4577)` + `TODO(location-id-type, #4577)` + `FIXME(location-id-type, #4577)` ×4 | PASS — cited + live |
+| Pt | `FIXME(part-structdef, #4578)` ×3 | PASS — cited + live (#4578 `blocked` = non-terminal) |
+| M | `TODO(modal-result-type, #4579)` + `TODO(loop-closure-record-type, #4579)` ×2 + `TODO(map-bodyid-jointparent, #4579)` ×2 | PASS — cited + live; :324 continuation de-marked |
+| S | `TODO(force-scalar, #4580)` + `TODO(velocity-scalar, #4580)` + `TODO(acceleration-scalar, #4580)` | PASS — cited + live |
+| (land-now) | `FIXME(impulse-dim)`, `TODO(frequency-scalar)` ×2 | DELETED — absent from tree |
+
+Zero in-family PTODO findings remain in the touched stdlib `.ri` modules; no `orphaned`/`unknown-id`/`malformed-cite` finding cites `#4575`–`#4580`. Residual `TODO(force/velocity/acceleration-scalar)` / `TODO(modal-result-type)` / `TODO(range-angle-type)` doc-comment mirrors in `trajectory_stdlib_compile.rs` + `flexures/common.rs` are out of task-4548's marker scope (and write scope) — they retarget under S/M/R at tightening time. **4548 project invariant satisfied.**
