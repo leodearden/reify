@@ -452,3 +452,139 @@ structure def C { let p = ProfileOfSurface(tolerance_value: 0.02mm, feature: box
         "ProfileOfSurface(RFS) must be silent"
     );
 }
+
+// ── C2 rule table — removed-in-2018 family (step-7 RED / step-8 GREEN) ────────
+
+/// C2-J: `Concentricity(...)` produces a `GdtRemoved2018` warning (not an error),
+/// with a label at the instantiation span, and a message naming the replacements
+/// (Position / Profile / Runout).
+///
+/// Fails until the Removed family rule is implemented (step-8).
+#[test]
+fn c2_concentricity_emits_removed_2018_warning() {
+    const SOURCE: &str = r#"
+structure def CheckConcentricity {
+    let c = Concentricity(
+        tolerance_value: 0.01mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let module = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+
+    let removed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtRemoved2018))
+        .collect();
+
+    assert_eq!(
+        removed.len(),
+        1,
+        "Concentricity must emit exactly 1 GdtRemoved2018 diagnostic; got {}: {:?}",
+        removed.len(),
+        removed
+    );
+
+    let diag = removed[0];
+    assert_eq!(diag.severity, Severity::Warning, "GdtRemoved2018 must be a warning");
+
+    assert!(
+        !diag.labels.is_empty(),
+        "GdtRemoved2018 must carry at least one label"
+    );
+    assert!(
+        !diag.labels[0].span.is_empty(),
+        "GdtRemoved2018 label span must be non-empty"
+    );
+
+    // The message must name at least one replacement characteristic.
+    let msg = &diag.message;
+    assert!(
+        msg.contains("Position") || msg.contains("Profile") || msg.contains("Runout"),
+        "GdtRemoved2018 message must name replacement characteristics; got: {:?}",
+        msg
+    );
+}
+
+/// C2-K: `Symmetry(...)` also produces a `GdtRemoved2018` warning.
+///
+/// Fails until the Removed family rule is implemented (step-8).
+#[test]
+fn c2_symmetry_emits_removed_2018_warning() {
+    const SOURCE: &str = r#"
+structure def CheckSymmetry {
+    let s = Symmetry(
+        tolerance_value: 0.01mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let module = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+
+    let removed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtRemoved2018))
+        .collect();
+
+    assert_eq!(
+        removed.len(),
+        1,
+        "Symmetry must emit exactly 1 GdtRemoved2018 diagnostic; got {}: {:?}",
+        removed.len(),
+        removed
+    );
+    assert_eq!(removed[0].severity, Severity::Warning, "GdtRemoved2018 must be a warning");
+}
+
+/// C2-L: `Concentricity(material_condition: MMC, ...)` emits only the
+/// `GdtRemoved2018` warning — NOT an additional `GdtIllegalModifier` error.
+///
+/// Fails until the Removed family suppresses the GdtIllegalModifier path (step-8).
+#[test]
+fn c2_concentricity_mmc_yields_only_removed_2018_not_illegal_modifier() {
+    const SOURCE: &str = r#"
+structure def CheckConcentricityMmc {
+    let c = Concentricity(
+        tolerance_value: 0.01mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let module = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+
+    let removed: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtRemoved2018))
+        .collect();
+    let illegal: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect();
+
+    assert_eq!(
+        removed.len(),
+        1,
+        "Concentricity(MMC) must emit exactly 1 GdtRemoved2018; got {}: {:?}",
+        removed.len(),
+        removed
+    );
+    assert!(
+        illegal.is_empty(),
+        "Concentricity(MMC) must NOT emit GdtIllegalModifier (removed-2018 takes precedence); got: {:?}",
+        illegal
+    );
+}
