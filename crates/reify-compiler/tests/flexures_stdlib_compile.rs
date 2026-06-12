@@ -184,9 +184,8 @@ fn rotational_stiffness_alias_resolves_to_real() {
 ///   - `yield_margin          : Real`                   ((yield-max_stress)/yield)
 ///   - `parasitic_error       : Option<Length>`         (compound-flexure
 ///                                                       orthogonal-DOF motion)
-///   - `prb_validity_range    : Real`                   (Real placeholder for
-///                                                       Range<Angle>; see
-///                                                       module header §2)
+///   - `prb_validity_range    : Range<Angle>`            (tightened from Real
+///                                                       by task 4576)
 ///   - `at_yield              : Bool`                   (true if
 ///                                                       max_stress >= yield)
 ///
@@ -197,10 +196,8 @@ fn rotational_stiffness_alias_resolves_to_real() {
 /// `pub type RotationalStiffness = Real` alias in flexures_types.ri).
 /// `Pressure` resolves to `Type::Scalar { dimension:
 /// DimensionVector::PRESSURE }` via the standard dimensioned-type path.
-/// `Range<Angle>` is not a resolvable parameterized builtin
-/// (`type_resolution.rs::resolve_parameterized_builtin_type` has no Range
-/// arm), so `prb_validity_range` ships as `Real` per the module header §2
-/// placeholder convention.
+/// `Range<Angle>` now resolves via the Range arm added to
+/// `type_resolution.rs::resolve_parameterized_builtin_type` (task 4576).
 ///
 /// Test pins three invariants: (a) exactly 7 param cells (no accidental
 /// 8th field), (b) declaration order matches the canonical order above,
@@ -249,7 +246,12 @@ fn flexure_compliance_struct_has_correct_param_shape() {
                 dimension: DimensionVector::LENGTH,
             })),
         ),
-        ("prb_validity_range", Type::dimensionless_scalar()),
+        (
+            "prb_validity_range",
+            Type::Range(Box::new(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            })),
+        ),
         ("at_yield", Type::Bool),
     ];
 
@@ -401,14 +403,30 @@ fn flexure_compliance_params_have_literal_defaults() {
         parasitic_error_default.kind
     );
 
-    // prb_validity_range = 0(.0) — accept Int(0) or Real(0.0).
+    // prb_validity_range = 0deg..0deg — sentinel-zero Range<Angle> (task 4576).
+    // RED until step-6 changes flexures.ri param type to Range<Angle> with default 0deg..0deg.
     let prb_validity_range_default = require_default(template, "prb_validity_range");
     match &prb_validity_range_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
-        CompiledExprKind::Literal(Value::Int(0)) => {}
+        CompiledExprKind::RangeConstructor { lower, upper, lower_inclusive, upper_inclusive } => {
+            assert!(lower_inclusive, "prb_validity_range default lower_inclusive should be true (0deg..0deg)");
+            assert!(upper_inclusive, "prb_validity_range default upper_inclusive should be true (0deg..0deg)");
+            let check_zero_angle = |opt: &Option<Box<CompiledExpr>>, label: &str| {
+                let expr = opt.as_deref().unwrap_or_else(|| panic!("prb_validity_range default {label} bound missing"));
+                match &expr.kind {
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
+                        assert_eq!(*dimension, DimensionVector::ANGLE,
+                            "prb_validity_range default {label} bound should have ANGLE dimension; got: {:?}", dimension);
+                        assert_eq!(*si_value, 0.0,
+                            "prb_validity_range default {label} bound si_value should be 0.0 (= 0deg); got: {}", si_value);
+                    }
+                    other => panic!("prb_validity_range default {label} bound should be Literal(Scalar{{ANGLE, 0.0}}); got: {:?}", other),
+                }
+            };
+            check_zero_angle(lower, "lower");
+            check_zero_angle(upper, "upper");
+        }
         other => panic!(
-            "prb_validity_range default should be Literal(Value::Real(0.0)) or \
-             Literal(Value::Int(0)); got: {:?}",
+            "prb_validity_range default should be RangeConstructor{{0deg..0deg}} (task 4576); got: {:?}",
             other
         ),
     }
