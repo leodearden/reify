@@ -150,3 +150,102 @@ structure def MultiGdt {
     assert_eq!(callouts[0].material_condition.as_deref(), Some("RFS"));
     assert_eq!(callouts[1].material_condition.as_deref(), Some("RFS"));
 }
+
+// ── C2 rule table — RFS-only Form family (step-3 RED / step-4 GREEN) ──────────
+
+/// C2-A: `Flatness(material_condition: MMC, ...)` produces exactly one
+/// `GdtIllegalModifier` error diagnostic; the label span equals the callout's
+/// instantiation span (B7 oracle).
+///
+/// Fails until `check_gdt_legality` is hooked into `Engine::check`.
+#[test]
+fn c2_flatness_mmc_emits_illegal_modifier_error() {
+    const SOURCE: &str = r#"
+structure def CheckForm {
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let module = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+
+    // Collect only GdtIllegalModifier diagnostics.
+    let gdt_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect();
+
+    assert_eq!(
+        gdt_errors.len(),
+        1,
+        "expected exactly 1 GdtIllegalModifier diagnostic; got {}: {:?}",
+        gdt_errors.len(),
+        gdt_errors
+    );
+
+    let diag = gdt_errors[0];
+    assert_eq!(
+        diag.severity,
+        Severity::Error,
+        "GdtIllegalModifier must be an error"
+    );
+
+    // The label span must be non-empty and must match the callout's instantiation span.
+    assert!(
+        !diag.labels.is_empty(),
+        "GdtIllegalModifier diagnostic must carry at least one label"
+    );
+    let label_span = diag.labels[0].span;
+    assert!(
+        !label_span.is_empty(),
+        "label span must be non-empty (B7 oracle)"
+    );
+
+    // Cross-check: the span must equal what the C1 enumerator reports.
+    let callout_span = {
+        let eval_result = make_simple_engine().eval(&module);
+        let callouts = make_simple_engine().enumerate_gdt_callouts(&module, &eval_result.values);
+        assert_eq!(callouts.len(), 1, "expected exactly 1 GDT callout for span cross-check");
+        callouts[0].span
+    };
+    assert_eq!(
+        label_span, callout_span,
+        "diagnostic label span must equal the C1 callout instantiation span (B7)"
+    );
+}
+
+/// C2-B: `Flatness(material_condition: RFS, ...)` (or defaulted) produces NO
+/// `GdtIllegalModifier` diagnostic — RFS is always legal.
+///
+/// Fails until `check_gdt_legality` is hooked into `Engine::check`.
+#[test]
+fn c2_flatness_rfs_is_silent() {
+    const SOURCE: &str = r#"
+structure def CheckFormRfs {
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let module = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+
+    let gdt_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect();
+
+    assert!(
+        gdt_errors.is_empty(),
+        "Flatness(RFS) must produce no GdtIllegalModifier; got: {:?}",
+        gdt_errors
+    );
+}
