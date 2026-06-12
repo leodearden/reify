@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound};
-use reify_core::{ConstraintNodeId, Diagnostic, Severity, SourceSpan, ValueCellId};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, ValueCellId};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
     DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap,
@@ -697,6 +697,9 @@ impl Engine {
             self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));
         diagnostics.extend(constraint_diags);
 
+        // ── C2 GD&T legality pass (task 4475 β) ──────────────────────────────
+        diagnostics.extend(self.check_gdt_legality(module, &eval_result.values));
+
         CheckResult {
             values: eval_result.values,
             constraint_results,
@@ -820,6 +823,41 @@ impl Engine {
 
         callouts
     }
+
+    // ── C2 rule table (task 4475 β) ──────────────────────────────────────────
+
+    /// Apply the GD&T legality rule table to all callouts in `module`.
+    ///
+    /// Returns zero or more diagnostics:
+    /// - [`DiagnosticCode::GdtIllegalModifier`] (Error) for any callout whose
+    ///   characteristic family is RFS-only but carries `MMC` or `LMC`.
+    /// - [`DiagnosticCode::GdtRemoved2018`] (Warning) for `Concentricity` /
+    ///   `Symmetry` (added in step-8).
+    ///
+    /// Unknown user-defined `GeometricTolerance` subtypes are silently skipped
+    /// (no false error).
+    ///
+    /// Fast-path: delegates to `enumerate_gdt_callouts`, which returns empty for
+    /// modules with no `GeometricTolerance`-conforming templates — keeping every
+    /// non-GD&T `check()` byte-identical.
+    pub(crate) fn check_gdt_legality(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<Diagnostic> {
+        let callouts = self.enumerate_gdt_callouts(module, values);
+        if callouts.is_empty() {
+            return Vec::new();
+        }
+
+        let mut diags = Vec::new();
+
+        for callout in &callouts {
+            classify_callout(callout, &mut diags);
+        }
+
+        diags
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -831,5 +869,44 @@ fn enum_field_variant(fields: &PersistentMap<String, Value>, field_name: &str) -
     match fields.get(&field_name.to_string()) {
         Some(Value::Enum { variant, .. }) => Some(variant.clone()),
         _ => None,
+    }
+}
+
+/// Returns `true` if `modifier` is `MMC` or `LMC` (i.e. not RFS and not unknown).
+#[inline]
+fn is_non_rfs(modifier: Option<&str>) -> bool {
+    matches!(modifier, Some("MMC") | Some("LMC"))
+}
+
+/// Classify a single GDT callout against the C2 rule table and push diagnostics.
+///
+/// Families implemented in step-4 (RFS-only Form):
+/// - Flatness, Straightness, Circularity, Cylindricity → RFS-only
+///
+/// All other families are left to later steps and silently skipped here.
+fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
+    let mc = callout.material_condition.as_deref();
+
+    match callout.type_name.as_str() {
+        // ── RFS-only Form family (step-4) ─────────────────────────────────
+        "Flatness" | "Straightness" | "Circularity" | "Cylindricity" => {
+            if is_non_rfs(mc) {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "`{}` is an RFS-only tolerance characteristic; \
+                         material condition modifiers (MMC/LMC) are not permitted",
+                        callout.type_name
+                    ))
+                    .with_code(DiagnosticCode::GdtIllegalModifier)
+                    .with_label(DiagnosticLabel::new(
+                        callout.span,
+                        "illegal material condition modifier applied here",
+                    )),
+                );
+            }
+        }
+
+        // All other families — not yet implemented; skip (no false error).
+        _ => {}
     }
 }
