@@ -3023,7 +3023,7 @@ fn build_values(
 /// constraint for its expression text and value refs, and returns one
 /// `ConstraintData` per entry.  Extracting this logic ensures that changes to
 /// constraint formatting are applied consistently to both call sites.
-fn build_constraints(
+pub(crate) fn build_constraints(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
 ) -> Vec<ConstraintData> {

@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -12345,5 +12345,69 @@ structure def TOnly {
         state.tensegrity_surfaces.is_empty(),
         "a Tensegrity StructureInstance (no tensegrity_surfaces() call) must not be extracted as a surface facet; got {} facet(s)",
         state.tensegrity_surfaces.len()
+    );
+}
+
+// --- build_constraints deterministic ordering ---
+
+/// RED: build_constraints must return ConstraintData sorted by node_id ascending,
+/// regardless of the insertion order of constraint_results.
+///
+/// This test feeds a CheckResult whose constraint_results are in deliberately
+/// non-ascending node_id order ([Zeta#0, Alpha#0, Mid#0]) and asserts the
+/// returned node_ids come out sorted (Alpha#0 < Mid#0 < Zeta#0 lexicographically).
+///
+/// The test is hermetic — it does NOT rely on HashMap-seed variance to produce
+/// the wrong order; scrambled input directly exercises the ordering guarantee.
+/// This is RED today (build_constraints preserves input order) and will be GREEN
+/// after the sort is added in step-2.
+#[test]
+fn build_constraints_sorts_constraints_by_node_id() {
+    use reify_eval::{CheckResult, ConstraintCheckEntry};
+    use reify_core::ConstraintNodeId;
+    use reify_ir::{Satisfaction, ValueMap};
+
+    // Minimal empty CompiledModule — template lookup returns None for all entries,
+    // so expression/parameter_ids default to ("", vec![]).
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+
+    // Deliberately scrambled order: Zeta, Alpha, Mid
+    // Display: "Zeta#constraint[0]", "Alpha#constraint[0]", "Mid#constraint[0]"
+    // Sorted ascending: "Alpha#constraint[0]" < "Mid#constraint[0]" < "Zeta#constraint[0]"
+    let check = CheckResult {
+        values: ValueMap::new(),
+        constraint_results: vec![
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Zeta", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Alpha", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Mid", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+        ],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    let result = build_constraints(&compiled, &check);
+
+    let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
+
+    let mut expected = node_ids.clone();
+    expected.sort();
+
+    assert_eq!(
+        node_ids, expected,
+        "build_constraints must return ConstraintData in ascending node_id order \
+         regardless of constraint_results insertion order; got: {:?}",
+        node_ids
     );
 }
