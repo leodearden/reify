@@ -936,4 +936,129 @@ mod tests {
             }
         }
     }
+
+    // ── step-3 (task 4564): RED — recover_nodal_gradient_p1 unit tests ───────
+    //
+    // (a) Uniform-strain patch test: two-element fan + uniform u(x)=(a·x,0,0)
+    //     → every element ∇u = [[a,0,0],[0,0,0],[0,0,0]]; volume-weighted
+    //     average of identical tensors = exact constant across all 5 nodes.
+    // (b) Unequal-volume weighting: shared node = volume-weighted average;
+    //     exclusive node = element's own gradient.
+    // Fails to compile (fn + struct absent) until step-4.
+
+    #[test]
+    fn recover_nodal_gradient_p1_uniform_strain_patch_test_yields_constant_field() {
+        let a = 0.01_f64;
+
+        // Two-element fan sharing a face (mirror of the stress patch test):
+        //   tet0: [(0,0,0),(1,0,0),(0,1,0),(0,0,1)]   conn = [0,1,2,3]
+        //   tet1: [(1,0,0),(0,1,0),(0,0,1),(1,1,1)]   conn = [1,2,3,4]
+        let nodes = [
+            [0.0_f64, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0],     // 1
+            [0.0, 1.0, 0.0],     // 2
+            [0.0, 0.0, 1.0],     // 3
+            [1.0, 1.0, 1.0],     // 4
+        ];
+        let tet0: [[f64; 3]; 4] = [nodes[0], nodes[1], nodes[2], nodes[3]];
+        let tet1: [[f64; 3]; 4] = [nodes[1], nodes[2], nodes[3], nodes[4]];
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+
+        // Uniform u(x) = (a·x, 0, 0) at all nodes.
+        let mut u0 = [0.0_f64; 12];
+        for (i, n) in tet0.iter().enumerate() { u0[3 * i] = a * n[0]; }
+        let mut u1 = [0.0_f64; 12];
+        for (i, n) in tet1.iter().enumerate() { u1[3 * i] = a * n[0]; }
+
+        let grad0 = element_gradient_p1(&tet0, &u0);
+        let grad1 = element_gradient_p1(&tet1, &u1);
+
+        let elem0 = GradientElement {
+            connectivity: &conn0,
+            gradient: grad0,
+            volume: tet_volume_p1(&tet0),
+        };
+        let elem1 = GradientElement {
+            connectivity: &conn1,
+            gradient: grad1,
+            volume: tet_volume_p1(&tet1),
+        };
+
+        let nodal = recover_nodal_gradient_p1(5, &[elem0, elem1]);
+        assert_eq!(nodal.len(), 5, "n_nodes=5 ⇒ output length 5");
+
+        // Expected: [[a,0,0],[0,0,0],[0,0,0]] at every node.
+        let expected = [[a, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        for (n, t) in nodal.iter().enumerate() {
+            for r in 0..3 {
+                for c in 0..3 {
+                    assert!(
+                        (t[r][c] - expected[r][c]).abs() < 1e-12,
+                        "node {n} ∇u[{r}][{c}] = {} expected {} (uniform patch test)",
+                        t[r][c], expected[r][c],
+                    );
+                }
+            }
+        }
+        // Trace = divergence = a.
+        for (n, t) in nodal.iter().enumerate() {
+            let div = t[0][0] + t[1][1] + t[2][2];
+            assert!(
+                (div - a).abs() < 1e-12,
+                "node {n} trace(∇u) = {} expected {a} (uniform patch test divergence)",
+                div,
+            );
+        }
+    }
+
+    #[test]
+    fn recover_nodal_gradient_p1_volume_weighted_average_two_unequal_volume_elements() {
+        // Two elements share node 0. Gradient tensors and volumes are
+        // hand-crafted to pin volume-weighted-average behaviour.
+        //   elem_a: grad = [[1,0,0],[0,0,0],[0,0,0]], V = 1.0
+        //   elem_b: grad = [[0,2,0],[0,0,0],[0,0,0]], V = 3.0
+        // Shared node 0 → (1·grad_a + 3·grad_b)/4 = [[0.25,1.5,0],[0,0,0],[0,0,0]].
+        let grad_a = [[1.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let grad_b = [[0.0_f64, 2.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let conn_a = [0_usize, 1, 2, 3];
+        let conn_b = [0_usize, 4, 5, 6];
+
+        let elem_a = GradientElement { connectivity: &conn_a, gradient: grad_a, volume: 1.0 };
+        let elem_b = GradientElement { connectivity: &conn_b, gradient: grad_b, volume: 3.0 };
+
+        let nodal = recover_nodal_gradient_p1(7, &[elem_a, elem_b]);
+
+        // Shared node 0: weighted average.
+        let exp0 = [[0.25_f64, 1.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[0][r][c] - exp0[r][c]).abs() < 1e-12,
+                    "node 0 ∇u[{r}][{c}] = {} expected {}",
+                    nodal[0][r][c], exp0[r][c],
+                );
+            }
+        }
+        // Node 1 exclusive to elem_a → recovers grad_a.
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[1][r][c] - grad_a[r][c]).abs() < 1e-12,
+                    "node 1 (only in a) ∇u[{r}][{c}] = {} expected grad_a = {}",
+                    nodal[1][r][c], grad_a[r][c],
+                );
+            }
+        }
+        // Node 4 exclusive to elem_b → recovers grad_b.
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[4][r][c] - grad_b[r][c]).abs() < 1e-12,
+                    "node 4 (only in b) ∇u[{r}][{c}] = {} expected grad_b = {}",
+                    nodal[4][r][c], grad_b[r][c],
+                );
+            }
+        }
+    }
 }
