@@ -167,4 +167,124 @@ mod tests {
     fn ke_collinear_triangle_panics() {
         let _ = element_stiffness_membrane_cst(&COLLINEAR_TRI, 0.1, &nu_zero_material(2.0));
     }
+
+    // ---------- S3: tilted-frame objectivity + 3D rigid-body null spaces ----------
+
+    /// Apply a 3×3 rotation `q` to a global 3-vector.
+    fn apply_q(q: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+            q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+            q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+        ]
+    }
+
+    /// `K · u` for a 9-DOF membrane element matrix.
+    fn matvec9(k: &ElementStiffness, u: &[f64; 9]) -> [f64; 9] {
+        let mut ku = [0.0_f64; 9];
+        for i in 0..9 {
+            for j in 0..9 {
+                ku[i] += k.get(i, j) * u[j];
+            }
+        }
+        ku
+    }
+
+    /// Strain energy `0.5 · uᵀ K u`.
+    fn energy(k: &ElementStiffness, u: &[f64; 9]) -> f64 {
+        let ku = matvec9(k, u);
+        0.5 * (0..9).map(|i| ku[i] * u[i]).sum::<f64>()
+    }
+
+    /// L∞ norm of a fixed-size slice.
+    fn linf(v: &[f64]) -> f64 {
+        v.iter().fold(0.0_f64, |acc, x| acc.max(x.abs()))
+    }
+
+    /// Q · UNIT_TRI — a rigidly rotated (tilted) copy of the unit triangle.
+    fn tilted_unit_tri(q: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
+        [
+            apply_q(q, UNIT_TRI[0]),
+            apply_q(q, UNIT_TRI[1]),
+            apply_q(q, UNIT_TRI[2]),
+        ]
+    }
+
+    /// Constant-strain (linear) in-plane displacement field, evaluated in the
+    /// flat triangle's xy-plane: ε_xx = 0.01, ε_yy = -0.005, γ_xy = 0.005.
+    fn const_strain_field(x: f64, y: f64) -> [f64; 3] {
+        [0.01 * x + 0.002 * y, 0.003 * x - 0.005 * y, 0.0]
+    }
+
+    /// Frame objectivity: strain energy is a rigid-rotation invariant. Rotating
+    /// both the geometry (UNIT_TRI → Q·UNIT_TRI) and the displacement field
+    /// (d → Q·d) must leave `0.5·uᵀKu` unchanged. This is true ONLY once the
+    /// local→global block rotation is applied (S4) — against the S2 local-as-global
+    /// packing the tilted energy differs ⇒ RED.
+    #[test]
+    fn ke_frame_objectivity_tilted_energy_matches_flat() {
+        let t = 0.1_f64;
+        let mat = nu_zero_material(2.0);
+
+        // Flat reference.
+        let k_flat = element_stiffness_membrane_cst(&UNIT_TRI, t, &mat);
+        let mut u_flat = [0.0_f64; 9];
+        for i in 0..3 {
+            let d = const_strain_field(UNIT_TRI[i][0], UNIT_TRI[i][1]);
+            for c in 0..3 {
+                u_flat[3 * i + c] = d[c];
+            }
+        }
+        let e_flat = energy(&k_flat, &u_flat);
+        assert!(e_flat > 1e-12, "reference strain energy must be nonzero, got {e_flat}");
+
+        // Tilted: Q·geometry, Q·displacement.
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let tilted = tilted_unit_tri(&q);
+        let k_tilted = element_stiffness_membrane_cst(&tilted, t, &mat);
+        let mut u_tilted = [0.0_f64; 9];
+        for i in 0..3 {
+            let d = const_strain_field(UNIT_TRI[i][0], UNIT_TRI[i][1]);
+            let dq = apply_q(&q, d);
+            for c in 0..3 {
+                u_tilted[3 * i + c] = dq[c];
+            }
+        }
+        let e_tilted = energy(&k_tilted, &u_tilted);
+
+        let scale = e_flat.abs().max(1e-30);
+        assert!(
+            (e_flat - e_tilted).abs() < 1e-9 * scale,
+            "frame objectivity: U_flat={e_flat}, U_tilted={e_tilted}, rel_err={}",
+            (e_flat - e_tilted).abs() / scale,
+        );
+    }
+
+    /// 3D rigid-body translation null space: a uniform per-node translation along
+    /// any global axis produces zero strain ⇒ `‖K_e·u‖_∞ < 1e-9·max|K_e|`. Holds
+    /// for both the flat and the tilted triangle.
+    #[test]
+    fn ke_translation_in_null_space() {
+        let t = 0.1_f64;
+        let mat = nu_zero_material(2.0);
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let tilted = tilted_unit_tri(&q);
+
+        for nodes in [&UNIT_TRI, &tilted] {
+            let k = element_stiffness_membrane_cst(nodes, t, &mat);
+            let max_abs = linf(&k.data).max(1.0);
+            for axis in 0..3 {
+                let mut u = [0.0_f64; 9];
+                for node in 0..3 {
+                    u[3 * node + axis] = 1.0;
+                }
+                let ku = matvec9(&k, &u);
+                let resid = linf(&ku);
+                assert!(
+                    resid < 1e-9 * max_abs,
+                    "translation axis {axis}: ‖K_e·u‖_∞ = {resid} (max|K_e|={max_abs})",
+                );
+            }
+        }
+    }
 }
