@@ -487,7 +487,7 @@ trait Shaper { }
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
-//   - max_force : Real   — TODO(force-scalar): placeholder for `Scalar<Force>`
+//   - max_force : Real   — TODO(force-scalar, #4580): placeholder for `Scalar<Force>`
 //                          per the uniform-Real-placeholder convention
 //                          established in modal_analysis.ri header §1.
 //                          Force IS a named dimension but the convention
@@ -533,7 +533,7 @@ structure def JointLimit {
 // ZVDShaper / EIShaper. All refine the same `trait Shaper { }`.
 //
 // Uniform-Real-placeholder encoding convention (modal_analysis.ri header §1):
-// All dimensioned scalars are encoded as Real with TODO(...) annotations
+// All dimensioned scalars are encoded as Real with TODO(...) annotations (sweep #4580)
 // naming the future-tightening target, even when the named dimension IS in
 // NAMED_DIMENSIONS. This keeps constraint RHS literals plain (> 0, <= 1)
 // and lets the dimensional-tightening sweep retarget every placeholder in a
@@ -547,10 +547,10 @@ structure def JointLimit {
 //                                              stdlib_loader.rs:110-116).
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
-//   - velocity_limit     : Real              — TODO(velocity-scalar): Scalar<Velocity>
+//   - velocity_limit     : Real              — TODO(velocity-scalar, #4580): Scalar<Velocity>
 //                                              (Velocity NOT in NAMED_DIMENSIONS,
 //                                              so Real is the only option anyway).
-//   - acceleration_limit : Real              — TODO(acceleration-scalar): Scalar<Acceleration>
+//   - acceleration_limit : Real              — TODO(acceleration-scalar, #4580): Scalar<Acceleration>
 //   - vibration_tolerance: Real              — genuinely dimensionless (residual
 //                                              fraction); vibration_tolerance ∈ (0,1]
 //                                              per PRD §11 Phase 2 ε spec.
