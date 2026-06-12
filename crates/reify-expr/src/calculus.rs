@@ -2891,4 +2891,117 @@ mod tests {
             "divergence of Sampled field with non-SampledField lambda must return Undef"
         );
     }
+
+    // ─── ζ step-3: curl eager-lower RED tests ─────────────────────────────────
+
+    /// compute_curl on a well-formed 3D Sampled vector field F=(-y, x, 0)
+    /// returns a Sampled field whose data equals the exact curl (0, 0, 2) at every
+    /// node, within 1e-12, and whose codomain_type is Type::vec3(Real).
+    ///
+    /// Numeric premise: curl F = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x, ∂Fy/∂x − ∂Fx/∂y)
+    ///                         = (0 − 0, 0 − 0, 1 − (−1)) = (0, 0, 2).
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_curl currently returns Value::Undef for Sampled source;
+    /// this test drives the step-4 Sampled eager-lower branch.
+    #[test]
+    fn curl_sampled_3d_affine_returns_sampled_field_with_exact_curl() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, _z| [-y, x, 0.0]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "curl of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Curl → vector output: stride-3, data.len() == grid_count * 3
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "curl output must have stride-3 data (len=grid_count*3={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+
+        // Every node must have (cx, cy, cz) within 1e-12 of (0, 0, 2)
+        for g in 0..grid_count {
+            let cx = out_sf.data[g * 3];
+            let cy = out_sf.data[g * 3 + 1];
+            let cz = out_sf.data[g * 3 + 2];
+            assert!(
+                cx.abs() < 1e-12,
+                "node {g}: curl_x = {cx}, expected 0.0 (error {})",
+                cx.abs()
+            );
+            assert!(
+                cy.abs() < 1e-12,
+                "node {g}: curl_y = {cy}, expected 0.0 (error {})",
+                cy.abs()
+            );
+            assert!(
+                (cz - 2.0).abs() < 1e-12,
+                "node {g}: curl_z = {cz}, expected 2.0 (error {})",
+                (cz - 2.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is vec3(Real)
+        let expected_codomain = Type::vec3(Type::dimensionless_scalar());
+        assert_eq!(
+            *result_codomain,
+            expected_codomain,
+            "curl codomain for dimensionless vector field must be vec3(Real), got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_curl on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-4 adds the well-formed dispatch branch.
+    #[test]
+    fn curl_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_curl(&field),
+            Value::Undef,
+            "curl of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
 }
