@@ -334,7 +334,7 @@ structure S {
 // step-10: no-context none → OptionNone with Option<Real> default, no error
 // ---------------------------------------------------------------------------
 
-/// step-10: `let x = none` (no type annotation) → OptionNone with Type::Option(Type::Real),
+/// step-10: `let x = none` (no type annotation) → OptionNone with Type::Option(Type::dimensionless_scalar()),
 /// no error diagnostics. Verifies graceful fallback when type cannot be inferred.
 #[test]
 fn compile_none_no_context_defaults_to_option_real() {
@@ -373,7 +373,7 @@ structure S {
     let default = cell.default_expr.as_ref().expect("should have default");
     assert_eq!(
         default.result_type,
-        Type::Option(Box::new(Type::Real)),
+        Type::Option(Box::new(Type::dimensionless_scalar())),
         "none without context should default to Option<Real>, got {:?}",
         default.result_type
     );

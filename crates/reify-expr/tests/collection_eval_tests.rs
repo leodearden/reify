@@ -320,12 +320,12 @@ fn eval_method_sum_ints() {
 fn eval_method_sum_reals() {
     let list = CompiledExpr::list_literal(
         vec![
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
-    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Real(3.0));
@@ -380,8 +380,8 @@ fn eval_method_sum_empty() {
 #[test]
 fn eval_method_sum_empty_real_list() {
     // [].sum() with result_type=Real should return Real(0.0), not Int(0)
-    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
-    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::Real);
+    let list = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar())));
+    let expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(

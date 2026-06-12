@@ -563,13 +563,13 @@ fn compile_field_analytical_matching_codomain_does_not_emit_mismatch() {
 fn compile_field_analytical_int_body_widens_to_real_codomain() {
     // Body literal `1` is typed as Type::Int (expr.rs:257-258): whole-number
     // literals without a unit suffix always produce Int, not Real.
-    // Codomain is Real (Type::Real).
+    // Codomain is Real (Type::dimensionless_scalar()).
     //
     // implicitly_converts_to(Int, Real) returns false (type_compat.rs:52-169:
     // identity check fails because Int != Real; none of rules 1a/1b/2a/2b/2c/3
     // match the Int→Real direction; the default arm returns false).
     //
-    // The dedicated `(Type::Int, Type::Real)` arm at functions.rs:170-171 is
+    // The dedicated `(Type::Int, Type::dimensionless_scalar())` arm at functions.rs:170-171 is
     // the *only* thing that keeps this source valid. Removing that arm would
     // cause field_codomain_compatible to return false and emit
     // DiagnosticCode::FieldCodomainMismatch, making this test fail.

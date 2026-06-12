@@ -310,10 +310,10 @@ impl OpenVdbKernel {
     /// (ingest.rs) captures the drift-prone invariants (Regular3D, X-outermost
     /// axis convention, f32→f64 conversion, units-empty→None) in one place.
     ///
-    /// Codomain is `Type::Real` (dimensionless raw SDF).
+    /// Codomain is `Type::dimensionless_scalar()` (dimensionless raw SDF).
     /// `meshToLevelSet` writes no units metadata → `grid_units` returns "" →
     /// `OpenVdbGridSource.units = None` →
-    /// `validate_grid_units(None, &Type::Real) = Ok(())` → no `UnitMismatch`.
+    /// `validate_grid_units(None, &Type::dimensionless_scalar()) = Ok(())` → no `UnitMismatch`.
     ///
     /// # `&mut self` — Sync-audit deviation from PRD §7.1
     ///
@@ -372,13 +372,13 @@ impl OpenVdbKernel {
             raw_buffer,
         );
 
-        // Lower to SampledField.  Codomain = Type::Real (dimensionless SDF);
+        // Lower to SampledField.  Codomain = Type::dimensionless_scalar() (dimensionless SDF);
         // meshToLevelSet writes no units → grid_units="" → units=None →
-        // validate_grid_units(None, &Type::Real) = Ok(()) — no UnitMismatch.
+        // validate_grid_units(None, &Type::dimensionless_scalar()) = Ok(()) — no UnitMismatch.
         let outcome = crate::ingest::lower_to_sampled(
             &source,
             SDF_FIELD_NAME,
-            &Type::Real,
+            &Type::dimensionless_scalar(),
         )
         .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
 

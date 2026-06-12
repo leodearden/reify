@@ -941,6 +941,20 @@ pub(crate) fn compile_geometry_op(
                         offset,
                     })
                 }
+                reify_compiler::ModifyKind::ZoneSlab => {
+                    let width = eval_arg("width")?;
+                    Ok(reify_ir::GeometryOp::ZoneSlab {
+                        target: target_id,
+                        width,
+                    })
+                }
+                reify_compiler::ModifyKind::OffsetSolid => {
+                    let distance = eval_arg("distance")?;
+                    Ok(reify_ir::GeometryOp::OffsetSolid {
+                        target: target_id,
+                        distance,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
@@ -3066,6 +3080,101 @@ pub(crate) fn try_eval_resolve_selector(
     }
 }
 
+/// Reconstruct a `SelectorValue` from a single compiled arg expression.
+///
+/// PREFERRED path: inline reconstruction from a nested selector FunctionCall
+/// (no value-cell ordering dependency) via a recursive `try_eval_topology_selector`
+/// call.  Fallback: a `ValueRef` pointing to an already-patched `Value::Selector`
+/// cell in the `values` map.
+///
+/// Returns `None` for any other expr shape (the cell is not yet hydrated or does
+/// not represent a selector) — the composition arm then returns `None`, leaving
+/// the cell at `Value::Undef` for a subsequent pass.
+///
+/// Factored from the step-1 inline reconstruction in `resolve_selector_to_list`
+/// (task 4119 δ, step-6) so the composition arms in `try_eval_topology_selector`
+/// can reuse the same logic.
+fn reconstruct_selector_value(
+    arg: &reify_ir::CompiledExpr,
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::SelectorValue> {
+    match &arg.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::Selector(sv) => Some(sv),
+                // FunctionCall resolved to a non-selector (e.g. adjacent_faces
+                // → List, or Undef) — not ours to wrap.
+                _ => None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build a variadic selector composition (`union` or `intersect`) from a slice of
+/// compiled args by reconstructing each child `SelectorValue` then calling the
+/// provided constructor.  Parameterised by `constructor` so Union and Intersect
+/// share the same collect+construct+error path and only differ in the fn they pass.
+///
+/// Returns `None` if any child cannot be reconstructed (cell stays Undef).
+/// Returns `Some(Value::Undef)` + a Warning on `SelectorError` (defensive backstop
+/// — compile-time `E_SELECTOR_KIND_MISMATCH` should have fired first).
+fn eval_variadic_composition(
+    op_name: &str,
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+    constructor: fn(
+        Vec<reify_ir::value::SelectorValue>,
+    ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError>,
+) -> Option<reify_ir::Value> {
+    let children: Vec<reify_ir::value::SelectorValue> = args
+        .iter()
+        .map(|arg| reconstruct_selector_value(arg, named_steps, values, kernel, diagnostics))
+        .collect::<Option<Vec<_>>>()?;
+    match constructor(children) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{op_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Build a named-leaf selector (`face`, `edge`, or `solid_body`) from two compiled
+/// args: `args[0]` is the geometry target (resolved via `resolve_selector_target`)
+/// and `args[1]` is the tag string (extracted via `resolve_string_literal_arg`).
+/// Parameterised by `kind` so all three ctors share the same resolution path.
+fn eval_named_leaf_selector_ctor(
+    kind: reify_core::ty::SelectorKind,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    function_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let target = resolve_selector_target(&args[0], values)?;
+    let name = resolve_string_literal_arg(&args[1])?.to_string();
+    build_leaf_selector(
+        kind,
+        target,
+        reify_ir::value::LeafQuery::Named(name),
+        function_name,
+        diagnostics,
+    )
+}
+
 /// Reconstruct the `Value::Selector` denoted by `selector_expr`, resolve it via
 /// `topology_selectors::resolve`, and wrap the canonical-order handle ids as a
 /// `Value::List` of `Value::GeometryHandle` sub-handles. Shared by the
@@ -3089,31 +3198,8 @@ fn resolve_selector_to_list(
     kernel: &mut dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    // (1) Obtain the Value::Selector. PREFERRED: inline reconstruction from a
-    // nested selector FunctionCall (no value-cell ordering dependency). Else a
-    // ValueRef to an already-patched Value::Selector cell.
-    let sv = match &selector_expr.kind {
-        reify_ir::CompiledExprKind::FunctionCall { .. } => {
-            match try_eval_topology_selector(
-                selector_expr,
-                named_steps,
-                values,
-                kernel,
-                diagnostics,
-            )? {
-                reify_ir::Value::Selector(sv) => sv,
-                // FunctionCall resolved to a non-selector (a still-List selector
-                // like adjacent_faces, or Undef) — not ours to wrap.
-                _ => return None,
-            }
-        }
-        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
-            Some(reify_ir::Value::Selector(sv)) => sv.clone(),
-            // Cell not yet patched to a selector / not a selector — skip.
-            _ => return None,
-        },
-        _ => return None,
-    };
+    // (1) Obtain the Value::Selector via the shared helper (task 4119 δ, step-6).
+    let sv = reconstruct_selector_value(selector_expr, named_steps, values, kernel, diagnostics)?;
 
     // (2) Parent identity for sub-handle hashing: the (first) leaf target.
     let target = first_leaf_target(&sv)?;
@@ -3229,15 +3315,33 @@ pub(crate) fn try_eval_topology_selector(
         "distance" => TopologySelectorHelper::Distance,
         "intersects" => TopologySelectorHelper::Intersects,
         "split" => TopologySelectorHelper::Split,
+        // task 4119 δ — selector-composition algebra
+        "union" => TopologySelectorHelper::Union,
+        "intersect" => TopologySelectorHelper::Intersect,
+        "difference" => TopologySelectorHelper::Difference,
+        // task 4119 δ — Named-leaf constructors (PRD §11.1)
+        "face" => TopologySelectorHelper::Face,
+        "edge" => TopologySelectorHelper::Edge,
+        "solid_body" => TopologySelectorHelper::SolidBody,
         _ => return None,
     };
 
     // (3) Per-helper arity check. Each new selector in task 3560 carries its
     // own arity contract; the legacy 2-arg trio (closest_point, is_on,
     // angle_between_surfaces) shares the arity-2 branch.
-    let expected_arity = helper.expected_arity();
-    if args.len() != expected_arity {
-        return None;
+    // task 4119 δ: union/intersect are variadic (≥ 2); difference is binary (== 2).
+    match helper {
+        TopologySelectorHelper::Union | TopologySelectorHelper::Intersect => {
+            if args.len() < 2 {
+                return None;
+            }
+        }
+        _ => {
+            let expected_arity = helper.expected_arity();
+            if args.len() != expected_arity {
+                return None;
+            }
+        }
     }
 
     match helper {
@@ -3301,7 +3405,14 @@ pub(crate) fn try_eval_topology_selector(
                 | TopologySelectorHelper::Perimeter
                 | TopologySelectorHelper::Distance
                 | TopologySelectorHelper::Intersects
-                | TopologySelectorHelper::Split => {
+                | TopologySelectorHelper::Split
+                // task 4119 δ — composition + Named-leaf ctors
+                | TopologySelectorHelper::Union
+                | TopologySelectorHelper::Intersect
+                | TopologySelectorHelper::Difference
+                | TopologySelectorHelper::Face
+                | TopologySelectorHelper::Edge
+                | TopologySelectorHelper::SolidBody => {
                     unreachable!("ClosestPoint/IsOn outer match guarantees this")
                 }
             }
@@ -3828,6 +3939,80 @@ pub(crate) fn try_eval_topology_selector(
             let (_, _, face_b) = resolve_parent_geometry_handle_arg(&args[1], values)?;
             dispatch_shared_edges(kernel, face_a, face_b, &function.name, diagnostics, values)
         }
+        // ── task 4119 δ: selector-composition algebra ────────────────────────
+        // union(a, b, …) / intersect(a, b, …) / difference(a, b) build a
+        // kernel-FREE composite `Value::Selector(kind)` whose tree is
+        // Union/Intersect/Difference of the child SelectorValues.  Child
+        // selectors are reconstructed via `reconstruct_selector_value` (either
+        // an inline nested selector FunctionCall or a ValueRef to an already-
+        // patched selector cell).  The K1 kind-closure check is delegated to
+        // the `SelectorValue::{union,intersect,difference}` constructors; on
+        // `SelectorError::KindMismatch` (defensive backstop — compile-time
+        // E_SELECTOR_KIND_MISMATCH should have fired first) a Warning is emitted
+        // and `Some(Value::Undef)` is returned, mirroring `build_leaf_selector`.
+        // Zero kernel queries at construction time (K2/BT7).
+        TopologySelectorHelper::Union => eval_variadic_composition(
+            "union",
+            args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            reify_ir::value::SelectorValue::union,
+        ),
+        TopologySelectorHelper::Intersect => eval_variadic_composition(
+            "intersect",
+            args,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            reify_ir::value::SelectorValue::intersect,
+        ),
+        TopologySelectorHelper::Difference => {
+            // args[0] and args[1] guaranteed by the == 2 arity gate.
+            let a = reconstruct_selector_value(&args[0], named_steps, values, kernel, diagnostics)?;
+            let b = reconstruct_selector_value(&args[1], named_steps, values, kernel, diagnostics)?;
+            match reify_ir::value::SelectorValue::difference(a, b) {
+                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "difference: selector kind-closure violation ({err:?}); cell left at Undef"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
+        // ── task 4119 δ: Named-leaf constructors ─────────────────────────────
+        // face(geometry, name) / edge(geometry, name) / solid_body(geometry, name)
+        // resolve the parent GeometryHandleRef from args[0] (via resolve_selector_target,
+        // which reads Value::GeometryHandle from the values map) and the name string
+        // from args[1] (a Literal(Value::String(s)), extracted via resolve_string_literal_arg
+        // which shares the AdHocSelector precedent).  Both must succeed; either
+        // falling through yields None (cell left at Undef — PRD invariant #2).
+        // Zero kernel queries at construction time (K2/BT7); resolution is the
+        // D8 interim (W_TOPOLOGY_TAG_STALE + [] until persistent-naming-v2).
+        TopologySelectorHelper::Face => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Face,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Edge,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor(
+            reify_core::ty::SelectorKind::Body,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
     }
 }
 
@@ -4263,6 +4448,37 @@ enum TopologySelectorHelper {
     /// diagnostic and returns `Some(Value::Undef)`.  Non-Plane args[1] or
     /// unhydrated args[0] fall through to `None`.
     Split,
+    /// `union(a, b, …) -> Selector(k)` — variadic same-kind selector union (task
+    /// 4119 δ).  All operands must already be `Value::Selector(k)` of the SAME
+    /// kind (K1); reconstructed via `reconstruct_selector_value` and combined via
+    /// `SelectorValue::union`.  Arity ≥ 2 (variadic; bypasses the fixed
+    /// `expected_arity` gate — see arity guard in `try_eval_topology_selector`).
+    /// On `SelectorError::KindMismatch` from the value-layer: Warning + Undef
+    /// (defensive backstop; compile-time E_SELECTOR_KIND_MISMATCH should have
+    /// already fired).
+    Union,
+    /// `intersect(a, b, …) -> Selector(k)` — variadic same-kind selector
+    /// intersection (task 4119 δ).  Mirrors `Union` in construction;
+    /// `SelectorValue::intersect` enforces K1. Arity ≥ 2.
+    Intersect,
+    /// `difference(a, b) -> Selector(k)` — binary same-kind selector difference
+    /// (task 4119 δ).  Arity exactly 2; `SelectorValue::difference` enforces K1.
+    Difference,
+    /// `face(geometry, name) -> Selector(Face)` — Named-leaf FaceSelector ctor
+    /// (task 4119 δ, PRD §11.1).  Arity 2: args[0] = parent geometry ValueRef,
+    /// args[1] = name string Literal.  Builds `LeafQuery::Named(name)` with
+    /// `SelectorKind::Face`.  Resolution is the D8 interim (W_TOPOLOGY_TAG_STALE
+    /// + [] for any name until persistent-naming-v2 lands).
+    Face,
+    /// `edge(geometry, name) -> Selector(Edge)` — Named-leaf EdgeSelector ctor
+    /// (task 4119 δ, PRD §11.1).  Arity 2: args[0] = parent geometry ValueRef,
+    /// args[1] = name string Literal.  Builds `LeafQuery::Named(name)` with
+    /// `SelectorKind::Edge`.
+    Edge,
+    /// `solid_body(geometry, name) -> Selector(Body)` — Named-leaf BodySelector
+    /// ctor (task 4119 δ, PRD §11.1).  Arity 2.  `body(...)` is the RBD ctor
+    /// (StructureRef("Mechanism")) — `solid_body` is the verified-free alternative.
+    SolidBody,
 }
 
 impl TopologySelectorHelper {
@@ -4287,7 +4503,19 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::Curvature
             | TopologySelectorHelper::Distance
             | TopologySelectorHelper::Intersects
-            | TopologySelectorHelper::Split => 2,
+            | TopologySelectorHelper::Split
+            // task 4119 δ: difference is binary; Union/Intersect are variadic
+            // (≥ 2) but list 2 here as their minimum arity. The arity gate in
+            // try_eval_topology_selector special-cases them to use a ≥2 check
+            // rather than the exact equality check, so this value is not used
+            // for the Union/Intersect path.
+            | TopologySelectorHelper::Difference
+            | TopologySelectorHelper::Union
+            | TopologySelectorHelper::Intersect
+            // task 4119 δ: Named-leaf ctors are arity 2 (geometry, name).
+            | TopologySelectorHelper::Face
+            | TopologySelectorHelper::Edge
+            | TopologySelectorHelper::SolidBody => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
             | TopologySelectorHelper::Length
@@ -6340,7 +6568,7 @@ mod tests {
 
     /// Helper: build a CompiledExpr literal from a constant f64.
     fn literal_f64(v: f64) -> reify_ir::CompiledExpr {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::Real)
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::dimensionless_scalar())
     }
 
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
@@ -6432,7 +6660,7 @@ mod tests {
     #[test]
     fn resolve_density_arg_diagnostics() {
         fn make_value_ref(cell: reify_core::ValueCellId) -> reify_ir::CompiledExpr {
-            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::Real)
+            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar())
         }
 
         // (a) ValueRef → LENGTH Scalar → None + 1 Warning
@@ -8302,7 +8530,7 @@ mod tests {
         // silently dropped it; the strict arm errors on it.
         let malformed_selector = reify_ir::CompiledExpr::literal(
             reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
-            reify_core::Type::List(Box::new(reify_core::Type::Real)),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
         );
         let op = CompiledGeometryOp::Modify {
             kind: reify_compiler::ModifyKind::Fillet,
@@ -9776,7 +10004,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
         let undef_expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::dimensionless_scalar());
         let args = vec![("width".to_string(), undef_expr)];
 
         let result = eval_named_arg_f64(
@@ -10108,7 +10336,7 @@ mod tests {
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
     fn conformance_call_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
@@ -11052,14 +11280,14 @@ mod tests {
                 },
                 args: vec![s_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
 
         // Lambda body: ListLiteral([inner])
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11071,7 +11299,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11086,7 +11314,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11228,13 +11456,13 @@ mod tests {
                 },
                 args: vec![s_ref, id_a_ref, id_b_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
 
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11245,7 +11473,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![id_a_cell, id_b_cell],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11259,7 +11487,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11424,12 +11652,12 @@ mod tests {
                 },
                 args: vec![s_ref, id_a_ref, id_b_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
         let lambda_arg = reify_ir::CompiledExpr {
@@ -11439,7 +11667,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![id_a_cell, id_b_cell],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
         let snaps_ref =
@@ -11452,7 +11680,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11836,9 +12064,9 @@ mod tests {
     /// `conformance_call_literal_arg` above.
     fn topology_selector_call_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -12624,9 +12852,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12674,9 +12902,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12725,9 +12953,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12810,11 +13038,11 @@ mod tests {
         // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
         let arg_a = reify_ir::CompiledExpr::literal(
             vec3_value(1.0, 0.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let arg_b = reify_ir::CompiledExpr::literal(
             vec3_value(0.0, 1.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str("angle"));
@@ -12877,9 +13105,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12948,9 +13176,9 @@ mod tests {
                 "angle",
                 "T",
                 "a",
-                reify_core::Type::vec3(reify_core::Type::Real),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
                 "b",
-                reify_core::Type::vec3(reify_core::Type::Real),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
                 reify_core::Type::angle(),
             );
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -14492,11 +14720,11 @@ mod tests {
     /// gate for arity-3 helpers (like `geo_equiv`) passes.
     fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
         let arg_c =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -14820,7 +15048,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -14931,7 +15159,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -14991,7 +15219,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -15065,7 +15293,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -15303,6 +15531,937 @@ mod tests {
         );
     }
 
+    // ── step-5 (task 4119 δ): composition-algebra eval + resolve tests ─────────
+    //
+    // These tests pin `try_eval_topology_selector` for the three combinator names
+    // (union/intersect/difference) and `topology_selectors::resolve` for their
+    // K3 set semantics. RED until step-6 adds the composition arms to
+    // try_eval_topology_selector; the resolve-semantics assertions are only
+    // reachable once the eval arm returns Some(Value::Selector(..)).
+    //
+    // BT2: union = canonical-order set-union of children (no duplicates).
+    // BT3: intersect of disjoint children = []; difference = a minus b.
+
+    /// Build a two-arg composition FunctionCall (`union(arg_a, arg_b)` etc.)
+    /// from two pre-compiled selector exprs.
+    fn topology_selector_composition_call(
+        combinator: &str,
+        arg_a: reify_ir::CompiledExpr,
+        arg_b: reify_ir::CompiledExpr,
+    ) -> reify_ir::CompiledExpr {
+        // Result type mirrors arg_a (same kind for valid same-kind composition).
+        let result_type = arg_a.result_type.clone();
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(combinator))
+            .combine(arg_a.content_hash)
+            .combine(arg_b.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: combinator.to_string(),
+                    qualified_name: combinator.to_string(),
+                },
+                args: vec![arg_a, arg_b],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// `union(faces(b), faces(c))` evaluates to `Value::Selector(Union([sv_b, sv_c]))`
+    /// of kind Face, and resolving via `topology_selectors::resolve` yields the
+    /// canonical-order set-union of all face handles. BT2.
+    ///
+    /// RED until step-6 adds the `union` arm to `try_eval_topology_selector`.
+    #[test]
+    fn union_eval_produces_union_selector_and_resolve_yields_set_union() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("UnionTest", 0);
+        let hash_b: [u8; 32] = [0x11; 32];
+        let hash_c: [u8; 32] = [0x22; 32];
+
+        // faces(b) = [GHId(10), GHId(11)]; faces(c) = [GHId(12), GHId(13)].
+        // Union = [GHId(10), GHId(11), GHId(12), GHId(13)] (first-seen order, no dups).
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10), GeometryHandleId(11)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(12), GeometryHandleId(13)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("UnionTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("UnionTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "UnionTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "UnionTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let union_expr = topology_selector_composition_call("union", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the union arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "union of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 2, "union of 2 operands → 2 children");
+            }
+            other => panic!("expected Union node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: union = set-union of children (BT2).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("union resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![
+                GeometryHandleId(10),
+                GeometryHandleId(11),
+                GeometryHandleId(12),
+                GeometryHandleId(13),
+            ],
+            "union resolves to canonical-order set-union of all child handles"
+        );
+    }
+
+    /// `intersect(faces(b), faces(c))` where b and c are disjoint evaluates to
+    /// `Value::Selector(Intersect([sv_b, sv_c]))` of kind Face, and resolving
+    /// yields [] (empty intersection of disjoint sets). BT3.
+    ///
+    /// RED until step-6 adds the `intersect` arm to `try_eval_topology_selector`.
+    #[test]
+    fn intersect_eval_produces_intersect_selector_and_disjoint_resolves_empty() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("IntersectTest", 0);
+        let hash_b: [u8; 32] = [0x33; 32];
+        let hash_c: [u8; 32] = [0x44; 32];
+
+        // faces(b) = [GHId(10), GHId(11)]; faces(c) = [GHId(12), GHId(13)] (disjoint).
+        // Intersect of disjoint sets = [].
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10), GeometryHandleId(11)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(12), GeometryHandleId(13)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("IntersectTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("IntersectTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "IntersectTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "IntersectTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let intersect_expr = topology_selector_composition_call("intersect", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &intersect_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the intersect arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "intersect(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "intersect of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Intersect(children) => {
+                assert_eq!(children.len(), 2, "intersect of 2 operands → 2 children");
+            }
+            other => panic!("expected Intersect node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean intersect composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: intersect of disjoint sets = [] (BT3).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("intersect resolve must not error");
+        assert!(
+            resolved.is_empty(),
+            "intersect of disjoint face sets must resolve to []; got {:?}",
+            resolved
+        );
+    }
+
+    /// `difference(faces(b), faces(c))` evaluates to `Value::Selector(Difference(sv_b, sv_c))`
+    /// of kind Face, and resolving yields faces in b but not in c. BT3.
+    ///
+    /// RED until step-6 adds the `difference` arm to `try_eval_topology_selector`.
+    #[test]
+    fn difference_eval_produces_difference_selector_and_resolve_yields_set_difference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("DiffTest", 0);
+        let hash_b: [u8; 32] = [0x55; 32];
+        let hash_c: [u8; 32] = [0x66; 32];
+
+        // faces(b) = [GHId(10), GHId(11), GHId(12)]; faces(c) = [GHId(11)].
+        // Difference = b \ c = [GHId(10), GHId(12)] (GHId(11) excluded).
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(
+                handle_b,
+                vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            )
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(11)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("DiffTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("DiffTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "DiffTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "DiffTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let diff_expr = topology_selector_composition_call("difference", faces_b, faces_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &diff_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // RED until step-6 adds the difference arm.
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "difference(faces(b), faces(c)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "difference of face selectors → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Difference(a, _b) => {
+                assert_eq!(
+                    a.kind,
+                    reify_core::ty::SelectorKind::Face,
+                    "difference left operand → Face kind"
+                );
+            }
+            other => panic!("expected Difference node, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean difference composition must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve set semantics: difference = a \ b (BT3).
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("difference resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![GeometryHandleId(10), GeometryHandleId(12)],
+            "difference(faces(b), faces(c)) resolves to b \\ c = [GHId(10), GHId(12)]"
+        );
+    }
+
+    // ── eval-side composition coverage (task 4119 δ amendment) ─────────────
+    //
+    // Tests added in the amendment pass to cover paths not exercised by the
+    // compile-time tests in selector_composition_tests.rs:
+    //   1. Variadic 3-arg union at eval level.
+    //   2. SelectorError::KindMismatch → Warning + Value::Undef backstop in
+    //      eval_variadic_composition (defensive path; compile-time
+    //      E_SELECTOR_KIND_MISMATCH should fire first in normal use).
+
+    /// `union(faces(b), faces(c), faces(d))` — 3 operands, all Face — evaluates
+    /// to `Value::Selector(Union([sv_b, sv_c, sv_d]))` of kind Face.
+    /// Covers the variadic path in `eval_variadic_composition`.
+    #[test]
+    fn union_three_operands_eval_produces_union_with_three_children() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let handle_d = GeometryHandleId(3);
+        let rr = RealizationNodeId::new("Union3Test", 0);
+        let hash_b: [u8; 32] = [0x11; 32];
+        let hash_c: [u8; 32] = [0x22; 32];
+        let hash_d: [u8; 32] = [0x33; 32];
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(handle_b, vec![GeometryHandleId(10)])
+            .with_extracted_faces(handle_c, vec![GeometryHandleId(11)])
+            .with_extracted_faces(handle_d, vec![GeometryHandleId(12)]);
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+        named_steps.insert("d".to_string(), kh(handle_d));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("Union3Test", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Union3Test", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+        values.insert(
+            ValueCellId::new("Union3Test", "d"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_d,
+                kernel_handle: handle_d,
+            },
+        );
+
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_c = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_d = topology_selector_call_one_value_ref(
+            "faces",
+            "Union3Test",
+            "d",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+
+        // Build union(faces_b, faces_c, faces_d) — three-arg FunctionCall.
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str("union"))
+            .combine(faces_b.content_hash)
+            .combine(faces_c.content_hash)
+            .combine(faces_d.content_hash);
+        let union3_expr = reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "union".to_string(),
+                    qualified_name: "union".to_string(),
+                },
+                args: vec![faces_b, faces_c, faces_d],
+            },
+            result_type: Type::Selector(reify_core::ty::SelectorKind::Face),
+            content_hash,
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union3_expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces(b), faces(c), faces(d)) must yield Some(Value::Selector(..)), \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face, "3-arg union → Face kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 3, "3-arg union → 3 children in Union node");
+            }
+            other => panic!("expected Union node with 3 children, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean 3-arg union must emit no diagnostics; got: {:?}",
+            diagnostics
+        );
+
+        // Resolve: union of 3 disjoint single-face sets = all three handles.
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("3-arg union resolve must not error");
+        assert_eq!(
+            resolved,
+            vec![GeometryHandleId(10), GeometryHandleId(11), GeometryHandleId(12)],
+            "3-arg union resolves to set-union of all three child face sets"
+        );
+    }
+
+    /// Defensive backstop: when `eval_variadic_composition` receives children of
+    /// mismatched `SelectorKind` (bypassing the compile-time
+    /// `E_SELECTOR_KIND_MISMATCH`), `SelectorValue::union` returns
+    /// `SelectorError::KindMismatch` and the result is `Some(Value::Undef)` with
+    /// exactly one Warning diagnostic.
+    ///
+    /// This path is not reachable from valid .ri source (the compiler catches it
+    /// first) but is reachable from hand-crafted IR, so we pin the defensive
+    /// behaviour here.
+    #[test]
+    fn eval_variadic_composition_kind_mismatch_yields_undef_with_warning() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let handle_c = GeometryHandleId(2);
+        let rr = RealizationNodeId::new("KindMismatchTest", 0);
+        let hash_b: [u8; 32] = [0xAA; 32];
+        let hash_c: [u8; 32] = [0xBB; 32];
+
+        // Kernel needs no mock data: `faces`/`edges` construction is kernel-free
+        // (LeafQuery::All build via build_leaf_selector, no extract_* calls).
+        let mut kernel = MockGeometryKernel::new();
+
+        let mut named_steps = HashMap::new();
+        named_steps.insert("b".to_string(), kh(handle_b));
+        named_steps.insert("c".to_string(), kh(handle_c));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("KindMismatchTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+        values.insert(
+            ValueCellId::new("KindMismatchTest", "c"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_c,
+                kernel_handle: handle_c,
+            },
+        );
+
+        // Build union(faces(b), edges(c)) at IR level — mixed kinds, bypasses
+        // the compiler's kind-mismatch check.  result_type is deliberately Face
+        // (as if the compiler did anti-cascade), so the FunctionCall arm in
+        // try_eval_topology_selector routes to the Union handler.
+        let faces_b = topology_selector_call_one_value_ref(
+            "faces",
+            "KindMismatchTest",
+            "b",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_c = topology_selector_call_one_value_ref(
+            "edges",
+            "KindMismatchTest",
+            "c",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let union_mixed = topology_selector_composition_call("union", faces_b, edges_c);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &union_mixed,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        // Defensive backstop: kind-mismatch at eval level → Some(Undef) + Warning.
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "kind-mismatch union at eval level must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+    }
+
+    // ── step-9 (task 4119 δ): Named-leaf constructor eval tests ─────────────
+    //
+    // These tests pin `try_eval_topology_selector` for the three named-leaf
+    // constructors (face/edge/solid_body) and the BT8 resolve-to-empty path
+    // for an unresolvable name.  RED until step-10 adds the face/edge/solid_body
+    // arms to try_eval_topology_selector.
+    //
+    // BT8: resolving a face(b,"nope") Named leaf (no matching tag) returns []
+    // and pushes EXACTLY ONE DiagnosticCode::TopologyTagStale — exercising the
+    // already-landed resolve_leaf Named interim now reachable from the .ri surface.
+
+    /// Build a two-arg `face`/`edge`/`solid_body` FunctionCall: arg[0] is a
+    /// ValueRef to the parent geometry cell, arg[1] is a string Literal.
+    fn named_selector_call(
+        helper_name: &str,
+        entity: &str,
+        member: &str,
+        result_kind: reify_core::ty::SelectorKind,
+        name_str: &str,
+    ) -> reify_ir::CompiledExpr {
+        let arg_geom = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
+        );
+        let arg_name = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String(name_str.to_string()),
+            reify_core::Type::String,
+        );
+        let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(helper_name))
+            .combine(arg_geom.content_hash)
+            .combine(arg_name.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: helper_name.to_string(),
+                    qualified_name: helper_name.to_string(),
+                },
+                args: vec![arg_geom, arg_name],
+            },
+            result_type: reify_core::Type::Selector(result_kind),
+            content_hash,
+        }
+    }
+
+    /// `face(b, "top")` evaluates to `Value::Selector(Face)` with a
+    /// `SelectorNode::Leaf { query: LeafQuery::Named("top") }`. Zero kernel
+    /// queries at construction time (K2/BT7). RED until step-10.
+    #[test]
+    fn face_named_ctor_yields_named_leaf_selector_of_face_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedFaceCtorTest", 0);
+        let hash_b: [u8; 32] = [0xAA; 32];
+
+        let named_steps = HashMap::new(); // no kernel queries at construction
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedFaceCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "face",
+            "NamedFaceCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Face,
+            "top",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(b, \"top\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "face() → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "top", "face(b, \"top\") → Named(\"top\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `edge(b, "rim")` evaluates to `Value::Selector(Edge)` with
+    /// `LeafQuery::Named("rim")`. RED until step-10.
+    #[test]
+    fn edge_named_ctor_yields_named_leaf_selector_of_edge_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedEdgeCtorTest", 0);
+        let hash_b: [u8; 32] = [0xBB; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedEdgeCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "edge",
+            "NamedEdgeCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Edge,
+            "rim",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "edge(b, \"rim\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Edge,
+            "edge() → Edge kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "rim", "edge(b, \"rim\") → Named(\"rim\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `solid_body(b, "core")` evaluates to `Value::Selector(Body)` with
+    /// `LeafQuery::Named("core")`. RED until step-10.
+    #[test]
+    fn solid_body_named_ctor_yields_named_leaf_selector_of_body_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedBodyCtorTest", 0);
+        let hash_b: [u8; 32] = [0xCC; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedBodyCtorTest", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "solid_body",
+            "NamedBodyCtorTest",
+            "b",
+            reify_core::ty::SelectorKind::Body,
+            "core",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "solid_body(b, \"core\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Body,
+            "solid_body() → Body kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::Named(n),
+                ..
+            } => {
+                assert_eq!(n, "core", "solid_body(b, \"core\") → Named(\"core\") leaf");
+            }
+            other => panic!("expected Leaf{{ Named }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// BT8: resolving `face(b, "nope")` (unknown name) returns the empty list
+    /// and pushes exactly ONE `DiagnosticCode::TopologyTagStale` warning — the
+    /// already-landed resolve_leaf Named interim, now reachable from .ri surface.
+    /// RED until step-10 wires the face arm; the resolve assertion is only
+    /// reachable once construction succeeds.
+    #[test]
+    fn face_named_ctor_resolve_unknown_name_yields_empty_and_topology_tag_stale() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ValueCellId;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("NamedBT8Test", 0);
+        let hash_b: [u8; 32] = [0xDD; 32];
+
+        let named_steps = HashMap::new();
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("NamedBT8Test", "b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = named_selector_call(
+            "face",
+            "NamedBT8Test",
+            "b",
+            reify_core::ty::SelectorKind::Face,
+            "nope",
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+
+        // Step 1: construction produces Value::Selector with no diagnostics.
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(b, \"nope\"): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+
+        // Step 2: resolve the Named leaf — resolves to [] + exactly one TopologyTagStale.
+        let resolved = crate::topology_selectors::resolve(&sv, &mut kernel, &mut diagnostics)
+            .expect("resolve must not return QueryError for Named leaf");
+        assert_eq!(
+            resolved,
+            vec![],
+            "Named(\"nope\"): resolve must return empty list (D8 interim)"
+        );
+        let stale_count = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::TopologyTagStale))
+            .count();
+        assert_eq!(
+            stale_count,
+            1,
+            "resolve of Named leaf with no matching tag must emit exactly ONE \
+             W_TOPOLOGY_TAG_STALE; got {stale_count}: {:?}",
+            diagnostics
+        );
+    }
+
     // ── try_eval_topology_selector directional-selector dispatch unit tests ───
     // (task 3618, KGQ-ι: faces_by_normal + edges_parallel_to)
     //
@@ -15391,7 +16550,7 @@ mod tests {
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -15483,7 +16642,7 @@ mod tests {
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -15581,7 +16740,7 @@ mod tests {
             "b",
             Type::Geometry,
             "axis",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -16584,7 +17743,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real, // placeholder result type — unused on dispatch path
+            reify_core::Type::dimensionless_scalar(), // placeholder result type — unused on dispatch path
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -16651,7 +17810,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -16705,7 +17864,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -16794,7 +17953,7 @@ mod tests {
     /// literal arg. Used for 1-arg literal fall-through tests.
     fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name))
             .combine(arg.content_hash);
@@ -16806,7 +17965,7 @@ mod tests {
                 },
                 args: vec![arg],
             },
-            result_type: reify_core::Type::Real,
+            result_type: reify_core::Type::dimensionless_scalar(),
             content_hash,
         }
     }
@@ -17619,7 +18778,7 @@ mod tests {
     #[test]
     fn eval_sub_pose_non_pose_value_returns_undef_with_diagnostic() {
         let expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::dimensionless_scalar());
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -17905,7 +19064,7 @@ mod tests {
         // Build an expression that evaluates to Value::Undef directly.
         let expr = reify_ir::CompiledExpr::literal(
             reify_ir::Value::Undef,
-            reify_core::Type::Real, // type doesn't matter; the value is Undef
+            reify_core::Type::dimensionless_scalar(), // type doesn't matter; the value is Undef
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -18577,7 +19736,7 @@ mod tests {
             "solid",
             Type::Geometry,
             "plane",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::List(Box::new(Type::Geometry)),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();

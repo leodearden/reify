@@ -159,8 +159,8 @@ fn field_real_real_resolves_to_typed_field() {
         "Body",
         "scalar_field",
         &Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
     );
 }
@@ -200,7 +200,7 @@ fn field_user_struct_domain_resolves_to_typed_field() {
         "f",
         &Type::Field {
             domain: Box::new(Type::StructureRef("Foo".into())),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
     );
 }
@@ -229,7 +229,7 @@ fn field_user_trait_codomain_resolves_to_typed_field() {
         "Body",
         "f",
         &Type::Field {
-            domain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::TraitObject("Bar".into())),
         },
     );

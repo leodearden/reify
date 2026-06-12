@@ -2353,6 +2353,18 @@ impl OcctKernel {
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::ZoneSlab { target, width } => {
+                let shape = self.get_shape(*target)?;
+                let w = extract_f64(width)?;
+                ffi::ffi::zone_slab_shape(shape, w)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
+            GeometryOp::OffsetSolid { target, distance } => {
+                let shape = self.get_shape(*target)?;
+                let d = extract_f64(distance)?;
+                ffi::ffi::offset_solid_shape(shape, d)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Shell {
                 target,
                 thickness,
@@ -5723,6 +5735,191 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    /// RED until step-2 adds GeometryOp::ZoneSlab.
+    #[test]
+    fn zone_slab_planar_face_volume_identity() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Rectangle face: width=0.040 m, height=0.020 m → A = 8e-4 m²
+        let face_h = kernel
+            .execute(&GeometryOp::RectangleProfile {
+                width: Value::Real(0.040),
+                height: Value::Real(0.020),
+            })
+            .unwrap();
+        let w = 0.002_f64; // 2 mm width
+        let slab_h = kernel
+            .execute(&GeometryOp::ZoneSlab {
+                target: face_h.id,
+                width: Value::Real(w),
+            })
+            .unwrap();
+        // B6 identity: V = w · A for a right prism, within 1e-9 rel
+        let expected = w * (0.040 * 0.020);
+        let vol = kernel.query(&GeometryQuery::Volume(slab_h.id)).unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(
+                    (v - expected).abs() <= 1e-9 * expected,
+                    "zone_slab volume {v} should equal w·A={expected} within 1e-9 rel"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+        // Centering: centroid.z ≈ 0 (±w/2 symmetric offset)
+        let centroid = kernel.query(&GeometryQuery::Centroid(slab_h.id)).unwrap();
+        match centroid {
+            Value::String(ref s) => {
+                let (_cx, _cy, cz) = parse_centroid_json(s);
+                assert!(
+                    cz.abs() <= 1e-9,
+                    "zone_slab centroid z should be ≈0 (symmetric slab), got {cz}"
+                );
+            }
+            other => panic!("expected Value::String (centroid JSON), got {:?}", other),
+        }
+    }
+
+    /// RED until step-4 adds make_cylindrical_face FFI and wires curved handling.
+    /// PRD G6 smoke bar: zone_slab on a curved (cylindrical) face must not fail
+    /// and must return a solid with volume > 0.
+    #[test]
+    fn zone_slab_curved_face_smoke() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Build an open cylindrical lateral face: radius=0.050 m, height=0.030 m
+        let face_h = ffi::ffi::make_cylindrical_face(0.050, 0.030)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))
+            .unwrap();
+        let face_id = kernel.store_with_repr(face_h, crate::BRepKind::Face).id;
+        let w = 0.002_f64; // 2 mm zone width
+        let slab_h = kernel
+            .execute(&GeometryOp::ZoneSlab {
+                target: face_id,
+                width: Value::Real(w),
+            })
+            .expect("zone_slab on curved face must not fail (PRD G6)");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(slab_h.id))
+            .expect("Volume query on slab must succeed");
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "zone_slab on curved face must have volume > 0, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_solid_shape_ffi_contract() {
+        let b = ffi::ffi::make_box(10.0, 10.0, 10.0).expect("make_box");
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, 2.0).is_ok(),
+            "outward offset should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -2.0).is_ok(),
+            "inward offset < inradius should succeed"
+        );
+        assert!(
+            ffi::ffi::offset_solid_shape(&b, -100.0).is_err(),
+            "inward offset >> inradius should fail (degenerate)"
+        );
+    }
+
+    // --- OffsetSolid high-level execute tests ---
+
+    #[test]
+    fn offset_solid_outward_increases_volume() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box = volume 1000
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Outward offset 2.0 — same primitive as thicken, same 10³ box → vol > 1000
+        let grown_h = kernel
+            .execute(&GeometryOp::OffsetSolid {
+                target: box_h.id,
+                distance: Value::Real(2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(grown_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => assert!(
+                v > 1000.0,
+                "outward-offset volume should exceed original 1000, got {v}"
+            ),
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_solid_inward_valid_shrinks_volume() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box = volume 1000; inradius = 5
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Inward offset -2.0 (< inradius 5) → valid smaller solid, 0 < vol < 1000
+        let shrunk_h = kernel
+            .execute(&GeometryOp::OffsetSolid {
+                target: box_h.id,
+                distance: Value::Real(-2.0),
+            })
+            .unwrap();
+        let vol = kernel
+            .query(&GeometryQuery::Volume(shrunk_h.id))
+            .unwrap();
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "shrunk volume must be positive, got {v}");
+                assert!(
+                    v < 1000.0,
+                    "shrunk volume must be less than original 1000, got {v}"
+                );
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn offset_solid_degenerate_collapse_returns_error() {
+        let mut kernel = OcctKernel::new();
+        // 10×10×10 box; inradius = 5
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .unwrap();
+        // Inward offset -100 >> inradius 5 → degenerate, must return Err
+        let result = kernel.execute(&GeometryOp::OffsetSolid {
+            target: box_h.id,
+            distance: Value::Real(-100.0),
+        });
+        assert!(
+            result.is_err(),
+            "degenerate inward offset should produce an error"
+        );
     }
 
     #[test]

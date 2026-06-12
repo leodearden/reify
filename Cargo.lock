@@ -4260,6 +4260,7 @@ dependencies = [
  "reify-ir",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
  "reify-lsp",
  "reify-mcp",
  "reify-stdlib",

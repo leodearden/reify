@@ -1509,7 +1509,7 @@ fn ident_alias_scope_type_is_geometry() {
     //   1. `alias` is skipped in the second pass → appears in realizations, NOT value_cells.
     //   2. `let x = alias + 1` is NOT a geometry let → x IS compiled as a value cell.
     // Together these prove the first-pass type registration correctly typed `alias` as
-    // Geometry. Without the fix, `alias` would be Type::Real and compiled as a value cell,
+    // Geometry. Without the fix, `alias` would be Type::dimensionless_scalar() and compiled as a value cell,
     // so realizations.len() would be 1 (only body), failing assertion (1).
     let source = r#"structure S {
     param r: Length = 5mm

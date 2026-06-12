@@ -66,7 +66,7 @@ fn classify_mixed_as_cross_domain() {
 /// Pure arithmetic on dimensionless Reals should classify as Dimensional.
 #[test]
 fn classify_dimensionless_real_as_dimensional() {
-    let x = value_ref_typed("Part", "ratio", Type::Real);
+    let x = value_ref_typed("Part", "ratio", Type::dimensionless_scalar());
     let threshold = literal(Value::Real(0.5));
     let expr = gt(x, threshold);
 
@@ -96,7 +96,7 @@ fn classify_geometry_function_as_geometric() {
 #[test]
 fn classify_conditional_with_mixed_branches() {
     // Condition: ratio > 0.5 (numeric → Dimensional)
-    let ratio = value_ref_typed("Part", "ratio", Type::Real);
+    let ratio = value_ref_typed("Part", "ratio", Type::dimensionless_scalar());
     let half = literal(Value::Real(0.5));
     let condition = gt(ratio, half);
 

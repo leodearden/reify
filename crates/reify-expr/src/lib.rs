@@ -11,10 +11,12 @@ mod field_reductions;
 pub mod interp;
 pub mod kleene;
 pub mod sampled;
+mod sampled_fd;
 mod sanitize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
@@ -220,6 +222,27 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
+                }
+                // fn_field(lambda): wrap a user lambda as FieldSourceKind::Analytical.
+                //
+                // This is the β-phase intercepting builtin (task 4220,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.2). It constructs a
+                // `Value::Field { source: Analytical, lambda: Arc(lambda) }` from
+                // the evaluated first argument (which must be a `Value::Lambda`).
+                //
+                // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
+                // recursive frame small in debug builds — the two `Type` locals
+                // (`domain_type`, `codomain_type`) would otherwise sit on every
+                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+                // evaluation (same rationale as `eval_structure_instance_ctor`,
+                // `eval_quantifier`, etc.; pinned by
+                // `eval_user_fn_recursion_depth_exceeded`).
+                "fn_field"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
+                {
+                    eval_fn_field(&evaluated_args[0], &expr.result_type)
                 }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
@@ -1120,7 +1143,6 @@ fn type_carries_type_param(t: &Type) -> bool {
         // All remaining leaves carry no inner `Type`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1947,6 +1969,39 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
+/// Wrap a user lambda as a `Value::Field { source: Analytical, .. }`.
+///
+/// Implements the `fn_field` intercepting builtin (task 4220 β,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.2).
+///
+/// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
+/// debug builds — the `domain_type` and `codomain_type` locals (each a
+/// `Type`) would otherwise sit on every recursive `eval_expr` frame and
+/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// levels of user-fn recursion (same rationale as
+/// `eval_structure_instance_ctor`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "fn_field result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4219 α); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda.clone()),
+    }
+}
+
 /// Apply a lambda closure to a list of argument values.
 ///
 /// Returns Undef if:
@@ -2339,7 +2394,7 @@ fn eval_method_call(
                 if items.is_empty() {
                     return match result_type {
                         Type::Int => Value::Int(0),
-                        Type::Real => Value::Real(0.0),
+                        Type::Scalar { dimension } if dimension.is_dimensionless() => Value::Real(0.0),
                         Type::Scalar { dimension } => Value::Scalar {
                             si_value: 0.0,
                             dimension: *dimension,
@@ -4079,10 +4134,10 @@ mod tests {
     #[test]
     fn function_call_abs_dispatches_to_stdlib() {
         // FunctionCall('abs', [Literal(Real(-3.0))]) should return Real(3.0), not Undef
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[42]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4133,7 +4188,7 @@ mod tests {
         };
 
         // The literal args' static Type is not consulted at runtime (eval_expr's
-        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        // Literal arm clones the value), so Type::dimensionless_scalar() is a neutral placeholder.
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
             result_type: Type::Bool,
@@ -4143,9 +4198,9 @@ mod tests {
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
                 args: vec![
-                    lit(part, Type::Real),
-                    lit(env, Type::Real),
-                    lit(sev, Type::Real),
+                    lit(part, Type::dimensionless_scalar()),
+                    lit(env, Type::dimensionless_scalar()),
+                    lit(sev, Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -4209,9 +4264,9 @@ mod tests {
                     name: "fits_build_volume".to_string(),
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
-                // Literal args' static Type is not consulted at runtime; Type::Real
+                // Literal args' static Type is not consulted at runtime; Type::dimensionless_scalar()
                 // is a neutral placeholder (matches the step-11 test).
-                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
             },
         }
     }
@@ -4277,7 +4332,7 @@ mod tests {
         );
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[43]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "sin".to_string(),
@@ -4296,10 +4351,10 @@ mod tests {
 
     #[test]
     fn function_call_unknown_returns_undef() {
-        let arg = lit(Value::Real(1.0), Type::Real);
+        let arg = lit(Value::Real(1.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[44]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "nonexistent".to_string(),
@@ -4315,10 +4370,10 @@ mod tests {
     #[test]
     fn function_call_undef_propagation() {
         // abs(Undef) should return Undef (strict propagation)
-        let arg = lit(Value::Undef, Type::Real);
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[45]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4372,7 +4427,7 @@ mod tests {
         // abs() with no args should return Undef
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[47]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -5083,7 +5138,7 @@ mod tests {
             1,
             vec![
                 ("youngs_modulus", lit(Value::Int(200), Type::Int)),
-                ("poisson", lit(Value::Real(0.3), Type::Real)),
+                ("poisson", lit(Value::Real(0.3), Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5175,7 +5230,7 @@ mod tests {
             1,
             vec![
                 ("length", lit(Value::Int(5), Type::Int)),
-                ("mystery", vref("Nowhere", "missing", Type::Real)),
+                ("mystery", vref("Nowhere", "missing", Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5209,16 +5264,16 @@ mod tests {
         // let sum = a + b
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", lit(Value::Real(3.0), Type::Real)),
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", lit(Value::Real(3.0), Type::dimensionless_scalar())),
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5256,20 +5311,20 @@ mod tests {
         // let quad   = double + double → 8.0
         let double_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "a", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "a", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let quad_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "double", Type::Real),
-            vref("S", "double", Type::Real),
-            Type::Real,
+            vref("S", "double", Type::dimensionless_scalar()),
+            vref("S", "double", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
-            vec![("a", lit(Value::Real(2.0), Type::Real))],
+            vec![("a", lit(Value::Real(2.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("double", double_let), ("quad", quad_let)],
         );
@@ -5303,14 +5358,14 @@ mod tests {
         // inner struct
         let inner_derived_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S_inner", "x", Type::Real),
-            vref("S_inner", "x", Type::Real),
-            Type::Real,
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let inner_ctor = sct_with_lets(
             "S_inner",
             1,
-            vec![("x", lit(Value::Real(3.0), Type::Real))],
+            vec![("x", lit(Value::Real(3.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("derived", inner_derived_let)],
         );
@@ -5321,7 +5376,7 @@ mod tests {
             Value::String("derived".to_string()),
             Type::String,
         );
-        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::Real);
+        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::dimensionless_scalar());
         let expr = sct_with_lets(
             "S_outer",
             1,
@@ -5354,16 +5409,16 @@ mod tests {
         // let sum = a + b → Undef (Undef propagation)
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", vref("nowhere", "missing", Type::Real)), // unbound → Undef
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", vref("nowhere", "missing", Type::dimensionless_scalar())), // unbound → Undef
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5393,21 +5448,21 @@ mod tests {
 
     fn make_double_fn() -> CompiledFunction {
         // fn double(x: Real) -> Real { x + x }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "double".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("double", "x", Type::Real),
-                    vref("double", "x", Type::Real),
-                    Type::Real,
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"double"),
@@ -5419,29 +5474,29 @@ mod tests {
 
     fn make_fn_with_let() -> CompiledFunction {
         // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "f".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![(
                     "y".to_string(),
                     CompiledExpr::binop(
                         BinOp::Add,
-                        vref("f", "x", Type::Real),
+                        vref("f", "x", Type::dimensionless_scalar()),
                         lit(Value::Int(1), Type::Int),
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                     ),
                 )],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("f", "y", Type::Real),
+                    vref("f", "y", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
@@ -5456,10 +5511,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Real(5.0), Type::Real)],
+                args: vec![lit(Value::Real(5.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5487,7 +5542,7 @@ mod tests {
             "x".to_string(),
             Type::Field {
                 domain: Box::new(Type::TypeParam("T".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             },
         )];
         let generic_fn = CompiledFunction {
@@ -5496,10 +5551,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"generic_field_f"),
             annotations: vec![],
@@ -5513,8 +5568,8 @@ mod tests {
         // Arg's result_type is the concrete Field<Real, Real>; the Value payload
         // is irrelevant to overload resolution (which keys on result_type).
         let concrete_field = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         let args = vec![lit(Value::Undef, concrete_field)];
         let fns = [generic_fn];
@@ -5547,10 +5602,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"non_generic_trait_obj_solve"),
             annotations: vec![],
@@ -5658,10 +5713,10 @@ mod tests {
         let f = make_fn_with_let();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_f"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "f".to_string(),
-                args: vec![lit(Value::Real(4.0), Type::Real)],
+                args: vec![lit(Value::Real(4.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5725,10 +5780,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double_undef"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Undef, Type::Real)],
+                args: vec![lit(Value::Undef, Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5822,21 +5877,21 @@ mod tests {
     #[test]
     fn eval_user_fn_overload_by_arity() {
         // fn process(x: Real) -> Real { x * 2 }
-        let params1 = vec![("x".to_string(), Type::Real)];
+        let params1 = vec![("x".to_string(), Type::dimensionless_scalar())];
         let process1 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params1),
             params: params1,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("process", "x", Type::Real),
+                    vref("process", "x", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
@@ -5845,21 +5900,21 @@ mod tests {
             type_params: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
-        let params2 = vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)];
+        let params2 = vec![("x".to_string(), Type::dimensionless_scalar()), ("y".to_string(), Type::dimensionless_scalar())];
         let process2 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params2),
             params: params2,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("process", "x", Type::Real),
-                    vref("process", "y", Type::Real),
-                    Type::Real,
+                    vref("process", "x", Type::dimensionless_scalar()),
+                    vref("process", "y", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
@@ -5874,10 +5929,10 @@ mod tests {
         // Call with 1 arg: process(3.0) → 6.0
         let call1 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process1"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
         let ctx = EvalContext::new(&values, &functions);
@@ -5889,12 +5944,12 @@ mod tests {
         // Call with 2 args: process(3.0, 4.0) → 7.0
         let call2 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process2"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
                 args: vec![
-                    lit(Value::Real(3.0), Type::Real),
-                    lit(Value::Real(4.0), Type::Real),
+                    lit(Value::Real(3.0), Type::dimensionless_scalar()),
+                    lit(Value::Real(4.0), Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -5957,8 +6012,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5974,8 +6029,8 @@ mod tests {
             im: f64::NAN,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5991,8 +6046,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6008,8 +6063,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6025,8 +6080,8 @@ mod tests {
             im: f64::INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6042,8 +6097,8 @@ mod tests {
             im: f64::NEG_INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6076,8 +6131,8 @@ mod tests {
             im: -3.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Complex { re, im, dimension } => {
@@ -6464,12 +6519,12 @@ mod tests {
 
         // Lambda body: ValueRef of param `p`.
         let p_id = ValueCellId::new("__field.base", "p");
-        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::dimensionless_scalar());
         let body = CompiledExpr::binop(
             BinOp::Mul,
             p_ref,
-            lit(Value::Real(2.0), Type::Real),
-            Type::Real,
+            lit(Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // The lambda value (as it would appear inside Value::Field.lambda).
@@ -6481,8 +6536,8 @@ mod tests {
 
         // Build the field cell and seed the values map under __field.base.
         let field_value = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Composed,
             lambda: Arc::new(lambda_value),
         };
@@ -6493,13 +6548,13 @@ mod tests {
         // Synthesize a FunctionCall: `base(3.0)`.
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[100]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "base".to_string(),
                     qualified_name: "field::base".to_string(),
                 },
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
 
@@ -6523,10 +6578,10 @@ mod tests {
         // No `__field.abs` cell present → dispatch fall-through →
         // `reify_stdlib::eval_builtin("abs", &[Real(-3.0)])` runs and
         // returns Real(3.0).
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[101]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -7086,9 +7141,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7099,9 +7154,9 @@ mod tests {
 
     #[test]
     fn real_add_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7112,9 +7167,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7126,8 +7181,8 @@ mod tests {
     #[test]
     fn int_add_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7140,8 +7195,8 @@ mod tests {
     fn dimensioned_scalar_add_real_is_undef() {
         // Scalar{LENGTH} + Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -7153,9 +7208,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7166,9 +7221,9 @@ mod tests {
 
     #[test]
     fn real_sub_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7179,9 +7234,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7193,8 +7248,8 @@ mod tests {
     #[test]
     fn int_sub_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7207,8 +7262,8 @@ mod tests {
     fn dimensioned_scalar_sub_real_is_undef() {
         // Scalar{LENGTH} - Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -7229,7 +7284,7 @@ mod tests {
                     qualified_name: "std::iso_it_tolerance".to_string(),
                 },
                 // Literal args' static Type is not consulted at runtime.
-                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
             },
         }
     }

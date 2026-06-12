@@ -24,7 +24,7 @@ fn build_module_with_manufacturing_purpose(
 ) -> reify_compiler::CompiledModule {
     // Template "Head": one Param cell on entity "Head".
     let head_template = TopologyTemplateBuilder::new("Head")
-        .param("Head", "diameter", Type::Real, None)
+        .param("Head", "diameter", Type::dimensionless_scalar(), None)
         .build();
 
     // Template "MyDesign": one Param cell on entity "MyDesign" + sub "head" → Head.
@@ -107,7 +107,7 @@ fn build_module_with_two_param_purpose(
     tol_env: f64,
 ) -> reify_compiler::CompiledModule {
     let head_template = TopologyTemplateBuilder::new("Head")
-        .param("Head", "diameter", Type::Real, None)
+        .param("Head", "diameter", Type::dimensionless_scalar(), None)
         .build();
     let my_design_template = my_design_template_with_subs(&[("head", "Head"), ("tail", "Head")]);
     let purpose = two_param_fits_purpose(purpose_name, tol_part, tol_env);
@@ -217,7 +217,7 @@ fn build_module_with_overlapping_purposes(
     tight_tol: f64,
 ) -> reify_compiler::CompiledModule {
     let head_template = TopologyTemplateBuilder::new("Head")
-        .param("Head", "diameter", Type::Real, None)
+        .param("Head", "diameter", Type::dimensionless_scalar(), None)
         .build();
     // Two siblings so `loose`'s descendant propagation reaches BOTH `head`
     // and `tail`, while `tight` overrides only `head`.

@@ -257,8 +257,23 @@ pub enum DiagnosticCode {
     /// makes that non-breaking).
     ConstraintViolated,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
-    /// Replaces canonical message:
-    /// `"constraint <id> indeterminate: undefined inputs"` (Undef branch, Severity::Warning)
+    /// Replaces two canonical message forms (Undef branch, Severity::Warning):
+    ///
+    /// - `"constraint <id> indeterminate: undefined inputs: <cells>"` — emitted when
+    ///   ≥1 leaf `ValueRef` in the constraint expression resolves to `Value::Undef`
+    ///   (data is absent). `<cells>` is a comma-separated list of the undefined cell
+    ///   names (deduped, sorted alphabetically) via `ValueCellId::Display`
+    ///   (`"entity.member"` format). Note: `collect_value_refs()` also returns
+    ///   `CrossSubGeometryRef` IDs; those are treated the same as ordinary cell IDs
+    ///   and will appear here if absent from the `ValueMap`.
+    ///
+    /// - `"constraint <id> indeterminate: operator undefined for these operand kinds: <kinds>"`
+    ///   — emitted when all leaf `ValueRef`s are defined but the operator is undefined
+    ///   for the given operand kinds (e.g. comparing a Tensor to a Scalar, or comparing
+    ///   scalars of mismatched dimensions). `<kinds>` is a comma-separated list of the
+    ///   distinct operand kinds (deduped, sorted alphabetically) such as `"Tensor"`,
+    ///   `"Scalar<m>"`, `"Enum<MyType>"`. When the expression has no `ValueRef` leaves
+    ///   (literal-only), the `": <kinds>"` suffix is omitted.
     ConstraintIndeterminate,
     /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`,
     ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`, and
@@ -444,6 +459,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
+    /// Origin: `crates/reify-compiler/src/units.rs` (`selector_composition_result_type`),
+    /// called from `crates/reify-compiler/src/expr.rs` (selector-composition ladder arm).
+    /// Emitted as an `Error` when a selector composition (`union`/`intersect`/`difference`)
+    /// violates the K1 kind-closure invariant (all operands must share the same
+    /// `SelectorKind`).
+    ///
+    /// Two message variants are emitted under this code (distinguished by message text):
+    ///
+    /// 1. **Mixed-kind composition** — all operands are selectors but of different kinds
+    ///    (e.g. `Face` and `Edge`):
+    ///    `"selector composition kind mismatch: cannot compose <KindA> and <KindB>"`
+    ///    Label at the composition call site: `"mixed-kind selector composition"`.
+    ///
+    /// 2. **Non-selector operand mixed with selectors** — at least one operand is not a
+    ///    `Type::Selector` at all (e.g. `union(faces(b), box(…))`):
+    ///    `"selector composition requires all operands to be selectors; N non-selector \
+    ///     operand(s) found"`
+    ///    Label at the composition call site: `"non-selector operand in selector composition"`.
+    ///
+    /// Exactly one diagnostic is emitted per composition call site in both cases; the
+    /// result type is inferred as `Type::Selector(first_kind)` for downstream anti-cascade.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
+    /// (see `docs/prds/topology-selector-value-type.md` §11.2).
+    SelectorKindMismatch,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
@@ -736,6 +776,48 @@ pub enum DiagnosticCode {
     /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
     /// decisions").
     AutoTypeParamCrossProductSizeExceeded,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter BFS fallback assignment is jointly infeasible:
+    /// parameters [<names>] exceed <bound> (depth bound max_depth=<N>|cross-product
+    /// cap max_cross_product_size=<C>); BFS assignment [<T=fqn>, …] violates
+    /// constraint(s) [<id>, …] under joint check. No substitution produced."`
+    ///
+    /// Where:
+    /// - `<names>` lists the `auto:` type-parameter names (declared order).
+    /// - The `<bound>` clause identifies which fallback fired: either
+    ///   `depth bound max_depth=<N>` (from `AutoTypeParamDepthBoundExceeded`)
+    ///   or `cross-product cap max_cross_product_size=<C>` (from
+    ///   `AutoTypeParamCrossProductSizeExceeded`) — derived from the `code`
+    ///   argument passed to the helper.
+    /// - `[<T=fqn>, …]` is the per-param assignment BFS returned.
+    /// - `[<id>, …]` are the `ConstraintNodeId`s that returned `Violated`
+    ///   in the single joint `check_constraints_leaf` call.
+    ///
+    /// Emitted as `Severity::Error` when:
+    /// 1. The v0.2 DFS-over-cross-product falls back to v0.1 BFS (depth-bound
+    ///    or cross-product-cap guard fires).
+    /// 2. BFS returns a COMPLETE assignment (`substitution.len() == params.len()`).
+    /// 3. The joint recheck (`check_constraints_leaf` with a full ValueMap seeded
+    ///    from all candidates' literal defaults via `seed_candidate_value_map`)
+    ///    finds at least one `Violated` constraint.
+    ///
+    /// On this path **no substitution is produced** for the declaration — the
+    /// BFS assignment is discarded entirely because it is jointly infeasible.
+    /// The caller returns a `MultiParamResolutionOutcome` with an empty
+    /// `substitution`.  The Error is emitted INSTEAD of (not in addition to)
+    /// the depth-bound/cap `Warning`.
+    ///
+    /// Severity is `Error` (not `Warning`) because the BFS assignment is
+    /// unsound: accepting it would substitute a cross-product-infeasible
+    /// combination into the parameterized template.  A Warning would
+    /// mis-signal that compilation succeeded.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §6.2).
+    AutoTypeParamBoundedInfeasible,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
@@ -1968,6 +2050,45 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
     EvalUnresolved,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"GD&T material modifier (MMC/LMC) is illegal for '<type_name>': this characteristic is RFS-only"`.
+    ///
+    /// Emitted as a `Severity::Error` when a callout instance (a `Value::StructureInstance`
+    /// conforming to `GeometricTolerance`) carries `material_condition ∈ {MMC, LMC}` for a
+    /// characteristic family that is RFS-only per ASME Y14.5-2018 — namely Form
+    /// (`Flatness`, `Straightness`, `Circularity`, `Cylindricity`), Runout
+    /// (`CircularRunout`, `TotalRunout`), and Profile (`ProfileOfSurface`,
+    /// `ProfileOfLine`, `ProfileOfSurfaceRelated`, `ProfileOfLineRelated`).
+    /// Orientation (`Parallelism`, `Perpendicularity`, `Angularity`) are FOS-eligible
+    /// only when `zone_shape == Cylindrical`; when `zone_shape == Width` (the default)
+    /// a modifier is also illegal and this code is emitted.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`),
+    /// which is the B7 "at the instantiation span" oracle.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_GdtIllegalModifier`
+    /// (severity convention: `E_*` → Error; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtIllegalModifier,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"'<type_name>' was removed in ASME Y14.5-2018; use Position, ProfileOfSurface, or CircularRunout/TotalRunout instead"`.
+    ///
+    /// Emitted as a `Severity::Warning` (non-fatal) when a callout instance is of type
+    /// `Concentricity` or `Symmetry`, both of which were removed from the standard in
+    /// ASME Y14.5-2018. The warning fires unconditionally (independent of
+    /// `material_condition`). `GdtIllegalModifier` is NOT additionally emitted for these
+    /// types — the removal supersedes the modifier-legality question.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_GdtRemoved2018`
+    /// (severity convention: `W_*` → Warning; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtRemoved2018,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2776,6 +2897,44 @@ mod tests {
             back,
             DiagnosticCode::AutoTypeParamDepthBoundExceeded,
             "deserialize must round-trip back to AutoTypeParamDepthBoundExceeded"
+        );
+    }
+
+    // --- AutoTypeParamBoundedInfeasible tests (task 4434 — E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) ---
+    // Pairs with the joint-recheck emitter in
+    // `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs` (not
+    // reify-ir) alongside the other AutoTypeParam* siblings, per the design decision
+    // recorded in task 4434's plan (reify-ir/src/diagnostics.rs does not exist).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // serde wire-form round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamBoundedInfeasible` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamBoundedInfeasible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the γ BFS-fallback joint-recheck hard error.
+    ///
+    /// Emitted (as `Severity::Error`) by
+    /// `emit_fallback_warning_and_delegate_to_bfs` when BFS returns a complete
+    /// assignment that the joint-recheck finds infeasible (any Violated
+    /// constraint after seeding the full joint ValueMap).  Produces NO
+    /// substitution (PRD §6.2 step 4 / mnemonic E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_bounded_infeasible_round_trips_via_serde() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::AutoTypeParamBoundedInfeasible).unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamBoundedInfeasible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamBoundedInfeasible,
+            "deserialize must round-trip back to AutoTypeParamBoundedInfeasible"
         );
     }
 

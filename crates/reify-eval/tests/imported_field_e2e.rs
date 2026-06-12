@@ -265,7 +265,7 @@ fn imported_field_e2e_vdb_cube_sdf() {
     // ---------------------------------------------------------------------------
     // G2#1: Compile the embedded .ri source (path interpolated from tempfile).
     // ---------------------------------------------------------------------------
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
     let source = format!(
         r#"
 field def cube_sdf : Point3 -> Scalar {{

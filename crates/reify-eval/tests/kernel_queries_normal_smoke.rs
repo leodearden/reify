@@ -14,7 +14,7 @@
 //! Two assertions:
 //!
 //! 1. **COMPILE-LEVEL** (always) — `normal_smoke.ri` parses + typechecks and
-//!    the `NormalSmoke.n` cell's compile-time type is `Type::vec3(Type::Real)`
+//!    the `NormalSmoke.n` cell's compile-time type is `Type::vec3(Type::dimensionless_scalar())`
 //!    (dimensionless Vector3), proving the `units.rs` GEOMETRY_QUERY_NAMES
 //!    registration and `geometry_query_result_type` arm wire the cell type
 //!    through the compiler.  At engine runtime the `solid` arg is a
@@ -54,7 +54,7 @@ const NORMAL_SMOKE_PATH: &str = concat!(
 
 /// Pins the user-observable signal for KGQ-ζ:
 ///
-/// - `NormalSmoke.n` must have compile-time type `Type::vec3(Type::Real)`,
+/// - `NormalSmoke.n` must have compile-time type `Type::vec3(Type::dimensionless_scalar())`,
 ///   verifying the `units.rs` registration wires the cell type correctly.
 /// - `GeometryQuery::FaceNormalAt` through the real OCCT kernel returns
 ///   `Ok(Value::String(_))`, confirming the `OcctKernel::query()` dispatch
@@ -88,7 +88,7 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
         .expect("NormalSmoke structure should exist in normal_smoke.ri");
 
     // The `n = normal(solid, pt)` cell must typecheck as Vector3<Dimensionless>.
-    // Set by `geometry_query_result_type("normal") → Type::vec3(Type::Real)` in
+    // Set by `geometry_query_result_type("normal") → Type::vec3(Type::dimensionless_scalar())` in
     // crates/reify-compiler/src/units.rs (KGQ-ζ, task 3615 step-4).
     let n_cell = tmpl
         .value_cells
@@ -98,8 +98,8 @@ fn normal_smoke_compiles_as_vec3_real_and_face_normal_at_ffis() {
 
     assert_eq!(
         n_cell.cell_type,
-        Type::vec3(Type::Real),
-        "NormalSmoke.n should have type Type::vec3(Type::Real) \
+        Type::vec3(Type::dimensionless_scalar()),
+        "NormalSmoke.n should have type Type::vec3(Type::dimensionless_scalar()) \
          (dimensionless Vector3, KGQ-ζ registration), got: {:?}",
         n_cell.cell_type
     );

@@ -1638,10 +1638,10 @@ fn compile_simple_function() {
     let f = &compiled.functions[0];
     assert_eq!(f.name, "double");
     assert!(!f.is_pub);
-    assert_eq!(f.params, vec![("x".to_string(), reify_core::Type::Real)]);
-    assert_eq!(f.return_type, reify_core::Type::Real);
+    assert_eq!(f.params, vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]);
+    assert_eq!(f.return_type, reify_core::Type::dimensionless_scalar());
     assert!(f.body.let_bindings.is_empty());
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Compile a function with let bindings in body.
@@ -1667,7 +1667,7 @@ fn compile_function_with_let_bindings() {
     assert_eq!(f.body.let_bindings[0].0, "y");
     assert_eq!(f.body.let_bindings[1].0, "z");
     // result_expr should compile without unresolved name errors
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Two overloaded functions with the same name but different param types.
@@ -1693,7 +1693,7 @@ fn compile_overloaded_functions() {
     assert_eq!(compiled.functions[1].name, "convert");
     assert_eq!(
         compiled.functions[0].params,
-        vec![("x".to_string(), reify_core::Type::Real)]
+        vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
     );
     assert_eq!(
         compiled.functions[1].params,
@@ -2040,7 +2040,7 @@ fn compile_user_function_call() {
         }
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
-    assert_eq!(v_expr.result_type, reify_core::Type::Real);
+    assert_eq!(v_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Overload resolution should pick the correct overload based on argument types.
@@ -2079,7 +2079,7 @@ fn compile_overload_resolution_picks_correct() {
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
     // 3.14 is Real, so it matches the Real overload
-    assert_eq!(a_expr.result_type, reify_core::Type::Real);
+    assert_eq!(a_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Forward reference: structure calls a function declared AFTER it.
@@ -2145,7 +2145,7 @@ fn compile_fn_body_calls_other_user_fn() {
         } => {
             assert_eq!(function_name, "double", "outer call should be double");
             assert_eq!(args.len(), 1);
-            assert_eq!(q_body.result_expr.result_type, reify_core::Type::Real);
+            assert_eq!(q_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 
             // Inner call: double(x)
             match &args[0].kind {
@@ -2155,7 +2155,7 @@ fn compile_fn_body_calls_other_user_fn() {
                 } => {
                     assert_eq!(inner_name, "double", "inner call should be double");
                     assert_eq!(inner_args.len(), 1);
-                    assert_eq!(args[0].result_type, reify_core::Type::Real);
+                    assert_eq!(args[0].result_type, reify_core::Type::dimensionless_scalar());
                 }
                 other => panic!("expected inner UserFunctionCall, got {:?}", other),
             }
@@ -2192,14 +2192,14 @@ fn compile_fn_body_calls_user_fn_in_let_binding() {
             assert_eq!(args.len(), 1);
             assert_eq!(
                 calc_body.let_bindings[0].1.result_type,
-                reify_core::Type::Real
+                reify_core::Type::dimensionless_scalar()
             );
         }
         other => panic!("expected UserFunctionCall in let binding, got {:?}", other),
     }
 
     // result expr: y + 1 — should be BinOp with result_type Real
-    assert_eq!(calc_body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(calc_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
     match &calc_body.result_expr.kind {
         reify_ir::CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, reify_ir::BinOp::Add);

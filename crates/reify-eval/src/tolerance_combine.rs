@@ -6,11 +6,12 @@
 //!
 //! # Recognition-shape twin
 //!
-//! The `extract_output_tolerance_bound` extractor and the new
-//! `recognize_representation_within` asserter share recognition gates via the
-//! private `match_representation_within_shape` helper — both functions call it
-//! so there is a single gate implementation that cannot drift (retiring the
-//! TODO that lived in the extractor's doc before task 4199 γ).
+//! `extract_output_tolerance_bound`, `recognize_representation_within`, and
+//! `crate::tolerance_scope::extract_tolerance_bindings` all share recognition
+//! gates via the `pub(crate) match_representation_within_shape` helper — three
+//! callers, one gate implementation that cannot drift (retiring the TODO that
+//! lived in the extractor's doc before task 4199 γ; the scope-side routing
+//! landed in task 4542).
 //!
 //! The canonical recognition shape (either compiler IR variant):
 //! `UserFunctionCall("RepresentationWithin", ..)` (synthetic/test expressions)
@@ -89,7 +90,7 @@ pub fn combine_demanded_tolerance(
 /// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
 ///
 /// Returns `(subject_vcid, struct_ref_name, bound_si)` on success.
-fn match_representation_within_shape(
+pub(crate) fn match_representation_within_shape(
     expr: &CompiledExpr,
 ) -> Option<(ValueCellId, String, f64)> {
     // Gate 2: top-level call to "RepresentationWithin" with exactly 2 args.
@@ -355,13 +356,11 @@ fn resolve_repr_tol_key(
 ///
 /// Returns `None` when no matching constraint exists.
 ///
-/// # TODO
+/// # Shared recognition (drift retired)
 ///
-/// The recognition gates are duplicated from
-/// [`crate::tolerance_scope::extract_tolerance_bindings`]. A shared helper
-/// would prevent drift between the two extractors but requires touching the
-/// `tolerance_scope` public surface — deferred to keep this task scoped to
-/// the 2650 contract.
+/// Gates 2-4 are delegated to [`match_representation_within_shape`].
+/// `crate::tolerance_scope::extract_tolerance_bindings` is now a third caller
+/// of that helper (landed as task 4542), so the two extractors cannot drift.
 pub fn extract_output_tolerance_bound(
     constraints: &PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     output_template_name: &str,
@@ -576,7 +575,7 @@ mod tests {
             CompiledExpr::user_function_call(
                 "RepresentationWithin".to_string(),
                 vec![
-                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::Real),
+                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::dimensionless_scalar()),
                     CompiledExpr::literal(
                         Value::Scalar {
                             si_value: 0.5e-6,
@@ -852,7 +851,7 @@ mod tests {
         // ValueRef with result_type = Real, not StructureRef.
         let subject_arg = CompiledExpr::value_ref(
             ValueCellId::new("subject", "self"),
-            Type::Real, // wrong result_type
+            Type::dimensionless_scalar(), // wrong result_type
         );
         let tol_arg = CompiledExpr::literal(
             Value::Scalar {

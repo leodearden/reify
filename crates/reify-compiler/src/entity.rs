@@ -622,6 +622,13 @@ pub(crate) fn compile_entity(
     // geometry-let classification is order-sensitive (incremental accumulation).
     // Pinned by `let_scope_tests::cyclic_ident_alias_does_not_crash`.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+    // Parallel to `known_geometry_lets`: tracks which let names resolve to a
+    // selector expression (direct ctor / composition of already-known selectors).
+    // Populated incrementally in the Let arm's else branch (when is_selector_expr
+    // is true) so that subsequent selector-let ident references are recognised by
+    // is_selector_expr's Ident arm. Threaded into every is_geometry_let call
+    // and into register_guarded_names. (task 4527)
+    let mut known_selector_lets: HashSet<&str> = HashSet::new();
     // Tracks cluster logical names already registered in this pre-pass so that a
     // second MatchArmDeclGroup with the same logical name is skipped wholesale.
     // Mirrors the dup-cluster check in compile_match_arm_decl_group (entity.rs:2038)
@@ -806,14 +813,14 @@ pub(crate) fn compile_entity(
                                             "unknown type name",
                                         )),
                                     );
-                                    Type::Real // fallback
+                                    Type::dimensionless_scalar() // fallback
                                 }
                             }
                         }
                     }
                 } else {
                     // Infer type from default expression if available
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets: register as Type::Geometry,
@@ -824,7 +831,7 @@ pub(crate) fn compile_entity(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -851,7 +858,7 @@ pub(crate) fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
@@ -859,7 +866,12 @@ pub(crate) fn compile_entity(
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
                     // We'll update this after the expression is compiled.
-                    scope.register(&let_decl.name, Type::Real);
+                    scope.register(&let_decl.name, Type::dimensionless_scalar());
+                    // Track selector lets so subsequent is_selector_expr Ident lookups
+                    // can classify compositions of these lets correctly. (task 4527)
+                    if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
+                        known_selector_lets.insert(let_decl.name.as_str());
+                    }
                 }
                 outside_decl_spans
                     .entry(let_decl.name.clone())
@@ -890,6 +902,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &mut known_geometry_lets,
+                    &mut known_selector_lets,
                 );
                 register_guarded_names(
                     &g.else_members,
@@ -901,6 +914,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &mut known_geometry_lets,
+                    &mut known_selector_lets,
                 );
             }
             reify_ast::MemberDecl::MatchArmDeclGroup(m) => {
@@ -1067,10 +1081,10 @@ pub(crate) fn compile_entity(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),
                                     );
-                                    Type::Real
+                                    Type::dimensionless_scalar()
                                 })
                             } else {
-                                Type::Real
+                                Type::dimensionless_scalar()
                             };
                             let id = ValueCellId::new(entity_name, &composite_name);
                             scope.names.insert(composite_name, (id, ty, None));
@@ -1078,7 +1092,7 @@ pub(crate) fn compile_entity(
                         reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
-                            scope.names.insert(composite_name, (id, Type::Real, None));
+                            scope.names.insert(composite_name, (id, Type::dimensionless_scalar(), None));
                         }
                         _ => {}
                     }
@@ -1305,7 +1319,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::Real
+                            Type::dimensionless_scalar()
                         }
                     })
                     .collect();
@@ -1410,7 +1424,7 @@ pub(crate) fn compile_entity(
             }
             reify_ast::MemberDecl::Let(let_decl) => {
                 // Skip geometry-producing function calls (and ident aliases to them)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                     continue;
                 }
 
@@ -1600,7 +1614,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::Real
+                            Type::dimensionless_scalar()
                         }
                     })
                     .collect();
@@ -1879,6 +1893,7 @@ pub(crate) fn compile_entity(
                     structure_names,
                     trait_names,
                     &known_geometry_lets,
+                    &known_selector_lets,
                 );
             }
             reify_ast::MemberDecl::AssociatedType(_) => {
@@ -2266,7 +2281,7 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, functions, &mut map);
+        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &mut map);
         map
     };
 
@@ -2276,7 +2291,7 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) =>
+                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
@@ -3106,7 +3121,7 @@ fn compile_match_arm_decl_group(
                 .collect();
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
-            // entries emit a diagnostic and yield Type::Real, preserving positional
+            // entries emit a diagnostic and yield Type::dimensionless_scalar(), preserving positional
             // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
             // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
             // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
@@ -3150,7 +3165,7 @@ fn compile_match_arm_decl_group(
                                 "unexpected dimensional expression in type argument",
                             )),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     }
                 })
                 .collect();
@@ -3322,7 +3337,7 @@ fn arm_member_type(
         }
         reify_ast::MemberDecl::Let(l) => {
             // Same pass-1 registration invariant as the Param arm above; the ICE guards
-            // against a future refactor regressing to silent Type::Real. See `emit_ice_unresolved`.
+            // against a future refactor regressing to silent Type::dimensionless_scalar(). See `emit_ice_unresolved`.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
@@ -3332,12 +3347,12 @@ fn arm_member_type(
         }
         _ => {
             // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
-            // feedback rather than a silently-wrong Type::Real.
+            // feedback rather than a silently-wrong Type::dimensionless_scalar().
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
     }
 }
@@ -3545,13 +3560,14 @@ pub(crate) struct PendingSubOverrideAuto {
 fn collect_geometry_exprs<'a>(
     members: &'a [reify_ast::MemberDecl],
     known: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
     functions: &[CompiledFunction],
     out: &mut HashMap<&'a str, &'a reify_ast::Expr>,
 ) {
     for m in members {
         match m {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, known) =>
+                if is_geometry_let(&let_decl.value, functions, known, known_selector_lets) =>
             {
                 out.insert(let_decl.name.as_str(), &let_decl.value);
             }
@@ -3561,8 +3577,8 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, functions, out);
-                collect_geometry_exprs(&g.else_members, known, functions, out);
+                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, out);
+                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, out);
             }
             _ => {}
         }
@@ -3746,7 +3762,7 @@ pub(crate) fn check_type_param_bounds(
 ///
 /// Returns true if any of the `structure_trait_bounds` equals `required_trait`
 /// or refines it (directly or transitively) through the `trait_registry`.
-pub(crate) fn satisfies_trait_bound(
+pub fn satisfies_trait_bound(
     structure_trait_bounds: &[String],
     required_trait: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,
@@ -4122,6 +4138,11 @@ pub(crate) fn build_structure_def_skeleton(
     // the first pass below (authoritative: entity.rs:822-831); geometry lets are
     // accumulated in the second pass.
     let mut known_geometry_lets: HashSet<&str> = HashSet::new();
+    // Parallel selector-let accumulator — mirrors the authoritative pre-pass
+    // (entity.rs:~631). Populated in the Let arm's else branch when
+    // is_selector_expr is true, enabling all-ident selector compositions to
+    // route correctly. (task 4527)
+    let mut known_selector_lets: HashSet<&str> = HashSet::new();
 
     for member in &structure.members {
         if let reify_ast::MemberDecl::Param(param) = member {
@@ -4141,7 +4162,7 @@ pub(crate) fn build_structure_def_skeleton(
                         trait_names,
                     )
                 })
-                .unwrap_or(Type::Real);
+                .unwrap_or(Type::dimensionless_scalar());
 
             let default_expr = param.default.as_ref().map(|expr| {
                 let mut compiled =
@@ -4159,7 +4180,7 @@ pub(crate) fn build_structure_def_skeleton(
                 && param
                     .default
                     .as_ref()
-                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets))
+                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
                     .unwrap_or(false)
             {
                 known_geometry_lets.insert(param.name.as_str());
@@ -4211,12 +4232,23 @@ pub(crate) fn build_structure_def_skeleton(
     //     identical metadata on both paths.
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets) {
+            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
                 // Accumulate this geometry let's name so subsequent lets that
                 // alias it (Ident/branch references) are also classified as
                 // geometry — matching the authoritative path (entity.rs:853-856).
                 known_geometry_lets.insert(let_decl.name.as_str());
                 continue;
+            }
+            // Track selector lets BEFORE the where_clause guard — mirrors the authoritative
+            // pre-pass (entity.rs:857-875) which populates known_selector_lets regardless
+            // of where_clause.  Without this, a per-decl-guarded selector let followed by
+            // a non-guarded all-ident composition (`let u = union(s, other)` where `s`
+            // has a where_clause) would have `u` mis-classified as CSG on this skeleton
+            // pass even though the authoritative pass correctly routes it to the selector
+            // path.  Mirrors the `known_geometry_lets` population above (which also
+            // precedes the where_clause continue). (task 4527 amendment)
+            if is_selector_expr(&let_decl.value, functions, &known_selector_lets) {
+                known_selector_lets.insert(let_decl.name.as_str());
             }
             // Per-decl guarded lets belong in guarded_groups on the authoritative path;
             // exclude them here so value_cells (and thus ctor `lets`) are path-consistent.
@@ -4309,7 +4341,7 @@ mod tests {
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
     /// when the declared name is absent from scope.  We assert that:
-    /// 1. `Type::Real` is returned (the ICE fallback value).
+    /// 1. `Type::dimensionless_scalar()` is returned (the ICE fallback value).
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
@@ -4455,8 +4487,8 @@ mod tests {
 
             assert_eq!(
                 ty,
-                Type::Real,
-                "[{label}] fallback type should be Type::Real"
+                Type::dimensionless_scalar(),
+                "[{label}] fallback type should be Type::dimensionless_scalar()"
             );
             assert_eq!(
                 diagnostics.len(),

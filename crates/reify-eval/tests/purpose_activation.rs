@@ -19,7 +19,7 @@
 //!     true today due to empty-list emission; runtime expansion is a follow-up task)
 //!   - Member-type resolution for concrete subjects: task-2200 added compile-time
 //!     existence validation (unknown member → Error diagnostic) for concrete subject
-//!     types, but member types still fall back to `Type::Real`. The generic
+//!     types, but member types still fall back to `Type::dimensionless_scalar()`. The generic
 //!     `subject : Structure` wildcard still has no template to validate against,
 //!     so `subject.bogus` on a wildcard subject compiles silently — a known
 //!     limitation documented by the characterization test in purpose_compile_tests.rs.
@@ -1288,7 +1288,7 @@ purpose manufacturing_ready(subject : Structure) {
 ///      `PurposeReflectiveAggregation` marker, and not a `ListLiteral`).
 ///  (b) the ReflectiveCellList has exactly two elements, each a `ValueRef`.
 ///  (c) the elements' cell IDs are `{Bracket.x, Bracket.y}` (any order).
-///  (d) each element's `result_type` is `Type::Real` (cell-type lockstep —
+///  (d) each element's `result_type` is `Type::dimensionless_scalar()` (cell-type lockstep —
 ///      `Bracket.x` / `Bracket.y` are declared as `Real`).
 #[test]
 fn activate_expands_subject_params_placeholder_to_populated_list() {
@@ -1383,8 +1383,8 @@ purpose check(subject : Structure) {
         // declared cell type (Real for Bracket.x / Bracket.y).
         assert_eq!(
             element.result_type,
-            Type::Real,
-            "expected element {} result_type to be Type::Real (cell-type lockstep), got {:?}",
+            Type::dimensionless_scalar(),
+            "expected element {} result_type to be Type::dimensionless_scalar() (cell-type lockstep), got {:?}",
             i,
             element.result_type
         );

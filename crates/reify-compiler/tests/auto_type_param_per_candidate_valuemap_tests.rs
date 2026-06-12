@@ -70,7 +70,7 @@ fn gasket_seal_template() -> reify_compiler::TopologyTemplate {
             Type::length(),
             Some(CompiledExpr::literal(mm(30.0), Type::length())),
         )
-        .param("GasketSeal", "color", Type::Real, None)
+        .param("GasketSeal", "color", Type::dimensionless_scalar(), None)
         .param(
             "GasketSeal",
             "computed",
@@ -138,8 +138,8 @@ fn seed_extracts_literal_defaults_and_skips_others() {
 #[test]
 fn seed_returns_empty_map_for_template_with_no_literal_defaults() {
     let tmpl = TopologyTemplateBuilder::new("BareSeal")
-        .param("BareSeal", "x", Type::Real, None)
-        .param("BareSeal", "y", Type::Real, None)
+        .param("BareSeal", "x", Type::dimensionless_scalar(), None)
+        .param("BareSeal", "y", Type::dimensionless_scalar(), None)
         .build();
 
     let map = seed_candidate_value_map(&tmpl, "seal");

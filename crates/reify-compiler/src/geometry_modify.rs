@@ -82,6 +82,28 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // zone_slab(face, width) — offset face ±w/2 and cap into a centered slab solid
+        "zone_slab" => compile_modify_2arg(
+            "zone_slab",
+            ModifyKind::ZoneSlab,
+            "width",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
+        // offset_solid(target, distance)
+        "offset_solid" => compile_modify_2arg(
+            "offset_solid",
+            ModifyKind::OffsetSolid,
+            "distance",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         // draft(target, angle, plane)
         "draft" => {
             if !check_arg_count_exact("draft", compiled_args.len(), 3, expr_span, diagnostics) {
@@ -149,6 +171,19 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
+        // fillet_all(target, radius) — all-edges alias: identical to 2-arg fillet.
+        // Uses compile_modify_2arg with ModifyKind::Fillet → CompiledGeometryOp::Modify{Fillet}
+        // with NO "edges" arg, so it reaches the same eval None-edges branch as 2-arg fillet.
+        "fillet_all" => compile_modify_2arg(
+            "fillet_all",
+            ModifyKind::Fillet,
+            "radius",
+            compiled_args,
+            target,
+            expr_span,
+            diagnostics,
+            sub_ops,
+        ),
         _ => unreachable!("compile_modify_op called with non-modify name: {}", name),
     }
 }
@@ -158,7 +193,7 @@ mod tests {
     use super::*;
 
     fn scalar_literal(v: f64) -> CompiledExpr {
-        CompiledExpr::literal(Value::Real(v), Type::Real)
+        CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
     #[test]
@@ -542,6 +577,8 @@ mod tests {
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
+            (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
+            (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
         // ModifyKind::VARIANT_COUNT, `cargo check` fails here before any test runs.
@@ -557,7 +594,9 @@ mod tests {
             | ModifyKind::Fillet
             | ModifyKind::Thicken
             | ModifyKind::Shell
-            | ModifyKind::Draft => (),
+            | ModifyKind::Draft
+            | ModifyKind::ZoneSlab
+            | ModifyKind::OffsetSolid => (),
         };
         CASES
     }

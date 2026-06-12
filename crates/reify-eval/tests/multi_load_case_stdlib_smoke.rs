@@ -218,7 +218,7 @@ fn multi_load_case_stdlib_smoke_e2e() {
 /// The natural shape for a real worst_case call is
 /// `worst_case(mcr, |e| e["displacement"])` where each case is an
 /// `ElasticResult`-shaped Map. However, untyped lambda params default to
-/// `Type::Real` (per `compile_expr_guarded`'s Lambda arm at expr.rs:2092),
+/// `Type::dimensionless_scalar()` (per `compile_expr_guarded`'s Lambda arm at expr.rs:2092),
 /// and `IndexAccess` on `Real` is rejected by the type checker
 /// ("cannot index into non-collection type 'Real'"). The Reify lambda
 /// param-type syntax accepts only bare named types resolvable by

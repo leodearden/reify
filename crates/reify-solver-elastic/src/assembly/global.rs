@@ -457,11 +457,44 @@ pub fn assemble_global_stiffness(
         .sum();
     let triplets: Vec<Triplet<usize, usize, f64>> = match mode {
         AssemblyMode::Deterministic => {
-            let mut acc = Vec::with_capacity(total_triplets);
+            // Pre-aggregate every duplicate `(row, col)` contribution into a
+            // `BTreeMap<(usize, usize), f64>` in slice/encounter order, then
+            // emit a **duplicate-free** triplet set to faer. This makes K a
+            // pure reify-owned function of `(n_nodes, elements)` — faer's
+            // internal `sort_unstable`-based dedup order no longer affects
+            // any stored value.
+            //
+            // Accumulation is left-fold / encounter order:
+            //   K[i][j] = Σ (over elements sharing DOF pair (i,j))
+            //              K_e[a·d_e+α][b·d_e+β]
+            // processed in the order elements appear in the `elements` slice
+            // (and within each element in `(a, α, b, β)` row-major order as
+            // emitted by `emit_element_triplets`).
+            //
+            // With unique keys faer's `try_new_from_triplets` dedup becomes a
+            // no-op — the canary `faer_sums_duplicate_triplets_in_encounter_order`
+            // still validates the parallel-mode path (unchanged below).
+            let mut btree: std::collections::BTreeMap<(usize, usize), f64> =
+                std::collections::BTreeMap::new();
+            // Pre-size `scratch` to the largest per-element triplet block to
+            // avoid repeated reallocs (one Vec is reused via `clear()` across
+            // all elements). `total_triplets / elements.len().max(1)` gives the
+            // average count; using the true per-element max would require an
+            // extra pass over elements, but the average is sufficient for
+            // avoiding pathological realloc cascades on heterogeneous meshes.
+            let scratch_cap = total_triplets / elements.len().max(1);
+            let mut scratch: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(scratch_cap);
             for element in elements {
-                emit_element_triplets(element, n_dofs_per_node, &mut acc);
+                scratch.clear();
+                emit_element_triplets(element, n_dofs_per_node, &mut scratch);
+                for t in &scratch {
+                    *btree.entry((t.row, t.col)).or_insert(0.0) += t.val;
+                }
             }
-            acc
+            btree
+                .into_iter()
+                .map(|((row, col), val)| Triplet::new(row, col, val))
+                .collect()
         }
         AssemblyMode::Parallel { threads } => {
             // Partition `elements` into `threads` chunks via
@@ -548,28 +581,29 @@ pub fn assemble_global_stiffness(
             })
         }
     };
-    // faer 0.24's `try_new_from_triplets` **sums duplicate `(row, col)`
-    // entries in encounter order**. We rely on this contract: when two
-    // (or more) elements share a DOF pair, each element emits its own
-    // triplet, and the accumulated `K_global[i][j]` is the sum of all
-    // contributions in slice-iteration order.
+    // **Duplicate-summation ownership split:**
     //
-    // The contract is pinned by the `faer_sums_duplicate_triplets_in_encounter_order`
-    // unit test below, which seeds five duplicate triplets whose left-fold
-    // (encounter-order) and pairwise-tree-reduction sums diverge above
-    // the LSB — so a faer upgrade that switches summation strategy
-    // surfaces immediately rather than silently invalidating the
-    // parallel-mode determinism contract. Faer's own `test_from_indices`
-    // (sparse/mod.rs:280-326) demonstrates the same behavior on values
-    // that happen to be sum-order-invariant; our canary uses values that
-    // are not, so it would also catch a regression that survives faer's
-    // own test suite.
+    // *Deterministic mode* — the `BTreeMap` pre-aggregation above produces a
+    // duplicate-free triplet set, so faer's internal `sort_unstable`-based
+    // dedup is a no-op and does not influence any stored value. The summation
+    // order (left-fold / encounter order over the `elements` slice) is fully
+    // reify-owned. This makes `K` a pure function of `(n_nodes, elements)`,
+    // eliminating the flaky-determinism failure mode documented in task 4573.
     //
-    // If a future faer version regresses this (e.g. overwrites instead of
-    // summing), the fix is to switch the local helper to a pre-merge pass
-    // that sums in a `BTreeMap<(row, col), f64>` keyed by the canonical
-    // `(row, col)` order. step-5's `two_p1_elements_sharing_face_*` test
-    // would also surface the regression.
+    // *Parallel mode* — the merged triplet `Vec` still contains duplicates at
+    // shared DOFs, so `try_new_from_triplets` **must** sum them in encounter
+    // order. The `faer_sums_duplicate_triplets_in_encounter_order` canary
+    // (below) pins that faer contract: it seeds five duplicate triplets whose
+    // left-fold and pairwise-tree-reduction sums diverge above the LSB, so a
+    // faer upgrade that switches summation strategy surfaces immediately rather
+    // than silently invalidating the parallel-mode determinism contract. Faer's
+    // own `test_from_indices` (sparse/mod.rs:280-326) uses sum-order-invariant
+    // values; our canary does not, so it also catches regressions that survive
+    // faer's own suite.
+    //
+    // If a future faer version breaks encounter-order summation in parallel mode
+    // (e.g. overwrites instead of summing), apply the same BTreeMap pre-merge
+    // to the parallel arm and remove the canary dependency.
     // Debug-only orphan-DOF diagnostic. Zero release-mode cost; matches the
     // #[cfg(debug_assertions)] gating idiom in mpc.rs:172-213. Uses eprintln!
     // rather than tracing/log because reify-solver-elastic has no logging
@@ -2732,5 +2766,298 @@ mod tests {
             expected_examples,
             "examples should list all 9 orphan (node,axis) pairs sorted by (node, axis)",
         );
+    }
+
+    // ─── prereq-2: shared-DOF box-mesh fixture ────────────────────────────────
+
+    /// Split a hex cell into 6 P1 tets via the Kuhn triangulation.
+    ///
+    /// Identical to the helper in `tests/determinism.rs` (copied per the
+    /// established per-test-file pattern). All 6 tets share the main diagonal
+    /// from `c[0]` to `c[6]`.
+    ///
+    /// Corner ordering:
+    /// ```text
+    /// c[0]=(ix,iy,iz)     c[4]=(ix,iy,iz+1)
+    /// c[1]=(ix+1,iy,iz)   c[5]=(ix+1,iy,iz+1)
+    /// c[2]=(ix+1,iy+1,iz) c[6]=(ix+1,iy+1,iz+1)
+    /// c[3]=(ix,iy+1,iz)   c[7]=(ix,iy+1,iz+1)
+    /// ```
+    fn kuhn_split_hex_to_six_tets_fixture(c: [usize; 8]) -> [[usize; 4]; 6] {
+        [
+            [c[0], c[1], c[2], c[6]], // σ=(x,y,z)
+            [c[0], c[1], c[5], c[6]], // σ=(x,z,y)
+            [c[0], c[3], c[2], c[6]], // σ=(y,x,z)
+            [c[0], c[3], c[7], c[6]], // σ=(y,z,x)
+            [c[0], c[4], c[5], c[6]], // σ=(z,x,y)
+            [c[0], c[4], c[7], c[6]], // σ=(z,y,x)
+        ]
+    }
+
+    /// Build a `[0,Lx]×[0,Ly]×[0,Lz]` structured P1 tet mesh with
+    /// `nx×ny×nz` hex cells, each Kuhn-split into 6 tets.
+    ///
+    /// Node indexing: `iz*(ny+1)*(nx+1) + iy*(nx+1) + ix`.
+    /// Identical to `box_p1_mesh` in `tests/determinism.rs`.
+    fn box_p1_mesh_fixture(
+        lx: f64,
+        ly: f64,
+        lz: f64,
+        nx: usize,
+        ny: usize,
+        nz: usize,
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+        let nnx = nx + 1;
+        let nny = ny + 1;
+        let nnz = nz + 1;
+
+        let mut nodes = Vec::with_capacity(nnx * nny * nnz);
+        for iz in 0..nnz {
+            for iy in 0..nny {
+                for ix in 0..nnx {
+                    nodes.push([
+                        ix as f64 * lx / nx as f64,
+                        iy as f64 * ly / ny as f64,
+                        iz as f64 * lz / nz as f64,
+                    ]);
+                }
+            }
+        }
+
+        let node_idx =
+            |ix: usize, iy: usize, iz: usize| iz * nny * nnx + iy * nnx + ix;
+
+        let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let c = [
+                        node_idx(ix, iy, iz),
+                        node_idx(ix + 1, iy, iz),
+                        node_idx(ix + 1, iy + 1, iz),
+                        node_idx(ix, iy + 1, iz),
+                        node_idx(ix, iy, iz + 1),
+                        node_idx(ix + 1, iy, iz + 1),
+                        node_idx(ix + 1, iy + 1, iz + 1),
+                        node_idx(ix, iy + 1, iz + 1),
+                    ];
+                    for tet in kuhn_split_hex_to_six_tets_fixture(c) {
+                        connectivity.push(tet);
+                    }
+                }
+            }
+        }
+
+        (nodes, connectivity)
+    }
+
+    /// Build the shared-DOF 3×3×3 box-mesh fixture for assembly-determinism
+    /// unit tests.
+    ///
+    /// Geometry: `[0,1]×[0,1]×[0,1]`, `3×3×3` hex cells →
+    /// `4×4×4 = 64` nodes, `6×27 = 162` P1 tet elements.
+    ///
+    /// Total triplets: `162 × 144 = 23 328`. Interior nodes (e.g. node at
+    /// position `(1/3, 1/3, 1/3)`) are shared by up to 8 hex cells × 6 tets
+    /// = 48 elements, so the most-shared `(row, col)` pairs in the assembled
+    /// K receive up to 48 duplicate contributions — well into faer's
+    /// large-array argsort / quicksort regime (above the ~20-element
+    /// insertion-sort threshold). Element geometries vary across the mesh
+    /// (the 6 Kuhn-split tets per hex cell have distinct shapes), so
+    /// contributions to shared `(row, col)` pairs carry distinct values —
+    /// FP non-associativity from different summation orders produces
+    /// observable K differences.
+    ///
+    /// Returns `(n_nodes, ke_list, conns)`.
+    fn build_shared_dof_box_3x3x3(
+        mat: &IsotropicElastic,
+    ) -> (usize, Vec<ElementStiffness>, Vec<[usize; 4]>) {
+        let (nodes, conns) = box_p1_mesh_fixture(1.0, 1.0, 1.0, 3, 3, 3);
+        let n_nodes = nodes.len(); // 4×4×4 = 64
+        assert_eq!(conns.len(), 6 * 27, "expected 162 elements for 3×3×3 hex mesh");
+
+        let ke_list: Vec<ElementStiffness> = conns
+            .iter()
+            .map(|conn| {
+                let phys: [[f64; 3]; 4] = [
+                    nodes[conn[0]],
+                    nodes[conn[1]],
+                    nodes[conn[2]],
+                    nodes[conn[3]],
+                ];
+                element_stiffness_p1(&phys, mat)
+            })
+            .collect();
+
+        (n_nodes, ke_list, conns)
+    }
+
+    // ─── step-1 (RED): assembly-level determinism guards ─────────────────────
+
+    /// 32 sequential `AssemblyMode::Deterministic` assemblies of the shared-DOF
+    /// 3×3×3 box mesh produce bit-identical K (stored values AND sparsity
+    /// pattern).
+    ///
+    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` is
+    /// deterministic for the same in-memory input in sequential execution, so
+    /// this test will PASS even without the fix.  Under concurrent CPU load,
+    /// however, different heap-allocation patterns change the physical layout
+    /// of the triplet `Vec`, which can cause `sort_unstable` to produce
+    /// different orderings for equal-key `(row, col)` triplets → different K
+    /// matrices → diverging CG iteration counts (the observed harness flake).
+    ///
+    /// **After the BTreeMap fix**: K is a pure reify-owned left-fold over
+    /// elements in encounter order, guaranteed bit-identical across ANY
+    /// execution environment (loaded or not, any thread count, any OS scheduler
+    /// decision). The test encodes this cross-environment invariant.
+    ///
+    /// Non-trivial-K sanity check: asserts at least one stored value is
+    /// non-zero, so a degenerate zero-K can't make the test pass spuriously.
+    #[test]
+    fn deterministic_assembly_bit_identical_across_repeats() {
+        let mat = dimensionless_steel_like();
+        let (n_nodes, ke_list, conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .zip(ke_list.iter())
+            .enumerate()
+            .map(|(i, (conn, ke))| AssemblyElement {
+                id: i,
+                connectivity: conn.as_slice(),
+                k_e: ke,
+            })
+            .collect();
+
+        // Reference assembly (repeat 0).
+        let reference =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        let (ref_sym, ref_vals) = reference.parts();
+
+        // Sanity: K is non-trivial.
+        assert!(
+            ref_vals.iter().any(|&v| v != 0.0),
+            "reference K is all-zero — fixture may be degenerate",
+        );
+
+        // 31 further repeats must be bit-identical.
+        for repeat in 1..32_usize {
+            let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+            let (sym, vals) = k.parts();
+
+            // Sparsity pattern.
+            assert_eq!(
+                sym.row_ptr(),
+                ref_sym.row_ptr(),
+                "repeat {repeat}: row_ptr differs",
+            );
+            assert_eq!(
+                sym.col_idx(),
+                ref_sym.col_idx(),
+                "repeat {repeat}: col_idx differs",
+            );
+
+            // Stored values must be bit-identical.
+            assert_eq!(
+                vals.len(),
+                ref_vals.len(),
+                "repeat {repeat}: nnz count differs",
+            );
+            for (j, (&a, &b)) in vals.iter().zip(ref_vals.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "repeat {repeat}: vals[{j}] = {a} differs from reference {b}",
+                );
+            }
+        }
+    }
+
+    /// `AssemblyMode::Deterministic` on the shared-DOF 3×3×3 box mesh produces
+    /// K bit-identical to the encounter-order BTreeMap reference at every
+    /// `(row, col)` entry.
+    ///
+    /// **Reference construction**: independently accumulate the same elements
+    /// into a `BTreeMap<(usize,usize),f64>` in slice/encounter order,
+    /// mirroring `emit_element_triplets`' `(a,α,b,β)` emission —
+    /// `reference[(row,col)] = Σ K_e[a*d+α][b*d+β]` summed over all elements
+    /// contributing to `(row, col)` in the order they appear in the element
+    /// slice. This is the reify-owned left-fold that the BTreeMap fix
+    /// guarantees.
+    ///
+    /// **Before the BTreeMap fix** (step-2): faer's `sort_unstable` on 23 328
+    /// triplets operates in the large-array quicksort regime (NOT insertion
+    /// sort), which is **not stable** — equal-key triplets may land in any
+    /// relative order. For the 3×3×3 mesh, interior nodes receive up to 48
+    /// contributions per `(row,col)` pair; if quicksort reorders them
+    /// differently from encounter order, the resulting K[i][j] sum will differ
+    /// from the reference due to FP non-associativity (distinct element
+    /// geometries → distinct contribution values → order-dependent sums).
+    ///
+    /// Expected: **FAIL** with a `to_bits()` mismatch at a shared-DOF entry
+    /// (confirms faer's sort does not preserve encounter order for large meshes,
+    /// establishing the RED baseline for the BTreeMap fix).
+    ///
+    /// **After the BTreeMap fix**: K_det IS the encounter-order BTreeMap fold,
+    /// so this assertion is guaranteed to pass bit-for-bit.
+    #[test]
+    fn deterministic_assembly_matches_encounter_order_reference() {
+        let mat = dimensionless_steel_like();
+        let (n_nodes, ke_list, conns) = build_shared_dof_box_3x3x3(&mat);
+
+        let elements: Vec<AssemblyElement<'_>> = conns
+            .iter()
+            .zip(ke_list.iter())
+            .enumerate()
+            .map(|(i, (conn, ke))| AssemblyElement {
+                id: i,
+                connectivity: conn.as_slice(),
+                k_e: ke,
+            })
+            .collect();
+
+        // Assemble via the Deterministic path (currently delegates dedup to faer).
+        let k_det =
+            assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+
+        // Build the encounter-order BTreeMap reference.
+        // Uses emit_element_triplets (the production scatter primitive) to
+        // ensure the reference mirrors exactly the same (a,α,b,β) emission
+        // order, then folds contributions in slice order.
+        let n_dofs_per_node = 3usize; // pure P1 tet mesh → D = 3
+        let mut reference: std::collections::BTreeMap<(usize, usize), f64> =
+            std::collections::BTreeMap::new();
+        let mut tmp: Vec<Triplet<usize, usize, f64>> = Vec::new();
+        for element in &elements {
+            tmp.clear();
+            emit_element_triplets(element, n_dofs_per_node, &mut tmp);
+            for t in &tmp {
+                *reference.entry((t.row, t.col)).or_insert(0.0) += t.val;
+            }
+        }
+
+        // Sanity: reference is non-trivial.
+        assert!(
+            reference.values().any(|&v| v != 0.0),
+            "encounter-order reference is all-zero — fixture may be degenerate",
+        );
+
+        // Every (row, col) in the reference must match K_det bit-for-bit.
+        // A mismatch at any shared-DOF entry means faer's sort reordered equal-
+        // key triplets differently from encounter order — the RED confirmation.
+        let dim = 3 * n_nodes;
+        for row in 0..dim {
+            for col in 0..dim {
+                let ref_val = reference.get(&(row, col)).copied().unwrap_or(0.0);
+                let det_val = read(&k_det, row, col);
+                assert_eq!(
+                    det_val.to_bits(),
+                    ref_val.to_bits(),
+                    "K_det[{row}][{col}] = {det_val} differs from encounter-order \
+                     reference = {ref_val}; \
+                     faer sort reordered equal-key triplets at this shared DOF",
+                );
+            }
+        }
     }
 }

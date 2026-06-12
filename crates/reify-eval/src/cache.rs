@@ -2236,9 +2236,9 @@ mod tests {
         let y = ValueCellId::new("A", "b");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(y.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         let mut values = ValueMap::new();
@@ -2257,7 +2257,7 @@ mod tests {
     #[test]
     fn compute_input_hash_different_values_produce_different_hashes() {
         let x = ValueCellId::new("A", "a");
-        let expr = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let expr = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
 
         // Values: 1.0
         let mut values1 = ValueMap::new();
@@ -2279,7 +2279,7 @@ mod tests {
     fn compute_input_hash_empty_deps_uses_expr_hash() {
         // Literal expression with no deps
         use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(Value::Real(PI), Type::Real);
+        let expr = CompiledExpr::literal(Value::Real(PI), Type::dimensionless_scalar());
         let values = ValueMap::new();
 
         let hash = compute_input_hash(&expr, &[], &values);
@@ -2297,17 +2297,17 @@ mod tests {
         // a + a
         let expr_add = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // a * a
         let expr_mul = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         let mut values = ValueMap::new();

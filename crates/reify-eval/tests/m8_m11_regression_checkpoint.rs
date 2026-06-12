@@ -374,7 +374,7 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
     use reify_core::Type;
     let _ = match t {
         // Primitive scalars
-        Type::Bool | Type::Int | Type::Real | Type::String => true,
+        Type::Bool | Type::Int | Type::String => true,
         // Dimensioned scalar
         Type::Scalar { .. } => true,
         // Named enum
@@ -478,7 +478,7 @@ fn checkpoint_type_variant_coverage() {
         // Primitive scalars (4)
         Type::Bool,
         Type::Int,
-        Type::Real,
+        Type::dimensionless_scalar(),
         Type::String,
         // Dimensioned scalar (1)
         Type::Scalar {
@@ -493,15 +493,15 @@ fn checkpoint_type_variant_coverage() {
         Type::Option(Box::new(Type::Int)),
         // Callable / generic (3)
         Type::Function {
-            params: vec![Type::Real],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar()],
+            return_type: Box::new(Type::dimensionless_scalar()),
         },
         Type::TypeParam("T".to_string()),
         Type::StructureRef("Bolt".to_string()),
         // Field mapping (1)
         Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         // Geometry handle (1)
         Type::Geometry,
@@ -521,10 +521,10 @@ fn checkpoint_type_variant_coverage() {
         Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
         // Complex and range (2)
-        Type::Complex(Box::new(Type::Real)),
+        Type::Complex(Box::new(Type::dimensionless_scalar())),
         Type::Range(Box::new(Type::Int)),
         // Rigid-body / orientation (3)
         Type::Orientation(3),
@@ -538,7 +538,7 @@ fn checkpoint_type_variant_coverage() {
         Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
         // Compile-time-only union over guarded-decl-group arm types (task 2373) (1)
         Type::Union(vec![
@@ -580,7 +580,7 @@ fn checkpoint_value_variant_coverage() {
     // Shared lambda body used for Field and Lambda variants.
     let lambda_body = CompiledExpr {
         kind: CompiledExprKind::Literal(Value::Real(1.0)),
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: ContentHash(0),
     };
 
@@ -659,8 +659,8 @@ fn checkpoint_value_variant_coverage() {
         Value::Option(Some(Box::new(Value::Int(5)))),
         // Field (lambda-backed analytical field) (1)
         Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Lambda {
                 params: vec![],

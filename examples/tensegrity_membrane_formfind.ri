@@ -1,0 +1,116 @@
+// Anchored isotropic-membrane form-finding smoke test for `fn form_find` (γ).
+//
+// PRD reference: docs/prds/v0_6/tensegrity-membrane.md §4 (Natural Force-Density
+// surface form-finding) — the γ SURFACE slice that extends the landed line
+// (cable/strut) form-find in examples/tensegrity_cable_net.ri.
+//
+// Distinct from examples/tensegrity_membrane_patch.ri (task-α / M0): that file is
+// a FLAT all-boundary representation patch (4 coplanar z=0 corners, no free DOF)
+// that only exercises `tensegrity_surfaces` and CANNOT form-find (every node is a
+// boundary anchor ⇒ EmptyFreeSet). This file instead has a NON-PLANAR boundary
+// and a free interior node, so it form-finds to a genuinely CURVED minimal
+// surface.
+//
+// Geometry — a "saddle" (hyperbolic-paraboloid-like) boundary spanned by one free
+// interior node, fanned by four triangles:
+//
+//   node 0: free   — interior; initial guess (0.15, 0.1, 0.25) m, off-solution
+//   node 1: anchor — ( 1,  0,  0.5) m   (raised  corner)
+//   node 2: anchor — ( 0,  1, -0.5) m   (lowered corner)
+//   node 3: anchor — (-1,  0,  0.5) m   (raised  corner)
+//   node 4: anchor — ( 0, -1, -0.5) m   (lowered corner)
+//
+//   surfaces: [[0,1,2],[0,2,3],[0,3,4],[0,4,1]]   (a 4-triangle fan)
+//   struts: []   cables: []                       (a PURE membrane — no lines)
+//
+// The boundary is non-coplanar (opposite corners at z = ±0.5 m), so the discrete
+// minimal surface that balances the isotropic surface prestress σ is a curved
+// saddle of four non-coplanar triangles — NOT the trivial flat plane. The NFDM
+// surface term assembles the per-triangle cotangent-Laplacian (σ/2)·cot(θ) edge
+// weights into the same global force-density matrix the line FDM builds, and the
+// kernel iterates the cotangent fixed point to a prestress-only equilibrium
+// (free-node net force ‖(D·x)_free‖ → 0).
+//
+// Honest-signal note (G6): this example asserts NOTHING about the solved shape at
+// the .ri level — no exact coordinate, no hypar-exactness (which is FALSE for a
+// raised-corner square; the catenoid mesh-convergence BOUND lives only in the
+// kernel integration golden at
+// crates/reify-solver-elastic/tests/tensegrity_gamma_membrane_form_find.rs). The
+// user-observable γ signal here is purely `form.converged == true` (the
+// residual-guarded equilibrium) plus a non-empty per-triangle `surface_stresses`
+// echo, surfaced by a `solver::form_find` ComputeNode in the graph.
+//
+// Running:
+//
+//     reify eval examples/tensegrity_membrane_formfind.ri
+//
+// prints the form-found `FormFindResult { converged: true, … }` — its solved
+// `nodes` (the free interior node pulled onto the equilibrium surface) and the
+// per-triangle `surface_stresses` echo. The integration test at
+// crates/reify-eval/tests/tensegrity_t1a_form_find.rs asserts convergence, the
+// non-empty surface_stresses echo, that `@optimized("solver::form_find")` lowered
+// to a ComputeNode (NOT body-inlined), and a Final-gate cache hit on a second
+// eval.
+//
+// Capture note (ComputeNode value-input contract):
+//   The structure, the (empty) force-density list, the anchor index list, and the
+//   per-triangle surface-stress list are each bound to their own `let` and passed
+//   to `form_find` by bare name. Bare `ValueRef` arguments are what the engine
+//   records as the ComputeNode's `value_inputs` (engine_eval.rs shallow-walk) —
+//   the cache-key dependency list that drives the Final-gate cache hit on a
+//   second eval. Surface CONNECTIVITY is read from `net.surfaces` (not a call
+//   argument); only the per-triangle σ is supplied positionally.
+
+structure MembraneFormFind {
+    // ── Membrane topology ────────────────────────────────────────────────────
+    //
+    // Free interior node 0 (off-solution initial guess) plus four anchored saddle
+    // corners; a 4-triangle fan covers the patch. No struts, no cables — this is a
+    // pure surface-prestress membrane.
+    let net = Tensegrity(
+        nodes: [
+            point3(0.15m, 0.1m, 0.25m),  // node 0: free interior (initial guess; overwritten)
+            point3(1m, 0m, 0.5m),        // node 1: anchor — raised  corner
+            point3(0m, 1m, -0.5m),       // node 2: anchor — lowered corner
+            point3(-1m, 0m, 0.5m),       // node 3: anchor — raised  corner
+            point3(0m, -1m, -0.5m)       // node 4: anchor — lowered corner
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [
+            [0, 1, 2],   // triangle 0
+            [0, 2, 3],   // triangle 1
+            [0, 3, 4],   // triangle 2
+            [0, 4, 1]    // triangle 3
+        ]
+    )
+
+    // Per-member force densities, struts-then-cables order. There are no line
+    // members here, so this is the empty list (the line FDM term vanishes; the
+    // solve is surface-prestress only).
+    let qs = []
+
+    // 0-based indices into `net.nodes` of the anchored (fixed) boundary nodes.
+    let anchors = [1, 2, 3, 4]
+
+    // Per-triangle isotropic surface stress σ, in `net.surfaces` declaration
+    // order. All strictly positive — a membrane carries tension (the surface
+    // analogue of the cable q > 0 contract enforced by the kernel).
+    let sigmas = [1.0, 1.0, 1.0, 1.0]
+
+    // ── Form-finding solve ──────────────────────────────────────────────────
+    //
+    // `@optimized("solver::form_find")` routes this call to the FD trampoline,
+    // which assembles D = CᵀQC (lines — none here) + Σ_T σ_T·L_T (surface
+    // cotangent-Laplacians), iterates the cotangent fixed point, and returns a
+    // FormFindResult carrying the solved node coordinates, the echoed force
+    // densities, the per-triangle surface-stress echo, and a convergence flag.
+    let form = form_find(net, qs, anchors, sigmas)
+
+    // ── User-observable signals ──────────────────────────────────────────────
+    //
+    // Solved equilibrium geometry — the free interior node pulled onto the curved
+    // minimal surface — and the per-triangle surface-stress echo.
+    let solved = form.nodes
+    let stresses = form.surface_stresses
+}

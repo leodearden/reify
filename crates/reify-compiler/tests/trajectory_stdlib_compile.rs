@@ -179,7 +179,7 @@ fn assert_evaluator_signature(name: &str) {
 
     assert_eq!(
         func.return_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "{} return type should be List<Real> (= List<JointValue>); got: {:?}",
         name,
         func.return_type
@@ -210,6 +210,34 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
         _ => {}
     }
     pairs
+}
+
+/// Returns `true` iff `expr` has the structural shape of a dimensioned-zero
+/// BinOp chain: `0 * <anything>` (optionally followed by `/` or `*` factors).
+///
+/// **Shape-only:** the right operand is NOT inspected — `0 * 5` (dimensionless)
+/// also returns `true`. Callers MUST pair this with an independent `result_type`
+/// check to confirm the actual dimension; see each call site below.
+///
+/// Examples that match (shape only — `result_type` supplies the dimension):
+///   `0 * 1N`            → BinOp(Mul, Int(0), Scalar{..})                  ✓
+///   `0 * 1m / 1s`       → BinOp(Div, BinOp(Mul, Int(0), ..), ..)          ✓
+///   `0 * 1m / (1s*1s)`  → BinOp(Div, BinOp(Mul, Int(0), ..), BinOp(..))   ✓
+///
+/// Used to distinguish the dimensioned-zero RHS of `velocity_limit > 0 * 1m/1s`
+/// (required for Scalar<Velocity> — esc-3115 rule) from the plain
+/// `Literal(Int(0))` RHS of dimensionless constraints like `vibration_tolerance > 0`.
+fn is_dimensioned_zero_binop(expr: &reify_ir::CompiledExpr) -> bool {
+    match &expr.kind {
+        CompiledExprKind::BinOp { op: BinOp::Mul, left, .. } => {
+            matches!(&left.kind, CompiledExprKind::Literal(Value::Int(0)))
+                || matches!(&left.kind, CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0)
+        }
+        CompiledExprKind::BinOp { op: BinOp::Div, left, .. } => {
+            is_dimensioned_zero_binop(left)
+        }
+        _ => false,
+    }
 }
 
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
@@ -364,7 +392,7 @@ fn spline_kind_enum_has_cubic_and_quintic_variants() {
 ///   - `accels : Option<List<JointValue>>`      (optional per-joint q̈)
 ///
 /// `JointValue` is the module-level alias for `Real` (see header §1), so
-/// `List<JointValue>` compiles to `Type::List(Box::new(Type::Real))`.
+/// `List<JointValue>` compiles to `Type::List(Box::new(Type::dimensionless_scalar()))`.
 /// `Time` resolves to `Type::Scalar { dimension: DimensionVector::TIME }`
 /// via the same dimensional-type path that `lead_time : Time` in
 /// `stdlib/io.ri:77` already uses.
@@ -395,14 +423,14 @@ fn waypoint_struct_has_correct_param_shape() {
                 dimension: DimensionVector::TIME,
             },
         ),
-        ("values", Type::List(Box::new(Type::Real))),
+        ("values", Type::List(Box::new(Type::dimensionless_scalar()))),
         (
             "vels",
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "accels",
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
     ];
 
@@ -545,8 +573,8 @@ fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("start_velocity", Type::List(Box::new(Type::Real))),
-        ("end_velocity", Type::List(Box::new(Type::Real))),
+        ("start_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
+        ("end_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
     ];
 
     // Param declaration order is part of the contract — pin it explicitly
@@ -695,7 +723,7 @@ fn piecewise_polynomial_profile_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("mechanism", Type::Real),
+        ("mechanism", Type::dimensionless_scalar()),
         (
             "waypoints",
             Type::List(Box::new(Type::StructureRef("Waypoint".to_string()))),
@@ -1018,7 +1046,7 @@ fn shaper_trait_exists_with_no_params() {
 ///
 ///   - `joint     : Real`  (TODO(joint-type) placeholder for the future
 ///     kinematic-completion Joint type)
-///   - `max_force : Real`  (TODO(force-scalar) placeholder for Scalar<Force>)
+///   - `max_force : Scalar<Force>`  (task 4580: tightened from Real)
 ///
 /// Both fields are caller-supplied — no canonical defaults. JointLimit
 /// refines no trait (zero `trait_bounds`). Constraint `max_force > 0` is
@@ -1050,8 +1078,13 @@ fn joint_limit_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("joint", Type::Real),
-        ("max_force", Type::Real),
+        ("joint", Type::dimensionless_scalar()),
+        (
+            "max_force",
+            Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            },
+        ),
     ];
 
     // Param declaration order is part of the contract.
@@ -1091,12 +1124,14 @@ fn joint_limit_struct_has_correct_param_shape() {
 
 // ─── step-33: JointLimit max_force positivity constraint ─────────────────────
 
-/// `JointLimit` must declare exactly one constraint: `max_force > 0`.
+/// `JointLimit` must declare exactly one constraint: `max_force > 0 * 1N`.
 ///
 /// A "max force" of zero or negative is physically degenerate — only positive
-/// values are meaningful as an actuator limit. Making the contract explicit
-/// in production code (task #2544 convention) rather than relying solely on
-/// test coverage.
+/// values are meaningful as an actuator limit. The dimensioned-zero RHS
+/// (`0 * 1N`) is required because `max_force : Scalar<Force>` — a bare `0`
+/// would be `Type::dimensionless_scalar()`, dim-incompatible with Force
+/// (esc-3115 rule). Making the contract explicit in production code (task
+/// #2544 convention) rather than relying solely on test coverage.
 ///
 /// Tight count == 1 is a regression gate: `joint : Real` is explicitly NOT
 /// constrained (it is an entity-handle placeholder — no meaningful scalar
@@ -1159,17 +1194,29 @@ fn joint_limit_constrains_max_force_positive() {
         lhs_refs
     );
 
-    // RHS must be literal 0 — accept Int(0) or Real(0.0) per future-proofing
-    // convention (mirrors piecewise_polynomial_profile_constrains_waypoints_nonempty).
-    match &right.kind {
-        CompiledExprKind::Literal(Value::Int(0)) => {}
-        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => {}
-        other => panic!(
-            "JointLimit constraint RHS should be Literal(Int(0)) or \
-             Literal(Real(0.0)); got: {:?}",
-            other
-        ),
-    }
+    // RHS must be dimensioned-zero: `0 * 1N` compiles to
+    // BinOp { op: Mul, left: Literal(Int(0)), right: Literal(Scalar{si:1.0, dim:FORCE}) }.
+    // A bare `0` is Type::dimensionless_scalar() and is dim-incompatible with
+    // Scalar<Force> (esc-3115 rule) — the dimensioned form is required.
+    let rhs_ok = match &right.kind {
+        CompiledExprKind::BinOp { op: rhs_op, left: rhs_left, right: rhs_right } => {
+            *rhs_op == BinOp::Mul
+                && matches!(&rhs_left.kind, CompiledExprKind::Literal(Value::Int(0)))
+                && matches!(
+                    &rhs_right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { dimension, .. })
+                        if *dimension == DimensionVector::FORCE
+                )
+        }
+        _ => false,
+    };
+    assert!(
+        rhs_ok,
+        "JointLimit constraint RHS should be dimensioned-zero `0 * 1N` \
+         (BinOp::Mul, left=Literal(Int(0)), right=Literal(Scalar{{dim:FORCE}})); \
+         got: {:?}",
+        right.kind
+    );
 }
 
 // ─── step-35: TOTSShaper param shape ─────────────────────────────────────────
@@ -1180,8 +1227,8 @@ fn joint_limit_constrains_max_force_positive() {
 ///
 ///   - `modes             : List<Mode>`        (cross-module: Mode from std.modal.analysis)
 ///   - `actuator_limits   : List<JointLimit>`  (JointLimit declared in this file above)
-///   - `velocity_limit    : Real`              (TODO(velocity-scalar) placeholder)
-///   - `acceleration_limit: Real`              (TODO(acceleration-scalar) placeholder)
+///   - `velocity_limit    : Scalar<Velocity>`   (task 4580: tightened from Real)
+///   - `acceleration_limit: Scalar<Acceleration>` (task 4580: tightened from Real)
 ///   - `vibration_tolerance: Real`             (genuinely dimensionless residual fraction)
 ///   - `max_iters         : Int`               (solver iteration cap)
 ///   - `tol               : Real`              (convergence threshold)
@@ -1240,11 +1287,21 @@ fn tots_shaper_struct_has_correct_param_shape() {
             "actuator_limits",
             Type::List(Box::new(Type::StructureRef("JointLimit".to_string()))),
         ),
-        ("velocity_limit", Type::Real),
-        ("acceleration_limit", Type::Real),
-        ("vibration_tolerance", Type::Real),
+        (
+            "velocity_limit",
+            Type::Scalar {
+                dimension: DimensionVector::VELOCITY,
+            },
+        ),
+        (
+            "acceleration_limit",
+            Type::Scalar {
+                dimension: DimensionVector::ACCELERATION,
+            },
+        ),
+        ("vibration_tolerance", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
-        ("tol", Type::Real),
+        ("tol", Type::dimensionless_scalar()),
     ];
 
     // (c) Param declaration order is part of the contract.
@@ -1351,12 +1408,17 @@ fn tots_shaper_param_defaults_match_spec() {
 
 /// `TOTSShaper` must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
 ///
-///   constraint velocity_limit     > 0
-///   constraint acceleration_limit > 0
-///   constraint vibration_tolerance > 0
+///   constraint velocity_limit     > 0 * 1m / 1s        (dimensioned-zero: task 4580)
+///   constraint acceleration_limit > 0 * 1m / (1s * 1s) (dimensioned-zero: task 4580)
+///   constraint vibration_tolerance > 0                  (dimensionless: plain `> 0`)
 ///   constraint vibration_tolerance <= 1   (upper bound: (0,1] interval)
 ///   constraint max_iters           > 0
 ///   constraint tol                 > 0
+///
+/// velocity_limit and acceleration_limit use dimensioned-zero RHS because their
+/// param types are Scalar<Velocity>/Scalar<Acceleration> (esc-3115 rule: a bare
+/// `0` is dimensionless and dim-incompatible with a dimensioned LHS).
+/// vibration_tolerance/max_iters/tol remain plain (dimensionless params).
 ///
 /// The `vibration_tolerance ∈ (0, 1]` interval decomposes into two scalar
 /// predicates because Reify's constraint grammar admits BinOp predicates but
@@ -1392,14 +1454,75 @@ fn tots_shaper_constrains_design_param_invariants() {
             .collect::<Vec<_>>()
     );
 
-    // Five positivity constraints (> 0) for numeric design params.
-    for required in &[
-        "velocity_limit",
-        "acceleration_limit",
-        "vibration_tolerance",
-        "max_iters",
-        "tol",
-    ] {
+    // velocity_limit: positivity constraint with dimensioned-zero RHS
+    // (`0 * 1m / 1s` = Scalar<Velocity>). Two-layer check:
+    //   (1) structural shape: is_dimensioned_zero_binop — `0 * <unit>` chain.
+    //   (2) result_type == Scalar{VELOCITY} — catches a wrong-unit regression
+    //       (e.g. `0 * 1N`) that is_dimensioned_zero_binop alone would miss,
+    //       since esc-3115 only fires at module-load time.
+    // Mirrors the FORCE dimension-pin in joint_limit_constrains_max_force_positive.
+    let velocity_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                *op == BinOp::Gt
+                    && collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "velocity_limit")
+                    && is_dimensioned_zero_binop(right)
+                    && matches!(
+                        &right.result_type,
+                        Type::Scalar { dimension } if *dimension == DimensionVector::VELOCITY
+                    )
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        velocity_matched,
+        "TOTSShaper should declare `constraint velocity_limit > 0 * 1m/1s` \
+         (dimensioned-zero BinOp, result_type=Scalar{{VELOCITY}}; task 4580); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // acceleration_limit: positivity constraint with dimensioned-zero RHS
+    // (`0 * 1m / (1s * 1s)` = Scalar<Acceleration>). Same two-layer check as
+    // velocity_limit above.
+    let accel_matched = template.constraints.iter().any(|c| {
+        match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                *op == BinOp::Gt
+                    && collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "acceleration_limit")
+                    && is_dimensioned_zero_binop(right)
+                    && matches!(
+                        &right.result_type,
+                        Type::Scalar { dimension } if *dimension == DimensionVector::ACCELERATION
+                    )
+            }
+            _ => false,
+        }
+    });
+    assert!(
+        accel_matched,
+        "TOTSShaper should declare `constraint acceleration_limit > 0 * 1m/(1s*1s)` \
+         (dimensioned-zero BinOp, result_type=Scalar{{ACCELERATION}}; task 4580); \
+         got constraints: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // vibration_tolerance, max_iters, tol: plain positivity constraints (> 0),
+    // dimensionless params — plain `Literal(Int(0))` RHS.
+    for required in &["vibration_tolerance", "max_iters", "tol"] {
         let matched = template.constraints.iter().any(|c| {
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
@@ -1419,7 +1542,7 @@ fn tots_shaper_constrains_design_param_invariants() {
         });
         assert!(
             matched,
-            "TOTSShaper should declare `constraint {} > 0`; \
+            "TOTSShaper should declare `constraint {} > 0` (dimensionless plain RHS); \
              got constraints: {:?}",
             required,
             template
@@ -1473,7 +1596,7 @@ fn tots_shaper_constrains_design_param_invariants() {
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — the dimensioned
-/// literal is required per the esc-3115 rule; a bare `0` is Type::Real
+/// literal is required per the esc-3115 rule; a bare `0` is Type::dimensionless_scalar()
 /// and dim-incompatible with Frequency).
 ///
 /// Uses the HarmonicForce Frequency-constraint pattern
@@ -1513,7 +1636,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -1621,7 +1744,7 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
 ///
 /// Exactly 1 constraint: `target_frequency > 0Hz` (BinOp::Gt, RHS
 /// Value::Scalar{si_value:0.0, dimension:FREQUENCY} — dimensioned literal
-/// required per esc-3115 rule; bare `0` is Type::Real, dim-incompatible
+/// required per esc-3115 rule; bare `0` is Type::dimensionless_scalar(), dim-incompatible
 /// with Frequency).
 ///
 /// Key distinction from ZVShaper: BOTH params have `default_expr.is_none()`.
@@ -1659,7 +1782,7 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -1793,8 +1916,8 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
                 dimension: DimensionVector::FREQUENCY,
             },
         ),
-        ("damping_ratio", Type::Real),
-        ("vibration_tolerance", Type::Real),
+        ("damping_ratio", Type::dimensionless_scalar()),
+        ("vibration_tolerance", Type::dimensionless_scalar()),
     ];
 
     // (c) param declaration order is part of the contract.
@@ -2071,7 +2194,7 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 ///   - `combined_pose    : List<List<Pose3>>`       (outer: time, inner: locations)
 ///
 /// `Pose3` and `Vec3` are module-level aliases for `Real`; so all three nested
-/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::Real))))`.
+/// list params compile to `Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar()))))`.
 /// `t_samples : List<Time>` compiles to `Type::List(Box::new(Type::Scalar
 /// { dimension: DimensionVector::TIME }))`.
 ///
@@ -2102,8 +2225,8 @@ fn end_effector_track_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("mechanism", Type::Real),
-        ("modal_result", Type::Real),
+        ("mechanism", Type::dimensionless_scalar()),
+        ("modal_result", Type::dimensionless_scalar()),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
@@ -2112,15 +2235,15 @@ fn end_effector_track_struct_has_correct_param_shape() {
         ),
         (
             "nominal_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "vibration_offset",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
         (
             "combined_pose",
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         ),
     ];
 
@@ -2184,7 +2307,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 /// `track : EndEffectorTrack` resolves to `Type::StructureRef("EndEffectorTrack")`
 /// — the structure_def is in the same module (same name-resolution path as
 /// `List<Waypoint>` in PiecewisePolynomialProfile.waypoints).
-/// `location : LocationId` resolves to `Type::Real` (LocationId = Real alias).
+/// `location : LocationId` resolves to `Type::dimensionless_scalar()` (LocationId = Real alias).
 /// Return type `List<Pose3>` = `List<Real>` via the Pose3 = Real alias.
 ///
 /// Param order is part of the contract — (track, location), not (location, track).
@@ -2216,7 +2339,7 @@ fn end_effector_track_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "end_effector_track param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]
@@ -2224,7 +2347,7 @@ fn end_effector_track_fn_has_correct_signature() {
 
     assert_eq!(
         func.return_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "end_effector_track return type should be List<Real> (= List<Pose3>); \
          got: {:?}",
         func.return_type
@@ -2269,7 +2392,7 @@ fn deviation_from_nominal_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "deviation_from_nominal param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]
@@ -2326,7 +2449,7 @@ fn peak_deviation_fn_has_correct_signature() {
     );
     assert_eq!(
         func.params[1],
-        ("location".to_string(), Type::Real),
+        ("location".to_string(), Type::dimensionless_scalar()),
         "peak_deviation param[1] should be (\"location\", Real) \
          (LocationId = Real alias); got: {:?}",
         func.params[1]

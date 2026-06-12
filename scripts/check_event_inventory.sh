@@ -57,6 +57,9 @@ Options:
                      §2 graduation. Opt-in per esc-3552-52 reviewer note.
   --repo-root DIR    Repository root (default: git rev-parse --show-toplevel).
                      Must be a git work tree; exits 1 with an error otherwise.
+  --print-registered Print the extracted registered-channel set (one per line)
+                     and exit 0.  Field-debug tool: loop this to detect a
+                     truncation drop without running the full check (task-4586).
   -h, --help         Show this message.
 
 Note: only git-tracked (staged) .rs files are scanned. A .emit("new-channel")
@@ -66,12 +69,14 @@ USAGE
 
 STRICT=0
 BIDIRECTIONAL=0
+PRINT_REGISTERED=0
 REPO_ROOT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --strict) STRICT=1; shift ;;
         --bidirectional) BIDIRECTIONAL=1; shift ;;
+        --print-registered) PRINT_REGISTERED=1; shift ;;
         --repo-root) REPO_ROOT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -117,7 +122,52 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 # Per the inventory format, §2a command rows use **bold** formatting (not
 # backticks) and are mechanically outside this regex; no special-case handling
 # needed here.
-registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
+#
+# extract_registered_channels: single awk pass over the inventory file.
+# Matches | `name` | rows (literal pipes + backticks), deduplicates in-process,
+# and prints without a downstream pipe — removing the grep -oP | sort -u two-
+# process pipeline that the task-4586 hypothesis names as the truncation point.
+# Membership tests are order-independent so output order does not matter.
+#
+# Optional second argument: pass 1 to restrict extraction to the §1 section only
+# (used by the bidirectional pass, which must exclude pre-implementation §2 rows).
+extract_registered_channels() {
+    local inv="$1"
+    local sec1_only="${2:-0}"
+    awk -v sec1_only="$sec1_only" '
+    {
+        if (sec1_only) {
+            if (/^## §1 /) { in_sec1 = 1; next }
+            if (/^## §[0-9]+ /) { in_sec1 = 0; next }
+            if (!in_sec1) next
+        }
+        line = $0
+        while (match(line, /\| `[a-z0-9-]+` \|/)) {
+            name = substr(line, RSTART + 3, RLENGTH - 6)
+            seen[name] = 1
+            line = substr(line, RSTART + RLENGTH - 1)
+        }
+    }
+    END { for (ch in seen) print ch }
+    ' "$inv"
+}
+registered=$(extract_registered_channels "$INVENTORY")
+
+# TEST-ONLY fault-injection seam (task-4586): drop one channel from registered
+# to deterministically simulate under-load single-line truncation so the per-
+# orphan re-check (below) can be RED/GREEN tested.  Inert unless the env var is
+# set; MUST NOT be set in CI / verify runs — doing so would suppress real orphan
+# detection.  Mirrors the REIFY_TEST_SEMAPHORE_DISABLE / REIFY_MAIN_GATE_BYPASS
+# convention for test-only env knobs.
+if [[ -n "${REIFY_EVENT_INVENTORY_DROP_REGISTERED:-}" ]]; then
+    registered=$(printf '%s\n' "$registered" | grep -vx -- "$REIFY_EVENT_INVENTORY_DROP_REGISTERED" || true)
+fi
+
+# --print-registered: emit the extracted set and exit 0 (field-debug + test seam).
+if [[ $PRINT_REGISTERED -eq 1 ]]; then
+    printf '%s\n' "$registered"
+    exit 0
+fi
 
 # Extract literal channel names from .emit("name", …) call sites in Rust.
 # Uses perl slurp mode (-0777) so \s* can span the newline between .emit( and
@@ -131,10 +181,17 @@ if [[ ${#_tracked_rs[@]} -gt 0 ]]; then
 fi
 
 # Compare: flag any emit-site literal not present in the registered set.
+# task-4586/4529/4572 defense-in-depth: before flagging an orphan, re-confirm
+# absence via a targeted fixed-string grep of the inventory file.  The in-memory
+# `registered` set may have transiently dropped a line under subprocess load
+# (esc-4578-61); the per-channel grep is far cheaper and far less prone to that
+# truncation.  Only genuine orphans (absent from the file itself) are flagged.
 orphan_count=0
 while IFS= read -r channel; do
     [[ -z "$channel" ]] && continue
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
+        # Re-confirm absence against the source file before flagging.
+        grep -qF -- "| \`$channel\` |" "$INVENTORY" && continue
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
         grep -n -- "\"$channel\"" "${_tracked_rs[@]}" >&2 || true
@@ -152,10 +209,7 @@ fi
 # not just .emit("…") form, so dynamic-emit patterns are naturally covered.
 phantom_count=0
 if [[ $BIDIRECTIONAL -eq 1 ]]; then
-    sec1_channels=$(
-        awk '/^## §1 /{f=1;next} /^## §[0-9]+ /{f=0} f' "$INVENTORY" \
-        | grep -oP '\| `\K[a-z0-9-]+(?=` \|)' | sort -u || true
-    )
+    sec1_channels=$(extract_registered_channels "$INVENTORY" 1)
     while IFS= read -r ch; do
         [[ -z "$ch" ]] && continue
         if [[ ${#_tracked_rs[@]} -eq 0 ]] || ! grep -qF -- "\"$ch\"" "${_tracked_rs[@]}" 2>/dev/null; then

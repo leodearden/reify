@@ -331,76 +331,51 @@ structure def EndEffectorTrack {
     param combined_pose    : List<List<Pose3>>
 }
 
-// ── Evaluator helper fn signatures (compiler-known intrinsics) ────────────────
+// ── Evaluator helper fn signatures — wired to spline evaluator (task 4539) ────
 //
-// These four functions are declared with minimal type-correct stub bodies that
-// satisfy the grammar's `fn_body` requirement. The stubs document the signature
-// surface so consumer tasks (β, γ, δ, ε, η, ι, ξ) can type-check their call
-// sites at α time.
+// These four functions delegate to undeclared `*_at` intrinsics via the same
+// delegate-to-undeclared-name pattern used by `gcode_import` → `gcode_import_lower`
+// (trajectory.ri:820) and `input_shape` → `input_shape_apply` (trajectory.ri:895).
 //
-// Design decision: stub bodies are used rather than body-less intrinsic
-// declarations because the Reify grammar requires `fn_body` for every `fn`
-// declaration (`tree-sitter-reify/grammar.js:91-96`; `reify-syntax/src/lib.rs:
-// 567-579`). The body-less form `fn f(...) -> T;` does not parse. Extending the
-// grammar for body-less intrinsic declarations is beyond α scope (touches
-// grammar + parser + lowering for all stdlib modules). The β task (3816) will
-// replace the stub bodies — either by editing them to call into the real
-// B-spline evaluator once `reify-stdlib/src/trajectory/spline.rs` lands, or by
-// switching dispatch to the runtime-intrinsic registry scaffolded on
-// `preserved/trajectory-beta-spline` (`crates/reify-stdlib/src/trajectory/
-// mod.rs::eval_trajectory` — commit e075cff59a recognises all four names).
+// Dispatch path for, e.g., `evaluate_profile(p, t)`:
+//   1. The `.ri` declaration shadows the same-named `eval_builtin` entry
+//      (`resolve_function_overload` returns `Resolved` → `UserFunctionCall`).
+//   2. The body calls the *undeclared* name `evaluate_profile_at(p, t)`.
+//   3. `evaluate_profile_at` has NO `.ri` declaration, so it resolves
+//      `NoUserFunctions` → `FunctionCall` → `eval_builtin` →
+//      `eval_trajectory("evaluate_profile_at", ...)`.
+//   4. `eval_trajectory` routes both "evaluate_profile" and "evaluate_profile_at"
+//      to `trampoline::evaluate_profile_value`, which calls
+//      `value_to_multijoint_spline` + `MultiJointSpline::eval`.
 //
-// Stub body conventions:
-//   - `List<JointValue>` returns → `[0.0]`  (single-element Real list; avoids
-//     the "cannot infer element type of empty list literal" warning at
-//     `reify-compiler/src/expr.rs:2082`)
-//   - `Time` return → `0.0 * 1s`  (numeric × unit-literal; pattern from
-//     `units.ri:82` `STANDARD_GRAVITY = 9.80665 * 1m / (1s * 1s)`)
+// The compiler's first-arg type-fallback assigns the undeclared `*_at` call an
+// inferred result type equal to the type of `p` (Profile), which is discarded;
+// the outer UserFunctionCall uses the declared return type.
+// `compile_function` applies no body-vs-return-type check, so no compiler change
+// is needed — identical to the gcode_import/input_shape precedent.
 //
-// α-phase hazard: if a call to any of these fns reaches the evaluator before
-// β-3816 lands, it will silently return the stub value (`[0.0]` or `0.0 * 1s`)
-// rather than a real result. No α-phase consumer is expected to invoke these
-// fns at runtime; the risk is low. β-3816 closes the hazard by replacing each
-// stub body with the real evaluator dispatch.
+// `evaluate_profile` is a pure, cheap, stateless sample → PLAIN delegate (not
+// `@optimized`). No `ComputeNode` / warm-cache, no `reify-eval` re-export.
+// Contrast `input_shape` whose heavy TOTS arm justifies the @optimized path.
 
 // evaluate_profile — sample a Profile at time `t`, returning the per-joint
-// position vector q(t) (PRD §4.1 line 241).
-//
-// `p : Profile` accepts any concrete Profile variant via the nominal type-tag
-// mechanism (`PiecewisePolynomialProfile : Profile`). `t : Time` is the
-// evaluation instant within the profile's `[0, T]` domain.
-//
-// TODO(beta-3816): replace stub body `[0.0]` with the real B-spline evaluator
-// (de Boor recursion) once `reify-stdlib/src/trajectory/spline.rs` lands.
-pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+// position vector q(t) (PRD §4.1 line 241). Delegates to `evaluate_profile_at`;
+// see section header above for the dispatch path.
+pub fn evaluate_profile(p: Profile, t: Time) -> List<JointValue> { evaluate_profile_at(p, t) }
 
 // evaluate_profile_dot — first-derivative companion to `evaluate_profile`.
 // Returns the per-joint velocity vector q̇(t) at time `t` (PRD §4.1 line 242).
-//
-// TODO(beta-3816): replace stub body `[0.0]` with B-spline first-derivative
-// evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
-pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+pub fn evaluate_profile_dot(p: Profile, t: Time) -> List<JointValue> { evaluate_profile_dot_at(p, t) }
 
 // evaluate_profile_ddot — second-derivative companion to `evaluate_profile`.
 // Returns the per-joint acceleration vector q̈(t) at time `t`
 // (PRD §4.1 line 243).
-//
-// TODO(beta-3816): replace stub body `[0.0]` with B-spline second-derivative
-// evaluation once `reify-stdlib/src/trajectory/spline.rs` lands.
-pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { [0.0] }
+pub fn evaluate_profile_ddot(p: Profile, t: Time) -> List<JointValue> { evaluate_profile_ddot_at(p, t) }
 
 // profile_duration — duration accessor returning the profile's total `[0, T]`
 // span as a Time-dimensioned scalar (PRD §4.1 line 244).
-//
-// Takes only `p : Profile` (no `t` param — duration is a property of the
-// profile itself, not a function of the evaluation instant). The stub body
-// `0.0 * 1s` is the numeric-times-unit-literal pattern from `units.ri:82`
-// (`STANDARD_GRAVITY = 9.80665 * 1m / (1s * 1s)`).
-//
-// TODO(beta-3816): replace stub body `0.0 * 1s` with the actual duration
-// computation (`waypoints.last.t - waypoints.first.t`) once the B-spline
-// evaluator and the PiecewisePolynomialProfile runtime accessor land.
-pub fn profile_duration(p: Profile) -> Time { 0.0 * 1s }
+// Takes only `p : Profile` (no `t` param).
+pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 
 // ── EndEffectorTrack lazy accessor fns ───────────────────────────────────────
 //
@@ -487,18 +462,17 @@ trait Shaper { }
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
-//   - max_force : Real   — TODO(force-scalar): placeholder for `Scalar<Force>`
-//                          per the uniform-Real-placeholder convention
-//                          established in modal_analysis.ri header §1.
-//                          Force IS a named dimension but the convention
-//                          placeholders all dimensioned scalars uniformly so
-//                          the dimensional-tightening sweep retargets them in
-//                          a single pass.
+//   - max_force : Scalar<Force>  — RESOLVED(force-scalar): tightened from Real
+//                                  by task 4580. Constraint RHS updated to
+//                                  dimensioned-zero `0 * 1N` (esc-3115 rule:
+//                                  bare `0` is dimensionless; Scalar<Force>
+//                                  LHS requires a dimensioned RHS literal).
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
 //
-// Constraint `max_force > 0` is added in step-34. Explicitly NOT constrained:
+// Constraint `max_force > 0 * 1N` is added in step-34, tightened in task 4580.
+// Explicitly NOT constrained:
 // `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
 // predicate on a handle.
 //
@@ -506,7 +480,7 @@ trait Shaper { }
 // variant or a BoundaryCondition).
 structure def JointLimit {
     param joint : Real
-    param max_force : Real
+    param max_force : Scalar<Force>
 
     // max_force is a physical limit — only positive values are meaningful.
     // A "max force" of zero or negative is degenerate (a zero-limit means
@@ -516,10 +490,14 @@ structure def JointLimit {
     // Fires automatically at construction via SIR-α's
     // `check_constraints_against_templates` machinery (task 3540, landed).
     //
+    // Dimensioned-zero RHS `0 * 1N` required because max_force : Scalar<Force>
+    // — a bare `0` is Type::dimensionless_scalar() and dim-incompatible with
+    // Force (esc-3115 rule; polymorphic-zero not yet landed).
+    //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
     //   meaningful scalar predicate on a handle.
-    constraint max_force > 0
+    constraint max_force > 0 * 1N
 }
 
 // ── TOTSShaper (PRD §5.2) ─────────────────────────────────────────────────────
@@ -532,12 +510,13 @@ structure def JointLimit {
 // several input-shaper variants; the future Phase 2 task δ adds ZVShaper /
 // ZVDShaper / EIShaper. All refine the same `trait Shaper { }`.
 //
-// Uniform-Real-placeholder encoding convention (modal_analysis.ri header §1):
-// All dimensioned scalars are encoded as Real with TODO(...) annotations
-// naming the future-tightening target, even when the named dimension IS in
-// NAMED_DIMENSIONS. This keeps constraint RHS literals plain (> 0, <= 1)
-// and lets the dimensional-tightening sweep retarget every placeholder in a
-// single pass.
+// Dimensional encoding (task 4580 tightening):
+// velocity_limit and acceleration_limit are now Scalar<Velocity>/Scalar<Acceleration>
+// (Velocity added to NAMED_DIMENSIONS in task 4580; Force/Acceleration were
+// already named). Their constraint RHS literals are dimensioned-zero
+// (`0 * 1m / 1s`, `0 * 1m / (1s * 1s)`) because polymorphic-zero has not
+// landed — esc-3115 rule requires a dimensioned RHS for a Scalar<D> LHS.
+// vibration_tolerance/max_iters/tol remain dimensionless (plain > 0 / <= 1).
 //
 // Fields:
 //   - modes              : List<Mode>        — vibration modes resolved via
@@ -547,10 +526,10 @@ structure def JointLimit {
 //                                              stdlib_loader.rs:110-116).
 //   - actuator_limits    : List<JointLimit>  — per-joint force limits
 //                                              (JointLimit declared above).
-//   - velocity_limit     : Real              — TODO(velocity-scalar): Scalar<Velocity>
-//                                              (Velocity NOT in NAMED_DIMENSIONS,
-//                                              so Real is the only option anyway).
-//   - acceleration_limit : Real              — TODO(acceleration-scalar): Scalar<Acceleration>
+//   - velocity_limit     : Scalar<Velocity>  — RESOLVED(velocity-scalar): tightened
+//                                              from Real by task 4580.
+//   - acceleration_limit : Scalar<Acceleration> — RESOLVED(acceleration-scalar):
+//                                              tightened from Real by task 4580.
 //   - vibration_tolerance: Real              — genuinely dimensionless (residual
 //                                              fraction); vibration_tolerance ∈ (0,1]
 //                                              per PRD §11 Phase 2 ε spec.
@@ -565,8 +544,8 @@ structure def JointLimit {
 structure def TOTSShaper : Shaper {
     param modes : List<Mode>
     param actuator_limits : List<JointLimit>
-    param velocity_limit : Real
-    param acceleration_limit : Real
+    param velocity_limit : Scalar<Velocity>
+    param acceleration_limit : Scalar<Acceleration>
     param vibration_tolerance : Real
 
     // max_iters = 100 per PRD §5.2 explicit default — solver iteration cap.
@@ -593,8 +572,12 @@ structure def TOTSShaper : Shaper {
     // velocity_limit, acceleration_limit: must be strictly positive — a zero or
     // negative kinematic limit is non-physical (the robot cannot move at all if
     // the velocity limit is zero, and a negative limit has no physical meaning).
-    constraint velocity_limit > 0
-    constraint acceleration_limit > 0
+    // Dimensioned-zero RHS required because these are Scalar<Velocity> /
+    // Scalar<Acceleration> (esc-3115 rule; polymorphic-zero not yet landed).
+    //   `1m / 1s`         mirrors units.ri SPEED_OF_LIGHT
+    //   `1m / (1s * 1s)`  mirrors units.ri STANDARD_GRAVITY
+    constraint velocity_limit > 0 * 1m / 1s
+    constraint acceleration_limit > 0 * 1m / (1s * 1s)
 
     // vibration_tolerance ∈ (0, 1]: residual-vibration fraction. Zero would
     // mean "no vibration allowed ever" (impossible in practice); values > 1

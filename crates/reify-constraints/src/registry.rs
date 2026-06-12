@@ -396,11 +396,11 @@ fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
         ObjectiveSense::Minimize if is_unit => e,
         ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
         ObjectiveSense::Minimize => {
-            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::Real);
+            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
         ObjectiveSense::Maximize => {
-            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::Real);
+            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
     }
@@ -441,8 +441,8 @@ fn build_band_constraints(
     let delta = f64::max(LEX_EPSILON_BAND_REL * obj_star.abs(), LEX_EPSILON_BAND_ABS);
     let cost = signed_cost_expr(rank_terms);
 
-    let upper = CompiledExpr::literal(Value::Real(obj_star + delta), Type::Real);
-    let lower = CompiledExpr::literal(Value::Real(obj_star - delta), Type::Real);
+    let upper = CompiledExpr::literal(Value::Real(obj_star + delta), Type::dimensionless_scalar());
+    let lower = CompiledExpr::literal(Value::Real(obj_star - delta), Type::dimensionless_scalar());
 
     let le_expr = CompiledExpr::binop(BinOp::Le, cost.clone(), upper, Type::Bool);
     let ge_expr = CompiledExpr::binop(BinOp::Ge, cost, lower, Type::Bool);

@@ -338,7 +338,7 @@ fn promote_function_call_to_structure_ref(
     arg: &CompiledExpr,
     templates: &HashMap<String, &TopologyTemplate>,
 ) -> Option<Type> {
-    if !matches!(arg.result_type, Type::Real | Type::Int) {
+    if !matches!(arg.result_type, Type::Scalar { .. } | Type::Int) {
         return None;
     }
     let name = extract_function_call_name(arg)?;
@@ -914,15 +914,18 @@ fn check_leaf_trait_conformance(
         // amend, reviewer_comprehensive robustness_false_positive).
         Type::TypeParam(_) => {}
         _ => {
-            // Anti-cascade: when arg_type is a numeric fallback (Real or Int)
-            // and arg_call_name is Some but the callee was not in the template
-            // registry (so promotion returned None), an "undefined function"
-            // diagnostic already fired for that unknown call. Emitting
-            // "type 'real'/'int' does not conform to trait 'X'" here would be
-            // misleading — the numeric type is the expression compiler's
-            // fallback for unresolved calls, not the author's intended type.
-            // Suppress.
-            if matches!(arg_type, Type::Real | Type::Int) && arg_call_name.is_some() {
+            // Anti-cascade: when arg_type is a dimensionless-scalar/Int fallback
+            // and arg_call_name refers to an UNKNOWN callee (not in the template
+            // registry, so promotion returned None, and not a known geometry
+            // function), an "undefined function" diagnostic already fired.
+            // Emitting "type does not conform to trait 'X'" here would be
+            // misleading — the fallback type is not the author's intended type.
+            // Geometry functions (box, sphere, …) return dimensionless_scalar()
+            // as a compile-time placeholder and are NOT unknown; they must NOT
+            // be suppressed so a non-geometry trait receives the correct error.
+            if matches!(arg_type, Type::Scalar { .. } | Type::Int)
+                && arg_call_name.is_some_and(|n| !is_geometry_function(n))
+            {
                 return;
             }
             // Neither StructureRef nor TraitObject — cannot conform to a trait.
@@ -1196,7 +1199,7 @@ mod tests {
                     name: "req".to_string(),
                     has_self: true,
                     params: vec![],
-                    return_type: Type::Real,
+                    return_type: Type::dimensionless_scalar(),
                 }),
                 span: SourceSpan::empty(0),
             }],
@@ -1339,7 +1342,7 @@ mod tests {
                     name: fn_name.to_string(),
                     has_self: true,
                     params: vec![],
-                    return_type: Type::Real,
+                    return_type: Type::dimensionless_scalar(),
                 }),
                 span: SourceSpan::empty(0),
             }],
@@ -1610,7 +1613,7 @@ mod tests {
         assert_eq!(entry.function.name, "area");
         assert_eq!(
             entry.function.return_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "the injected default's compiled return type should be Real"
         );
     }
@@ -1772,13 +1775,13 @@ mod tests {
     /// `Type::Enum("Direction")` resolution:
     ///
     /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
-    ///   back to `Type::Real`)
+    ///   back to `Type::dimensionless_scalar()`)
     /// - Absence of **"type mismatch"** → the resolved types matched the trait's
     ///   `Type::Enum("Direction")` requirements
     /// - Absence of **"missing required member"** → both members appeared in `structure_members`
     ///
     /// Together these three imply `Type::Enum("Direction")` was produced.  A regression that
-    /// accidentally resolves enum params to `Type::Real` would trip "type mismatch", and one
+    /// accidentally resolves enum params to `Type::dimensionless_scalar()` would trip "type mismatch", and one
     /// that omits a member from `structure_members` would trip "missing required member".
     #[test]
     fn check_trait_conformance_resolves_enum_typed_param_and_let() {
@@ -1913,7 +1916,7 @@ mod tests {
     /// reach today: it hand-builds a `RequirementKind::Let` requirement (not parseable
     /// from reify source — see `let_type_disambiguation_tests.rs:470-497` and
     /// esc-1951-6) and verifies that the Option B guard in `available_defaults`
-    /// suppresses the phantom `(name, Let) -> Type::Real` entry for names recorded in
+    /// suppresses the phantom `(name, Let) -> Type::dimensionless_scalar()` entry for names recorded in
     /// `pass2_skipped`.
     ///
     /// ## Scenario
@@ -1928,14 +1931,14 @@ mod tests {
     /// ## Expected behavior (post-fix)
     ///
     /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
-    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
+    /// `available_defaults` returns `None` before reaching the `Type::dimensionless_scalar()` fallback.
     /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
     /// correct "missing required member" diagnostic (not the spurious "available default
     /// has Real" phantom type-mismatch).
     ///
     /// ## Pre-fix behavior (should NOT happen after fix)
     ///
-    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
+    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::dimensionless_scalar()`.
     /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
     /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     #[test]
@@ -1993,7 +1996,7 @@ mod tests {
         };
 
         // TraitZ: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope,
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope,
         // and records "x" in pass2_skipped (no inferred_let_exprs cache entry).
         let trait_z = CompiledTrait {
             name: "TraitZ".to_string(),
@@ -2084,7 +2087,7 @@ mod tests {
             .collect();
         assert!(
             phantom_diags.is_empty(),
-            "Option B fix violated: phantom `(x, Let) -> Type::Real` advertisement caused \
+            "Option B fix violated: phantom `(x, Let) -> Type::dimensionless_scalar()` advertisement caused \
              a spurious type-mismatch diagnostic. Expected no phantom diagnostic. Got: {:?}",
             phantom_diags
         );
@@ -2185,7 +2188,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
         // Unannotated Let: `let x = 5.5` — cell_type: None
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope
         // (from the annotated Let above), and records "x" in pass2_skipped.
         let unannotated_let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
@@ -2415,7 +2418,7 @@ mod tests {
     ///
     /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
     /// it verifies that an unknown parameterized type name falls through to the
-    /// "unresolved type" diagnostic rather than silently resolving to `Type::Real` or
+    /// "unresolved type" diagnostic rather than silently resolving to `Type::dimensionless_scalar()` or
     /// emitting a spurious "does not accept type arguments" error.
     #[test]
     fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
@@ -2607,19 +2610,19 @@ mod tests {
     /// Pins the `Some(default_type) =>` type-mismatch branch at conformance.rs:411-423
     /// for the `RequirementKind::Let` path when the inferred-let type is incompatible.
     ///
-    /// `implicitly_converts_to(Type::Real, Type::length())` is false — `Real` and
+    /// `implicitly_converts_to(Type::dimensionless_scalar(), Type::length())` is false — `Real` and
     /// `Scalar { LENGTH }` are distinct types with no implicit conversion
     /// (type_compat.rs:3-96).
     ///
     /// ## Scenario
     ///
     /// Identical to `inferred_let_expr_satisfies_let_requirement` except the let
-    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::Real`)
+    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::dimensionless_scalar()`)
     /// instead of `QuantityLiteral { 80.0, "mm" }`.
     ///
     /// ## Expected behavior
     ///
-    /// `available_defaults` advertises `("x", Let) -> Type::Real` (via the
+    /// `available_defaults` advertises `("x", Let) -> Type::dimensionless_scalar()` (via the
     /// `inferred_let_exprs.get("x")` fallback). The `Some(default_type) =>` arm
     /// fires → exactly one "type mismatch" + "available default" + "x" diagnostic.
     /// No "missing required member" for "x" (the default IS present in
@@ -2645,7 +2648,7 @@ mod tests {
         };
 
         // TraitB: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" vacant in scope,
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" vacant in scope,
         // caches in inferred_let_exprs.
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
@@ -2879,7 +2882,7 @@ mod tests {
             refinements: vec![],
             required_members: vec![TraitRequirement {
                 name: "w".to_string(),
-                kind: RequirementKind::Param(Type::Real),
+                kind: RequirementKind::Param(Type::dimensionless_scalar()),
                 span: SourceSpan::empty(0),
             }],
             defaults: vec![],
@@ -2954,7 +2957,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -3105,8 +3108,8 @@ mod tests {
         );
         assert_eq!(
             out.inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::Real,
-            "Expected Type::Real for a floating-point number literal 2.5"
+            Type::dimensionless_scalar(),
+            "Expected Type::dimensionless_scalar() for a floating-point number literal 2.5"
         );
     }
 
@@ -3497,7 +3500,7 @@ mod tests {
     /// `let x = []` — an empty list literal — causes `compile_expr` to push a
     /// `Severity::Warning` diagnostic ("cannot infer element type of empty list literal,
     /// defaulting to Real") but emits **no** `Severity::Error`.  The expression compiles
-    /// successfully to `Type::List(Box::new(Type::Real))`.
+    /// successfully to `Type::List(Box::new(Type::dimensionless_scalar()))`.
     ///
     /// ## What this test locks in
     ///
@@ -3511,7 +3514,7 @@ mod tests {
     ///   (a) At least 1 diagnostic emitted, and ALL diagnostics have non-Error severity.
     ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
     ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
-    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
+    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::dimensionless_scalar()))`.
     ///   (e) The scope slot for "x" is occupied after Pass 2 and holds the inferred type
     ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
     #[test]
@@ -3599,7 +3602,7 @@ mod tests {
         // (d) The cached expression has the expected inferred type for an empty list literal.
         assert_eq!(
             out.inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
         );
 
@@ -3614,7 +3617,7 @@ mod tests {
         );
         assert_eq!(
             resolved.unwrap().1,
-            &Type::List(Box::new(Type::Real)),
+            &Type::List(Box::new(Type::dimensionless_scalar())),
             "Expected scope slot for 'x' to hold the inferred Type::List(Real) after Pass 2; \
              got: {:?}",
             resolved.unwrap().1
@@ -3853,7 +3856,7 @@ mod tests {
             TraitDefault {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Param {
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_decl: param_decl,
                 },
                 span: SourceSpan::empty(0),
@@ -3893,8 +3896,8 @@ mod tests {
         );
         assert_eq!(
             available_defaults[&("x".to_string(), AvailableDefaultKind::Param)],
-            Type::Real,
-            "Expected Type::Real for key ('x', Param)"
+            Type::dimensionless_scalar(),
+            "Expected Type::dimensionless_scalar() for key ('x', Param)"
         );
     }
 
@@ -4123,7 +4126,7 @@ mod tests {
         let mut ctx = MergeContext::new();
         ctx.requirements = vec![TraitRequirement {
             name: "w".to_string(),
-            kind: RequirementKind::Param(Type::Real),
+            kind: RequirementKind::Param(Type::dimensionless_scalar()),
             span: SourceSpan::empty(0),
         }];
 
@@ -4275,7 +4278,7 @@ mod tests {
 
         // Structure param member "w" exists but has wrong type: Real, not Length
         let mut structure_param_members: HashMap<String, Type> = HashMap::new();
-        structure_param_members.insert("w".to_string(), Type::Real);
+        structure_param_members.insert("w".to_string(), Type::dimensionless_scalar());
         let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4347,7 +4350,7 @@ mod tests {
         let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         available_defaults.insert(
             ("w".to_string(), AvailableDefaultKind::Param),
-            Type::Real, // Wrong type — Length is required
+            Type::dimensionless_scalar(), // Wrong type — Length is required
         );
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
@@ -4488,7 +4491,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -4710,7 +4713,7 @@ mod tests {
     ///
     /// ## Fixture
     ///
-    /// A single Param default for "x" (cell_type = Type::Real, no default expression),
+    /// A single Param default for "x" (cell_type = Type::dimensionless_scalar(), no default expression),
     /// with `pass1_param_skipped = {"x"}`.  The injection loop must skip "x" entirely:
     /// - `value_cells.is_empty()` — no Param cell emitted
     /// - `constraints.is_empty()` — no constraint emitted
@@ -4751,7 +4754,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -4824,7 +4827,7 @@ mod tests {
     /// defaults bypass the inferred cache entirely.
     #[test]
     fn resolve_let_advertised_type_prefers_annotation_over_inferred() {
-        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
         let result = resolve_let_advertised_type(&Some(Type::length()), Some(&inferred));
         assert_eq!(
             result,
@@ -4842,11 +4845,11 @@ mod tests {
     /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
     #[test]
     fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
-        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
         let result = resolve_let_advertised_type(&None, Some(&inferred));
         assert_eq!(
             result,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "Expected inferred type (Real) when no annotation is present"
         );
     }
@@ -5031,8 +5034,8 @@ mod tests {
             kind: ValueCellKind::Let,
             visibility: Visibility::Private,
             is_aux: false,
-            cell_type: Type::Real,
-            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::Real)),
+            cell_type: Type::dimensionless_scalar(),
+            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::dimensionless_scalar())),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
         }
@@ -5049,7 +5052,7 @@ mod tests {
     /// the value_cells arm — the arm that contains the recursive call to
     /// `infer_traits_for_expr_in_env(expr, self)`.
     ///
-    /// # Why `Type::Real`
+    /// # Why `Type::dimensionless_scalar()`
     ///
     /// A non-geometry type confirms the fixture bypasses the realization arm
     /// and only exercises the value_cells fallback where the recursion lives.
@@ -5181,7 +5184,7 @@ mod tests {
             kind: ValueCellKind::Let,
             visibility: Visibility::Private,
             is_aux: false,
-            cell_type: Type::Real,
+            cell_type: Type::dimensionless_scalar(),
             default_expr: Some(diff_expr),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
@@ -5594,7 +5597,7 @@ mod tests {
     #[test]
     fn l2_joint_constructor_name_mapping_exhaustive() {
         // Build a minimal FunctionCall CompiledExpr for a given constructor name.
-        // result_type = Type::Real (arbitrary — Path B ignores it and keeys on
+        // result_type = Type::dimensionless_scalar() (arbitrary — Path B ignores it and keeys on
         // the function.name string).
         let make_call = |name: &str| -> CompiledExpr {
             CompiledExpr {
@@ -5605,7 +5608,7 @@ mod tests {
                     },
                     args: vec![],
                 },
-                result_type: Type::Real,
+                result_type: Type::dimensionless_scalar(),
                 content_hash: ContentHash(0),
             }
         };

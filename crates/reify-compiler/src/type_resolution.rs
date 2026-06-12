@@ -579,7 +579,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
-        "Real" => Some(Type::Real),
+        "Real" => Some(Type::dimensionless_scalar()),
         "String" => Some(Type::String),
         // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
         // None for it); mirror the special-case used in resolve_dimension_type.
@@ -1230,7 +1230,6 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1661,6 +1660,17 @@ pub(crate) fn resolve_parameterized_builtin_type(
             )?;
             Some(Type::Option(Box::new(inner)))
         }
+        "Range" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases(
+                &type_args[0],
+                type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Range(Box::new(inner)))
+        }
         "Scalar" if type_args.len() == 1 => {
             // Scalar<Q>: resolve Q to a DimensionVector and wrap.
             let dim =
@@ -1788,7 +1798,7 @@ fn expect_integer_literal_type_arg(
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
 ///
-/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
+/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Range<T>`, `Scalar<Q>`, `Vector3<Q>`,
 /// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
@@ -1859,6 +1869,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Option(Box::new(inner)))
+        }
+        "Range" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
             let dim = resolve_type_alias_expr_to_dim_with_subst(
@@ -2881,17 +2901,17 @@ mod tests {
     #[test]
     fn substitute_bare_type_param_bound() {
         // (a) bare TypeParam("T") with {T: Real} → Real.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
-            Type::Real
+            Type::dimensionless_scalar()
         );
     }
 
     #[test]
     fn substitute_unbound_type_param_passthrough() {
         // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
             Type::TypeParam("D".to_string())
@@ -2916,7 +2936,7 @@ mod tests {
         // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
         //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
         //     D stays unbound (nested partial substitution).
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Field {
@@ -2927,7 +2947,7 @@ mod tests {
             ),
             Type::Field {
                 domain: Box::new(Type::TypeParam("D".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }
         );
     }
@@ -2952,7 +2972,7 @@ mod tests {
     fn substitute_function_params_and_return() {
         // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
         //     with {T: Real} → both positions substituted.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Function {
@@ -2962,8 +2982,8 @@ mod tests {
                 &subst
             ),
             Type::Function {
-                params: vec![Type::Real],
-                return_type: Box::new(Type::List(Box::new(Type::Real))),
+                params: vec![Type::dimensionless_scalar()],
+                return_type: Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
             }
         );
     }
@@ -2994,5 +3014,97 @@ mod tests {
         // (h) non-typeparam leaf (Int) with empty subst → identity.
         let subst = subst_of(&[]);
         assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
+    }
+
+    // ── Range<T> parameterized resolution (step-1 RED / task 4576) ───────────
+    // `Range<Length>` and `Range<Real>` must resolve to the Range kind.
+    // Arity guard: Range with 0 or 2 args must return None.
+    // Fails until step-2 adds the "Range" arm to resolve_parameterized_builtin_type.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_length() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))),
+            "Range<Length> should resolve to Type::Range(Box::new(Type::Scalar{{LENGTH}}))",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_real() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Real")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::dimensionless_scalar()))),
+            "Range<Real> should resolve to Type::Range(dimensionless_scalar)",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_zero() {
+        let reg = TypeAliasRegistry::new();
+        let mut diags = Vec::new();
+        // Range with 0 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &[],
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result, None,
+            "Range with 0 type-args should return None (arity guard)",
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_two() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length"), named_type_expr("Angle")];
+        let mut diags = Vec::new();
+        // Range with 2 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result, None,
+            "Range with 2 type-args should return None (arity guard)",
+        );
     }
 }

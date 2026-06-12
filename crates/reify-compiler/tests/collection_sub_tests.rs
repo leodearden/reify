@@ -595,7 +595,7 @@ fn mixed_sub_types_instance_qualified_access() {
     );
 
     // Positive correctness check: verify that d1 and d2 resolved to the expected
-    // ValueRef IDs and types — not the ICE fallback (Type::Real) or an error result.
+    // ValueRef IDs and types — not the ICE fallback (Type::dimensionless_scalar()) or an error result.
     //
     // For non-collection subs, InstanceQualifiedAccess produces a ValueRef scoped to
     // "Outer.part" with the element type from Inner (Length).

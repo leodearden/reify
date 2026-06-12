@@ -160,7 +160,7 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
         max_stress_at_neutral,
         b.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }
@@ -339,7 +339,7 @@ fn prb_let_joint(args: &[Value]) -> Value {
         max_stress_at_neutral,
         l.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }
@@ -1260,13 +1260,12 @@ mod tests {
             other => panic!("{ctor_name}: max_stress Scalar, got {other:?}"),
         }
         assert_eq!(f("at_yield"), &Value::Bool(false), "{ctor_name}: auto endpoint not at yield");
-        match f("prb_validity_range") {
-            Value::Real(rr) => assert!(
-                (rr - prb_limit).abs() / prb_limit < 1e-9,
-                "{ctor_name}: prb_validity_range {rr} == 5°"
-            ),
-            other => panic!("{ctor_name}: prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range is now Range<Angle> = [−θ_lim, +θ_lim] (task 4576).
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - prb_limit).abs() / prb_limit < 1e-9,
+            "{ctor_name}: prb_validity_range half {prb_half} == 5°"
+        );
 
         // ── declared ±10° on yielding geometry (t=0.05mm, L=2mm) ─────────────
         // σ(10°) ≈ 447 MPa > 310 yield. 8-arg layout:
@@ -1325,15 +1324,13 @@ mod tests {
         // prb_validity_range still advertises the auto SAFE bound, NOT the
         // declared 10°. For this short geometry θ_yield = yield·L/(E·t/2) ≈ 6.93°
         // > 5°, so the SAFE bound is the ±5° PRB cap (the declared 10° must not
-        // leak into prb_validity_range).
+        // leak into prb_validity_range). Now Range<Angle> (task 4576).
         let theta_lim_short = (yield_si * yl / (e * yt / 2.0)).min(prb_limit);
-        match yg("prb_validity_range") {
-            Value::Real(rr) => assert!(
-                (rr - theta_lim_short).abs() / theta_lim_short < 1e-9,
-                "{ctor_name}: prb_validity_range stays auto SAFE bound {theta_lim_short}, got {rr}"
-            ),
-            other => panic!("{ctor_name}: prb_validity_range Real, got {other:?}"),
-        }
+        let prb_half_y = angle_range_half_si(yg("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half_y - theta_lim_short).abs() / theta_lim_short < 1e-9,
+            "{ctor_name}: prb_validity_range stays auto SAFE bound {theta_lim_short}, got half {prb_half_y}"
+        );
     }
 
     #[test]
@@ -1402,13 +1399,12 @@ mod tests {
             other => panic!("LET: max_stress Scalar, got {other:?}"),
         }
         assert_eq!(f("at_yield"), &Value::Bool(false), "LET: auto endpoint not at yield");
-        match f("prb_validity_range") {
-            Value::Real(rr) => assert!(
-                (rr - prb_limit).abs() / prb_limit < 1e-9,
-                "LET: prb_validity_range {rr} == 5°"
-            ),
-            other => panic!("LET: prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range is now Range<Angle> = [−θ_lim, +θ_lim] (task 4576).
+        let prb_half_let = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half_let - prb_limit).abs() / prb_limit < 1e-9,
+            "LET: prb_validity_range half {prb_half_let} == 5°"
+        );
 
         // ── declared ±10° (9-arg layout): σ_eq(10°) ≈ 360 MPa > yield. The 9-arg
         // layout is (length, width, thickness, n_blades, material, pivot, axis,

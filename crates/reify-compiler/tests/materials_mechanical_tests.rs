@@ -134,7 +134,7 @@ fn elastic_trait_required_members_have_correct_types() {
     match &poissons.kind {
         RequirementKind::Param(ty) => assert_eq!(
             *ty,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "poissons_ratio should remain Real (dimensionless), got {:?}",
             ty
         ),
@@ -326,7 +326,7 @@ fn hardness_scale_enum_and_hard_trait() {
     match &hardness_value.kind {
         RequirementKind::Param(ty) => assert_eq!(
             *ty,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "hardness_value should be Real, got {:?}",
             ty
         ),

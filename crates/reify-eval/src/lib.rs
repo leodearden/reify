@@ -20,8 +20,10 @@ mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
+pub(crate) mod realization_content;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
+    RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
 pub use graph::RealizationKernelProvenance;
@@ -30,6 +32,7 @@ pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
+pub use engine_constraints::GdtCallout;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
@@ -242,8 +245,8 @@ fn value_type_kind_matches(
         // diagnostic rather than a hard error, so the kind check must not reject
         // them.  This is intentional and mirrors the pre-existing collection
         // count behaviour (see edit_param_non_int_*_count_emits_warning tests).
-        Value::Int(_) => matches!(ty, Type::Int | Type::Real),
-        Value::Real(_) => matches!(ty, Type::Real | Type::Int),
+        Value::Int(_) => matches!(ty, Type::Int | Type::Scalar { .. }),
+        Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
         Value::Enum { .. } => matches!(ty, Type::Enum(_)),
@@ -544,6 +547,16 @@ pub struct Engine {
     /// `post_process_geometry_handle_cells`; empty before the first build.
     /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// β (task 4508): memoization store for realized geometry content.
+    ///
+    /// Keyed by `(RealizationNodeId, ContentHash)`.  Populated by
+    /// `project_realization_read_handle` when γ/δ add per-repr projection;
+    /// consulted by that method before attempting (potentially expensive)
+    /// kernel re-projection.  Plain private field (crate-root visibility)
+    /// so `engine_compute` and `realization_content` child modules reach it
+    /// directly (same visibility model as `compute_registry` /
+    /// `realization_handles`).
+    realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
     /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
@@ -1282,7 +1295,7 @@ mod tests {
         let t = Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1304,7 +1317,7 @@ mod tests {
         let t = Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1312,7 +1325,7 @@ mod tests {
         );
     }
 
-    /// Value::Tensor supplied to Type::Real must return false.
+    /// Value::Tensor supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path: Tensor values are rejected by
     /// non-Tensor/non-Matrix types, confirming the `matches!` guard cannot be
     /// trivially widened to `_ => true` without breaking this assertion.
@@ -1321,14 +1334,14 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Tensor(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
+            "Value::Tensor should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
-    /// Value::Matrix supplied to Type::Real must return false.
+    /// Value::Matrix supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path for Matrix, symmetric to the
     /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
     #[test]
@@ -1336,10 +1349,10 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Matrix(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
+            "Value::Matrix should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
@@ -1696,7 +1709,7 @@ mod tests {
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
         use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
-        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+        for t in [Type::Int, Type::dimensionless_scalar(), Type::Bool, Type::String] {
             assert!(
                 !value_type_kind_matches(&v, &t, Some(&reg)),
                 "StructureInstance must be rejected by unrelated type {t:?}"
@@ -1747,7 +1760,7 @@ mod tests {
         };
         for t in [
             Type::Int,
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::StructureRef("X".to_string()),
             Type::List(Box::new(Type::Int)),
             Type::Bool,
@@ -1930,7 +1943,7 @@ structure S {
                     .param(
                         "Widget",
                         "width",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         Some(literal(Value::Real(1.0))),
                     )
                     .build(),
@@ -2432,6 +2445,21 @@ structure S {
             real_diags,
             stub_diags,
             "real checker must produce identical diagnostics to stub at compile time"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for value_type_kind_matches ───────
+    //
+    // After α, a dimensionless cell is statically typed Scalar{DL} but holds
+    // Value::Real — the runtime bridge MUST accept this combination.
+    // RED today: Value::Real(_) matches only Type::dimensionless_scalar() | Type::Int (line 247),
+    // so value_type_kind_matches(Real, Scalar{DL}) returns false.
+    #[test]
+    fn value_real_matches_dimensionless_scalar_type() {
+        assert!(
+            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
+             (the runtime bridge after α)"
         );
     }
 }

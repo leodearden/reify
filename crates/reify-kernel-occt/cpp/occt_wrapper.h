@@ -712,9 +712,13 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms);
 
-// --- Thicken / Shell ---
+// --- Thicken / Shell / Offset Solid ---
+
+std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
+
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
 
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices);
@@ -731,6 +735,11 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
+
+/// Create an open lateral cylindrical face (no caps) centred on the Z axis with
+/// base at the origin.  U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+/// Both radius and height must be finite and positive.
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height);
 
 /// Create a flat axis-aligned rectangular face centred at origin in the XY plane
 /// at the given Z height (for extrude profiles).

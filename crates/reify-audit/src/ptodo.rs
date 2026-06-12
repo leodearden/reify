@@ -24,8 +24,10 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, GitCommit, Pattern, Severity};
+use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // -----------------------------------------------------------------------
@@ -256,6 +258,29 @@ fn phantom_phrase(line: &str) -> bool {
     PHANTOM_PHRASES.iter().any(|p| lower.contains(p))
 }
 
+/// §8.3 γ blocker-prose needles — matched case-insensitively (against a
+/// lowercased copy of the reason), except `RED:` which is matched
+/// case-sensitively against the original to avoid the `required:` false
+/// positive (the substring `red:` appears in `required:` when lowercased).
+///
+/// Trailing spaces on `until ` and `once ` are part of the §8.3 grammar and
+/// provide a crude word boundary (so `until` at end-of-string does not match).
+const BLOCKER_PROSE: &[&str] = &["pending", "not yet", "until ", "once ", "blocked"];
+
+/// §8.3 γ: `true` when `reason` contains a blocker-prose needle.
+///
+/// The check is applied to the EXTRACTED reason, not the whole `#[ignore]`
+/// line. Five tokens are matched case-insensitively; `RED:` is matched
+/// case-sensitively to guard against `required:` false positives.
+fn has_blocker_prose(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    if BLOCKER_PROSE.iter().any(|n| lower.contains(n)) {
+        return true;
+    }
+    // `RED:` case-sensitive — `required:` must not match.
+    reason.contains("RED:")
+}
+
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
 fn line_escaped(line: &str) -> bool {
@@ -350,10 +375,12 @@ enum LineClass {
 ///
 /// Precedence per line (first match wins; at most one entry per line):
 /// 1. `ptodo:allow` inline escape → the line is skipped entirely (§6.8).
-/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing → no
-///    entry (deferred to γ — intentionally NOT cite-checked, so its `#N` reason
-///    ids never reach β). Checked before comment markers so a reason string is
-///    not misread as a marker.
+/// 2. `#[ignore]` (`.rs`): bare → `Structural(BareIgnore)`; reason-bearing →
+///    γ reason policy: extract reason via [`extract_ignore_reason`]; if it
+///    contains a canonical `#NNNN` cite → `Cited(ids)` (step-8; β liveness);
+///    else if it has blocker-prose → `Structural(Untracked)`; else (operational)
+///    → no entry. Checked before comment markers so a reason string is not
+///    misread as a marker.
 /// 3. comment marker (all exts): canonical `#NNNN` → `Cited(on-line cites)`
 ///    (tracked → β liveness-checks); malformed cite → `Structural(MalformedCite)`;
 ///    else `Structural(Untracked)`.
@@ -376,10 +403,28 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
         let has_canon = has_canonical_cite(line);
 
         if is_rust && let Some(form) = ignore_attr(line) {
-            // (2) #[ignore] (.rs only). Reason-bearing forms defer to γ and are
-            // NOT cite-checked (their #N reason ids are γ's job, not β's).
-            if form == IgnoreForm::Bare {
-                out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+            // (2) #[ignore] (.rs only). γ reason policy (cite-first, §8.3):
+            //   bare → Structural(BareIgnore);
+            //   reason-bearing: extract reason;
+            //     if it has a canonical cite → Cited(ids) (β liveness);
+            //     else if it has blocker-prose → Structural(Untracked);
+            //     else (operational) → no entry.
+            match form {
+                IgnoreForm::Bare => {
+                    out.push((line_no, LineClass::Structural(Kind::BareIgnore), line.trim().to_string()));
+                }
+                IgnoreForm::WithReason => {
+                    if let Some(reason) = extract_ignore_reason(line) {
+                        if has_canonical_cite(reason) {
+                            // cite-first (§8.3): reason contains a canonical #NNNN → β resolves it.
+                            out.push((line_no, LineClass::Cited(extract_cites(reason)), line.trim().to_string()));
+                        } else if has_blocker_prose(reason) {
+                            out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
+                        }
+                        // else: operational reason → no entry (pass)
+                    }
+                    // extract_ignore_reason returned None (non-canonical form) → no entry
+                }
             }
         } else if find_comment_marker(line).is_some() {
             // (3) comment markers (all swept exts).
@@ -463,6 +508,155 @@ fn open_tasks_db(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
 /// liveness kinds Medium).
 fn is_terminal_status(status: &str) -> bool {
     status == "done" || status == "cancelled"
+}
+
+// -----------------------------------------------------------------------
+// §6.3 inverse lane — non-terminal tasks citing git-deleted metadata.files paths
+// -----------------------------------------------------------------------
+
+/// §6.3 inverse-lane membership test: returns `true` when `path` (trailing-
+/// slash-tolerant) is "present in the tracked set" — i.e. it equals a tracked
+/// file OR is a directory prefix of some tracked file (a tracked file starts
+/// with `path + "/"`). Strips at most one trailing `/` before the checks.
+///
+/// This guard suppresses the critical FP class where `metadata.files` names
+/// a DIRECTORY that still exists (e.g. `crates/reify-audit/tests`): a
+/// directory is never a member of the `git ls-files` set, yet
+/// `git log -1 -- <dir>` returns non-empty — without this guard, every
+/// directory citation would produce a false-positive finding.
+fn path_present_in_tracked(path: &str, tracked: &std::collections::HashSet<String>) -> bool {
+    // Strip at most one trailing slash for both exact-match and prefix checks.
+    let path = path.trim_end_matches('/');
+    if tracked.contains(path) {
+        return true;
+    }
+    // Directory-prefix membership: some tracked file lives under `path/`.
+    // O(n) scan over the tracked set — acceptable for current backlog sizes
+    // because most cited paths hit the O(1) exact-match branch above and only
+    // genuinely absent paths reach here. If the tracked set grows very large
+    // (tens of thousands of files), consider a sorted Vec<String> +
+    // `partition_point`-based prefix search to reduce this to O(log n).
+    let prefix = format!("{}/", path);
+    tracked.iter().any(|f| f.starts_with(&prefix))
+}
+
+/// §6.3 inverse lane: for each non-terminal master task, check each cited
+/// `metadata.files` path. A path absent from `tracked` (not an exact tracked
+/// file and not a directory prefix of one) is checked for git history via
+/// [`crate::GitOps::last_commit_for_path`]:
+///
+/// - `Some(commit)` → the path was deleted → emit a Medium [`Pattern::PTodo`]
+///   `task-cites-deleted-path` finding carrying the task id, the path, and
+///   the last-touching commit.
+/// - `None` → path never existed → presumed to-be-created → pass (no finding).
+///
+/// Fail-soft on DB errors (propagated as `Err` so the caller's
+/// `and_then`-based degradation handles them alongside the liveness lane).
+/// NULL/malformed/missing `metadata` → empty files list → graceful (no panic).
+///
+/// Findings are sorted by (task_id, path) for determinism; deleted paths are
+/// by definition absent from `tracked` so they never share a key with the
+/// structural/liveness (path, line) findings.
+// G-allow: test-facing thin pub fn (mirrors resolve_liveness's pattern). MUST stay `pub`: its sole callers are the tests/ptodo.rs integration test binary (a SEPARATE crate — cannot see crate-private items) and check() (same module); `pub(crate)` would break the integration test, `#[cfg(test)]` would hide it from the same external caller.
+pub fn resolve_inverse(
+    conn: &rusqlite::Connection,
+    git: &dyn crate::GitOps,
+    tracked: &std::collections::HashSet<String>,
+) -> rusqlite::Result<Vec<Finding>> {
+    let mut stmt =
+        conn.prepare("SELECT id, status, metadata FROM tasks WHERE tag = 'master'")?;
+
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut out: Vec<Finding> = Vec::new();
+    // Per-run cache: avoid redundant `git log` spawns when multiple tasks cite
+    // the same absent path (common in larger backlogs where a single deleted
+    // file is referenced by several related tasks).
+    let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
+
+    for (id, status, metadata_opt) in rows {
+        if is_terminal_status(&status) {
+            continue;
+        }
+
+        // Parse metadata.files: NULL / malformed / missing key → empty, graceful.
+        let files: Vec<String> = metadata_opt
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok())
+            .and_then(|v| v.get("files").and_then(|a| a.as_array()).cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+
+        for path in files {
+            if path_present_in_tracked(&path, tracked) {
+                continue;
+            }
+            // Path absent from tracked set — check git history (fail-safe: None
+            // on any git error → no false positive). Results are memoized to
+            // avoid repeated subprocess spawns for the same path across tasks.
+            let commit_opt = git_cache
+                .entry(path.clone())
+                .or_insert_with(|| git.last_commit_for_path(&path))
+                .clone();
+            if let Some(commit) = commit_opt {
+                out.push(Finding {
+                    pattern: Pattern::PTodo,
+                    severity: Severity::Medium,
+                    task_id: id.to_string(),
+                    summary: format!(
+                        "task-cites-deleted-path: task #{id} cites deleted path '{path}' (last touched {sha})",
+                        sha = commit.sha,
+                    ),
+                    evidence: vec![
+                        EvidenceRef::MetadataFiles { entries: vec![path.clone()] },
+                        EvidenceRef::Commit { sha: commit.sha, subject: commit.subject },
+                    ],
+                });
+            }
+            // None → path never existed → presumed to-be-created → pass.
+        }
+    }
+
+    // Deterministic order: (task_id parsed as integer, path). Deleted paths are
+    // absent from `tracked` so there is no cross-lane sort key collision.
+    out.sort_by(|a, b| {
+        let id_a = a.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        let id_b = b.task_id.parse::<i64>().unwrap_or(i64::MAX);
+        let path_a = a
+            .evidence
+            .iter()
+            .find_map(|e| {
+                if let EvidenceRef::MetadataFiles { entries } = e {
+                    entries.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let path_b = b
+            .evidence
+            .iter()
+            .find_map(|e| {
+                if let EvidenceRef::MetadataFiles { entries } = e {
+                    entries.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        id_a.cmp(&id_b).then(path_a.cmp(&path_b))
+    });
+
+    Ok(out)
 }
 
 /// §8.2/§8.3 liveness resolution: per cited marker, resolve each `#NNNN` id's
@@ -587,13 +781,18 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
     let mut cited: Vec<(String, usize, Vec<u32>, String)> = Vec::new();
 
-    for path in ctx.git.ls_files() {
-        if !is_swept_ext(&path) || is_allowlisted(&path) {
+    // Collect ls_files() once: the Vec drives the structural sweep; the HashSet
+    // is reused by the ζ inverse-lane membership test without a second git call.
+    let tracked_files: Vec<String> = ctx.git.ls_files();
+    let tracked_set: HashSet<String> = tracked_files.iter().cloned().collect();
+
+    for path in &tracked_files {
+        if !is_swept_ext(path) || is_allowlisted(path) {
             continue;
         }
         // Read the working tree directly (only enumeration is a git seam). Skip
         // unreadable paths fail-safe.
-        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+        let content = match std::fs::read_to_string(ctx.project_root.join(path)) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -621,28 +820,41 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         })
         .collect();
 
-    // β liveness lane: open the task DB read-only; on success resolve the
-    // collected cites and merge the findings in. A missing/unreadable DB (open
-    // error) OR a prepare/probe failure on an existing-but-corrupt DB (resolve
-    // error) degrades the lane fail-soft (§6.7): exactly one stderr breadcrumb
-    // naming the resolved path, then the structural findings are returned
-    // unchanged. The exit class is untouched (Medium-neutral) — 125 is reserved
-    // for genuine arg/IO misconfig, never an absent optional substrate.
+    // β liveness lane + ζ inverse lane: open the task DB read-only; on success
+    // resolve BOTH the collected cites (β) AND the inverse-path check (ζ) so
+    // they degrade together under the single existing breadcrumb (§6.7).
+    // A missing/unreadable DB (open error) OR a prepare/probe failure on an
+    // existing-but-corrupt DB (resolve error) degrades both lanes fail-soft.
+    // The exit class is untouched (Medium-neutral) — 125 is reserved for genuine
+    // arg/IO misconfig, never an absent optional substrate.
     let db_path = tasks_db_path(&ctx.project_root);
-    match open_tasks_db(&db_path).and_then(|conn| resolve_liveness_keyed(&conn, &cited)) {
-        Ok(live) => keyed.extend(live),
+    let mut inverse_findings: Vec<Finding> = Vec::new();
+    match open_tasks_db(&db_path).and_then(|conn| {
+        let live = resolve_liveness_keyed(&conn, &cited)?;
+        let inv = resolve_inverse(&conn, ctx.git, &tracked_set)?;
+        Ok((live, inv))
+    }) {
+        Ok((live, inv)) => {
+            keyed.extend(live);
+            inverse_findings = inv;
+        }
         Err(_) => eprintln!(
-            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness degraded; structural checks still run",
+            "reify-audit: tasks.db unreachable at '{}' — PTODO liveness (β) and inverse (ζ) lanes degraded; structural checks still run",
             db_path.display()
         ),
     }
 
-    // Deterministic merged order across both lanes: (path, line). A given line
-    // yields at most one lane's entry (scan_file emits one LineClass per line),
-    // so there is no cross-lane tie; the stable sort preserves the per-marker
-    // multi-cite order within a line.
+    // Deterministic merged order across structural + liveness lanes: (path, line).
+    // A given line yields at most one lane's entry (scan_file emits one LineClass
+    // per line), so there is no cross-lane tie; the stable sort preserves the
+    // per-marker multi-cite order within a line.
     keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    keyed.into_iter().map(|(_path, _line, finding)| finding).collect()
+    let mut out: Vec<Finding> = keyed.into_iter().map(|(_path, _line, finding)| finding).collect();
+    // ζ inverse findings are already sorted by (task_id, path); append as a
+    // deterministic trailing block. Deleted paths are absent from tracked_set
+    // so they never share a (path,line) sort key with structural/liveness findings.
+    out.extend(inverse_findings);
+    out
 }
 
 #[cfg(test)]
@@ -701,6 +913,44 @@ mod tests {
         // Commented-out / doc-comment mentions are prose, not real stubs.
         assert!(!find_macro_stub("// todo!() example"));
         assert!(!find_macro_stub("/// returns todo!() placeholder"));
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ blocker-prose matching — has_blocker_prose
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn has_blocker_prose_positives() {
+        // "pending" — case-insensitive
+        assert!(has_blocker_prose("pending fillet binding"));
+        assert!(has_blocker_prose("Pending upstream fix"));
+        // "not yet" — case-insensitive
+        assert!(has_blocker_prose("not yet implemented"));
+        assert!(has_blocker_prose("Not Yet ready"));
+        // "RED:" — case-SENSITIVE (must stay uppercase)
+        assert!(has_blocker_prose("RED: awaiting impl"));
+        // "until " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("ignore until fillet lands"));
+        assert!(has_blocker_prose("Until some later date"));
+        // "once " — case-insensitive (trailing space is part of needle)
+        assert!(has_blocker_prose("run once manually"));
+        assert!(has_blocker_prose("Once fixed, remove this"));
+        // "blocked" — case-insensitive
+        assert!(has_blocker_prose("blocked on upstream"));
+        assert!(has_blocker_prose("Blocked by refactor"));
+    }
+
+    #[test]
+    fn has_blocker_prose_negatives() {
+        // Operational reasons — none of the needles present
+        assert!(!has_blocker_prose("requires OCCT"));
+        assert!(!has_blocker_prose("probe: run manually"));
+        assert!(!has_blocker_prose("timing/benchmark out of CI"));
+        // Case-sensitivity guard: "required:" contains "red:" in lowercase
+        // but must NOT match because RED: is matched case-sensitively.
+        assert!(!has_blocker_prose("required: rebuild"));
+        // Empty reason
+        assert!(!has_blocker_prose(""));
     }
 
     // -------------------------------------------------------------------
@@ -873,7 +1123,7 @@ mod tests {
             "// TODO(task δ): migrate",           // 3 (c) marker + malformed -> MalformedCite
             "// TODO: wire this",                 // 4 (d) marker, no cite -> Untracked
             "    #[ignore]",                      // 5 (e) bare ignore -> BareIgnore
-            "    #[ignore = \"blocked\"]",        // 6 (f) reason-bearing -> no entry
+            "    #[ignore = \"blocked\"]",        // 6 (f) blocker-prose reason -> Untracked (γ)
             "// resolved in #4553",               // 7 canonical cite, no marker -> no entry (prev for 8)
             "    todo!()",                        // 8 (g) macro, canonical cite directly above -> no entry
             "// TODO: leave me  // ptodo:allow",  // 9 (h) inline escape -> skipped
@@ -887,9 +1137,53 @@ mod tests {
             (3, Kind::MalformedCite, "// TODO(task δ): migrate".to_string()),
             (4, Kind::Untracked, "// TODO: wire this".to_string()),
             (5, Kind::BareIgnore, "#[ignore]".to_string()),
+            // γ: blocker-prose reason "blocked" → Untracked (was "no entry" pre-γ).
+            (6, Kind::Untracked, "#[ignore = \"blocked\"]".to_string()),
             (10, Kind::Untracked, "todo!(\"later\")".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ structural policy — blocker-prose vs operational
+    // -------------------------------------------------------------------
+
+    /// Blocker-prose reason (no cite) → Structural(Untracked).
+    /// Operational reason (no cite, no blocker-prose) → no entry.
+    /// Bare #[ignore] → Structural(BareIgnore) (regression).
+    #[test]
+    fn scan_file_ignore_with_reason_blocker_prose_and_operational() {
+        let lines = [
+            "#[ignore = \"pending fillet binding\"]", // 1 blocker-prose -> Structural(Untracked)
+            "#[ignore = \"requires OCCT\"]",           // 2 operational -> no entry
+            "#[ignore]",                              // 3 bare -> Structural(BareIgnore)
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Structural(Kind::Untracked),
+             "#[ignore = \"pending fillet binding\"]".to_string()),
+            (3, LineClass::Structural(Kind::BareIgnore), "#[ignore]".to_string()),
+        ];
+        assert_eq!(got, expected);
+    }
+
+    /// Non-canonical `#[ignore="blocked"]` (no spaces around `=`) — identical
+    /// to the canonical form from scan_file's perspective: extract_ignore_reason
+    /// mirrors ignore_attr's tolerance of non-spaced forms.
+    #[test]
+    fn scan_file_ignore_non_canonical_form_blocker_prose() {
+        let content = "#[ignore=\"pending fillet binding\"]";
+        let got = scan_file(content, true);
+        assert_eq!(
+            got,
+            vec![(
+                1,
+                LineClass::Structural(Kind::Untracked),
+                "#[ignore=\"pending fillet binding\"]".to_string(),
+            )]
+        );
     }
 
     // -------------------------------------------------------------------
@@ -903,7 +1197,7 @@ mod tests {
             "// TODO(#4553): x",          // 1 comment marker + canonical cite -> Cited([4553])
             "// #42",                     // 2 cite-only, no marker -> no entry (prev for 3)
             "    todo!()",                // 3 stub macro, cite directly above -> Cited([42])
-            "    #[ignore = \"see #42\"]", // 4 reason-bearing ignore -> no entry (deferred to γ)
+            "    #[ignore = \"see #42\"]", // 4 reason-bearing with cite -> Cited([42]) (γ cite-first)
             "// TODO: wire this",         // 5 marker, no cite -> Structural(Untracked)
             "// TODO(#5): x  // ptodo:allow", // 6 inline escape on a cited line -> skipped
         ];
@@ -913,17 +1207,41 @@ mod tests {
         let expected: Vec<(usize, LineClass, String)> = vec![
             (1, LineClass::Cited(vec![4553]), "// TODO(#4553): x".to_string()),
             (3, LineClass::Cited(vec![42]), "todo!()".to_string()),
+            // γ cite-first: reason "see #42" has a canonical cite → Cited([42]).
+            (4, LineClass::Cited(vec![42]), "#[ignore = \"see #42\"]".to_string()),
             (5, LineClass::Structural(Kind::Untracked), "// TODO: wire this".to_string()),
         ];
         assert_eq!(got, expected);
 
         // Regression: classify_file is exactly scan_file filtered to its
-        // Structural variants — the Cited markers (1, 3) and the suppressed
-        // lines (2, 4, 6) drop out, leaving byte-identical α output.
+        // Structural variants — the Cited markers (1, 3, 4) and the suppressed
+        // lines (2, 6) drop out, leaving byte-identical α output.
         let classified = classify_file(&content, true);
         let expected_structural: Vec<(usize, Kind, String)> =
             vec![(5, Kind::Untracked, "// TODO: wire this".to_string())];
         assert_eq!(classified, expected_structural);
+    }
+
+    // -------------------------------------------------------------------
+    // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
+    // -------------------------------------------------------------------
+
+    /// `#[ignore = "blocked on #4444"]` — cite wins over blocker-prose.
+    /// `#[ignore = "see #42"]`          — cite without blocker-prose.
+    #[test]
+    fn scan_file_ignore_reason_with_cite_emits_cited_entry() {
+        let lines = [
+            "#[ignore = \"blocked on #4444\"]", // 1 cite wins over "blocked" prose → Cited([4444])
+            "#[ignore = \"see #42\"]",          // 2 cite, no blocker-prose → Cited([42])
+        ];
+        let content = lines.join("\n");
+        let got = scan_file(&content, true);
+
+        let expected: Vec<(usize, LineClass, String)> = vec![
+            (1, LineClass::Cited(vec![4444]), "#[ignore = \"blocked on #4444\"]".to_string()),
+            (2, LineClass::Cited(vec![42]),   "#[ignore = \"see #42\"]".to_string()),
+        ];
+        assert_eq!(got, expected);
     }
 
     // -------------------------------------------------------------------

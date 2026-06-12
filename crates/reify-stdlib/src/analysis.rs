@@ -107,6 +107,28 @@ fn von_mises(args: &[Value]) -> Value {
     })
 }
 
+/// Compute the maximum shear stress from a 3×3 row-major stress window.
+///
+/// Formula: τ_max = (σ₁ − σ₃) / 2, where σ₁ and σ₃ are the maximum and
+/// minimum principal stresses (ascending eigenvalues of the symmetric stress
+/// tensor: `eigs[2]` and `eigs[0]`).
+///
+/// Returns `f64::NAN` if eigenvalue decomposition fails (e.g. all-NaN window).
+///
+/// `pub` so the formula has a single home — the `max_shear` builtin (below),
+/// AND the cross-crate MaxShear field reduction in
+/// `crates/reify-expr/src/field_reductions.rs`. Mirrors the `pub` promotion
+/// of `compute_von_mises_3x3`. Re-exported via
+/// `pub use analysis::compute_max_shear_3x3` in `lib.rs`.
+///
+/// Window must be at least 9 floats long; only `d[0..9]` is read.
+pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
+    match compute_eigenvalues_3x3(d) {
+        Some(eigs) => (eigs[2] - eigs[0]) / 2.0,
+        None => f64::NAN,
+    }
+}
+
 /// Compute eigenvalues of a symmetric 3×3 matrix.
 ///
 /// Uses the closed-form formula optimized for symmetric matrices: two eigenvalues
@@ -115,11 +137,14 @@ fn von_mises(args: &[Value]) -> Value {
 ///
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 ///
-/// `pub(crate)` for cross-module reuse from
-/// `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — the
-/// per-grid-point projection inlines this call on each 9-float row-major
-/// stress window and selects `eigs[2]` (the largest principal stress).
-pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+/// `pub` for cross-crate reuse from:
+/// - `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — per-grid-point
+///   projection inlines this call on each 9-float row-major stress window and
+///   selects `eigs[2]` (the largest principal stress).
+/// - `crates/reify-expr/src/field_reductions.rs::project_principal_stresses_sampled`
+///   — selects `eigs[2]` (max) or `eigs[0]` (min) per window during a
+///   `max|min|argmax|argmin(principal_stresses_field)` reduction (task 4562).
+pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     debug_assert!(
         d.len() >= 9,
         "compute_eigenvalues_3x3 requires at least 9 elements, got {}",
@@ -131,7 +156,14 @@ pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     // ignored. For non-symmetric inputs the result will be silently wrong.
     debug_assert!(
         {
-            let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+            // NaN inputs (out-of-solid sentinel windows from the FEA elaborator)
+            // are trivially "symmetric" — the assertion is only meaningful for
+            // non-NaN programmer-error catches.  Matches the NaN short-circuit
+            // already present in `compute_von_mises_3x3`.
+            let tol = |a: f64, b: f64| {
+                (a.is_nan() && b.is_nan())
+                    || (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()))
+            };
             tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
         },
         "compute_eigenvalues_3x3 assumes a symmetric matrix but got non-symmetric entries: \
@@ -215,6 +247,10 @@ fn principal_stresses(args: &[Value]) -> Value {
 /// Compute maximum shear stress from a 3×3 stress tensor.
 ///
 /// max_shear = (σ₁ − σ₃) / 2 where σ₁ and σ₃ are the max and min principal stresses.
+///
+/// Delegates to [`compute_max_shear_3x3`] so the formula has a single home
+/// shared with the cross-crate MaxShear field reduction in
+/// `crates/reify-expr/src/field_reductions.rs`.
 fn max_shear(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
@@ -223,13 +259,7 @@ fn max_shear(args: &[Value]) -> Value {
         };
         let _ = (nrows, ncols);
 
-        let eigs = match compute_eigenvalues_3x3(&d) {
-            Some(e) => e,
-            None => return Value::Undef,
-        };
-
-        // eigs is sorted ascending: [σ₃, σ₂, σ₁]
-        let tau_max = (eigs[2] - eigs[0]) / 2.0;
+        let tau_max = compute_max_shear_3x3(&d);
         sanitize_value(Value::from_real_scalar(tau_max, dim))
     })
 }
@@ -616,6 +646,63 @@ mod tests {
             eval_analysis("max_shear", &[Value::Real(1.0)])
                 .unwrap()
                 .is_undef()
+        );
+    }
+
+    // ── compute_max_shear_3x3 kernel tests ──────────────────────────────────
+
+    /// `compute_max_shear_3x3` on a uniaxial window [σ,0,...,0] returns σ/2
+    /// (eigenvalues = [0,0,σ] → (σ−0)/2 = σ/2).
+    ///
+    /// Also verifies a hydrostatic window [p,0,0, 0,p,0, 0,0,p] → 0.0
+    /// (all eigenvalues equal → (p−p)/2 = 0).
+    ///
+    /// RED before step-2: `compute_max_shear_3x3` does not exist (compile error).
+    #[test]
+    fn compute_max_shear_3x3_uniaxial_and_hydrostatic() {
+        // Uniaxial [σ,0,0,0,0,0,0,0,0] → τ_max = σ/2
+        let sigma = 200e6_f64;
+        let uniaxial = [sigma, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let tau = compute_max_shear_3x3(&uniaxial);
+        assert!(
+            (tau - sigma / 2.0).abs() < 1e-6,
+            "uniaxial: expected τ_max={}, got {}",
+            sigma / 2.0,
+            tau
+        );
+
+        // Hydrostatic [p,0,0, 0,p,0, 0,0,p] → τ_max = 0
+        let p = 100e6_f64;
+        let hydrostatic = [p, 0.0, 0.0, 0.0, p, 0.0, 0.0, 0.0, p];
+        let tau_h = compute_max_shear_3x3(&hydrostatic);
+        assert!(
+            tau_h.abs() < 1e-6,
+            "hydrostatic: expected τ_max=0.0, got {}",
+            tau_h
+        );
+    }
+
+    /// All-NaN window routed through the `max_shear` builtin must NOT panic
+    /// on the symmetry `debug_assert` in `compute_eigenvalues_3x3`, and must
+    /// return `Value::Undef` (NaN projected to NaN → `sanitize_value` → Undef).
+    ///
+    /// RED before step-2: the NaN short-circuit in `compute_eigenvalues_3x3`
+    /// is missing, so `(NaN-NaN).abs() <= ...` = false and the assert fires.
+    #[test]
+    fn max_shear_builtin_all_nan_window_returns_undef_without_panic() {
+        let nan_tensor = make_dimensioned_matrix(
+            &[
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+            ],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[nan_tensor]).unwrap();
+        assert!(
+            result.is_undef(),
+            "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
+            result
         );
     }
 

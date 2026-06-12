@@ -447,6 +447,8 @@ pub mod form_find;
 pub mod form_find_free;
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
 pub mod prestress_stability;
+// Task 3798: Tensegrity T3b — load analysis with tension-only active-set.
+pub mod tensegrity_load;
 pub mod geometric_stiffness;
 pub mod interpolation;
 // Task 3868: κ — additive joint-stiffness kernel (PRD compliant-joints-flexures.md §7.2).
@@ -505,6 +507,8 @@ pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     degenerate_shell::{Director, ShellRefCoord3, directors_from_facets},
     hex_p1::HexP1,
+    // Task 4417/ζ: dedicated CST membrane element K_e.
+    membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
     tet_p1::TetP1,
     tet_p2::TetP2,
@@ -573,6 +577,12 @@ pub use geometric_stiffness::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
     geometric_element_stiffness_wedge_p1,
+};
+// Task 4417/ζ: Tensegrity-membrane — CST membrane K_g element kernel,
+// in-plane prestress resultant, and per-element tangent K_t = K_e + K_g.
+// PRD: docs/prds/v0_6/tensegrity-membrane.md §5 / D1 / D2.
+pub use geometric_stiffness::{
+    MembranePrestress, geometric_element_stiffness_membrane_cst, membrane_tangent_stiffness,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
@@ -649,7 +659,12 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // PRD: docs/prds/v0_6/tensegrity-structures.md §4. Pure numeric kernel behind
 // the `solver::form_find` ComputeNode target; the Value-cracking trampoline
 // lives in reify-eval's compute_targets/form_find.rs.
-pub use form_find::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
+// Task 4414: Tensegrity-membrane γ — `form_find_anchored_surfaces` adds isotropic
+// NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
+// (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
+pub use form_find::{
+    FormFindError, FormFindSolve, MemberKind, form_find_anchored, form_find_anchored_surfaces,
+};
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
@@ -662,3 +677,43 @@ pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_f
 // layer-2's D = CᵀQC and the buckling dense eigensolver. Kernel-only (no .ri /
 // stdlib / trampoline wiring in this task, per plan.json design_decisions).
 pub use prestress_stability::{StabilityError, StabilityResult, analyze_prestress_stability};
+/// Task 3798: Tensegrity T3b — load analysis with tension-only active-set (slack
+/// cables). PRD: `docs/prds/v0_6/tensegrity-structures.md` §6 / Tier-3 leaf T3b.
+/// Pure numeric kernel behind the dedicated `solver::tensegrity_load` ComputeNode
+/// target; the Value-cracking trampoline lives in reify-eval's
+/// `compute_targets/tensegrity_load.rs`.
+///
+/// API-surface pin (a single taut cable under a unit axial pull):
+///
+/// ```
+/// use reify_solver_elastic::{
+///     BarMember, BarSection, MemberKind, TensegrityLoadOptions, tensegrity_load_analysis,
+/// };
+///
+/// // Cable 0—1: node 0 anchored, node 1 free. With E = A = L = 1 and prestress
+/// // N0 = 1, a unit axial pull moves the tip u_x = P·L/(E·A) = 1 and the cable
+/// // carries N0 + P = 2 — it stays taut, so nothing slackens.
+/// let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+/// let members = [BarMember {
+///     nodes: (0, 1),
+///     kind: MemberKind::Cable,
+///     section: BarSection { youngs_modulus: 1.0, area: 1.0 },
+///     prestress: 1.0,
+/// }];
+/// let loads = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+/// let fixed = [0];
+///
+/// let solve = tensegrity_load_analysis(
+///     &nodes, &members, &loads, &fixed, &TensegrityLoadOptions::default(),
+/// )
+/// .expect("a single taut cable is feasible");
+///
+/// assert!((solve.displacements[1][0] - 1.0).abs() < 1e-6);
+/// assert!((solve.member_forces[0] - 2.0).abs() < 1e-6);
+/// assert_eq!(solve.slack, vec![false]);
+/// assert!(solve.converged);
+/// ```
+pub use tensegrity_load::{
+    BarMember, TensegrityLoadError, TensegrityLoadOptions, TensegrityLoadSolve,
+    tensegrity_load_analysis,
+};

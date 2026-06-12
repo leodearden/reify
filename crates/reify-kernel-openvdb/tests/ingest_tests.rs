@@ -706,7 +706,7 @@ fn read_vdb_file_returns_ffi_not_implemented_with_path() {
 #[test]
 fn read_vdb_file_missing_path_returns_file_read_error() {
     let missing = "/nonexistent/path/does-not-exist.vdb";
-    let result = read_vdb_file(missing, "any_grid", &Type::Real);
+    let result = read_vdb_file(missing, "any_grid", &Type::dimensionless_scalar());
     match result {
         Err(IngestError::FileReadError { path, detail: _ }) => {
             assert_eq!(
@@ -777,7 +777,7 @@ fn lower_to_sampled_tensor_pressure_with_mpa_grid_succeeds() {
     assert!(outcome.warnings.is_empty());
 }
 
-/// Amendment: a `Type::Real` codomain (dimensionless) paired with a
+/// Amendment: a `Type::dimensionless_scalar()` codomain (dimensionless) paired with a
 /// unit-bearing grid (e.g. `m`) is a common caller mistake. It must
 /// surface as `UnitMismatch` (LENGTH vs DIMENSIONLESS) rather than
 /// silently succeeding.
@@ -792,7 +792,7 @@ fn lower_to_sampled_real_codomain_with_meter_grid_returns_unit_mismatch() {
         units: Some("m".to_string()),
         interpolation: OpenVdbInterpolation::Linear,
     };
-    let result = lower_to_sampled(&grid, "real", &Type::Real);
+    let result = lower_to_sampled(&grid, "real", &Type::dimensionless_scalar());
     match result {
         Err(IngestError::UnitMismatch {
             expected_dimension,

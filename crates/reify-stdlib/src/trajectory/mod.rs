@@ -56,14 +56,15 @@ pub(crate) mod trampoline;
 /// args / infeasible TOTS / unrecognised shaper). See
 /// [`input_shape::eval_input_shape`] for the full argument contract.
 ///
-/// The Phase β spline intrinsics still unconditionally return `Some(Value::Undef)`:
-/// the pure-Rust spline math is implemented in the `spline` submodule but is
-/// not yet wired to the Value API.  Full marshalling (parsing a
-/// `PiecewisePolynomialProfile` from `Value::StructureInstance`, dispatching on
-/// the `BoundaryCondition` SIR type-tag, emitting `Value::List<Value::Real>`
-/// per joint) is deferred to a later phase (γ/η/θ per the β PRD scope
-/// boundary).  Callers that see `Value::Undef` from one of those names should
-/// treat it as a "not yet implemented" stub, not a computation result.
+/// `evaluate_profile` / `evaluate_profile_dot` / `evaluate_profile_ddot` /
+/// `profile_duration` (task 4539, β residue) are fully wired to the spline
+/// evaluator via [`trampoline::value_to_multijoint_spline`] +
+/// [`super::spline::MultiJointSpline`]. Each uses the same delegate-to-undeclared
+/// `*_at` name pattern as `gcode_import` / `input_shape`: the `.ri` declaration
+/// delegates to `evaluate_profile_at` / `_dot_at` / `_ddot_at` /
+/// `profile_duration_at`, all of which route here and to the thin composers in
+/// `trampoline`. Returns `Value::Undef` on unmarshalable / degenerate input —
+/// a loud not-computed signal, not a numeric placeholder.
 pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
     match name {
         "gcode_import" | "gcode_import_lower" => Some(gcode_import::eval_gcode_import(args)),
@@ -84,11 +85,23 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
             [track, location] => trampoline::peak_deviation_at(track, location),
             _ => Value::Undef,
         }),
-        "piecewise_polynomial"
-        | "evaluate_profile"
-        | "evaluate_profile_dot"
-        | "evaluate_profile_ddot"
-        | "profile_duration" => Some(Value::Undef),
+        "evaluate_profile" | "evaluate_profile_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_value(profile, t),
+            _ => Value::Undef,
+        }),
+        "evaluate_profile_dot" | "evaluate_profile_dot_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_dot_value(profile, t),
+            _ => Value::Undef,
+        }),
+        "evaluate_profile_ddot" | "evaluate_profile_ddot_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_ddot_value(profile, t),
+            _ => Value::Undef,
+        }),
+        "profile_duration" | "profile_duration_at" => Some(match args {
+            [profile] => trampoline::profile_duration_value(profile),
+            _ => Value::Undef,
+        }),
+        "piecewise_polynomial" => Some(Value::Undef),
         _ => None,
     }
 }

@@ -38,7 +38,7 @@ fn make_sample(field: Value, field_type: Type, at: Value, at_type: Type) -> Comp
                 CompiledExpr::literal(at, at_type),
             ],
         },
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: hash,
     }
 }
@@ -54,8 +54,8 @@ where
     let p_id = ValueCellId::new(scope, param_name);
     let body = body_fn(p_id.clone());
     Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Analytical,
         lambda: Arc::new(Value::Lambda {
             params: vec![(param_name.to_string(), p_id)],
@@ -83,9 +83,9 @@ fn sample_composed_list_form_applies_f_of_g() {
     let g = make_analytical_field("x", "$lambda_g.S", |x_id| {
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id, Type::Real),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id, Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         )
     });
 
@@ -93,9 +93,9 @@ fn sample_composed_list_form_applies_f_of_g() {
     let f = make_analytical_field("y", "$lambda_f.S", |y_id| {
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(y_id, Type::Real),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(y_id, Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         )
     });
 
@@ -103,17 +103,17 @@ fn sample_composed_list_form_applies_f_of_g() {
     // Convention (PRD §5.2, task 4219): items[0] = f (outer), items[1] = g (inner)
     // sample(composed, p) == f(g(p))
     let composed = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Composed,
         lambda: Arc::new(Value::List(vec![f, g])),
     };
 
     let field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
-    let sample_expr = make_sample(composed, field_type, Value::Real(3.0), Type::Real);
+    let sample_expr = make_sample(composed, field_type, Value::Real(3.0), Type::dimensionless_scalar());
     let result = eval_expr(&sample_expr, &EvalContext::simple(&ValueMap::new()));
 
     assert_eq!(
@@ -145,9 +145,9 @@ fn sample_restricted_scaffold_returns_undef() {
     let inner = make_analytical_field("x", "$lambda_inner.S", |x_id| {
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id, Type::Real),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id, Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         )
     });
 
@@ -157,17 +157,17 @@ fn sample_restricted_scaffold_returns_undef() {
 
     // restricted = Field{source: Restricted, lambda: List[inner, region]}
     let restricted = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Restricted,
         lambda: Arc::new(Value::List(vec![inner, region])),
     };
 
     let field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
-    let sample_expr = make_sample(restricted, field_type, Value::Real(1.0), Type::Real);
+    let sample_expr = make_sample(restricted, field_type, Value::Real(1.0), Type::dimensionless_scalar());
     let result = eval_expr(&sample_expr, &EvalContext::simple(&ValueMap::new()));
 
     // α scaffold: always Undef (task δ revises to inside→inner-value / outside→Undef)

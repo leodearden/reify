@@ -21,6 +21,10 @@ pub mod elastic_static;
 pub mod form_find;
 pub mod multi_case;
 pub mod shell_solve;
+/// Shared Tensegrity input-cracking helpers (node / index-pair / scalar / index
+/// validation) reused by the `form_find` and `tensegrity_load` trampolines.
+mod tensegrity_crack;
+pub mod tensegrity_load;
 
 // ── Shared field-construction helpers ───────────────────────────────────────
 //
@@ -113,6 +117,16 @@ pub(crate) fn point3_length(p: [f64; 3]) -> Value {
     Value::Point(vec![length(p[0]), length(p[1]), length(p[2])])
 }
 
+/// A 3-component `Value::Vector` of Length-dimensioned Scalars.
+///
+/// The displacement-field analogue of [`point3_length`]: a displacement is a
+/// vector (a delta), not a position, so it lowers to `Value::Vector` rather than
+/// `Value::Point`. Used by the tensegrity-load trampoline for its per-node
+/// deflection output.
+pub(crate) fn vec3_length(v: [f64; 3]) -> Value {
+    Value::Vector(vec![length(v[0]), length(v[1]), length(v[2])])
+}
+
 /// One `dimension`-typed `Value::Scalar` per SI value, in input order.
 pub(crate) fn scalar_list(values: &[f64], dimension: DimensionVector) -> Vec<Value> {
     values.iter().map(|&v| scalar(v, dimension)).collect()
@@ -141,6 +155,13 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     engine.register_compute_fn(
         "solver::form_find_free",
         form_find::solve_form_find_free_trampoline as crate::ComputeFn,
+    );
+    // Tensegrity T3b (task 3798): load analysis with a tension-only active set.
+    // PRD §11 Q2 decision — a DEDICATED target (disjoint input/result shapes +
+    // active-set wrapper), not an extension of solver::elastic_static.
+    engine.register_compute_fn(
+        "solver::tensegrity_load",
+        tensegrity_load::solve_tensegrity_load_trampoline as crate::ComputeFn,
     );
     engine.register_compute_fn(
         "solver::multi_case",
