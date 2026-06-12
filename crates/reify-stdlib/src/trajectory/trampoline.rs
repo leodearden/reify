@@ -2484,8 +2484,7 @@ mod tests {
     /// `evaluate_profile(profile, t)` returns `Value::List([Value::Real(q)])` with
     /// `q` within `SPLINE_TOL` of `cubic_p(t)` for all sampled `t` in `[0, 4]`.
     /// The result must NOT be `[0.0]` (the stub value that the unwired
-    /// `.ri` body returned before task 4539). RED because `eval_trajectory`
-    /// currently returns `Some(Value::Undef)` for `"evaluate_profile"`.
+    /// `.ri` body returned before task 4539).
     #[test]
     fn evaluate_profile_position_eval_boundary() {
         let profile = clamped_cubic_profile();
@@ -2519,6 +2518,63 @@ mod tests {
             assert!(
                 q.abs() > SPLINE_TOL || expected.abs() < SPLINE_TOL,
                 "evaluate_profile(t={t}): result is [0.0] — the stub body is still live"
+            );
+        }
+    }
+
+    // ── step-3 (task 4539): evaluate_profile_dot / _ddot eval-boundary ──────────
+
+    /// Helper: extract the single real from a `Value::List([Value::Real(r)])`.
+    fn single_real(v: &Value, ctx: &str) -> f64 {
+        let Value::List(items) = v else {
+            panic!("{ctx}: expected Value::List, got {v:?}");
+        };
+        assert_eq!(items.len(), 1, "{ctx}: expected 1-element list, got {}", items.len());
+        let Value::Real(r) = items[0] else {
+            panic!("{ctx}: list element should be Value::Real, got {:?}", items[0]);
+        };
+        r
+    }
+
+    /// `evaluate_profile_dot(profile, t)` returns `[cubic_dp(t)]` within
+    /// `SPLINE_TOL`. A clamped cubic whose endpoint slopes equal the exact
+    /// cubic first-derivative reproduces p' exactly (spline.rs:1187).
+    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
+    /// `"evaluate_profile_dot"`.
+    #[test]
+    fn evaluate_profile_dot_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile_dot", &[profile.clone(), time(t)]);
+            let got = single_real(&result, &format!("evaluate_profile_dot(t={t})"));
+            let expected = cubic_dp(t);
+            assert!(
+                (got - expected).abs() < SPLINE_TOL,
+                "evaluate_profile_dot(t={t}): got {got}, want {expected} (diff {})",
+                (got - expected).abs()
+            );
+        }
+    }
+
+    /// `evaluate_profile_ddot(profile, t)` returns `[cubic_ddp(t)]` within
+    /// `SPLINE_TOL`. A clamped cubic reproduces p'' exactly.
+    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
+    /// `"evaluate_profile_ddot"`.
+    #[test]
+    fn evaluate_profile_ddot_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile_ddot", &[profile.clone(), time(t)]);
+            let got = single_real(&result, &format!("evaluate_profile_ddot(t={t})"));
+            let expected = cubic_ddp(t);
+            assert!(
+                (got - expected).abs() < SPLINE_TOL,
+                "evaluate_profile_ddot(t={t}): got {got}, want {expected} (diff {})",
+                (got - expected).abs()
             );
         }
     }
