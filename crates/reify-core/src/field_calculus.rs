@@ -161,9 +161,94 @@ pub fn differential_codomain(
     domain: &Type,
     codomain: &Type,
 ) -> Option<Type> {
-    // STUB: always returns None until step-2 implements the body.
-    let _ = (op, domain, codomain);
-    None
+    match op {
+        DifferentialOp::Gradient => {
+            // Determine n from domain.
+            let n = match domain {
+                _ if scalar_dimension(domain).is_some() => 1,
+                Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
+                _ => return None,
+            };
+            let gradient_quantity = dim_quotient_type(
+                scalar_dimension(codomain),
+                domain_dimension(domain),
+                1,
+                dimensionless_fallback(codomain),
+            );
+            Some(if n == 1 {
+                gradient_quantity
+            } else {
+                Type::Vector {
+                    n,
+                    quantity: Box::new(gradient_quantity),
+                }
+            })
+        }
+
+        DifferentialOp::Divergence => {
+            // Domain must be Point{n, scalar}; extract n.
+            let n = match domain {
+                Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
+                _ => return None,
+            };
+            // Codomain must be Vector{n, scalar}; extract the unwrapped quantity.
+            let (vec_n, codomain_quantity) = match codomain {
+                Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
+                    (*n, quantity.as_ref())
+                }
+                _ => return None,
+            };
+            // Vector dimension must match domain dimension.
+            if vec_n != n {
+                return None;
+            }
+            Some(dim_quotient_type(
+                scalar_dimension(codomain_quantity),
+                domain_dimension(domain),
+                1,
+                dimensionless_fallback(codomain_quantity),
+            ))
+        }
+
+        DifferentialOp::Curl => {
+            // Domain must be Point{3, scalar}.
+            match domain {
+                Type::Point { n: 3, quantity } if scalar_dimension(quantity).is_some() => {}
+                _ => return None,
+            }
+            // Codomain must be Vector{3, scalar}; extract the unwrapped quantity.
+            let codomain_quantity = match codomain {
+                Type::Vector { n: 3, quantity } if scalar_dimension(quantity).is_some() => {
+                    quantity.as_ref()
+                }
+                _ => return None,
+            };
+            let result_component = dim_quotient_type(
+                scalar_dimension(codomain_quantity),
+                domain_dimension(domain),
+                1,
+                dimensionless_fallback(codomain_quantity),
+            );
+            Some(Type::vec3(result_component))
+        }
+
+        DifferentialOp::Laplacian => {
+            // Domain must be scalar or Point{n, scalar}.
+            match domain {
+                _ if scalar_dimension(domain).is_some() => {}
+                Type::Point { quantity, .. } if scalar_dimension(quantity).is_some() => {}
+                _ => return None,
+            }
+            // Codomain must be scalar.
+            scalar_dimension(codomain)?;
+            Some(dim_quotient_type(
+                scalar_dimension(codomain),
+                domain_dimension(domain),
+                2,
+                dimensionless_fallback(codomain),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
