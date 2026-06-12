@@ -137,10 +137,17 @@ if [[ ${#_tracked_rs[@]} -gt 0 ]]; then
 fi
 
 # Compare: flag any emit-site literal not present in the registered set.
+# task-4586/4529/4572 defense-in-depth: before flagging an orphan, re-confirm
+# absence via a targeted fixed-string grep of the inventory file.  The in-memory
+# `registered` set may have transiently dropped a line under subprocess load
+# (esc-4578-61); the per-channel grep is far cheaper and far less prone to that
+# truncation.  Only genuine orphans (absent from the file itself) are flagged.
 orphan_count=0
 while IFS= read -r channel; do
     [[ -z "$channel" ]] && continue
     if ! printf '%s\n' "$registered" | grep -qx "$channel"; then
+        # Re-confirm absence against the source file before flagging.
+        grep -qF -- "| \`$channel\` |" "$INVENTORY" && continue
         orphan_count=$((orphan_count + 1))
         echo "WARNING: orphan channel '$channel' (not in docs/gui-event-channels.md):" >&2
         grep -n -- "\"$channel\"" "${_tracked_rs[@]}" >&2 || true
