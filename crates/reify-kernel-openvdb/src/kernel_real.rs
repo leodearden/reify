@@ -299,91 +299,6 @@ impl OpenVdbKernel {
         Ok(openvdb_ffi::grid_name(grid))
     }
 
-    /// Densify the registered SDF grid into a flat f64 buffer and lower it to
-    /// a [`SampledField`] via the shared `lower_to_sampled` pipeline.
-    ///
-    /// # What this does
-    ///
-    /// Mirrors the grid→SampledField extraction path in `read_vdb_file`
-    /// (ingest.rs:574–649), but starts from an **already-registered handle**
-    /// instead of a file open. The shared `build_realized_grid_source` helper
-    /// (ingest.rs) captures the drift-prone invariants (Regular3D, X-outermost
-    /// axis convention, f32→f64 conversion, units-empty→None) in one place.
-    ///
-    /// Codomain is `Type::dimensionless_scalar()` (dimensionless raw SDF).
-    /// `meshToLevelSet` writes no units metadata → `grid_units` returns "" →
-    /// `OpenVdbGridSource.units = None` →
-    /// `validate_grid_units(None, &Type::dimensionless_scalar()) = Ok(())` → no `UnitMismatch`.
-    ///
-    /// # `&mut self` — Sync-audit deviation from PRD §7.1
-    ///
-    /// The PRD §7.1 proposed `&self`, but `grid_bbox_min`, `grid_bbox_max`, and
-    /// `grid_densify_to_buffer` all call `h.grid->evalActiveVoxelBoundingBox()`
-    /// (cpp/openvdb_wrapper.cpp:131, 138, 274).  The Sync maintenance contract
-    /// at the bottom of this file explicitly prohibits new `&self` methods that
-    /// call that API: "a future `&self` 'get bbox' accessor would race".
-    /// Using `&mut self` sidesteps the concern via borrow-checker exclusivity
-    /// — the same approach used by `realize_voxel_from_mesh` and
-    /// `open_vdb_grid_for_test`.  Consumer γ (`realize_solid_sdf`) already
-    /// holds `&mut self` to call `ingest_mesh`, so chaining densify is free.
-    ///
-    /// Condition to relax back to `&self` (per PRD §7.1): confirm that
-    /// `evalActiveVoxelBoundingBox()` is non-caching on libopenvdb 13.x under
-    /// all active build configurations, OR migrate the kernel to the
-    /// `Mutex<HashMap<…>>` actor pattern.
-    ///
-    /// # Errors
-    ///
-    /// - `Err(QueryError::InvalidHandle(handle))` — handle not registered.
-    /// - `Err(QueryError::QueryFailed(_))` — densification overflows the
-    ///   C++-side `GRID_DENSIFY_MAX_VOXELS` cap (~256M voxels), or
-    ///   `lower_to_sampled` rejects the resulting source (empty grid,
-    ///   degenerate bbox, etc.).
-    pub fn densify_grid_to_sampled(
-        &mut self,
-        handle: GeometryHandleId,
-    ) -> Result<SampledField, QueryError> {
-        let grid = self
-            .handles
-            .get(&handle)
-            .ok_or(QueryError::InvalidHandle(handle))?;
-
-        // Read per-axis metadata from the registered grid via FFI.
-        let voxel_sizes = openvdb_ffi::grid_voxel_sizes(grid);
-        let bbox_min = openvdb_ffi::grid_bbox_min(grid);
-        let bbox_max = openvdb_ffi::grid_bbox_max(grid);
-        let units_str = openvdb_ffi::grid_units(grid);
-
-        // Densify all active voxels into a flat f32 buffer (X-outermost).
-        // The C++ side caps at GRID_DENSIFY_MAX_VOXELS (~256M) and throws
-        // std::runtime_error on overflow; cxx maps it to Err(cxx::Exception).
-        let raw_buffer = openvdb_ffi::grid_densify_to_buffer(grid).map_err(|e| {
-            QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}"))
-        })?;
-
-        // Build the in-memory source using the shared helper (ingest.rs) so
-        // the Regular3D + X-outermost + f32→f64 + units-None invariants live
-        // in one place, shared with read_vdb_file.
-        let source = crate::ingest::build_realized_grid_source(
-            voxel_sizes,
-            bbox_min,
-            bbox_max,
-            &units_str,
-            raw_buffer,
-        );
-
-        // Lower to SampledField.  Codomain = Type::dimensionless_scalar() (dimensionless SDF);
-        // meshToLevelSet writes no units → grid_units="" → units=None →
-        // validate_grid_units(None, &Type::dimensionless_scalar()) = Ok(()) — no UnitMismatch.
-        let outcome = crate::ingest::lower_to_sampled(
-            &source,
-            SDF_FIELD_NAME,
-            &Type::dimensionless_scalar(),
-        )
-        .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
-
-        Ok(outcome.field)
-    }
 }
 
 /// Fixed field name used by `densify_grid_to_sampled`.
@@ -573,5 +488,50 @@ impl GeometryKernel for OpenVdbKernel {
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(VOXEL_BOOL_STUB_MSG.into()))
+    }
+
+    /// Densify the registered SDF grid into a flat f64 buffer and lower it to
+    /// a [`SampledField`] via the shared `lower_to_sampled` pipeline.
+    ///
+    /// Moved from `impl OpenVdbKernel` into this trait override so the Engine
+    /// can dispatch through `Box<dyn GeometryKernel>` (realization-read-api.md
+    /// §3.3 δ, D4 reuse — verbatim body, no parallel path).
+    ///
+    /// `&mut self` avoids the `evalActiveVoxelBoundingBox` `&self`-aliasing
+    /// race; see the Sync maintenance contract at the bottom of this file.
+    fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        let grid = self
+            .handles
+            .get(&handle)
+            .ok_or(QueryError::InvalidHandle(handle))?;
+
+        let voxel_sizes = openvdb_ffi::grid_voxel_sizes(grid);
+        let bbox_min = openvdb_ffi::grid_bbox_min(grid);
+        let bbox_max = openvdb_ffi::grid_bbox_max(grid);
+        let units_str = openvdb_ffi::grid_units(grid);
+
+        let raw_buffer = openvdb_ffi::grid_densify_to_buffer(grid).map_err(|e| {
+            QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}"))
+        })?;
+
+        let source = crate::ingest::build_realized_grid_source(
+            voxel_sizes,
+            bbox_min,
+            bbox_max,
+            &units_str,
+            raw_buffer,
+        );
+
+        let outcome = crate::ingest::lower_to_sampled(
+            &source,
+            SDF_FIELD_NAME,
+            &Type::dimensionless_scalar(),
+        )
+        .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
+
+        Ok(outcome.field)
     }
 }
