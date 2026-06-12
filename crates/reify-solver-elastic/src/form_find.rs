@@ -202,16 +202,28 @@ pub fn form_find_anchored(
 // Laplace–Beltrami operator) scaled by its surface stress σ, assembled with the
 // identical rank-1 edge pattern the line solve uses for the member q.
 
-/// Relative coordinate-change tolerance for the cotangent fixed-point iteration:
-/// once the free nodes move by less than `ε·(1+scale)` between solves the
-/// geometry has settled and `D(x*)·x*` ≈ 0 on the free rows (the honest
-/// equilibrium signal).
-const SURFACE_FIXED_POINT_TOL: f64 = 1e-12;
+/// Equilibrium-residual convergence tolerance for the cotangent fixed point. The
+/// iteration stops once the free-node net force `‖(D·x)_free‖∞ / (1+scale)`
+/// drops below this — the honest physical signal (prestress-only equilibrium),
+/// and the SAME quantity the catenoid integration golden re-checks independently.
+/// Set ~10× below the golden's `1e-9` acceptance bound so a converged solve
+/// clears it with margin.
+///
+/// This replaces the earlier *coordinate-change* criterion: the Picard rate
+/// approaches 1 as the mesh refines, so a machine-epsilon coordinate-change tol
+/// could not be reached within any sane iteration cap on a fine membrane — yet
+/// the residual (what actually matters) is already tiny there. Judging on the
+/// residual directly converges finer meshes honestly.
+const SURFACE_EQUILIBRIUM_TOL: f64 = 1e-10;
 
-/// Iteration cap for the cotangent fixed point. Well-posed seeded membranes
-/// settle in a handful of iterations; the cap only bounds a pathological
-/// non-converging input (which then reports `converged == false`).
-const MAX_SURFACE_ITERS: usize = 1000;
+/// Iteration cap for the cotangent fixed point. The Picard iteration converges
+/// linearly with a rate that approaches 1 under mesh refinement, so a fine
+/// membrane can need ~1–2k solves to reach [`SURFACE_EQUILIBRIUM_TOL`]; the cap
+/// is a generous backstop above that, reached only by a pathological /
+/// non-settling input (which then honestly reports `converged == false`). Each
+/// iteration is a single assemble + faer solve (per axis), so the cap bounds
+/// worst-case work without affecting well-posed inputs that break out early.
+const MAX_SURFACE_ITERS: usize = 5000;
 
 /// Solve the anchored Force-Density form-finding problem WITH isotropic NFDM
 /// surface (membrane) contributions (PRD §4, D1/D3 — γ / task 4414).
@@ -290,25 +302,33 @@ pub fn form_find_anchored_surfaces(
 
     // Iterate the cotangent fixed point. With no surfaces `D` is
     // geometry-independent, so a single solve is exact (the line-only case);
-    // with surfaces the weights depend on geometry, so re-assemble and re-solve
-    // until the free coordinates settle.
+    // with surfaces the cotangent weights depend on geometry, so re-assemble and
+    // re-solve until the free-node net force ‖(D·x)_free‖ settles to ~0
+    // (prestress-only equilibrium).
     let mut current = nodes.to_vec();
-    let mut converged = surfaces.is_empty();
+    let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
     for _ in 0..max_iters {
         let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
-        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
-        // Relative max-coordinate change over the free nodes.
-        let mut delta = 0.0_f64;
-        let mut scale = 0.0_f64;
-        for &gi in &free_indices {
-            for axis in 0..3 {
-                delta = delta.max((solved[gi][axis] - current[gi][axis]).abs());
-                scale = scale.max(solved[gi][axis].abs());
-            }
+
+        // Convergence is judged on the EQUILIBRIUM RESIDUAL of the current
+        // geometry under the freshly-assembled `D` — the honest physical signal
+        // (and the exact quantity the integration golden re-checks). It reuses
+        // the assembly we already need for the solve, so it adds no extra matrix
+        // build. At a force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
+        if !surfaces.is_empty()
+            && free_equilibrium_residual(&d, &current, &free_indices) <= SURFACE_EQUILIBRIUM_TOL
+        {
+            converged = true;
+            break;
         }
+
+        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
         current = solved;
-        if surfaces.is_empty() || delta <= SURFACE_FIXED_POINT_TOL * (1.0 + scale) {
+
+        // Line-only path: `D` is geometry-independent, so the single solve above
+        // is already the exact equilibrium — no iteration needed.
+        if surfaces.is_empty() {
             converged = true;
             break;
         }
@@ -439,6 +459,35 @@ fn solve_reduced(
     }
 
     Ok(out_nodes)
+}
+
+/// Free-node equilibrium residual `‖(D·x)_free‖∞ / (1+scale)` — the prestress-only
+/// net force on the free nodes, scaled by the coordinate magnitude so the bound
+/// is coordinate-scale-free. It is ~0 at a force-density fixed point, so the
+/// cotangent iteration uses it as its convergence signal; it mirrors the
+/// independent check the catenoid integration golden runs (same formula), so the
+/// kernel's stop condition and the test's acceptance bound measure the SAME
+/// quantity.
+#[allow(clippy::needless_range_loop)]
+fn free_equilibrium_residual(d: &Mat<f64>, nodes: &[[f64; 3]], free_indices: &[usize]) -> f64 {
+    let n = nodes.len();
+    let mut resid = 0.0_f64;
+    for &i in free_indices {
+        for axis in 0..3 {
+            let mut net = 0.0;
+            for j in 0..n {
+                net += d[(i, j)] * nodes[j][axis];
+            }
+            resid = resid.max(net.abs());
+        }
+    }
+    let mut scale = 0.0_f64;
+    for p in nodes {
+        for &c in p {
+            scale = scale.max(c.abs());
+        }
+    }
+    resid / (1.0 + scale)
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when

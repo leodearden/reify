@@ -317,20 +317,23 @@ fn solve_and_measure(n_theta: usize, n_axial: usize, sigma: f64) -> MeshResult {
 /// catching a non-converged or mis-assembled solve.
 const EQUIL_TOL: f64 = 1e-9;
 
-/// Relative-L2 catenoid shape bound at the COARSE mesh.
+/// Relative-L2 catenoid shape bound at the COARSE (16×3) mesh.
 ///
-/// PLACEHOLDER — deliberately too tight (machine-epsilon scale) so step-5 is RED.
-/// Step-6 replaces it with the actually-MEASURED coarse-mesh error plus margin
-/// (a value above the cotangent-Laplacian O(h²) discretization floor — never a
-/// frozen tight tolerance, never an exact coordinate).
-const COARSE_SHAPE_REL_L2_BOUND: f64 = 1e-12;
+/// MEASURED-then-bounded: the converged coarse-mesh error is `7.27e-3` (the
+/// cotangent-Laplacian O(h²) discretization floor at this mesh — the discrete
+/// minimal surface ≠ the smooth catenoid), so the bound is set ~1.4× above it.
+/// It is NOT a frozen tight tolerance and NOT an exact coordinate: a correct
+/// assembly lands well under it, a broken one (flipped Laplacian sign, wrong
+/// scatter) blows the error up by orders of magnitude or fails to converge.
+const COARSE_SHAPE_REL_L2_BOUND: f64 = 1.0e-2;
 
-/// Relative-L2 catenoid shape bound at the FINE mesh.
+/// Relative-L2 catenoid shape bound at the FINE (32×6) mesh.
 ///
-/// PLACEHOLDER — see [`COARSE_SHAPE_REL_L2_BOUND`]; calibrated in step-6 from the
-/// measured fine-mesh error (which sits below the coarse one — the O(h²) floor
-/// shrinks under refinement).
-const FINE_SHAPE_REL_L2_BOUND: f64 = 1e-12;
+/// MEASURED-then-bounded: the converged fine-mesh error is `1.59e-3` (≈¼ the
+/// coarse error — the O(h²) floor shrinks ~4× when `h` halves), so the bound is
+/// set ~1.6× above it and comfortably below [`COARSE_SHAPE_REL_L2_BOUND`]. Same
+/// honesty caveat: measured floor + margin, never a frozen tolerance.
+const FINE_SHAPE_REL_L2_BOUND: f64 = 2.5e-3;
 
 /// Multiplicative slack for the SOFT refinement check. The finer mesh should not
 /// score worse than the coarse one; a small slack absorbs the non-monotone noise
