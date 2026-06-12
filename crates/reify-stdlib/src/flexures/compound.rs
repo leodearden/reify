@@ -1285,11 +1285,10 @@ mod tests {
             other => panic!("parasitic_error Option(Some(Length)), got {other:?}"),
         }
 
-        // prb_validity_range is now Range<Angle> = [−δ_auto, +δ_auto] (task 4576;
-        // prismatic residual: δ_auto is a length stored as an angle si_value).
+        // prb_validity_range is now Range<Length> = [−δ_auto, +δ_auto] (task 4587).
         let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
         let range_half = length_scalar_si(up, "auto range upper");
-        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        let prb_half = length_range_half_si(f("prb_validity_range"), "prb_validity_range");
         assert!(
             (prb_half - delta_auto).abs() / delta_auto < 1e-9
                 && (prb_half - range_half).abs() / range_half < 1e-9,
@@ -1334,8 +1333,8 @@ mod tests {
             other => panic!("yield_margin Real, got {other:?}"),
         }
         // prb_validity_range still advertises the auto SAFE δ (not the declared one).
-        // Now Range<Angle> (task 4576; prismatic residual: δ stored as angle si).
-        let prb_half_y = angle_range_half_si(yg("prb_validity_range"), "prb_validity_range");
+        // Range<Length> (task 4587).
+        let prb_half_y = length_range_half_si(yg("prb_validity_range"), "prb_validity_range");
         assert!(
             (prb_half_y - delta_auto).abs() / delta_auto < 1e-9,
             "prb_validity_range stays the auto safe δ {delta_auto}, got half {prb_half_y}"
