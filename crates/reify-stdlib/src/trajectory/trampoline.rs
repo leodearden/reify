@@ -2648,18 +2648,19 @@ mod tests {
         );
         // profile_duration — bad / degenerate profile
         assert!(
-            eval_builtin("profile_duration", &[bad_profile.clone()]).is_undef(),
+            eval_builtin("profile_duration", std::slice::from_ref(&bad_profile)).is_undef(),
             "duration: non-StructureInstance profile"
         );
         assert!(
-            eval_builtin("profile_duration", &[degenerate_profile.clone()]).is_undef(),
+            eval_builtin("profile_duration", std::slice::from_ref(&degenerate_profile))
+                .is_undef(),
             "duration: <2-waypoint profile"
         );
 
         // evaluate_profile — wrong arity
         assert!(eval_builtin("evaluate_profile", &[]).is_undef(), "eval_profile: 0 args");
         assert!(
-            eval_builtin("evaluate_profile", &[bad_profile.clone()]).is_undef(),
+            eval_builtin("evaluate_profile", std::slice::from_ref(&bad_profile)).is_undef(),
             "eval_profile: 1 arg"
         );
         // evaluate_profile — bad profile
