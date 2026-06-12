@@ -1005,6 +1005,15 @@ pub(crate) fn try_default_padding<'a>(
             // Multiple candidates pass the wildcard prefix — prefer the subset
             // whose prefix matches by strict equality (mirrors
             // `resolve_function_overload`'s exact-match tie-break).
+            //
+            // When the exact subset is empty (all wildcard) or has more than
+            // one entry (two exact matches), we return None and let the caller
+            // fall through to its generic NoMatch error.  This is an
+            // intentional UX trade-off: a genuinely ambiguous defaultable call
+            // surfaces "no matching overload" rather than a dedicated Ambiguous
+            // diagnostic.  Defaultable-overload ambiguity is rare in practice;
+            // if a clearer user-facing diagnostic is ever warranted, this arm
+            // could surface an Ambiguous result before returning None.
             let exact: Vec<_> = satisfiable
                 .into_iter()
                 .filter(|(cand, _)| {
@@ -2171,6 +2180,73 @@ mod tests {
         assert!(
             result.is_none(),
             "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
+        );
+    }
+
+    /// Ambiguity: two same-name candidates both pass the wildcard prefix check
+    /// but neither has an exact-match prefix — `try_default_padding` returns
+    /// `None`, falling through to the caller's generic NoMatch error.
+    ///
+    /// Candidate A: `f(j: TraitObject("Joint1"), y: Real=1.0)`
+    /// Candidate B: `f(k: TraitObject("Joint2"), y: Real=2.0)`
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass via wildcard (`TraitObject`
+    /// matches any arg); neither matches by strict equality.
+    /// `satisfiable.len() == 2`, exact subset is empty → returns `None`.
+    ///
+    /// This documents the intentional UX contract: genuinely ambiguous
+    /// defaultable padding degrades to NoMatch (not Ambiguous).  See the
+    /// multi-candidate arm comment in `try_default_padding` for rationale.
+    #[test]
+    fn try_default_padding_all_wildcard_ambiguity_returns_none() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("Joint1".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("k".to_string(), Type::TraitObject("Joint2".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Both candidates match via wildcard; neither matches by exact equality
+        // → exact subset is empty → None (ambiguous padding falls through to
+        // NoMatch, not Ambiguous).
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        assert!(
+            result.is_none(),
+            "two wildcard-only candidates must return None (ambiguous padding \
+             degrades to NoMatch — see multi-candidate arm of try_default_padding)"
         );
     }
 }

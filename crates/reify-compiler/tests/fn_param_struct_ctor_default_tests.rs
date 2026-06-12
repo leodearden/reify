@@ -235,13 +235,14 @@ structure ElasticDefaultsTest {
     );
 }
 
-// ─── test (c): buckling def-site + consumption (RED until step-6) ────────────
+// ─── test (c): buckling def-site + consumption ───────────────────────────────
 
 /// `solve_buckling`'s `options` param must carry a StructureInstanceCtor default
 /// (`= BucklingOptions()`), AND a 6-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// RED until step-6 adds `= BucklingOptions()` to solver_buckling_fns.ri.
+/// GREEN; `= BucklingOptions()` was added to solver_buckling_fns.ri in step-6
+/// (same commit as this test).
 #[test]
 fn solve_buckling_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("BucklingOptions") ──
@@ -282,7 +283,8 @@ fn solve_buckling_options_defaults_and_omittable() {
         .as_ref()
         .expect(
             "solve_buckling's `options` param must carry a compiled default \
-             (= BucklingOptions()); currently None — add the default in step-6",
+             (= BucklingOptions()); None means the default is missing from \
+             solver_buckling_fns.ri",
         );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
@@ -327,13 +329,14 @@ structure BucklingDefaultsTest {
     );
 }
 
-// ─── test (d): modal def-site + consumption (RED until step-8) ───────────────
+// ─── test (d): modal def-site + consumption ──────────────────────────────────
 
 /// `modal_analysis`'s `options` param must carry a StructureInstanceCtor default
 /// (`= ModalOptions()`), AND a 4-arg call omitting `options` must compile
 /// with zero Error-severity diagnostics.
 ///
-/// RED until step-8 adds `= ModalOptions()` to modal_analysis_fns.ri.
+/// GREEN; `= ModalOptions()` was added to modal_analysis_fns.ri in step-8
+/// (same commit as this test).
 #[test]
 fn modal_analysis_options_defaults_and_omittable() {
     // ── (1) def-site: param_default is StructureInstanceCtor("ModalOptions") ──
@@ -374,7 +377,8 @@ fn modal_analysis_options_defaults_and_omittable() {
         .as_ref()
         .expect(
             "modal_analysis's `options` param must carry a compiled default \
-             (= ModalOptions()); currently None — add the default in step-8",
+             (= ModalOptions()); None means the default is missing from \
+             modal_analysis_fns.ri",
         );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
