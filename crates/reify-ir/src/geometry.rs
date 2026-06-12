@@ -6643,7 +6643,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 42;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 43;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
