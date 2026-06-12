@@ -49,7 +49,7 @@ mod types;
 mod units;
 
 pub use compile_builder::pre_pass::check_module_path_decl;
-pub use entity::{satisfies_trait_bound, trait_satisfies};
+pub use entity::satisfies_trait_bound;
 pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};

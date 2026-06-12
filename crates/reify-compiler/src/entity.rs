@@ -3777,7 +3777,7 @@ pub fn satisfies_trait_bound(
 }
 
 /// Recursively check if `trait_name` equals or refines `required_trait`.
-pub fn trait_satisfies(
+pub(crate) fn trait_satisfies(
     trait_name: &str,
     required_trait: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,

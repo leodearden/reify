@@ -728,8 +728,13 @@ impl Engine {
     /// the `RepresentationWithin` C1 invariant at `engine_constraints.rs:42-62`.
     ///
     /// # Fast-path
-    /// If no template in the module conforms to `GeometricTolerance`, returns an
-    /// empty `Vec` immediately — every non-GD&T `check()` call is byte-identical.
+    /// After building the trait/template registries, returns an empty `Vec`
+    /// immediately if no evaluated `Value::StructureInstance` in `values` conforms
+    /// to `GeometricTolerance`.  This is a real guard: the prelude always contains
+    /// GeometricTolerance-conforming *templates* (Flatness, Position, etc.), so a
+    /// template-only check would be vacuously true for every module.  Checking
+    /// *instance values* instead correctly fast-paths non-GD&T modules that happen
+    /// to load the stdlib tolerancing prelude.
     ///
     /// # Reuse contract (C1 — task 4475 β)
     /// This function is the *shared* enumerator: it is consumed unchanged by
@@ -766,12 +771,19 @@ impl Engine {
             template_by_name.insert(t.name.as_str(), t);
         }
 
-        // Fast-path: if no template in the combined map conforms to
-        // GeometricTolerance, there can be no GDT callouts in this module.
-        if !template_by_name
-            .values()
-            .any(|tmpl| satisfies_trait_bound(&tmpl.trait_bounds, "GeometricTolerance", &trait_registry))
-        {
+        // Fast-path: if no evaluated StructureInstance value conforms to
+        // GeometricTolerance, there are no GD&T callouts to collect.
+        // Checking values (not templates) is correct: the prelude always carries
+        // GeometricTolerance-conforming templates, so a template-only check would
+        // be vacuously true for every module that loads the tolerancing stdlib.
+        let has_gdt_instance = values.iter().any(|(_, v)| match v {
+            Value::StructureInstance(data) => template_by_name
+                .get(data.type_name.as_str())
+                .map(|t| satisfies_trait_bound(&t.trait_bounds, "GeometricTolerance", &trait_registry))
+                .unwrap_or(false),
+            _ => false,
+        });
+        if !has_gdt_instance {
             return Vec::new();
         }
 

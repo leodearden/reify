@@ -590,6 +590,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // engine.check() does NOT visit purpose-injected constraints —
         // they live in snapshot.graph.constraints, visited only by
         // check_constraints_with_values.
+        //
+        // GD&T legality (check_gdt_legality) is only enforced on the non-purpose
+        // path above.  A design with an illegal MMC modifier will not produce a
+        // GdtIllegalModifier diagnostic when checked via --purpose.  This is a
+        // known limitation of task 4475 β scope; a follow-up task should wire
+        // check_gdt_legality (and the same exit-code escalation) into this branch.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.
