@@ -1543,6 +1543,12 @@ impl Engine {
         // for forall over deferred-count collections is anchored in
         // `reify-compiler/src/forall_elaborate.rs`'s module docstring; that
         // contract names this engine_edit hook point explicitly.
+        //
+        // task 4530: track whether this phase mutated the graph (added/removed
+        // instance cells or emitted/drained forall constraints). If so, the
+        // install at the end rebuilds reverse_index/trace_map/demand to keep
+        // dirty_cone and constraints_dirty correct for grown instances.
+        let mut structural_mutation = false;
         {
             let collection_subs = new_snapshot.graph.collection_subs.clone();
             // Hoisted out of the per-col_sub loop: cloning every iteration
@@ -1569,6 +1575,10 @@ impl Engine {
                 for stale_id in drained.iter().flatten() {
                     new_snapshot.graph.constraints.remove(stale_id);
                     self.cache.invalidate(&NodeId::Constraint(stale_id.clone()));
+                }
+                // task 4530: stale constraints were removed → graph structure changed
+                if drained.iter().any(|v| !v.is_empty()) {
+                    structural_mutation = true;
                 }
             }
             new_snapshot
@@ -1635,6 +1645,15 @@ impl Engine {
                 let (new_count, new_warn) = resolve_count(&new_count_val, "new");
                 if let Some(w) = new_warn {
                     diagnostics.push(w);
+                }
+                // task 4530 (amend): gate structural_mutation on the resolved integer
+                // count changing, not on raw Value inequality. Raw values can differ
+                // while resolving to the same instance count: e.g. old=Value::Undef
+                // and new=Value::Int(0) both resolve to 0 via resolve_count, so no
+                // cells are added or removed and the O(graph) dep-structure rebuild
+                // is wasted work. Only mark structural when the actual counts differ.
+                if old_count != new_count {
+                    structural_mutation = true;
                 }
                 for i in 0..new_count {
                     let scoped_entity =
@@ -1916,7 +1935,54 @@ impl Engine {
 
         // Store state (actual_eval_set excludes early-cutoff-skipped nodes)
         self.last_eval_set = actual_eval_set;
-        self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+
+        // task 4530: if the collection-count re-elaboration phase mutated the
+        // graph (added/removed instance cells or emitted/drained forall
+        // constraints), rebuild reverse_index, trace_map, and demand against
+        // the final new_snapshot.graph before installing. This restores the
+        // dep-structure invariant that subsequent edit_param calls rely on:
+        //
+        //   reverse_index — dirty_cone reachability AND the constraints_dirty
+        //     solver gate miss grown instances entirely when stale.
+        //   demand — compute_eval_set excludes grown cells if built from the
+        //     pre-grow graph (build_demand_for_graph over n=2 omits bolts[2..3]).
+        //   trace_map — topo-sort of grown nodes in compute_eval_set.
+        //
+        // Mirrors edit_source step-15 (engine_edit.rs:3326-3331).
+        // When false (plain param edits), the cheap snapshot-only path is kept.
+        //
+        // NOTE — grow-then-read gap (pre-existing, tactical fix scope):
+        // The dep-structure rebuild happens here, at the END of the edit_param
+        // call that grew the collection. Grown instances' forall constraints are
+        // present in the new reverse_index for SUBSEQUENT edit_param calls, but
+        // are NOT solved within this call. A caller that does edit_param(n, +N)
+        // and then reads EvalResult without issuing a further edit will see
+        // newly-grown auto params as unsolved (Value::Undef). This is intentional
+        // at the tactical-fix level; a future unified-DAG driver (θ2) will close
+        // the gap by re-evaluating grown instances within the same pass that
+        // grows them.
+        if structural_mutation {
+            let compiled_fields = Arc::clone(&self.compiled_fields);
+            let new_reverse_index =
+                crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+                    &new_snapshot.graph,
+                    &compiled_fields,
+                );
+            let new_trace_map =
+                crate::deps::build_trace_map_and_fields(&new_snapshot.graph, &compiled_fields);
+            // build_demand_for_graph borrows new_snapshot.graph by ref; the
+            // borrows end before new_snapshot is moved into st.snapshot below.
+            let new_demand = crate::engine_eval::build_demand_for_graph(&new_snapshot.graph);
+            // Install demand on self first (disjoint field from eval_state),
+            // then snapshot + dep-structures together via the eval_state guard.
+            self.demand = new_demand;
+            let st = self.eval_state.as_mut().unwrap();
+            st.snapshot = new_snapshot;
+            st.reverse_index = new_reverse_index;
+            st.trace_map = new_trace_map;
+        } else {
+            self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+        }
 
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
