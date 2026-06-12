@@ -160,7 +160,7 @@ fn bending_hinge_revolute(b: &BendingHingeInputs<'_>, k_gamma: f64) -> Value {
         max_stress_at_neutral,
         b.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }
@@ -339,7 +339,7 @@ fn prb_let_joint(args: &[Value]) -> Value {
         max_stress_at_neutral,
         l.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }

@@ -222,7 +222,7 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         max_stress_at_neutral,
         inputs.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }

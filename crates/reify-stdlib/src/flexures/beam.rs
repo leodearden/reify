@@ -161,7 +161,7 @@ fn prb_cantilever_beam(args: &[Value]) -> Value {
         max_stress_at_neutral,
         b.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }
@@ -237,7 +237,7 @@ fn prb_fixed_fixed_beam(args: &[Value]) -> Value {
         max_stress_at_neutral,
         b.yield_si,
         None,
-        delta_auto,
+        symmetric_angle_range(delta_auto),
     );
     attach_compliance(joint, record)
 }
