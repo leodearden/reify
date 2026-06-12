@@ -30,7 +30,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::collect_value_ref_members;
+use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -1736,5 +1736,82 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
         "std/solver/elastic ElementOrder variants should be [P1, P2] in canonical order; \
          modal trampoline reads `variant == \"P2\"` against this set. Got: {:?}",
         enum_def.variants
+    );
+}
+
+// ─── task-4578: Part structure_def (step-1 RED) ───────────────────────────────
+
+/// `Part` must be declared as a zero-field opaque marker structure in
+/// `std/modal/analysis` (PRD §12 open-question-3: "minimal opaque
+/// structure_def first, then grow").
+///
+/// Mirrors `no_damping_marker_structure` (above) but asserts `trait_bounds`
+/// is EMPTY — `Part` refines no trait (unlike `NoDamping : DampingDescriptor`).
+///
+/// RED before step-2 (Part is not yet declared in modal_analysis.ri).
+/// GREEN once `structure def Part { }` lands before `ModalResult`.
+#[test]
+fn part_structure_def_declared() {
+    let template = find_structure("Part");
+
+    // (a) zero param cells — opaque marker, no fields
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        0,
+        "Part should be a zero-field opaque marker structure, but got params: {:?}",
+        params.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    // (b) no constraints — nothing to constrain on a zero-field structure
+    assert!(
+        template.constraints.is_empty(),
+        "Part should declare no constraints (zero-field opaque marker); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) no trait refinements — Part refines no trait in this phase
+    assert!(
+        template.trait_bounds.is_empty(),
+        "Part should have no trait_bounds (it refines no trait in the opaque-marker phase); \
+         got: {:?}",
+        template.trait_bounds
+    );
+}
+
+/// POSITIVE boundary test: compiling `ForcingTimeHistory(part: Part(), sources: [StepForce(...)])`
+/// via the stdlib must produce zero Error-severity diagnostics once `Part` is declared.
+///
+/// Reuses the `StepForce` construction from examples/modal/transient_step_response.ri:90-96.
+/// The `sources.count > 0` constraint is satisfied by the single StepForce.
+///
+/// RED before step-2: `Part()` is an unknown symbol (no `structure def Part` yet).
+/// GREEN once step-2 declares `structure def Part { }` in std/modal/analysis.
+#[test]
+fn part_value_accepted_where_part_param_declared() {
+    let source = r#"
+structure PartBoundarySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: Part(), sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected zero Error-severity diagnostics for ForcingTimeHistory(part: Part(), ...); \
+         RED until `structure def Part {{ }}` lands in std/modal/analysis (step-2). \
+         Got {}: {:#?}",
+        errors.len(),
+        errors
     );
 }
