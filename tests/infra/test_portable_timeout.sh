@@ -911,5 +911,37 @@ echo "--- Test 25: structural: Test 16a exit variable is quoted ---"
 assert "Test 16a subshell uses quoted exit \"\$found\" (no unquoted form)" \
     bash -c '! grep -qF "        exit \$found" "$1"' _ "${BASH_SOURCE[0]}"
 
+# -- Test 27: behavioral: Test 16a poll budget is load-scaled -----------------
+echo ""
+echo "--- Test 27: Test 16a poll budget derived from load_tolerant_attempts ---"
+#
+# Checks that _POLL_ATTEMPTS is defined in THIS FILE's parent shell (not a
+# subshell), computed via load_tolerant_attempts 60.  The variable must be set
+# BEFORE the Test 16a subshell so it can be passed via env (the subshell strips
+# PATH dirs containing nproc, so the computation must happen outside).
+#
+# _POLL_ATTEMPTS is undefined before step-6 adds the derivation to this file.
+# ${_POLL_ATTEMPTS:-} safely returns empty under set -euo pipefail.
+_test27_pa="${_POLL_ATTEMPTS:-}"
+
+# Fails RED until step-6: _POLL_ATTEMPTS undefined → empty → test -n fails.
+assert "Test 16a: _POLL_ATTEMPTS defined in parent scope (step-6 adds derivation)" \
+    test -n "$_test27_pa"
+
+# Independent lib checks (GREEN already from step-4): verify budget math is right.
+assert "Test 16a: idle budget (FACTOR=1, BASE=60) → 60 via load_tolerant_attempts" \
+    env REIFY_LOAD_TOLERANCE_FACTOR=1 SCRIPT_DIR="$SCRIPT_DIR" \
+    bash -c '
+        source "$SCRIPT_DIR/load_tolerance_lib.sh"
+        a=$(load_tolerant_attempts 60) && [ "$a" -eq 60 ]
+    '
+
+assert "Test 16a: load budget (FACTOR=4, BASE=60) → 240 via load_tolerant_attempts" \
+    env REIFY_LOAD_TOLERANCE_FACTOR=4 SCRIPT_DIR="$SCRIPT_DIR" \
+    bash -c '
+        source "$SCRIPT_DIR/load_tolerance_lib.sh"
+        a=$(load_tolerant_attempts 60) && [ "$a" -eq 240 ]
+    '
+
 # -- Summary ------------------------------------------------------------------
 test_summary
