@@ -465,6 +465,68 @@ pub fn recover_nodal_stress_p1(
     accum
 }
 
+/// Per-element gradient contribution for [`recover_nodal_gradient_p1`].
+///
+/// Mirrors [`StressElement`] for the displacement-gradient tensor.
+/// Borrows the connectivity slice from the parent mesh; carries the
+/// element's constant displacement-gradient tensor and volume by value.
+#[derive(Debug, Clone, Copy)]
+pub struct GradientElement<'a> {
+    /// Global node indices, in element-local order.
+    pub connectivity: &'a [usize],
+    /// Constant per-element displacement-gradient tensor (from
+    /// [`element_gradient_p1`]). Layout: `(∇u)[r][c] = ∂u_r/∂x_c`.
+    pub gradient: [[f64; 3]; 3],
+    /// Element volume (from [`tet_volume_p1`]).
+    pub volume: f64,
+}
+
+/// Recover a continuous nodal displacement-gradient field from per-element
+/// constant gradients via volume-weighted simple averaging.
+///
+/// Mirrors [`recover_nodal_stress_p1`] over the 3×3 gradient tensor.
+/// For each node `n`, the recovered gradient is
+///
+/// ```text
+/// (∇u)_n = (Σ_{e incident to n} V_e · (∇u)_e) / (Σ_{e incident to n} V_e)
+/// ```
+///
+/// Nodes incident to no element yield the zero tensor.
+pub fn recover_nodal_gradient_p1(
+    n_nodes: usize,
+    elements: &[GradientElement<'_>],
+) -> Vec<[[f64; 3]; 3]> {
+    let mut accum = vec![[[0.0_f64; 3]; 3]; n_nodes];
+    let mut weights = vec![0.0_f64; n_nodes];
+
+    for el in elements {
+        for &node in el.connectivity {
+            debug_assert!(
+                node < n_nodes,
+                "connectivity index {node} >= n_nodes {n_nodes} in recover_nodal_gradient_p1",
+            );
+            for (acc_cell, &grad_cell) in accum[node]
+                .iter_mut()
+                .flatten()
+                .zip(el.gradient.iter().flatten())
+            {
+                *acc_cell += el.volume * grad_cell;
+            }
+            weights[node] += el.volume;
+        }
+    }
+
+    for (node_accum, &weight) in accum.iter_mut().zip(weights.iter()) {
+        if weight > 0.0 {
+            for cell in node_accum.iter_mut().flatten() {
+                *cell /= weight;
+            }
+        }
+    }
+
+    accum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
