@@ -266,6 +266,77 @@ pub fn element_stress_p2(
     ]
 }
 
+/// Compute the per-element displacement-gradient tensor for a P1
+/// tetrahedron: `(∇u)[r][c] = ∂u_r / ∂x_c`.
+///
+/// # Layout
+///
+/// Row r = displacement component (0=x, 1=y, 2=z), col c = derivative axis
+/// (0=x, 1=y, 2=z). `trace(∇u) = ∇u[0][0] + ∇u[1][1] + ∇u[2][2]` equals
+/// the volumetric strain `tr(ε)` (divergence of the displacement field).
+///
+/// # Algorithm
+///
+/// Mirrors the Jacobian → J⁻ᵀ → `grads_phys` block of [`element_stress_p1`]
+/// (result.rs:78–116), then replaces the D-matrix / Voigt steps with the
+/// purely kinematic accumulation
+/// `(∇u)[r][c] += grads_phys[k][c] · u_e[3k+r]`.
+/// No material properties are required — this function is material-independent
+/// and serves both the isotropic and anisotropic solve paths.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate; same guard as [`element_stress_p1`].
+#[allow(clippy::needless_range_loop)]
+pub fn element_gradient_p1(phys_nodes: &[[f64; 3]; 4], u_e: &[f64; 12]) -> [[f64; 3]; 3] {
+    // Reference gradients (constant for P1 — any reference coord works).
+    let grads_ref = TetP1.shape_grad_at(ReferenceCoord::new(0.25, 0.25, 0.25));
+
+    // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
+    let mut j_mat = [[0.0_f64; 3]; 3];
+    for k in 0..4 {
+        for i in 0..3 {
+            for j in 0..3 {
+                j_mat[i][j] += phys_nodes[k][i] * grads_ref[k][j];
+            }
+        }
+    }
+    let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
+        - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
+        + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate tet in element_gradient_p1: |det J| = {} (must be > {} \
+         and finite — see PRD task #21 for the future diagnostic path)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
+    let j_inv_t = inverse_transpose_3x3(&j_mat, det);
+
+    // Push to physical gradients: ∇x N_i = J⁻ᵀ · ∇ξ N_i.
+    let mut grads_phys = [[0.0_f64; 3]; 4];
+    for i in 0..4 {
+        for r in 0..3 {
+            let mut s = 0.0;
+            for c in 0..3 {
+                s += j_inv_t[r][c] * grads_ref[i][c];
+            }
+            grads_phys[i][r] = s;
+        }
+    }
+
+    // Kinematic displacement-gradient (∇u)[r][c] += grads_phys[k][c] · u_e[3k+r].
+    let mut grad_u = [[0.0_f64; 3]; 3];
+    for k in 0..4 {
+        for r in 0..3 {
+            for c in 0..3 {
+                grad_u[r][c] += grads_phys[k][c] * u_e[3 * k + r];
+            }
+        }
+    }
+    grad_u
+}
+
 /// Compute the volume of a P1 tetrahedron from its physical vertex
 /// positions: `V = |det M| / 6`, where
 /// `M = [v_1 − v_0 | v_2 − v_0 | v_3 − v_0]` is the 3×3 Jacobian of the
