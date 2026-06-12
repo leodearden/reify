@@ -802,8 +802,10 @@ fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint
 ///
 /// The assertion shape mirrors `elastic_options_constrains_max_iter_and_cg_tolerance_positive`
 /// (above), substituting `BinOp::Ge` (`>=`) for `BinOp::Gt` (`>`).
-/// RHS literals `Int(0)` and `Real(0.0)` are both accepted for stability
-/// across future numeric-promotion changes.
+/// RHS literals `Int(0)`, `Real(0.0)`, and `Scalar{si_value:0.0, ..}` are all
+/// accepted: `iterations : Int` stays `Int(0)`; `max_von_mises : Pressure` has its
+/// bare `0` coerced to `Scalar<Pressure>(0.0)` at compile time by the task-4485/β
+/// polymorphic-zero rewrite (esc-3115-112 resolved).
 #[test]
 fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
     let template = find_structure("ElasticResult");
@@ -818,9 +820,12 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
     for required in &["iterations", "max_von_mises"] {
         let matched = template.constraints.iter().any(|c| {
             // The constraint must be a `>=` BinOp with a ValueRef to the
-            // required member on the left and the literal `0` on the right.
+            // required member on the left and a zero literal on the right.
             // Pinning the RHS prevents a silent weakening where the bound is
             // changed to a negative value but the name + op check still passes.
+            // Accept Int(0), Real(0.0), or Scalar{0.0, D} — the last form arises
+            // when task-4485/β coerces `max_von_mises >= 0` (Pressure LHS) at
+            // compile time (esc-3115-112 resolved).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
                     if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
@@ -829,6 +834,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
                     match &right.kind {
                         CompiledExprKind::Literal(Value::Int(0)) => true,
                         CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) if *si_value == 0.0 => true,
                         _ => false,
                     }
                 }
