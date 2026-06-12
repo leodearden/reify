@@ -119,6 +119,12 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- 'gui/src-tauri/*.rs' 2>/dev/null)
 # needed here.
 registered=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' "$INVENTORY" | sort -u || true)
 
+# task-4586 fault-injection seam: drop one channel from registered to simulate
+# under-load single-line truncation (inert unless REIFY_EVENT_INVENTORY_DROP_REGISTERED is set).
+if [[ -n "${REIFY_EVENT_INVENTORY_DROP_REGISTERED:-}" ]]; then
+    registered=$(printf '%s\n' "$registered" | grep -vx -- "$REIFY_EVENT_INVENTORY_DROP_REGISTERED" || true)
+fi
+
 # Extract literal channel names from .emit("name", …) call sites in Rust.
 # Uses perl slurp mode (-0777) so \s* can span the newline between .emit( and
 # the quoted argument — e.g. the multi-line form:
