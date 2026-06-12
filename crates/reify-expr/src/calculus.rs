@@ -277,70 +277,103 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     }
 }
 
+/// Compute the result-codomain type for the divergence operator.
+///
+/// Returns `Some(result_codomain)` when:
+/// - `domain_type` is `Point { n, scalar }` (n ≥ 1), **and**
+/// - `codomain_type` is `Vector { n, scalar }` with matching dimension n.
+///
+/// The result codomain is always a scalar quotient: `codomain_component_dim / domain_dim`
+/// (i.e. `dim_quotient_type` with `domain_exponent = 1`), which is the dimensionless
+/// strain rate for dimensionless inputs.
+///
+/// Returns `None` for:
+/// - non-Point domain, non-Vector codomain, or mismatched dimensions (vec_n ≠ n)
+///
+/// Used by both the Sampled eager-lower path (ζ) and the existing
+/// Analytical/Composed path to guarantee identical D6 typing across both paths.
+fn divergence_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Domain must be Point{n, scalar}; extract n.
+    let n = match domain_type {
+        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
+        _ => return None,
+    };
+    // Codomain must be Vector{n, scalar}; extract the unwrapped quantity.
+    let (vec_n, codomain_quantity) = match codomain_type {
+        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
+            (*n, quantity.as_ref())
+        }
+        _ => return None,
+    };
+    // Vector dimension must match domain dimension.
+    if vec_n != n {
+        return None;
+    }
+    Some(dim_quotient_type(
+        scalar_dimension(codomain_quantity),
+        domain_dimension(domain_type),
+        1,
+        dimensionless_fallback(codomain_quantity),
+    ))
+}
+
 /// Compute the divergence of a vector field.
 ///
 /// Returns a new scalar Field with `FieldSourceKind::Divergence` whose lambda slot stores
 /// the original field. The sample handler dispatches to `compute_numerical_divergence_at_point`.
 ///
 /// Validation:
-/// - Argument must be an Analytical or Composed Field
 /// - Domain must be `Point{n, scalar}` (n ≥ 1)
 /// - Codomain must be `Vector{n, scalar}` with matching dimension n
 ///
-/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
-/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
-/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
-/// `Value::Undef`, which is the correct ζ-pending behaviour.
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Divergence)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled scalar field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
 pub(crate) fn compute_divergence(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // divergence_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = divergence_result_codomain(domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Divergence,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
     let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "divergence")
     {
         Some(pair) => pair,
         None => return Value::Undef,
     };
 
-    // Domain must be a Point with scalar quantity
-    let n = match domain_type {
-        Type::Point { n, quantity } if scalar_dimension(quantity).is_some() => *n,
-        _ => {
+    let result_codomain = match divergence_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
             #[cfg(debug_assertions)]
             eprintln!(
-                "[reify-expr] divergence: domain must be Point{{n}}, got {:?}",
-                domain_type
+                "[reify-expr] divergence: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
             );
             return Value::Undef;
         }
     };
-
-    // Codomain must be Vector{n, scalar}; capture the unwrapped quantity for later use.
-    let (vec_n, codomain_quantity) = match codomain_type {
-        Type::Vector { n, quantity } if scalar_dimension(quantity).is_some() => {
-            (*n, quantity.as_ref())
-        }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] divergence: codomain must be Vector{{n}}, got {:?}",
-                codomain_type
-            );
-            return Value::Undef;
-        }
-    };
-
-    if vec_n != n {
-        #[cfg(debug_assertions)]
-        eprintln!("[reify-expr] divergence: domain dimension {n} ≠ codomain dimension {vec_n}");
-        return Value::Undef;
-    }
-
-    // Compute result codomain type: codomain_component_dim / domain_dim.
-    // Preserve-codomain fallback: downgrade dimensionless Scalar to Real, else keep component type.
-    // codomain_quantity is the unwrapped Vector quantity — no outer Vector match needed.
-    let result_codomain = dim_quotient_type(
-        scalar_dimension(codomain_quantity),
-        domain_dimension(domain_type),
-        1,
-        dimensionless_fallback(codomain_quantity),
-    );
 
     // Result: scalar field with dimensionally-correct codomain.
     // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
@@ -352,77 +385,102 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     }
 }
 
-/// Compute the curl of a 3D vector field.
+/// Compute the result-codomain type for the curl operator.
 ///
-/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
-/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+/// Returns `Some(Type::vec3(result_component))` when:
+/// - `domain_type` is `Point { 3, scalar }`, **and**
+/// - `codomain_type` is `Vector { 3, scalar }`.
 ///
-/// Validation:
-/// - Argument must be an Analytical or Composed Field
-/// - Domain must be `Point{3, scalar}`
-/// - Codomain must be `Vector{3, scalar}`
+/// The result codomain is `Type::vec3(codomain_component_dim / domain_dim)`.
 ///
-/// **Scope note:** Sampled-field eager-lowering (analogous to the gradient/laplacian ε branch)
-/// is deliberately deferred to task ζ (divergence/curl over Sampled vector input). Until then,
-/// a `FieldSourceKind::Sampled` argument falls through `validate_differentiable_field` →
-/// `Value::Undef`, which is the correct ζ-pending behaviour.
-pub(crate) fn compute_curl(field_val: &Value) -> Value {
-    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
-        Some(pair) => pair,
-        None => return Value::Undef,
-    };
-
-    // Domain must be Point{3, scalar}
+/// Returns `None` for non-Point{3} domain or non-Vector{3} codomain.
+///
+/// Used by both the Sampled eager-lower path (ζ) and the existing
+/// Analytical/Composed path to guarantee identical D6 typing across both paths.
+fn curl_result_codomain(domain_type: &Type, codomain_type: &Type) -> Option<Type> {
+    // Domain must be Point{3, scalar}.
     match domain_type {
-        Type::Point { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Int | Type::Scalar { .. }
-            ) => {}
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: domain must be Point{{3}}, got {:?}",
-                domain_type
-            );
-            return Value::Undef;
-        }
+        Type::Point { n: 3, quantity } if scalar_dimension(quantity).is_some() => {}
+        _ => return None,
     }
-
-    // Codomain must be Vector{3, scalar}; capture the unwrapped quantity for dim propagation.
+    // Codomain must be Vector{3, scalar}; extract the unwrapped quantity.
     let codomain_quantity = match codomain_type {
-        Type::Vector { n: 3, quantity }
-            if matches!(
-                quantity.as_ref(),
-                Type::Int | Type::Scalar { .. }
-            ) =>
-        {
+        Type::Vector { n: 3, quantity } if scalar_dimension(quantity).is_some() => {
             quantity.as_ref()
         }
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[reify-expr] curl: codomain must be Vector{{3}}, got {:?}",
-                codomain_type
-            );
-            return Value::Undef;
-        }
+        _ => return None,
     };
-
-    // Compute result component type: codomain_component_dim / domain_dim.
-    // Same pattern as compute_divergence, but wrapped back in Vector{3, ...}.
     let result_component = dim_quotient_type(
         scalar_dimension(codomain_quantity),
         domain_dimension(domain_type),
         1,
         dimensionless_fallback(codomain_quantity),
     );
+    Some(Type::vec3(result_component))
+}
+
+/// Compute the curl of a 3D vector field.
+///
+/// Returns a new vector Field with `FieldSourceKind::Curl` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_curl_at_point`.
+///
+/// Validation:
+/// - Domain must be `Point{3, scalar}`
+/// - Codomain must be `Vector{3, scalar}`
+///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ζ): dispatches `sampled_differential(Curl)` and returns a
+/// `source:Sampled` output field indistinguishable to `sample()`/`max()` from any other
+/// Sampled vector field.  A Sampled source with any other lambda slot falls through to
+/// the existing `validate_differentiable_field` reject → `Value::Undef`.
+pub(crate) fn compute_curl(field_val: &Value) -> Value {
+    // ζ: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
+    // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
+    // curl_sampled_malformed_lambda_slot_returns_undef) falls through to
+    // validate_differentiable_field, which hard-rejects Sampled → Value::Undef (unchanged).
+    if let Value::Field {
+        source: FieldSourceKind::Sampled,
+        lambda,
+        domain_type,
+        codomain_type,
+    } = field_val
+        && let Value::SampledField(sf) = lambda.as_ref()
+        && let Some(result_codomain) = curl_result_codomain(domain_type, codomain_type)
+    {
+        let out = crate::sampled_fd::sampled_differential(
+            sf,
+            crate::sampled_fd::DifferentialOp::Curl,
+        );
+        return Value::Field {
+            domain_type: domain_type.clone(),
+            codomain_type: result_codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(out)),
+        };
+    }
+
+    let (domain_type, codomain_type) = match validate_differentiable_field(field_val, "curl") {
+        Some(pair) => pair,
+        None => return Value::Undef,
+    };
+
+    let result_codomain = match curl_result_codomain(domain_type, codomain_type) {
+        Some(c) => c,
+        None => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[reify-expr] curl: unsupported domain {:?} or codomain {:?}",
+                domain_type, codomain_type
+            );
+            return Value::Undef;
+        }
+    };
 
     // Result: vector field with dimensionally-correct codomain.
     // FIXME(perf): see compute_gradient for note on Arc<Value> caller optimization. (task 4551)
     Value::Field {
         domain_type: domain_type.clone(),
-        codomain_type: Type::vec3(result_component),
+        codomain_type: result_codomain,
         source: FieldSourceKind::Curl,
         lambda: Arc::new(field_val.clone()),
     }
@@ -2722,5 +2780,418 @@ mod tests {
             Value::Undef,
             "laplacian of Sampled field with non-SampledField lambda must return Undef"
         );
+    }
+
+    // ─── ζ step-1: divergence eager-lower RED tests ───────────────────────────
+
+    /// Build a Regular3D stride-3 SampledField (interleaved node-major:
+    /// data[g*3+0]=cx, data[g*3+1]=cy, data[g*3+2]=cz).
+    /// Nodes are ordered x-major: for each x, for each y, for each z.
+    fn make_3d_vector_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> [f64; 3],
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz * 3);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    let v = f(x, y, z);
+                    data.push(v[0]);
+                    data.push(v[1]);
+                    data.push(v[2]);
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-vec".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build a Regular3D stride-1 (scalar) SampledField: one value per node.
+    /// Used to construct dimension/stride mismatch scenarios for totality regression tests.
+    fn make_3d_scalar_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> f64,
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    data.push(f(x, y, z));
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-scalar".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// compute_divergence on a well-formed 3D Sampled vector field F=(x, 2y, 3z)
+    /// returns a Sampled field whose data equals the exact divergence (6.0 everywhere,
+    /// <1e-12) and whose codomain_type is Real (dimensionless strain quotient).
+    ///
+    /// Numeric premise: div F = ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z = 1 + 2 + 3 = 6.
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_divergence currently returns Value::Undef for Sampled source;
+    /// this test drives the step-2 Sampled eager-lower branch.
+    #[test]
+    fn divergence_sampled_3d_affine_returns_sampled_field_with_exact_divergence() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "divergence of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Divergence → scalar output: stride-1, data.len() == grid_count
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "divergence output must have stride-1 data (len=grid_count={grid_count}), got {}",
+            out_sf.data.len()
+        );
+
+        // Every node must be within 1e-12 of 6.0
+        for (g, &val) in out_sf.data.iter().enumerate() {
+            assert!(
+                (val - 6.0).abs() < 1e-12,
+                "node {g}: divergence = {val}, expected 6.0 (error {})",
+                (val - 6.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is Real (dimensionless strain)
+        assert_eq!(
+            *result_codomain,
+            Type::dimensionless_scalar(),
+            "divergence codomain for dimensionless vector field must be Real, got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_divergence on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-2 adds the well-formed dispatch branch.
+    #[test]
+    fn divergence_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_divergence(&field),
+            Value::Undef,
+            "divergence of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ζ step-3: curl eager-lower RED tests ─────────────────────────────────
+
+    /// compute_curl on a well-formed 3D Sampled vector field F=(-y, x, 0)
+    /// returns a Sampled field whose data equals the exact curl (0, 0, 2) at every
+    /// node, within 1e-12, and whose codomain_type is Type::vec3(Real).
+    ///
+    /// Numeric premise: curl F = (∂Fz/∂y − ∂Fy/∂z, ∂Fx/∂z − ∂Fz/∂x, ∂Fy/∂x − ∂Fx/∂y)
+    ///                         = (0 − 0, 0 − 0, 1 − (−1)) = (0, 0, 2).
+    /// FD is algebraically exact for degree-1 polys (truncation ∝ 2nd derivative = 0).
+    /// Tolerance 1e-12 = δ-contract floor (PRD §6/D4).
+    ///
+    /// **RED**: compute_curl currently returns Value::Undef for Sampled source;
+    /// this test drives the step-4 Sampled eager-lower branch.
+    #[test]
+    fn curl_sampled_3d_affine_returns_sampled_field_with_exact_curl() {
+        let n = 4_usize;
+        let sf = make_3d_vector_sf(n, n, n, 1.0, |x, y, _z| [-y, x, 0.0]);
+        let grid_count = n * n * n;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be Value::Field with source=Sampled
+        let (out_sf, result_codomain) = match &result {
+            Value::Field {
+                source,
+                lambda,
+                codomain_type,
+                ..
+            } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "curl of Sampled vector field must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => (sf, codomain_type),
+                    other => panic!("lambda slot must be SampledField, got {:?}", other),
+                }
+            }
+            other => panic!("expected Value::Field, got {:?}", other),
+        };
+
+        // Curl → vector output: stride-3, data.len() == grid_count * 3
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "curl output must have stride-3 data (len=grid_count*3={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+
+        // Every node must have (cx, cy, cz) within 1e-12 of (0, 0, 2)
+        for g in 0..grid_count {
+            let cx = out_sf.data[g * 3];
+            let cy = out_sf.data[g * 3 + 1];
+            let cz = out_sf.data[g * 3 + 2];
+            assert!(
+                cx.abs() < 1e-12,
+                "node {g}: curl_x = {cx}, expected 0.0 (error {})",
+                cx.abs()
+            );
+            assert!(
+                cy.abs() < 1e-12,
+                "node {g}: curl_y = {cy}, expected 0.0 (error {})",
+                cy.abs()
+            );
+            assert!(
+                (cz - 2.0).abs() < 1e-12,
+                "node {g}: curl_z = {cz}, expected 2.0 (error {})",
+                (cz - 2.0).abs()
+            );
+        }
+
+        // codomain_type for dimensionless 3D vector field is vec3(Real)
+        let expected_codomain = Type::vec3(Type::dimensionless_scalar());
+        assert_eq!(
+            *result_codomain,
+            expected_codomain,
+            "curl codomain for dimensionless vector field must be vec3(Real), got {:?}",
+            result_codomain
+        );
+    }
+
+    /// compute_curl on a Sampled field whose lambda slot is a Value::Lambda (malformed)
+    /// still returns Value::Undef.  The fallthrough to validate_differentiable_field → Undef
+    /// must hold both before and after step-4 adds the well-formed dispatch branch.
+    #[test]
+    fn curl_sampled_malformed_lambda_slot_returns_undef() {
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let field = Value::Field {
+            domain_type: domain,
+            codomain_type: codomain,
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(make_scalar_lambda("p")),
+        };
+        assert_eq!(
+            compute_curl(&field),
+            Value::Undef,
+            "curl of Sampled field with non-SampledField lambda must return Undef"
+        );
+    }
+
+    // ─── ζ amend: stride-mismatch totality regression pins ────────────────────
+
+    /// compute_divergence with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch passes `divergence_result_codomain` (type-check succeeds:
+    /// n=3, vec_n=3), then calls `sampled_differential(sf, Divergence)` where the actual
+    /// grid has `in_stride=1` vs `n_axes=3`.  The totality path (`in_stride != n_axes`)
+    /// returns a zero-filled stride-1 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` scalar `Field`, NOT
+    /// `Value::Undef`.  Callers must not supply a type/stride mismatch; this test locks the
+    /// observed behaviour so any future change (e.g. returning `Undef` instead) requires a
+    /// deliberate test update.
+    #[test]
+    fn divergence_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1 but n_axes=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch divergence must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch divergence lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch divergence must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-1 scalar output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "degenerate divergence output must be stride-1 (len={grid_count}), got {}",
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "node {g}: degenerate divergence must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
+    }
+
+    /// compute_curl with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch passes `curl_result_codomain` (type-check succeeds: domain
+    /// `Point{3}`, codomain `Vector{3}`), then calls `sampled_differential(sf, Curl)` where
+    /// the actual grid has `in_stride=1` vs the required `3`.  The totality path
+    /// (`in_stride != 3`) returns a zero-filled stride-3 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` vec3 `Field`, NOT
+    /// `Value::Undef`.
+    #[test]
+    fn curl_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1, curl requires in_stride=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch curl must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch curl lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch curl must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-3 vector output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "degenerate curl output must be stride-3 (len={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "degenerate curl data[{g}] must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
     }
 }

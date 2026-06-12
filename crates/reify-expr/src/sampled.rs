@@ -411,6 +411,123 @@ mod tests {
         }
     }
 
+    /// Build a Regular3D stride-3 field (interleaved node-major:
+    /// data[g*3+0]=comp0, [g*3+1]=comp1, [g*3+2]=comp2).
+    fn make_3d_stride3(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> [f64; 3],
+    ) -> SampledField {
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz * 3);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    let v = f(x, y, z);
+                    data.push(v[0]);
+                    data.push(v[1]);
+                    data.push(v[2]);
+                }
+            }
+        }
+        SampledField {
+            name: "test-3d-stride3".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    // ── ζ step-6: stride-3 Regular3D regression pin ──────────────────────────
+
+    /// sample_at_point on a stride-3 Regular3D field with constant components
+    /// (comp0=1.0, comp1=2.0, comp2=3.0) at an in-bounds interior point returns
+    /// Value::Vector([Real(1.0), Real(2.0), Real(3.0)]).
+    ///
+    /// Pins the stride-n deinterleave + interpolate path for 3-component output
+    /// (ε only tested stride-2 via Regular2D; ζ uses stride-3 via Regular3D curl).
+    #[test]
+    fn sample_at_point_stride3_regular3d_constant_returns_vector() {
+        // 3×3×3 grid, constant components everywhere.
+        let sf = make_3d_stride3(3, 3, 3, 1.0, |_x, _y, _z| [1.0, 2.0, 3.0]);
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        // Interior non-node point — trilinear interpolation of constants is exact.
+        let point = Value::Vector(vec![
+            Value::Real(0.5),
+            Value::Real(0.5),
+            Value::Real(0.5),
+        ]);
+        let result = sample_at_point(&sf, &point, &codomain, &ctx);
+        match &result {
+            Value::Vector(comps) => {
+                assert_eq!(comps.len(), 3, "stride-3 result must have 3 components");
+                assert_eq!(comps[0], Value::Real(1.0), "comp0 must be Real(1.0)");
+                assert_eq!(comps[1], Value::Real(2.0), "comp1 must be Real(2.0)");
+                assert_eq!(comps[2], Value::Real(3.0), "comp2 must be Real(3.0)");
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
+    /// sample_at_point on a stride-3 Regular3D field with linearly-varying components
+    /// (comp0=x, comp1=y, comp2=z) at a grid node returns the exact per-component values.
+    /// Linear interpolation on a grid node is exact by construction.
+    ///
+    /// Locks the stride-3 deinterleave path that curl output relies on.
+    #[test]
+    fn sample_at_point_stride3_regular3d_linear_at_grid_node_is_exact() {
+        // 3×3×3 grid: comp0=x, comp1=y, comp2=z at each node.
+        let sf = make_3d_stride3(3, 3, 3, 1.0, |x, y, z| [x, y, z]);
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        // Grid node (2.0, 1.0, 0.0) — node g = 2*3*3 + 1*3 + 0 = 21
+        let point = Value::Vector(vec![
+            Value::Real(2.0),
+            Value::Real(1.0),
+            Value::Real(0.0),
+        ]);
+        let result = sample_at_point(&sf, &point, &codomain, &ctx);
+        match &result {
+            Value::Vector(comps) => {
+                assert_eq!(comps.len(), 3, "stride-3 result must have 3 components");
+                let c0 = match &comps[0] {
+                    Value::Real(v) => *v,
+                    other => panic!("comp0 must be Real, got {:?}", other),
+                };
+                let c1 = match &comps[1] {
+                    Value::Real(v) => *v,
+                    other => panic!("comp1 must be Real, got {:?}", other),
+                };
+                let c2 = match &comps[2] {
+                    Value::Real(v) => *v,
+                    other => panic!("comp2 must be Real, got {:?}", other),
+                };
+                assert!((c0 - 2.0).abs() < 1e-12, "comp0 at node (2,1,0) must be 2.0, got {c0}");
+                assert!((c1 - 1.0).abs() < 1e-12, "comp1 at node (2,1,0) must be 1.0, got {c1}");
+                assert!((c2 - 0.0).abs() < 1e-12, "comp2 at node (2,1,0) must be 0.0, got {c2}");
+            }
+            other => panic!("expected Value::Vector, got {:?}", other),
+        }
+    }
+
     /// sample_at_point on a stride-2 Regular2D field with linearly-varying components
     /// (comp0=x, comp1=y) at a grid node returns the exact per-component values.
     /// Linear interpolation on a grid node is exact by construction.

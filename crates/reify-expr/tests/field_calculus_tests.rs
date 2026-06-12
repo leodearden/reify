@@ -4765,6 +4765,255 @@ fn sampled_laplacian_1d_quadratic_max_returns_exact_second_deriv() {
     );
 }
 
+// ── ζ integration acceptance (PRD §5): divergence/curl eager-lower + stride-n ──
+
+/// Build a Regular3D stride-3 `SampledField` with `nx × ny × nz` nodes, uniform
+/// spacing `h`, where each node g stores the 3-component vector `f(x, y, z)` as
+/// `data[g*3+0..g*3+2]` in x-major order.
+fn make_sampled_3d_vector(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    h: f64,
+    f: impl Fn(f64, f64, f64) -> [f64; 3],
+) -> SampledField {
+    let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+    let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+    let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+    let mut data = Vec::with_capacity(nx * ny * nz * 3);
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let v = f(x, y, z);
+                data.push(v[0]);
+                data.push(v[1]);
+                data.push(v[2]);
+            }
+        }
+    }
+    SampledField {
+        name: "test-3d-vec".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+        spacing: vec![h, h, h],
+        axis_grids: vec![xs, ys, zs],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Integration acceptance (PRD §5, task ζ test (a)):
+/// `sample(divergence(F_3d_linear), node_point)` returns the exact divergence
+/// via divergence eager-lowering + stride-1 scalar sample.
+///
+/// `F(x, y, z) = (x, 2y, 3z)` on a 4×4×4 Regular3D grid (h=1.0).
+/// Divergence of an affine vector field is algebraically exact on a uniform grid;
+/// sampling at grid node (1.0, 1.0, 1.0) returns `Value::Real(6.0)`, <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_divergence` → stride-1 output
+/// (scalar Sampled field) → `sample()` builtin dispatch → `sample_at_point` scalar path.
+#[test]
+fn sampled_divergence_3d_linear_sample_returns_exact_divergence() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let div_codomain = Type::dimensionless_scalar(); // scalar quotient
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // divergence(field) → eager-lowered Sampled field, codomain = Real.
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(div_codomain.clone()),
+    };
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        div_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "divergence of 3D Sampled vector field should return Sampled Field, got {:?}",
+        div_result
+    );
+
+    // sample(div_field, Point3(1.0, 1.0, 1.0)) — grid node (1,1,1); exact for affine.
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        div_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(divergence(F), node) should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 6.0).abs() < 1e-12,
+        "sample(divergence((x,2y,3z)), node) should be exactly 6.0, \
+         got {} (error {})",
+        val,
+        (val - 6.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ζ test (b)):
+/// `max(divergence(F_3d_linear))` returns the exact constant divergence
+/// via divergence eager-lowering + scalar Sampled reduction.
+///
+/// `F(x, y, z) = (x, 2y, 3z)` on a 4×4×4 Regular3D grid (h=1.0).
+/// Divergence is uniformly 6.0; `max` over the constant-6.0 Sampled scalar
+/// field returns `Value::Real(6.0)`, <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_divergence` → stride-1 output
+/// → `reduce_sampled_extremum` in field_reductions.
+#[test]
+fn sampled_divergence_3d_linear_max_returns_exact_divergence() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let div_codomain = Type::dimensionless_scalar();
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // divergence(field) → eager-lowered Sampled scalar field.
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(div_codomain.clone()),
+    };
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        div_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "divergence of 3D Sampled vector field should return Sampled Field, got {:?}",
+        div_result
+    );
+
+    // max(divergence_field) → Value::Real(6.0) via reduce_sampled_extremum.
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(div_result, div_field_type)],
+        div_codomain,
+    );
+
+    let max_result = eval_expr(&max_expr, &EvalContext::simple(&values));
+
+    let val = max_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "max(divergence(F)) should be numeric, got {:?}",
+            max_result
+        )
+    });
+    assert!(
+        (val - 6.0).abs() < 1e-12,
+        "max(divergence((x,2y,3z))) should be exactly 6.0 (div=1+2+3), \
+         got {} (error {})",
+        val,
+        (val - 6.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ζ test (c)):
+/// `sample(curl(F_3d_linear), node_point)` returns the exact curl vector
+/// via curl eager-lowering + stride-3 sample.
+///
+/// `F(x, y, z) = (-y, x, 0)` on a 4×4×4 Regular3D grid (h=1.0).
+/// curl F = (0 - 0, 0 - 0, 1 - (-1)) = (0, 0, 2).
+/// FD is algebraically exact for degree-1 polys; sampling at node (1,1,1) returns
+/// `Value::Vector([Real(0), Real(0), Real(2)])`, each component <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_curl` → stride-3 output
+/// (stride-n Sampled field) → `sample()` dispatch → `sample_at_point` stride-n path.
+#[test]
+fn sampled_curl_3d_linear_sample_returns_exact_curl() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, _z| [-y, x, 0.0]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let curl_codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // curl(field) → eager-lowered Sampled field, codomain = vec3(Real).
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(curl_codomain.clone()),
+    };
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        curl_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "curl of 3D Sampled vector field should return Sampled Field, got {:?}",
+        curl_result
+    );
+
+    // sample(curl_field, Point3(1.0, 1.0, 1.0)) — grid node (1,1,1); exact for affine.
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        curl_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector([Real(0), Real(0), Real(2)])
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 2.0],
+        1e-12,
+        "sample(curl((-y,x,0)), node (1,1,1))",
+    );
+}
+
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
 /// complies with the Task 1622 convention — reason strings must be
 /// self-contained inline summaries beginning with `"known bug:"`.  The two
