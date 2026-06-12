@@ -39,6 +39,13 @@ pub fn element_stiffness_membrane_cst(
     thickness: f64,
     material: &IsotropicElastic,
 ) -> ElementStiffness {
+    // A non-positive thickness yields a singular (t = 0) or non-physical
+    // negative-definite (t < 0) membrane block with no diagnostic — reject it up
+    // front, matching `shell_element_stiffness`'s thickness contract.
+    assert!(
+        thickness > 0.0,
+        "element_stiffness_membrane_cst: thickness must be positive, got {thickness}"
+    );
     // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
     // panics on a degenerate (collinear/zero-edge) triangle — reused as the
     // degeneracy guard.
@@ -203,12 +210,23 @@ mod tests {
         }
     }
 
-    // Degeneracy guard: a collinear triangle panics via build_shell_frame.
-    #[cfg(debug_assertions)]
+    // Degeneracy guard: a collinear triangle panics via build_shell_frame. The
+    // guard is a plain `assert!` (not a debug_assert!), so it fires in release
+    // too — the test is NOT #[cfg(debug_assertions)]-gated, verifying the
+    // contract in all profiles.
     #[test]
     #[should_panic(expected = "collinear")]
     fn ke_collinear_triangle_panics() {
         let _ = element_stiffness_membrane_cst(&COLLINEAR_TRI, 0.1, &nu_zero_material(2.0));
+    }
+
+    // Robustness guard: a non-positive thickness is rejected in all profiles
+    // (an `assert!`, mirroring shell_element_stiffness), not silently turned into
+    // a singular (t = 0) or indefinite (t < 0) membrane block.
+    #[test]
+    #[should_panic(expected = "thickness must be positive")]
+    fn ke_nonpositive_thickness_panics() {
+        let _ = element_stiffness_membrane_cst(&UNIT_TRI, 0.0, &nu_zero_material(2.0));
     }
 
     // ---------- S3: tilted-frame objectivity + 3D rigid-body null spaces ----------

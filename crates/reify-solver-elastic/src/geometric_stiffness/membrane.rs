@@ -168,6 +168,13 @@ pub fn membrane_tangent_stiffness(
     material: &IsotropicElastic,
     prestress: &MembranePrestress,
 ) -> ElementStiffness {
+    // Reject a non-positive thickness here too (the elastic block would be
+    // singular/indefinite), mirroring element_stiffness_membrane_cst and
+    // shell_element_stiffness — clearer than a downstream singular-solve failure.
+    assert!(
+        thickness > 0.0,
+        "membrane_tangent_stiffness: thickness must be positive, got {thickness}"
+    );
     // Build the local frame + constant shape gradients ONCE and share them across
     // K_e and K_g — both kernels need the identical frame/dn, so this halves the
     // per-element build_shell_frame + shell_kinematics work on the tangent-assembly
@@ -375,5 +382,19 @@ mod tests {
                 &format!("kt==ke+kg idx {i}"),
             );
         }
+    }
+
+    // Thickness guard: the tangent rejects a non-positive thickness in all
+    // profiles (an `assert!`, mirroring element_stiffness_membrane_cst and the
+    // shell), giving a clear failure instead of a singular/indefinite K_t.
+    #[test]
+    #[should_panic(expected = "thickness must be positive")]
+    fn kt_nonpositive_thickness_panics() {
+        let _ = membrane_tangent_stiffness(
+            &UNIT_TRI,
+            -1.0,
+            &nu_zero_material(2.0),
+            &MembranePrestress::isotropic(100.0),
+        );
     }
 }
