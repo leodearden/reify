@@ -788,15 +788,30 @@ pub(crate) fn field_op_result_type(
         }
 
         // compose(Field<B,C>, Field<A,B>) → Field<A,C>
+        //
+        // Requires the shared middle type B: arg[0].domain must equal arg[1].codomain.
+        // Returns None if they differ — a mis-composed call must not be silently typed
+        // (4219-S2 reviewer note).
+        //
+        // Reachability note (4219-S2): once the user `.ri` compose fn (task 4224 ζ) is
+        // in stdlib/fields.ri, real compose(...) calls resolve via
+        // resolve_function_overload → UserFunctionCall BEFORE the NoUserFunctions
+        // field-op branch in expr.rs, so this arm is MOOT for real compose(...) calls.
+        // It is retained as a defensive, correct-in-isolation typing helper and
+        // regression guard exercised by the units.rs table tests.
         "compose" => {
             if arg_types.len() < 2 {
                 return None;
             }
             if let (
-                Type::Field { codomain: c, .. },
-                Type::Field { domain: a, .. },
+                Type::Field { domain: b0, codomain: c },
+                Type::Field { domain: a, codomain: b1 },
             ) = (&arg_types[0], &arg_types[1])
             {
+                // Middle type B must be consistent: arg[0].domain == arg[1].codomain.
+                if b0 != b1 {
+                    return None;
+                }
                 Some(Type::Field {
                     domain: a.clone(),
                     codomain: c.clone(),
