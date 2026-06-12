@@ -2434,4 +2434,71 @@ mod tests {
             "malformed peak_deviation_at → 0"
         );
     }
+
+    // ── step-1 (task 4539): evaluate_profile position eval-boundary ─────────────
+
+    use super::super::test_polynomials::{cubic_p, cubic_dp, cubic_ddp};
+
+    /// Build a clamped-cubic `PiecewisePolynomialProfile` `Value` at 4 knots
+    /// ts = [0.0, 1.0, 2.5, 4.0] with values = cubic_p(t) and endpoint slopes
+    /// equal to the exact cubic derivative (cubic_dp(0) / cubic_dp(4)). A
+    /// clamped cubic whose boundary slopes equal the exact cubic derivatives
+    /// reproduces p, p', p'' exactly (spline.rs:1187 tolerance 1e-12).
+    fn clamped_cubic_profile() -> Value {
+        let ts = [0.0_f64, 1.0, 2.5, 4.0];
+        let wps: Vec<Value> = ts
+            .iter()
+            .map(|&t| waypoint(t, &[cubic_p(t)], None, None))
+            .collect();
+        let boundary = instance(
+            "ClampedSpline",
+            vec![
+                ("start_velocity".to_string(), reals(&[cubic_dp(0.0)])),
+                ("end_velocity".to_string(), reals(&[cubic_dp(4.0)])),
+            ],
+        );
+        pp_profile(wps, boundary, spline_kind("CubicSpline"))
+    }
+
+    /// `evaluate_profile(profile, t)` returns `Value::List([Value::Real(q)])` with
+    /// `q` within `SPLINE_TOL` of `cubic_p(t)` for all sampled `t` in `[0, 4]`.
+    /// The result must NOT be `[0.0]` (the stub value that the unwired
+    /// `.ri` body returned before task 4539). RED because `eval_trajectory`
+    /// currently returns `Some(Value::Undef)` for `"evaluate_profile"`.
+    #[test]
+    fn evaluate_profile_position_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile", &[profile.clone(), time(t)]);
+            let Value::List(items) = &result else {
+                panic!(
+                    "evaluate_profile(t={t}) should return Value::List, got {result:?}"
+                );
+            };
+            assert_eq!(
+                items.len(),
+                1,
+                "evaluate_profile(t={t}): expected 1-element list (one joint), got {}",
+                items.len()
+            );
+            let Value::Real(q) = items[0] else {
+                panic!(
+                    "evaluate_profile(t={t}): list element should be Value::Real, got {:?}",
+                    items[0]
+                );
+            };
+            let expected = cubic_p(t);
+            assert!(
+                (q - expected).abs() < SPLINE_TOL,
+                "evaluate_profile(t={t}): got {q}, want {expected} (diff {})",
+                (q - expected).abs()
+            );
+            assert!(
+                q.abs() > SPLINE_TOL || expected.abs() < SPLINE_TOL,
+                "evaluate_profile(t={t}): result is [0.0] — the stub body is still live"
+            );
+        }
+    }
 }
