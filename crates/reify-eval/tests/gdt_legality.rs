@@ -7,8 +7,8 @@
 //! Tests are added incrementally (steps 1–8); each step adds RED tests that
 //! fail until the corresponding impl step makes them pass.
 
+#[allow(unused_imports)]
 use reify_core::{DiagnosticCode, Severity};
-use reify_eval::Engine;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 // ── C1 enumerator contract (step-1 RED / step-2 GREEN) ────────────────────────
@@ -48,7 +48,7 @@ structure def Fixture {
 "#;
 
     let (module, values) = eval_with_stdlib(SOURCE);
-    let mut engine = make_simple_engine();
+    let engine = make_simple_engine();
 
     let callouts = engine.enumerate_gdt_callouts(&module, &values);
 
@@ -101,7 +101,7 @@ structure def NoGdt {
 "#;
 
     let (module, values) = eval_with_stdlib(SOURCE);
-    let mut engine = make_simple_engine();
+    let engine = make_simple_engine();
 
     let callouts = engine.enumerate_gdt_callouts(&module, &values);
 
@@ -133,7 +133,7 @@ structure def MultiGdt {
 "#;
 
     let (module, values) = eval_with_stdlib(SOURCE);
-    let mut engine = make_simple_engine();
+    let engine = make_simple_engine();
 
     let callouts = engine.enumerate_gdt_callouts(&module, &values);
 

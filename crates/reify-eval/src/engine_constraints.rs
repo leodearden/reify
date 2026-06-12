@@ -3,14 +3,35 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
-use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_core::{ConstraintNodeId, Diagnostic, Severity, ValueCellId};
+use reify_compiler::{CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound};
+use reify_core::{ConstraintNodeId, Diagnostic, Severity, SourceSpan, ValueCellId};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
     DeterminacyState, OptimizedImplInput, PersistentMap, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
+
+// ── GD&T callout descriptor (C1, task 4475 β) ───────────────────────────────
+
+/// A single GD&T callout instance enumerated by [`Engine::enumerate_gdt_callouts`].
+///
+/// Descriptor returned by the C1 enumerator (task 4475 β), reused verbatim by
+/// the η conformance pass.
+#[derive(Debug, Clone)]
+pub struct GdtCallout {
+    /// Structure type name (e.g. `"Flatness"`, `"Position"`).
+    pub type_name: String,
+    /// Instantiation source span (`ValueCellDecl.span`) — the ctor-let site.
+    /// Anchor for the B7 "at the instantiation span" diagnostic label.
+    pub span: SourceSpan,
+    /// `material_condition` field variant, if the field was a concrete
+    /// [`Value::Enum`] at eval time (e.g. `Some("MMC")`). `None` when absent
+    /// or not a concrete enum value — no-false-positive invariant.
+    pub material_condition: Option<String>,
+    /// `zone_shape` field variant, if present and concrete (e.g. `Some("Width")`).
+    pub zone_shape: Option<String>,
+}
 
 impl Engine {
     /// Dispatch a batch of constraints to either their registered optimized
@@ -682,5 +703,133 @@ impl Engine {
             diagnostics,
             resolved_params: eval_result.resolved_params,
         }
+    }
+
+    // ── C1 enumerator (task 4475 β) ──────────────────────────────────────────
+
+    /// Enumerate all GD&T callout instances in the module.
+    ///
+    /// A callout is a [`Value::StructureInstance`] in the post-eval `values` map
+    /// whose declared structure template transitively conforms to the
+    /// `GeometricTolerance` trait (via the canonical `satisfies_trait_bound` walk
+    /// over `module.trait_defs`).
+    ///
+    /// Returned in declaration order (template order, then value-cell order within
+    /// each template).  Dead / guard-inactive branches are naturally skipped because
+    /// they produce no live `Value::StructureInstance` in `values`.
+    ///
+    /// # No-false-positive invariant
+    /// If a modifier field (`material_condition`, `zone_shape`) is not a concrete
+    /// [`Value::Enum`] at eval time, its slot in the returned [`GdtCallout`] is
+    /// `None` — the enumerator never emits on an indeterminate value.  This mirrors
+    /// the `RepresentationWithin` C1 invariant at `engine_constraints.rs:42-62`.
+    ///
+    /// # Fast-path
+    /// If no template in the module conforms to `GeometricTolerance`, returns an
+    /// empty `Vec` immediately — every non-GD&T `check()` call is byte-identical.
+    ///
+    /// # Reuse contract (C1 — task 4475 β)
+    /// This function is the *shared* enumerator: it is consumed unchanged by
+    /// `check_gdt_legality` (β) and will be reused verbatim by the η conformance
+    /// pass.  Do not add β-specific logic here.
+    pub fn enumerate_gdt_callouts(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<GdtCallout> {
+        // Build trait registry from prelude trait_defs + user module trait_defs.
+        // Stdlib traits like GeometricTolerance live in the prelude, not in
+        // module.trait_defs (which only holds user-defined traits).
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        for prelude_mod in self.prelude {
+            for t in &prelude_mod.trait_defs {
+                trait_registry.insert(t.name.clone(), t);
+            }
+        }
+        for t in &module.trait_defs {
+            trait_registry.insert(t.name.clone(), t);
+        }
+
+        // Build combined template lookup from prelude + user templates.
+        // Stdlib types (Flatness, Position, etc.) live in the prelude, not in
+        // module.templates (which only holds user-defined structure templates).
+        let mut template_by_name: HashMap<&str, &TopologyTemplate> = HashMap::new();
+        for prelude_mod in self.prelude {
+            for t in &prelude_mod.templates {
+                template_by_name.insert(t.name.as_str(), t);
+            }
+        }
+        for t in &module.templates {
+            template_by_name.insert(t.name.as_str(), t);
+        }
+
+        // Fast-path: if no template in the combined map conforms to
+        // GeometricTolerance, there can be no GDT callouts in this module.
+        if !template_by_name
+            .values()
+            .any(|tmpl| satisfies_trait_bound(&tmpl.trait_bounds, "GeometricTolerance", &trait_registry))
+        {
+            return Vec::new();
+        }
+
+        let mut callouts = Vec::new();
+
+        // Walk templates in declaration order, then value_cells in declaration order.
+        for template in &module.templates {
+            for cell in &template.value_cells {
+                // Look up the evaluated value for this cell.
+                let value = match values.get(&cell.id) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                // Only care about StructureInstances.
+                let instance_data = match value {
+                    Value::StructureInstance(data) => data,
+                    _ => continue,
+                };
+
+                // Look up the instance's template to check trait bounds.
+                let instance_tmpl = match template_by_name.get(instance_data.type_name.as_str()) {
+                    Some(t) => t,
+                    None => continue, // unknown type — skip; no false positive
+                };
+
+                // Check if the instance conforms to GeometricTolerance.
+                if !satisfies_trait_bound(
+                    &instance_tmpl.trait_bounds,
+                    "GeometricTolerance",
+                    &trait_registry,
+                ) {
+                    continue;
+                }
+
+                // Extract modifier fields; skip (None) if not a concrete enum.
+                let material_condition =
+                    enum_field_variant(&instance_data.fields, "material_condition");
+                let zone_shape = enum_field_variant(&instance_data.fields, "zone_shape");
+
+                callouts.push(GdtCallout {
+                    type_name: instance_data.type_name.clone(),
+                    span: cell.span,
+                    material_condition,
+                    zone_shape,
+                });
+            }
+        }
+
+        callouts
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
+/// Returns `None` if the key is absent or the value is not a concrete `Value::Enum`.
+/// No-false-positive invariant: only concrete enum values produce `Some(...)`.
+fn enum_field_variant(fields: &PersistentMap<String, Value>, field_name: &str) -> Option<String> {
+    match fields.get(&field_name.to_string()) {
+        Some(Value::Enum { variant, .. }) => Some(variant.clone()),
+        _ => None,
     }
 }
