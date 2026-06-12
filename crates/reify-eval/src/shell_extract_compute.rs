@@ -395,11 +395,17 @@ pub fn shell_extract_compute_fn(
         }
     };
 
+    // ── Phase 2: mid-surface extraction ───────────────────────────────────
+    if cancellation.is_cancelled() {
+        return ComputeOutcome::Cancelled;
+    }
+
     // PRD §7 row 6 — E_SHELL_NO_MEDIAL: medial-mask phase succeeded but
     // produced zero medial voxels. The body is fully solid (every voxel lies
     // outside the narrow band) or the voxel resolution is too coarse to
     // detect any interior surface. Short-circuit before Phase 2 so that
     // extract_mid_surface never receives an empty mask.
+    // Cancellation check precedes this guard so Cancelled always wins.
     if medial_mask.voxels.is_empty() {
         return ComputeOutcome::Failed {
             diagnostics: vec![
@@ -412,11 +418,6 @@ pub fn shell_extract_compute_fn(
                 .with_code(reify_core::DiagnosticCode::ShellNoMedial),
             ],
         };
-    }
-
-    // ── Phase 2: mid-surface extraction ───────────────────────────────────
-    if cancellation.is_cancelled() {
-        return ComputeOutcome::Cancelled;
     }
     let raw_mesh = match extract_mid_surface(sdf, &medial_mask, &mid_surf_opts) {
         Ok(m) => m,

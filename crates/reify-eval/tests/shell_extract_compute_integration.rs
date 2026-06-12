@@ -640,4 +640,24 @@ fn shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code() {
         "expected at least one diagnostic with code=DiagnosticCode::ShellNoMedial; \
          got: {diagnostics:?}"
     );
+
+    // (3) Severity must be Error (not Warning or Info)
+    let d = coded.unwrap();
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "expected Severity::Error for ShellNoMedial diagnostic; got: {:?}",
+        d.severity
+    );
+
+    // (4) Message must contain the canonical phrase and the body name
+    let msg = &d.message;
+    assert!(
+        msg.contains("no medial axis found"),
+        "expected message to contain 'no medial axis found'; got: {msg:?}"
+    );
+    assert!(
+        msg.contains("solid_no_medial"),
+        "expected message to contain body name 'solid_no_medial'; got: {msg:?}"
+    );
 }
