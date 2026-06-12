@@ -792,4 +792,77 @@ mod tests {
             }
         }
     }
+
+    // ── step-1 (task 4564): RED — element_gradient_p1 unit tests ────────────
+    //
+    // Premise: P1 FE reproduces linear fields exactly ⇒ the recovered per-
+    // element ∇u is the exact constant gradient to machine precision.
+    // Fails to compile (fn absent) until step-2.
+
+    #[test]
+    fn element_gradient_p1_general_linear_field_recovers_exact_gradient() {
+        // General linear displacement:
+        //   u_x(x,y,z) = A·x + B·y + C·z
+        //   u_y(x,y,z) = D·x + E·y + F·z
+        //   u_z(x,y,z) = G·x + H·y + I·z
+        //
+        // Layout convention: (∇u)[r][c] = ∂u_r/∂x_c
+        //   row = displacement component, col = derivative axis.
+        let (ga, gb, gc) = (0.01_f64, 0.02, 0.03); // row 0: ∂u_x/∂(x,y,z)
+        let (gd, ge, gf) = (0.04_f64, 0.05, 0.06); // row 1: ∂u_y/∂(x,y,z)
+        let (gg, gh, gi) = (0.07_f64, 0.08, 0.09); // row 2: ∂u_z/∂(x,y,z)
+
+        let expected_grad = [
+            [ga, gb, gc],
+            [gd, ge, gf],
+            [gg, gh, gi],
+        ];
+        // Divergence = trace = ∂u_x/∂x + ∂u_y/∂y + ∂u_z/∂z.
+        let expected_trace = ga + ge + gi;
+
+        // Evaluate the linear field at each UNIT_TET_P1 node.
+        let mut u_e = [0.0_f64; 12];
+        for (k, node) in UNIT_TET_P1.iter().enumerate() {
+            let (x, y, z) = (node[0], node[1], node[2]);
+            u_e[3 * k]     = ga * x + gb * y + gc * z;
+            u_e[3 * k + 1] = gd * x + ge * y + gf * z;
+            u_e[3 * k + 2] = gg * x + gh * y + gi * z;
+        }
+
+        let grad = element_gradient_p1(&UNIT_TET_P1, &u_e);
+
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (grad[r][c] - expected_grad[r][c]).abs() < 1e-12,
+                    "∇u[{r}][{c}] = {} expected {} (general linear field, unit tet)",
+                    grad[r][c],
+                    expected_grad[r][c],
+                );
+            }
+        }
+        // Divergence = trace.
+        let trace = grad[0][0] + grad[1][1] + grad[2][2];
+        assert!(
+            (trace - expected_trace).abs() < 1e-12,
+            "trace(∇u) = {} expected {} (divergence = volumetric strain)",
+            trace,
+            expected_trace,
+        );
+    }
+
+    #[test]
+    fn element_gradient_p1_zero_displacement_yields_zero_gradient() {
+        let grad = element_gradient_p1(&UNIT_TET_P1, &[0.0_f64; 12]);
+        for r in 0..3 {
+            for c in 0..3 {
+                assert_eq!(
+                    grad[r][c],
+                    0.0,
+                    "∇u[{r}][{c}] = {} expected 0.0 for zero-displacement field",
+                    grad[r][c],
+                );
+            }
+        }
+    }
 }
