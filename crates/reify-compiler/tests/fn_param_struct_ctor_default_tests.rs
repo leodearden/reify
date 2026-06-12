@@ -326,3 +326,93 @@ structure BucklingDefaultsTest {
         errors
     );
 }
+
+// ─── test (d): modal def-site + consumption (RED until step-8) ───────────────
+
+/// `modal_analysis`'s `options` param must carry a StructureInstanceCtor default
+/// (`= ModalOptions()`), AND a 4-arg call omitting `options` must compile
+/// with zero Error-severity diagnostics.
+///
+/// RED until step-8 adds `= ModalOptions()` to modal_analysis_fns.ri.
+#[test]
+fn modal_analysis_options_defaults_and_omittable() {
+    // ── (1) def-site: param_default is StructureInstanceCtor("ModalOptions") ──
+    let modal_module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/modal/analysis/fns")
+        .unwrap_or_else(|| {
+            panic!(
+                "stdlib must contain std/modal/analysis/fns; available paths: {:?}",
+                stdlib_loader::load_stdlib()
+                    .iter()
+                    .map(|m| m.path.to_string())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let modal_fn = modal_module
+        .functions
+        .iter()
+        .find(|f| f.name == "modal_analysis")
+        .unwrap_or_else(|| {
+            panic!(
+                "fn modal_analysis not found in std/modal/analysis/fns; \
+                 available functions: {:?}",
+                modal_module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        modal_fn.params.len(),
+        5,
+        "modal_analysis must have 5 params; got: {:?}",
+        modal_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+    );
+    let options_default = modal_fn.param_defaults[4]
+        .as_ref()
+        .expect(
+            "modal_analysis's `options` param must carry a compiled default \
+             (= ModalOptions()); currently None — add the default in step-8",
+        );
+    match &options_default.kind {
+        CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
+            assert_eq!(
+                type_name, "ModalOptions",
+                "options param default must be StructureInstanceCtor(\"ModalOptions\"); \
+                 got type_name: {}",
+                type_name
+            );
+        }
+        other => panic!(
+            "options param default must be StructureInstanceCtor; got: {:?}",
+            other
+        ),
+    }
+
+    // ── (2) call-site: 4-arg call (omitting options) compiles clean ──────────
+    let src = r#"
+structure ModalDefaultsTest {
+    let result = modal_analysis(
+        Steel_AISI_1045(),
+        1000mm,
+        100mm,
+        100mm
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "4-arg call to modal_analysis (omitting options) must compile \
+         with zero Error diagnostics once = ModalOptions() default is added; \
+         got: {:#?}",
+        errors
+    );
+}
