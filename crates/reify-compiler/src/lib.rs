@@ -39,6 +39,7 @@ mod scc;
 mod scope;
 pub mod si_units;
 pub mod stdlib_loader;
+pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
