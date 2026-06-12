@@ -218,6 +218,17 @@ pub(crate) fn pick_lexmin_brep_kernel_in<V>(
         .or_else(|| registered.values().next())
 }
 
+/// Returns the canonical registry name for the OpenVDB kernel.
+///
+/// Centralises the `geometry_kernels` index key used by δ's
+/// `project_realization_read_handle` Sdf/Voxel arm so the string is never
+/// a hardcoded literal in `realization_content.rs` — a rename in
+/// `reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME` would break the
+/// projection arm but be caught here by the step-5 test.
+pub(crate) fn openvdb_kernel_name() -> &'static str {
+    reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME
+}
+
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
 /// and materialise a `BTreeMap` keyed on each kernel's name, valued on
 /// **owned** [`CapabilityDescriptor`]s.
