@@ -851,9 +851,9 @@ mod tests {
         }
         let (_, up) = range_lower_upper(map_get(&auto, "range").expect("range present"));
         let range_half = length_scalar_si(up, "auto range upper");
-        // prb_validity_range is now Range<Angle> = [−δ_auto, +δ_auto] (task 4576;
-        // prismatic residual: δ_auto is a length stored as an angle si_value).
-        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        // prb_validity_range is now Range<Length> = [−δ_auto, +δ_auto] (task 4587:
+        // tightened from the Range<Angle> residual left by task 4576).
+        let prb_half = length_range_half_si(f("prb_validity_range"), "prb_validity_range");
         assert!(
             (prb_half - delta_auto).abs() / delta_auto < 1e-9
                 && (prb_half - range_half).abs() / range_half < 1e-9,
