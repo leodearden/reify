@@ -519,6 +519,41 @@ mod tests {
     }
 
     #[test]
+    fn make_compliance_record_stores_caller_provided_range() {
+        use super::super::test_util::{angle_range_half_si, length_range_half_si};
+        // LENGTH range: symmetric_length_range(δ) stored verbatim → Range<Length>.
+        let delta = 0.003_f64;
+        let rec_len = make_compliance_record(
+            1.0,
+            50e6,
+            0.0,
+            None,
+            None,
+            symmetric_length_range(delta),
+        );
+        let half_len = length_range_half_si(field(&rec_len, "prb_validity_range"), "prb_validity_range/length");
+        assert!(
+            (half_len - delta).abs() < 1e-12,
+            "length half-width {half_len} vs expected {delta}"
+        );
+        // ANGLE range: symmetric_angle_range(θ) stored verbatim → Range<Angle>.
+        let theta = 0.0872664626_f64;
+        let rec_ang = make_compliance_record(
+            1.0,
+            50e6,
+            0.0,
+            None,
+            None,
+            symmetric_angle_range(theta),
+        );
+        let half_ang = angle_range_half_si(field(&rec_ang, "prb_validity_range"), "prb_validity_range/angle");
+        assert!(
+            (half_ang - theta).abs() < 1e-9,
+            "angle half-width {half_ang} vs expected {theta}"
+        );
+    }
+
+    #[test]
     fn make_compliance_record_is_flexure_compliance_with_seven_fields() {
         let rec = make_compliance_record(1.42, 100e6, 0.0, Some(310e6), None, 0.0872664626);
         match &rec {
