@@ -4685,10 +4685,7 @@ fn resolve_density_arg(
         }
     };
 
-    let value = match values.get(id) {
-        None => return None, // missing cell — quiet degradation
-        Some(v) => v,
-    };
+    let value = values.get(id)?; // missing cell — quiet degradation
 
     match accept_arg(value, &density_spec()) {
         Acceptance::Accepted(si) => Some(si),
