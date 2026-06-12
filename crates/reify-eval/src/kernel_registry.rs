@@ -1060,6 +1060,39 @@ mod tests {
         );
     }
 
+    /// `openvdb_kernel_name()` returns the canonical registry name for the
+    /// OpenVDB kernel — the same string as
+    /// `reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME`.
+    ///
+    /// Pins the centralized accessor used by δ's projection arm so that a
+    /// future rename of the kernel's registry entry is caught here rather
+    /// silently diverging in `realization_content.rs`.
+    ///
+    /// Also asserts (under `has_openvdb`) that `registry()` actually contains
+    /// the key, verifying that the name survives the round-trip through the
+    /// inventory walk and BTreeMap materialization.
+    #[test]
+    fn openvdb_kernel_name_matches_register_constant_and_is_in_registry_under_has_openvdb() {
+        let canonical = reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME;
+        let returned = openvdb_kernel_name();
+        assert_eq!(
+            returned,
+            canonical,
+            "openvdb_kernel_name() must equal reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME \
+             ({canonical:?}); got {returned:?}",
+        );
+
+        #[cfg(has_openvdb)]
+        {
+            assert!(
+                registry().contains_key(returned),
+                "registry() must contain the OpenVDB kernel name {:?} under has_openvdb; \
+                 kernel likely failed to submit its KernelRegistration",
+                returned,
+            );
+        }
+    }
+
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically
     /// *smaller* kernel when multiple registrations are present.
     ///
