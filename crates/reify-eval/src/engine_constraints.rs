@@ -920,9 +920,23 @@ fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
             // Cylindrical zone (the default) makes this FOS-eligible — permit MMC/LMC.
         }
 
-        // ── Removed-in-2018 family: handled in step-8 ─────────────────────
+        // ── Removed-in-2018 family ────────────────────────────────────────
+        // Concentricity and Symmetry were removed from ASME Y14.5-2018.
+        // Emit a warning unconditionally (independent of material_condition);
+        // suppress GdtIllegalModifier so an MMC callout yields only this warning.
         "Concentricity" | "Symmetry" => {
-            // GdtRemoved2018 warning emitted in step-8; no GdtIllegalModifier here.
+            diags.push(
+                Diagnostic::warning(format!(
+                    "`{}` was removed in ASME Y14.5-2018; \
+                     use Position, ProfileOfSurface, or Runout instead",
+                    callout.type_name
+                ))
+                .with_code(DiagnosticCode::GdtRemoved2018)
+                .with_label(DiagnosticLabel::new(
+                    callout.span,
+                    "removed in ASME Y14.5-2018",
+                )),
+            );
         }
 
         // ── RFS-only Runout family ────────────────────────────────────────
