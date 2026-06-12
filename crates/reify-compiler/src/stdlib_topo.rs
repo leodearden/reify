@@ -157,6 +157,13 @@ pub(crate) fn compile_modules_topo(
             &prelude_enum_names,
         );
 
+        assert!(
+            parsed.errors.is_empty(),
+            "module '{}' has parse errors: {:?}",
+            module_name,
+            parsed.errors
+        );
+
         let compiled = crate::compile_with_prelude(&parsed, &compiled_so_far);
         compiled_so_far.push(compiled);
     }
