@@ -132,19 +132,10 @@ impl InputShapeCacheKey {
 }
 
 // ── Value→core marshalling ──────────────────────────────────────────────────
-//
-// The deferred β `Value`→`MultiJointSpline` marshalling (and, in later steps,
-// the modal / mechanism / track marshalling). These helpers are `pub(crate)`
-// internal — `reify-eval` reaches the trajectory core only through the
-// `simulate_trajectory_value` / `input_shape_value` composers (steps 14 / 16),
-// which call these. Tagged `#[allow(dead_code)]` until those composers consume
-// them, mirroring `spline.rs`'s own dead-code suppression (the spline math is
-// fully tested but its Value wiring lands incrementally across π's TDD steps).
 
 /// Read a numeric stdlib field as `f64` — a dimensioned `Scalar` (SI magnitude),
 /// a `Real`, or an `Int`. Any other variant yields `None`. Mirrors
 /// `input_shape::read_scalar_si` / `modal_ops::read_scalar_si`.
-#[allow(dead_code)]
 fn read_scalar_si(val: &Value) -> Option<f64> {
     match val {
         Value::Scalar { si_value, .. } => Some(*si_value),
@@ -157,7 +148,6 @@ fn read_scalar_si(val: &Value) -> Option<f64> {
 /// Read a `Value::List<numeric>` into `Vec<f64>` (each element via
 /// [`read_scalar_si`]). `None` if `val` is not a `List` or any element is
 /// non-numeric.
-#[allow(dead_code)]
 fn read_real_list(val: &Value) -> Option<Vec<f64>> {
     let Value::List(items) = val else {
         return None;
@@ -170,7 +160,6 @@ fn read_real_list(val: &Value) -> Option<Vec<f64>> {
 /// field, or a non-numeric list → `None`. The `None` return is the "no
 /// per-knot derivative data" case the cubic path tolerates and the quintic
 /// path rejects.
-#[allow(dead_code)]
 fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
     match val {
         Some(Value::Option(Some(inner))) => read_real_list(inner),
@@ -203,7 +192,6 @@ fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
 /// an unrecognised `boundary` tag (cubic path) or `spline_kind` variant, a
 /// degenerate knot set (`CubicSpline::fit` / `QuinticSpline::fit` returning
 /// `None`), or a quintic profile missing per-waypoint `vels` / `accels`.
-#[allow(dead_code)]
 pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSpline> {
     let Value::StructureInstance(data) = profile else {
         return None;
@@ -350,6 +338,18 @@ pub(crate) fn evaluate_profile_ddot_value(profile: &Value, t: &Value) -> Value {
     Value::List(
         spline.eval_ddot(t_si).into_iter().map(Value::Real).collect(),
     )
+}
+
+/// Duration accessor: returns `Value::Scalar{TIME, si_value: spline.duration()}`
+/// — the `[t_first, t_last]` knot span — or `Value::Undef` on unmarshalable input.
+pub(crate) fn profile_duration_value(profile: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    Value::Scalar {
+        si_value: spline.duration(),
+        dimension: DimensionVector::TIME,
+    }
 }
 
 /// Flatten a `Mode.shape` (`List<Vector3<Dimensionless>>`) into a flat
