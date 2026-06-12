@@ -1085,3 +1085,124 @@ fn e2e_cantilever_deterministic_option_within_tolerance() {
         hi
     );
 }
+
+// ── step-7 (task 4564): RED — .ri accessor `result.divergence` ───────────────
+//
+// Proves that the `ElasticResult.divergence` field is declared in solver_elastic.ri
+// and that the .ri accessor `result.divergence` type-resolves to
+// `Field<Point3<Length>, Real>` AND evaluates to `Value::Field{source:Sampled}`.
+//
+// RED signal: before step-8 adds `param divergence` to ElasticResult, the field-
+// projection `result.divergence` fails to type-check → an Error-severity
+// diagnostic is emitted → the `errors.is_empty()` assertion fails.
+//
+// GREEN by step-8 which declares the param in solver_elastic.ri.  The runtime
+// already emits the divergence channel (step-6), so evaluation succeeds.
+//
+// Sources:
+//   - Steel_AISI_1045 / geometry / loads mirror CANTILEVER_DETERMINISTIC_SRC.
+//   - `let divergence = result.divergence` binds the accessor as a named cell.
+//   - `let stress = result.stress` confirms coexistence — both projections
+//     must type-check cleanly when the param is present.
+
+/// Self-contained cantilever source that binds `result.divergence` and
+/// `result.stress` as top-level cells, gating step-8's .ri param declaration.
+const CANTILEVER_DIV_ACCESSOR_SRC: &str = r#"
+structure FeaCantileverDivAccessor {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions()
+    )
+
+    // .ri accessor — fails to type-check until step-8 adds
+    // `param divergence : Field<Point3<Length>, Real>` to ElasticResult.
+    let divergence = result.divergence
+
+    // Coexistence: stress accessor must survive alongside divergence.
+    let stress = result.stress
+}
+"#;
+
+/// `.ri` accessor `result.divergence` type-resolves and evaluates to a Sampled field.
+///
+/// Assertions:
+///   (a) No Error-severity diagnostics — proves `result.divergence` type-checks
+///       against the declared `param divergence : Field<Point3<Length>, Real>`.
+///   (b) The `divergence` cell evaluates to `Value::Field { source: Sampled }` —
+///       proves the accessor end-to-end, not just compile-time.
+///   (c) The `stress` cell evaluates to `Value::Field { source: Sampled }` —
+///       proves coexistence (the divergence param does not displace stress).
+///
+/// RED until step-8 adds `param divergence` to `ElasticResult` in solver_elastic.ri.
+#[test]
+fn e2e_cantilever_divergence_ri_accessor() {
+    let compiled = parse_and_compile_with_stdlib(CANTILEVER_DIV_ACCESSOR_SRC);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // ── (a) No Error-severity diagnostics ────────────────────────────────────
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics — `result.divergence` must type-check after \
+         step-8 adds `param divergence` to ElasticResult; got: {:?}",
+        errors
+    );
+
+    // ── (b) `divergence` cell evaluates to Value::Field{source:Sampled} ──────
+    let div_cell = ValueCellId::new("FeaCantileverDivAccessor", "divergence");
+    let div_val = eval_result
+        .values
+        .get(&div_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverDivAccessor.divergence not found"));
+
+    match div_val {
+        Value::Field { source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "divergence cell must be Value::Field{{source:Sampled}}, got source: {:?}",
+                source
+            );
+        }
+        other => panic!(
+            "divergence cell must be Value::Field, got: {:?}",
+            other
+        ),
+    }
+
+    // ── (c) `stress` cell coexists as Value::Field{source:Sampled} ───────────
+    let stress_cell = ValueCellId::new("FeaCantileverDivAccessor", "stress");
+    let stress_val = eval_result
+        .values
+        .get(&stress_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverDivAccessor.stress not found"));
+
+    match stress_val {
+        Value::Field { source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "stress cell must be Value::Field{{source:Sampled}}, got source: {:?}",
+                source
+            );
+        }
+        other => panic!(
+            "stress cell must be Value::Field, got: {:?}",
+            other
+        ),
+    }
+}
