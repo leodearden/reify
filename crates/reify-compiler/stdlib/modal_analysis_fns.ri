@@ -66,9 +66,10 @@ pub fn modal_analysis(
 //
 // `ModalResult.modes` is ordered ascending by frequency (producer-enforced by
 // the trampoline), so `modes[0]` is the fundamental mode. `Mode.frequency` is a
-// `Real` placeholder for `Scalar<Frequency>` (modal_analysis.ri:188), so this
-// returns `Real`. This is the task's headline user-observable signal (PRD §1).
-pub fn first_frequency(result : ModalResult) -> Real {
+// dimensioned `Frequency` (= s⁻¹; modal_analysis.ri Mode, tightened in task
+// 4548), so this returns `Frequency`. This is the task's headline
+// user-observable signal (PRD §1).
+pub fn first_frequency(result : ModalResult) -> Frequency {
     result.modes[0].frequency
 }
 
@@ -79,7 +80,7 @@ pub fn first_frequency(result : ModalResult) -> Real {
 pub fn mode_frequency(
     result : ModalResult,
     n      : Int
-) -> Real {
+) -> Frequency {
     result.modes[n].frequency
 }
 

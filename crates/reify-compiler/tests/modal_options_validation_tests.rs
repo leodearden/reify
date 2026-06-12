@@ -313,8 +313,8 @@ fn rayleigh_damping_param_shape() {
 /// Mode; see plan.json design-decision-6) must declare exactly the four
 /// PRD §4.1 params with the canonical types:
 ///
-///   - `frequency          : Real`                 (placeholder for Scalar<Frequency>;
-///                                                  encoded as Real per plan design-decision-3)
+///   - `frequency          : Frequency`            (natural frequency, = s⁻¹;
+///                                                  tightened from the Real placeholder in task 4548)
 ///   - `shape              : List<Vector3<Dimensionless>>`  (mass-normalized eigenvector;
 ///                                                  dimensionless under Φᵀ·M·Φ = I — NOT a placeholder)
 ///   - `participation_mass : Real`                 (effective modal mass along reference direction)
@@ -340,11 +340,20 @@ fn mode_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("frequency", Type::Real),
+        // `Mode.frequency` tightened from the `Real` PLACEHOLDER to the
+        // registered `Frequency` named dimension (= s⁻¹) — task 4548.
+        (
+            "frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
         (
             "shape",
             Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
         ),
+        // participation_mass / damping_ratio remain `Real` placeholders
+        // (out of scope for task 4548's Mode.frequency tightening).
         ("participation_mass", Type::Real),
         ("damping_ratio", Type::Real),
     ];
