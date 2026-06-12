@@ -1048,6 +1048,8 @@ pub(crate) fn compile_expr_guarded(
                             | BinOp::Le
                             | BinOp::Gt
                             | BinOp::Ge
+                            | BinOp::Add
+                            | BinOp::Sub
                     ) {
                         (compiled_left, compiled_right) =
                             coerce_zero_operand(left, compiled_left, right, compiled_right);
