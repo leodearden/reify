@@ -20,8 +20,8 @@ use reify_core::{Diagnostic, DiagnosticInfo, DiagnosticLabel, SourceLocationInfo
 use crate::types::{
     AutoResolveConstraintProgress, AutoResolveIteration, AutoResolveParameterValue, ConstraintData,
     DefInfo, EntityIdentity, EntityTreeNode, FileData, GuiState, JointBinding, JointDescriptor,
-    MechanismDescriptor, MeshData, SourceSpanInfo, TensegrityWireData, ValueData,
-    format_determinacy, format_freshness, format_value,
+    MechanismDescriptor, MeshData, SourceSpanInfo, TensegritySurfaceData, TensegrityWireData,
+    ValueData, format_determinacy, format_freshness, format_value,
 };
 
 // ── Persistent-cache startup sweep (task 3698) ────────────────────────────────
@@ -2202,6 +2202,7 @@ impl EngineSession {
                 tessellation_diagnostics: Vec::new(),
                 compile_diagnostics: compile_diagnostics_early,
                 tensegrity_wires: Vec::new(),
+                tensegrity_surfaces: Vec::new(),
             });
         }
 
@@ -2396,6 +2397,14 @@ impl EngineSession {
             build_tensegrity_wires(compiled, check)
         };
 
+        // Extract tensegrity surface facet descriptors from value cells.
+        // Scoped borrow released before GuiState construction.
+        let tensegrity_surfaces = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            build_tensegrity_surfaces(compiled, check)
+        };
+
         Ok(GuiState {
             meshes,
             values,
@@ -2404,6 +2413,7 @@ impl EngineSession {
             tessellation_diagnostics,
             compile_diagnostics,
             tensegrity_wires,
+            tensegrity_surfaces,
         })
     }
 
@@ -3172,6 +3182,129 @@ fn wire_data_from_instance(
     })
 }
 
+// ---- Tensegrity surface (membrane) extraction (β/task 4413) ─────────────────
+
+/// Walk every value cell in the compiled module and collect `TensegritySurface`
+/// instances (as emitted by the `tensegrity_surfaces()` builtin, α/task 4412).
+///
+/// Each cell is inspected via `collect_surfaces_from_value`; the entity path
+/// comes from `cell.id.entity`.
+///
+/// Malformed facets (missing or wrong-typed fields) are **skipped with a
+/// `warn!` log** — no panic.  Duplicate-facet suppression is left to callers;
+/// unlikely in practice because α binds the surface list to one cell.
+fn build_tensegrity_surfaces(
+    compiled: &reify_compiler::CompiledModule,
+    check: &CheckResult,
+) -> Vec<TensegritySurfaceData> {
+    let mut surfaces = Vec::new();
+    for template in &compiled.templates {
+        for cell in &template.value_cells {
+            let val = check.values.get_or_undef(&cell.id);
+            let entity_path = &cell.id.entity;
+            collect_surfaces_from_value(&val, entity_path, &mut surfaces);
+        }
+    }
+    surfaces
+}
+
+/// Collect `TensegritySurfaceData` records from a single cell `Value`.
+///
+/// Matches either a standalone `TensegritySurface` instance or a
+/// `List` of `TensegritySurface` instances (the output of `tensegrity_surfaces()`).
+/// All other variants are silently ignored.
+///
+/// Logs a `warn!` when a `TensegritySurface` instance is found but has malformed
+/// or missing fields (i.e. `surface_data_from_instance` returns `None`), so silent
+/// drops are observable in logs without changing the no-panic contract.
+fn collect_surfaces_from_value(
+    val: &Value,
+    entity_path: &str,
+    out: &mut Vec<TensegritySurfaceData>,
+) {
+    match val {
+        Value::StructureInstance(data) if data.type_name == "TensegritySurface" => {
+            if let Some(surface) = surface_data_from_instance(&data.fields, entity_path) {
+                out.push(surface);
+            } else {
+                warn!(
+                    entity = %entity_path,
+                    "skipping malformed TensegritySurface instance (missing or wrong-typed field)"
+                );
+            }
+        }
+        Value::List(items) => {
+            for item in items.iter() {
+                if let Value::StructureInstance(data) = item
+                    && data.type_name == "TensegritySurface"
+                {
+                    if let Some(surface) = surface_data_from_instance(&data.fields, entity_path) {
+                        out.push(surface);
+                    } else {
+                        warn!(
+                            entity = %entity_path,
+                            "skipping malformed TensegritySurface instance in list (missing or wrong-typed field)"
+                        );
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a `TensegritySurfaceData` from a `TensegritySurface` instance's fields.
+///
+/// Returns `None` if `kind` is missing/non-string, any of `i0/i1/i2` is
+/// missing/non-integer, or any coordinate field is missing/non-numeric — the
+/// caller silently drops malformed facets (no-panic contract).
+fn surface_data_from_instance(
+    fields: &reify_ir::PersistentMap<String, Value>,
+    entity_path: &str,
+) -> Option<TensegritySurfaceData> {
+    let kind = match fields.get(&"kind".to_string()) {
+        Some(Value::String(s)) => s.clone(),
+        _ => return None,
+    };
+    let i0 = match fields.get(&"i0".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let i1 = match fields.get(&"i1".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let i2 = match fields.get(&"i2".to_string()) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    let x0 = scalar_to_f64(fields.get(&"x0".to_string())?)?;
+    let y0 = scalar_to_f64(fields.get(&"y0".to_string())?)?;
+    let z0 = scalar_to_f64(fields.get(&"z0".to_string())?)?;
+    let x1 = scalar_to_f64(fields.get(&"x1".to_string())?)?;
+    let y1 = scalar_to_f64(fields.get(&"y1".to_string())?)?;
+    let z1 = scalar_to_f64(fields.get(&"z1".to_string())?)?;
+    let x2 = scalar_to_f64(fields.get(&"x2".to_string())?)?;
+    let y2 = scalar_to_f64(fields.get(&"y2".to_string())?)?;
+    let z2 = scalar_to_f64(fields.get(&"z2".to_string())?)?;
+    Some(TensegritySurfaceData {
+        entity_path: entity_path.to_string(),
+        kind,
+        i0,
+        i1,
+        i2,
+        x0,
+        y0,
+        z0,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+    })
+}
+
 // ---- Mechanism descriptor helpers -------------------------------------------
 
 /// Extract joint descriptors and their identity sequence from a valid (non-errored) mechanism Map.
@@ -3817,6 +3950,7 @@ fn build_preview_gui_state(
         tessellation_diagnostics: Vec::new(),
         compile_diagnostics: Vec::new(),
         tensegrity_wires: Vec::new(),
+        tensegrity_surfaces: Vec::new(),
     }
 }
 

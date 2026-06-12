@@ -16,6 +16,7 @@ fn gui_state_empty_serializes_with_expected_keys() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(v.get("meshes").unwrap().is_array());
@@ -34,6 +35,7 @@ fn gui_state_serializes_tessellation_diagnostics_field() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -1651,6 +1653,7 @@ fn gui_state_serializes_compile_diagnostics_field() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2377,6 +2380,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![wire],
+        tensegrity_surfaces: vec![],
     };
     let v = serde_json::to_value(&state).unwrap();
     assert!(
@@ -2403,6 +2407,7 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
         tessellation_diagnostics: vec![],
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
     };
     let ev = serde_json::to_value(&empty_state).unwrap();
     assert!(
