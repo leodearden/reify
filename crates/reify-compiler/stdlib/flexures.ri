@@ -129,7 +129,13 @@ pub type RotationalStiffness = Real
 //                           type_id, so the declared type is not enforced on
 //                           runtime values. Sentinel-zero default `0deg..0deg`
 //                           matches the runtime `symmetric_angle_range(0.0)`
-//                           posture.
+//                           posture. This type/value divergence is intentional
+//                           tracked debt: a follow-up task should make the
+//                           declared type family-polymorphic (or split the
+//                           field) so the declared type matches the runtime
+//                           value and future consumers (unit-aware
+//                           introspection, serialisation, tightened ctor
+//                           checks) cannot mis-handle prismatic records.
 //   at_yield              — true iff `max_stress >= material.yield_stress`.
 //                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
 //                           when this flips true; the field stays on the
