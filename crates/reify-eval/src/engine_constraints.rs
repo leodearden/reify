@@ -1103,7 +1103,7 @@ mod tests {
     /// Overhang takes precedence.
     #[test]
     fn step3_dfm_rule_spec_overhang_takes_precedence_over_draft() {
-        let max_angle_rad = 0.7853981633; // 45 deg
+        let max_angle_rad = std::f64::consts::FRAC_PI_4; // 45 deg
         let draft_angle_rad = 0.05235987756; // 3 deg
 
         let applies_to = structure("BothCapabilityProc", &[
