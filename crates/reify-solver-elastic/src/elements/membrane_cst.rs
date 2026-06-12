@@ -20,7 +20,7 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::shell_assembly::{
-    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag, ShellFrame,
 };
 use crate::shell_kinematics::shell_kinematics;
 
@@ -34,7 +34,6 @@ use crate::shell_kinematics::shell_kinematics;
 /// Returns an [`ElementStiffness`] with `n_dofs = 9`, row-major, assemblable
 /// through the unchanged [`crate::assemble_global_stiffness`] scatter
 /// (`dofs_per_node = 9 / 3 = 3`).
-#[allow(clippy::needless_range_loop)]
 pub fn element_stiffness_membrane_cst(
     nodes: &[[f64; 3]; 3],
     thickness: f64,
@@ -44,8 +43,25 @@ pub fn element_stiffness_membrane_cst(
     // panics on a degenerate (collinear/zero-edge) triangle — reused as the
     // degeneracy guard.
     let frame = build_shell_frame(nodes);
-    let area = frame.area;
     let dn = shell_kinematics(nodes, &frame).dn;
+    element_stiffness_membrane_cst_with_frame(&frame, &dn, thickness, material)
+}
+
+/// `K_e` core that reuses a precomputed [`ShellFrame`] + local shape gradients
+/// `dn`, so the per-element tangent ([`crate::geometric_stiffness::membrane::membrane_tangent_stiffness`])
+/// can build the frame/kinematics **once** and share them across `K_e` and `K_g`
+/// instead of recomputing `build_shell_frame` + `shell_kinematics` twice.
+///
+/// `pub(crate)` for that reuse only; external callers use
+/// [`element_stiffness_membrane_cst`], which builds the frame itself.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn element_stiffness_membrane_cst_with_frame(
+    frame: &ShellFrame,
+    dn: &[[f64; 2]; 3],
+    thickness: f64,
+    material: &IsotropicElastic,
+) -> ElementStiffness {
+    let area = frame.area;
 
     // Pre-scale the plane-stress constitutive matrix by thickness: t · D_pl.
     let d_pl = plane_stress_d(material);

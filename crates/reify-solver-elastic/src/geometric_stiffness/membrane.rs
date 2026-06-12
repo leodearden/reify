@@ -22,9 +22,9 @@
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::membrane_cst::{
-    element_stiffness_membrane_cst, rotate_membrane_local_to_global,
+    element_stiffness_membrane_cst_with_frame, rotate_membrane_local_to_global,
 };
-use crate::shell_assembly::build_shell_frame;
+use crate::shell_assembly::{build_shell_frame, ShellFrame};
 use crate::shell_kinematics::shell_kinematics;
 
 /// In-plane membrane stress **resultant** (force/length) in the element local
@@ -75,6 +75,25 @@ pub fn geometric_element_stiffness_membrane_cst(
     nodes: &[[f64; 3]; 3],
     prestress: &MembranePrestress,
 ) -> ElementStiffness {
+    // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
+    // panics on a degenerate (collinear/zero-edge) triangle — the same degeneracy
+    // guard K_e reuses.
+    let frame = build_shell_frame(nodes);
+    let dn = shell_kinematics(nodes, &frame).dn;
+    geometric_element_stiffness_membrane_cst_with_frame(&frame, &dn, prestress)
+}
+
+/// `K_g` core that reuses a precomputed [`ShellFrame`] + local shape gradients
+/// `dn`, so [`membrane_tangent_stiffness`] can build the frame/kinematics **once**
+/// and share them across `K_e` and `K_g` instead of recomputing them twice. The
+/// finite-resultant guard and the implicit symmetrisation of `S` live here, so
+/// both the public entry point and the tangent path get them.
+#[allow(clippy::needless_range_loop)]
+fn geometric_element_stiffness_membrane_cst_with_frame(
+    frame: &ShellFrame,
+    dn: &[[f64; 2]; 3],
+    prestress: &MembranePrestress,
+) -> ElementStiffness {
     // A non-finite resultant would propagate NaN/±∞ through the stiffness matrix
     // — guard under debug_assertions, mirroring tet/bar K_g's finite check. The
     // test is finite-only (not finite-positive): compressive prestress is
@@ -95,12 +114,7 @@ pub fn geometric_element_stiffness_membrane_cst(
         [0.5 * (r[0][1] + r[1][0]), r[1][1]],
     ];
 
-    // Local mid-surface frame + constant local shape gradients. `build_shell_frame`
-    // panics on a degenerate (collinear/zero-edge) triangle — the same degeneracy
-    // guard K_e reuses.
-    let frame = build_shell_frame(nodes);
     let area = frame.area;
-    let dn = shell_kinematics(nodes, &frame).dn;
 
     // Assemble the local 9×9 geometric stiffness. Under an in-plane prestress
     // resultant S the membrane stiffens ONLY the transverse/local-normal DOF
@@ -154,8 +168,14 @@ pub fn membrane_tangent_stiffness(
     material: &IsotropicElastic,
     prestress: &MembranePrestress,
 ) -> ElementStiffness {
-    let ke = element_stiffness_membrane_cst(nodes, thickness, material);
-    let kg = geometric_element_stiffness_membrane_cst(nodes, prestress);
+    // Build the local frame + constant shape gradients ONCE and share them across
+    // K_e and K_g — both kernels need the identical frame/dn, so this halves the
+    // per-element build_shell_frame + shell_kinematics work on the tangent-assembly
+    // hot path (e.g. assembling K_t over a refined pressure mesh).
+    let frame = build_shell_frame(nodes);
+    let dn = shell_kinematics(nodes, &frame).dn;
+    let ke = element_stiffness_membrane_cst_with_frame(&frame, &dn, thickness, material);
+    let kg = geometric_element_stiffness_membrane_cst_with_frame(&frame, &dn, prestress);
     let mut kt = ElementStiffness::zeros(9);
     for i in 0..81 {
         kt.data[i] = ke.data[i] + kg.data[i];
