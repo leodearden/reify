@@ -307,6 +307,27 @@ pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSp
     }
 }
 
+// ── evaluate_profile* / profile_duration composers (task 4539) ─────────────
+//
+// Thin `Value`→`Value` adapters that call `value_to_multijoint_spline` + the
+// `MultiJointSpline` evaluators. Routed from `eval_trajectory` for both the
+// public name and the `*_at` undeclared-delegate name (same two-name pattern
+// as `gcode_import`/`gcode_import_lower`). Return `Value::Undef` on any
+// unmarshalable / degenerate input — the loud not-computed signal rather than
+// a numeric placeholder.
+
+/// Sample a profile at time `t` (SI seconds), returning a `Value::List` of
+/// `Value::Real` per joint — or `Value::Undef` on unmarshalable input.
+pub(crate) fn evaluate_profile_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(spline.eval(t_si).into_iter().map(Value::Real).collect())
+}
+
 /// Flatten a `Mode.shape` (`List<Vector3<Dimensionless>>`) into a flat
 /// `Vec<f64>` of length `3·n_nodes` — each per-node `Value::Vector` / `List`'s
 /// three components read via [`read_scalar_si`]. A non-`List` / malformed shape

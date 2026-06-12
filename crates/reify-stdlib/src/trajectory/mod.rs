@@ -84,8 +84,11 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
             [track, location] => trampoline::peak_deviation_at(track, location),
             _ => Value::Undef,
         }),
+        "evaluate_profile" | "evaluate_profile_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_value(profile, t),
+            _ => Value::Undef,
+        }),
         "piecewise_polynomial"
-        | "evaluate_profile"
         | "evaluate_profile_dot"
         | "evaluate_profile_ddot"
         | "profile_duration" => Some(Value::Undef),
