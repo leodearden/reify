@@ -12,6 +12,9 @@ LIB_PORTABLE="$REPO_ROOT/scripts/lib_portable.sh"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
+[ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/load_tolerance_lib.sh"
+
 # -- Helper: _build_posix_fallback_env ----------------------------------------
 # Generates an eval-string that creates a rescue dir, symlinks commands, strips
 # timeout/gtimeout from PATH, and sources LIB_PORTABLE for POSIX fallback tests.
@@ -65,6 +68,17 @@ KILL_CMD_PID_RE='kill[[:space:]]+--[[:space:]]+"?-\$cmd_pid'
 # would require a non-integer PID difference.
 _SENT_16=$(($$ * 10 + 7))
 _SENT_21=$(($$ * 10 + 9))
+
+# Load-scaled poll budgets for Test 16a/16b/21b, computed ONCE in the parent
+# shell and passed into PATH-stripped POSIX-fallback subshells via env.
+# The subshells strip all PATH dirs that contain timeout/gtimeout (typically
+# /usr/bin on Linux), which also removes `nproc` — so the load factor must be
+# resolved here, before entering any stripped-PATH environment.
+# On idle hosts factor=1, so existing poll windows are byte-for-byte preserved;
+# the window only GROWS under concurrent-verify load (base 60; cap 8x).
+# Mirrors the env-passing convention already used for _SENT_16/_SENT_21.
+_POLL_ATTEMPTS=$(load_tolerant_attempts 60)    # Test 16a spawn-poll budget
+_POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)   # Test 16b/21b orphan-reap budget
 
 echo "=== portable_timeout unit tests ==="
 
@@ -417,7 +431,7 @@ echo "--- Test 16: POSIX fallback: no orphan sleep after fast-exit command ---"
 
 assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positive check)" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
-        _SENT_16="$_SENT_16" bash -c '
+        _SENT_16="$_SENT_16" _POLL_ATTEMPTS="$_POLL_ATTEMPTS" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -429,10 +443,13 @@ assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positiv
         portable_timeout "$_SENT_16" sleep 2 &
         pt_pid=$!
 
-        # Poll up to 60×200ms for the sentinel to appear (robust under CI load).
-        # On fast systems this returns on the first iteration (~0ms wait).
+        # Poll up to _POLL_ATTEMPTS×200ms for the sentinel to appear.
+        # _POLL_ATTEMPTS is load_tolerant_attempts(60): base 60 (12s) on idle,
+        # scaling up under concurrent-verify load (capped at 8×60=480, ~96s).
+        # Computed in parent shell and passed via env; nproc unavailable in
+        # PATH-stripped subshell. On fast systems returns on first iteration.
         found=1
-        for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
+        for ((_a=1; _a<=_POLL_ATTEMPTS; _a++)); do
             if "$_abs_ps" -A -o pid,args 2>/dev/null \
                     | "$_abs_grep" -qE "[[:space:]]sleep ${_SENT_16}$"; then
                 found=0
@@ -458,7 +475,7 @@ assert "POSIX fallback: timer actually spawns sentinel sleep \$_SENT_16 (positiv
 
 assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit command" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
-        _SENT_16="$_SENT_16" bash -c '
+        _SENT_16="$_SENT_16" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -482,11 +499,11 @@ assert "POSIX fallback: timer cleanup leaves no orphan sleep after early-exit co
         # its inner sleep $_SENT_16 before the command exits.
         portable_timeout "$_SENT_16" "$_abs_sleep" 0.3 || true
 
-        # Poll up to 5s for the orphan sleep $_SENT_16 to be reaped.
-        # A single fixed sleep races against kernel process-table cleanup
-        # on busy systems, so retry a few times before declaring failure.
+        # Poll up to _POLL_ATTEMPTS_5×1s for the orphan sleep $_SENT_16 to be
+        # reaped. _POLL_ATTEMPTS_5 = load_tolerant_attempts(5): base 5s on idle,
+        # scaling under load. Computed in parent shell; passed via env.
         _check_rc=0
-        for _try in 1 2 3 4 5; do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
             _check_rc=0
             ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_16}$" || _check_rc=$?
             [ "$_check_rc" -eq 0 ] && break
@@ -662,7 +679,7 @@ assert "POSIX fallback: SIGKILL escalation returns exit code 124" \
 
 assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep \$_SENT_21" \
     env LIB_PORTABLE="$LIB_PORTABLE" POSIX_FALLBACK_SETUP_NO_TRAP="$POSIX_FALLBACK_SETUP_NO_TRAP" \
-        _SENT_21="$_SENT_21" bash -c '
+        _SENT_21="$_SENT_21" _POLL_ATTEMPTS_5="$_POLL_ATTEMPTS_5" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
         _abs_grep=$(command -v grep)
@@ -684,11 +701,11 @@ assert "POSIX fallback: SIGKILL escalation leaves no orphan sleep \$_SENT_21" \
         _inner_cmd="trap \"\" TERM; sleep $_SENT_21"
         portable_timeout 1 "$_abs_bash" -c "$_inner_cmd" || true
 
-        # Poll up to 5s for the orphan sleep $_SENT_21 to be reaped.
-        # A single fixed sleep races against kernel process-table cleanup
-        # on busy systems, so retry a few times before declaring failure.
+        # Poll up to _POLL_ATTEMPTS_5×1s for the orphan sleep $_SENT_21 to be
+        # reaped. _POLL_ATTEMPTS_5 = load_tolerant_attempts(5): base 5s on idle,
+        # scaling under load. Computed in parent shell; passed via env.
         _check_rc=0
-        for _try in 1 2 3 4 5; do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_5; _t++)); do
             _check_rc=0
             ! "$_abs_ps" -A -o pid,args 2>/dev/null | "$_abs_grep" -E "[[:space:]]sleep ${_SENT_21}$" || _check_rc=$?
             [ "$_check_rc" -eq 0 ] && break
