@@ -244,6 +244,12 @@ impl Engine {
             // override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
+            // Task 4532: passive observed-demand side-channel + would-prune
+            // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
+            // build reads the measurement. `observed_demand` is never fed into
+            // `compute_eval_set`.
+            observed_demand: DemandRegistry::new(),
+            last_demand_prune_measurement: None,
             next_snapshot_id: 0,
             next_version_id: 0,
             last_eval_set: Vec::new(),
