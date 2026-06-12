@@ -340,6 +340,24 @@ structure def ElasticOptions {
 structure def ElasticResult {
     param displacement : Field<Point3<Length>, Vector3<Length>>
     param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    // `divergence` — volumetric strain tr(ε) = ∂uₓ/∂x + ∂u_y/∂y + ∂u_z/∂z
+    // (dilatation / first strain invariant). Derived from the displacement-
+    // gradient tensor recovered during stress computation; no additional FE
+    // solve is required.
+    //
+    // Tet/solid population (PRD differential-field-operators.md task α):
+    // a real Sampled Field on the same Regular3D grid as `displacement` and
+    // `stress` (stride 1, codomain Real = dimensionless scalar). Useful for
+    // volumetric-change queries, compressibility checks, and as the spine
+    // for PRD task β gradient/curl channels.
+    //
+    // Shell population: Value::Undef — derivative field channels are out of
+    // scope for the shell solver (PRD §7). Undef is the honest-absence signal,
+    // matching the `frame` / `shell_channels` tet convention.
+    // Note for future runtime-type-checking implementors: Value::Undef must
+    // remain accepted for this Field-typed param on shell results (same
+    // Undef-for-absent-field convention as `frame` above).
+    param divergence : Field<Point3<Length>, Real>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure
