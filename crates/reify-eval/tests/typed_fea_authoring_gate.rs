@@ -101,28 +101,44 @@ fn multi_load_bracket_evals_to_typed_loadcases() {
 
 fn assert_loadcase_loads_type(case: &Value, index: usize, expected_type: &str, label: &str) {
     match extract_field(case, "loads") {
-        Some(Value::List(items)) => match &items[index] {
-            Value::StructureInstance(si) => assert_eq!(
-                si.type_name, expected_type,
-                "{label} must be StructureInstance{{type_name={expected_type:?}}}; got {:?}",
-                si.type_name
-            ),
-            other => panic!("{label} must be Value::StructureInstance; got {other:?}"),
-        },
+        Some(Value::List(items)) => {
+            let item = items.get(index).unwrap_or_else(|| {
+                panic!(
+                    "{label}: loads list has {} elements, expected index {index}",
+                    items.len()
+                )
+            });
+            match item {
+                Value::StructureInstance(si) => assert_eq!(
+                    si.type_name, expected_type,
+                    "{label} must be StructureInstance{{type_name={expected_type:?}}}; got {:?}",
+                    si.type_name
+                ),
+                other => panic!("{label} must be Value::StructureInstance; got {other:?}"),
+            }
+        }
         other => panic!("LoadCase.loads must be Value::List; got {other:?}"),
     }
 }
 
 fn assert_loadcase_supports_type(case: &Value, index: usize, expected_type: &str, label: &str) {
     match extract_field(case, "supports") {
-        Some(Value::List(items)) => match &items[index] {
-            Value::StructureInstance(si) => assert_eq!(
-                si.type_name, expected_type,
-                "{label} must be StructureInstance{{type_name={expected_type:?}}}; got {:?}",
-                si.type_name
-            ),
-            other => panic!("{label} must be Value::StructureInstance; got {other:?}"),
-        },
+        Some(Value::List(items)) => {
+            let item = items.get(index).unwrap_or_else(|| {
+                panic!(
+                    "{label}: supports list has {} elements, expected index {index}",
+                    items.len()
+                )
+            });
+            match item {
+                Value::StructureInstance(si) => assert_eq!(
+                    si.type_name, expected_type,
+                    "{label} must be StructureInstance{{type_name={expected_type:?}}}; got {:?}",
+                    si.type_name
+                ),
+                other => panic!("{label} must be Value::StructureInstance; got {other:?}"),
+            }
+        }
         other => panic!("LoadCase.supports must be Value::List; got {other:?}"),
     }
 }
@@ -168,10 +184,6 @@ fn fea_cantilever_smoke_live_solves_direct_material() {
 /// cell is a LoadCase with a MIXED `List<Load>` ([PointLoad, Gravity]) and
 /// `List<Support>` ([FixedSupport]) — proves ζ/4444 tightening accepts both
 /// Load subtypes in one tightened list.
-///
-/// RED state: this test's `include_str!` references the fixture that does not
-/// exist yet → the binary fails to compile, making all three tests pending.
-/// Both (1) and (2) go green once the binary compiles in step-2.
 #[test]
 fn fea_multi_case_fixture_typechecks_mixed_loadcase() {
     let src = include_str!("../../../examples/fea_multi_case_smoke.ri");
@@ -260,9 +272,6 @@ fn fea_multi_case_fixture_typechecks_mixed_loadcase() {
 /// (4) `examples/fea_multi_case_smoke.ri` fixture gravity solve produces a
 /// nonzero, net-downward displacement field (β/4440 integration signal:
 /// sign + nonzero only — linearity/density/zero stay in gravity_self_weight_e2e.rs).
-///
-/// RED state (step-3): fixture has no `self_weight` binding yet → cell lookup
-/// panics at runtime. Goes green in step-4 when the binding is added.
 #[test]
 fn fea_multi_case_fixture_gravity_self_weight_downward() {
     let src = include_str!("../../../examples/fea_multi_case_smoke.ri");
