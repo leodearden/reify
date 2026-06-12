@@ -250,6 +250,19 @@ fn describe(e: FormFindError) -> &'static str {
         FormFindError::DimensionMismatch => {
             "force_densities length does not match the member count (struts + cables)"
         }
+        FormFindError::DegenerateTriangle => {
+            "degenerate surface triangle — collinear or zero-area corners make the \
+             cotangent weights diverge (2·Area → 0); check the surfaces connectivity \
+             and node coordinates"
+        }
+        FormFindError::NonTensionSurfaceStress => {
+            "non-tension surface stress — every membrane surface requires σ > 0 \
+             (tension); a slack or compressed surface (σ ≤ 0) is infeasible prestress"
+        }
+        FormFindError::SurfaceCountMismatch => {
+            "surface_stresses length does not match the surface count — each triangle \
+             in `surfaces` needs exactly one isotropic σ"
+        }
     }
 }
 
