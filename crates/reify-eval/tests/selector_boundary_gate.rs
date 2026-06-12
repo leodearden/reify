@@ -168,3 +168,63 @@ fn build_with_unstaged_kernel(source: &str) -> BuildResult {
 fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
+
+// ── BT1: wrong-kind union rejected at compile time ────────────────────────────
+
+/// BT1 (producer / type-checker): `union(faces(b), edges(b))` must be rejected
+/// at compile time with exactly ONE `SelectorKindMismatch` error naming both
+/// the encountered and expected kinds.
+///
+/// PRD §5 BT1: "mixed-kind `union()` → compile error E_SELECTOR_KIND_MISMATCH,
+/// message names both kinds".
+///
+/// RED when fixture `bt1_wrong_kind_union.ri` is absent (`.expect()` panics).
+#[test]
+fn bt1_wrong_kind_union_rejected() {
+    let source = std::fs::read_to_string(fixture_path("bt1_wrong_kind_union.ri")).expect(
+        "fixture bt1_wrong_kind_union.ri must exist (create it in step-2 to turn GREEN)",
+    );
+
+    // Compile via compile_source_with_stdlib (NOT parse_and_compile_with_stdlib
+    // which panics on errors — we WANT to check for errors here).
+    let compiled = compile_source_with_stdlib(&source);
+    let errors: Vec<&Diagnostic> = errors_only(&compiled);
+
+    // (a) exactly ONE error-severity diagnostic
+    assert_eq!(
+        errors.len(),
+        1,
+        "BT1: expected exactly 1 SelectorKindMismatch error, got {} errors:\n{:#?}",
+        errors.len(),
+        errors
+    );
+
+    let err = errors[0];
+
+    // (b) carries DiagnosticCode::SelectorKindMismatch
+    assert_eq!(
+        err.code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "BT1: error must carry DiagnosticCode::SelectorKindMismatch, got: {:?}",
+        err.code
+    );
+
+    // (c) message names BOTH kinds (FaceSelector and EdgeSelector)
+    assert!(
+        err.message.contains("FaceSelector"),
+        "BT1: error message must name FaceSelector, got: {:?}",
+        err.message
+    );
+    assert!(
+        err.message.contains("EdgeSelector"),
+        "BT1: error message must name EdgeSelector, got: {:?}",
+        err.message
+    );
+
+    // (d) call-site label/span present (at least one DiagnosticLabel)
+    assert!(
+        !err.labels.is_empty(),
+        "BT1: error must carry at least one call-site label/span, got labels: {:?}",
+        err.labels
+    );
+}
