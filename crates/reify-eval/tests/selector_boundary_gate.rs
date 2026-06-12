@@ -169,6 +169,85 @@ fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
 
+// ── BT8: named-leaf interim — resolve returns [] + one TopologyTagStale ──────
+
+/// BT8 (producer / Named-leaf interim / D8): `face(b, "nope")` must build a
+/// `Value::Selector(Face)` whose node is a `Leaf` with `LeafQuery::Named("nope")`
+/// (kernel-free construction). Calling `topology_selectors::resolve()` on it
+/// must return `Ok(vec![])` (empty selection) and emit EXACTLY ONE diagnostic
+/// with `code = Some(DiagnosticCode::TopologyTagStale)` (W_TOPOLOGY_TAG_STALE).
+/// The call must NOT panic.
+///
+/// PRD §5 BT8: "named-leaf (`face(b,tag)`) resolves to [] + 1 TopologyTagStale
+/// warning (D8 interim) — no panic".
+///
+/// Strategy: build kernel-free (selector stays `Value::Selector`, no eager
+/// resolution) → assert leaf shape → resolve against `staged_box_kernel()`
+/// (always-on, no OCCT).
+///
+/// RED when fixture `bt8_named_leaf_interim.ri` is absent.
+#[test]
+fn bt8_named_leaf_interim_empty_with_one_warning() {
+    let source = std::fs::read_to_string(fixture_path("bt8_named_leaf_interim.ri")).expect(
+        "fixture bt8_named_leaf_interim.ri must exist (create in step-12 to turn GREEN)",
+    );
+
+    // (a) Build kernel-free; the Named selector must stay Value::Selector(Face).
+    let result = build_with_unstaged_kernel(&source);
+    let sv = selector_cell(&result, "BT8NamedLeaf", "s");
+
+    assert_eq!(
+        sv.kind,
+        SelectorKind::Face,
+        "BT8: BT8NamedLeaf.s must be Value::Selector(Face)"
+    );
+
+    // (b) The node must be a Leaf with LeafQuery::Named("nope").
+    match &sv.node {
+        SelectorNode::Leaf {
+            query: LeafQuery::Named(tag),
+            ..
+        } => {
+            assert_eq!(
+                tag, "nope",
+                "BT8: Named tag must be \"nope\", got: {tag:?}"
+            );
+        }
+        other => panic!(
+            "BT8: BT8NamedLeaf.s must be SelectorNode::Leaf{{Named(\"nope\")}}, got: {other:?}"
+        ),
+    }
+
+    // (c) Resolve against the staged box kernel.
+    let mut staged = staged_box_kernel();
+    let mut diags: Vec<Diagnostic> = Vec::new();
+    let handles = topology_selectors::resolve(sv, &mut staged, &mut diags)
+        .expect("BT8: resolve() must not return a QueryError for a Named leaf");
+
+    // (d) Returns Ok([]) — "nope" matches no tag → empty selection.
+    assert!(
+        handles.is_empty(),
+        "BT8: Named(\"nope\") must resolve to [] (no match), got: {handles:?}"
+    );
+
+    // (e) Exactly ONE diagnostic with code = TopologyTagStale.
+    assert_eq!(
+        diags.len(),
+        1,
+        "BT8: resolve() must emit exactly 1 diagnostic (W_TOPOLOGY_TAG_STALE), \
+         got {} diagnostics:\n{:#?}",
+        diags.len(),
+        diags
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TopologyTagStale),
+        "BT8: the diagnostic must carry DiagnosticCode::TopologyTagStale, \
+         got: {:?}",
+        diags[0].code
+    );
+}
+
 // ── BT3: difference and intersect set semantics ───────────────────────────────
 
 /// BT3 (producer / resolve): difference and intersect set semantics.
