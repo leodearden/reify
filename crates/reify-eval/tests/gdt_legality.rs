@@ -249,3 +249,206 @@ structure def CheckFormRfs {
         gdt_errors
     );
 }
+
+// ── C2 rule table — FOS-eligibility / family matrix (step-5 RED / step-6 GREEN) ─
+
+/// Helper: collect all `GdtIllegalModifier` error diagnostics from `Engine::check`.
+fn illegal_modifier_diags(source: &str) -> Vec<reify_core::Diagnostic> {
+    let module = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.check(&module);
+    result
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect()
+}
+
+/// C2-C: `Position(material_condition: MMC, ...)` is FOS-eligible (Location family,
+/// Cylindrical zone by default) — must emit NO `GdtIllegalModifier`.
+///
+/// Fails until the Location family is classified as FOS-eligible (step-6).
+/// (Currently passes because Position falls through the default arm — step-6
+/// must keep it passing when it explicitly classifies Position as FOS-eligible.)
+#[test]
+fn c2_position_mmc_is_legal() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckPosition {
+    let pos = Position(
+        tolerance_value: 0.05mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert!(
+        diags.is_empty(),
+        "Position(MMC) is FOS-eligible and must produce no GdtIllegalModifier; got: {:?}",
+        diags
+    );
+}
+
+/// C2-D: `StraightnessOfAxis(material_condition: MMC, ...)` is the FOS-axis
+/// form variant — MMC-eligible; must emit NO `GdtIllegalModifier`.
+///
+/// Fails until FormAxis is classified as FOS-eligible (step-6).
+#[test]
+fn c2_straightness_of_axis_mmc_is_legal() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckStraightnessOfAxis {
+    let s = StraightnessOfAxis(
+        tolerance_value: 0.02mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert!(
+        diags.is_empty(),
+        "StraightnessOfAxis(MMC) is FOS-eligible and must produce no GdtIllegalModifier; got: {:?}",
+        diags
+    );
+}
+
+/// C2-E: `Parallelism(zone_shape: Cylindrical, material_condition: MMC, ...)` is
+/// FOS-eligible (Orientation + Cylindrical zone) — must emit NO `GdtIllegalModifier`.
+///
+/// Fails until the Orientation/Cylindrical gate is implemented (step-6).
+#[test]
+fn c2_parallelism_cylindrical_mmc_is_legal() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckParallelismCyl {
+    let p = Parallelism(
+        tolerance_value: 0.03mm,
+        material_condition: MaterialCondition.MMC,
+        zone_shape: ZoneShape.Cylindrical,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert!(
+        diags.is_empty(),
+        "Parallelism(Cylindrical, MMC) is FOS-eligible and must produce no GdtIllegalModifier; got: {:?}",
+        diags
+    );
+}
+
+/// C2-F: `Parallelism(material_condition: MMC, ...)` with the default Width zone
+/// is NOT FOS-eligible — must emit `GdtIllegalModifier`.
+///
+/// Fails until the Orientation/Width-zone gating is implemented (step-6).
+#[test]
+fn c2_parallelism_width_mmc_emits_illegal_modifier() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckParallelismWidth {
+    let p = Parallelism(
+        tolerance_value: 0.03mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Parallelism(Width, MMC) must emit exactly 1 GdtIllegalModifier; got {}: {:?}",
+        diags.len(),
+        diags
+    );
+}
+
+/// C2-G: `CircularRunout(material_condition: MMC, datum_refs: ...)` is Runout
+/// (RFS-only) — must emit `GdtIllegalModifier`.
+///
+/// Fails until the Runout family is classified as RFS-only (step-6).
+#[test]
+fn c2_circular_runout_mmc_emits_illegal_modifier() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckCircularRunout {
+    let r = CircularRunout(
+        tolerance_value: 0.01mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert_eq!(
+        diags.len(),
+        1,
+        "CircularRunout(MMC) must emit exactly 1 GdtIllegalModifier; got {}: {:?}",
+        diags.len(),
+        diags
+    );
+}
+
+/// C2-H: `ProfileOfSurface(material_condition: MMC, ...)` is Profile (RFS-only)
+/// — must emit `GdtIllegalModifier`.
+///
+/// Fails until the Profile family is classified as RFS-only (step-6).
+#[test]
+fn c2_profile_of_surface_mmc_emits_illegal_modifier() {
+    let diags = illegal_modifier_diags(r#"
+structure def CheckProfileOfSurface {
+    let p = ProfileOfSurface(
+        tolerance_value: 0.02mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#);
+    assert_eq!(
+        diags.len(),
+        1,
+        "ProfileOfSurface(MMC) must emit exactly 1 GdtIllegalModifier; got {}: {:?}",
+        diags.len(),
+        diags
+    );
+}
+
+/// C2-I: All-RFS variants of the FOS-eligible families must remain silent.
+#[test]
+fn c2_fos_eligible_rfs_variants_are_silent() {
+    // Position (RFS, Cylindrical default)
+    assert!(
+        illegal_modifier_diags(r#"
+structure def C { let p = Position(tolerance_value: 0.05mm, feature: box(1mm,1mm,1mm), datum_refs: box(1mm,1mm,1mm)) }
+"#).is_empty(),
+        "Position(RFS) must be silent"
+    );
+
+    // StraightnessOfAxis (RFS)
+    assert!(
+        illegal_modifier_diags(r#"
+structure def C { let s = StraightnessOfAxis(tolerance_value: 0.02mm, feature: box(1mm,1mm,1mm)) }
+"#).is_empty(),
+        "StraightnessOfAxis(RFS) must be silent"
+    );
+
+    // Parallelism (RFS, Width default)
+    assert!(
+        illegal_modifier_diags(r#"
+structure def C { let p = Parallelism(tolerance_value: 0.03mm, feature: box(1mm,1mm,1mm), datum_refs: box(1mm,1mm,1mm)) }
+"#).is_empty(),
+        "Parallelism(RFS) must be silent"
+    );
+
+    // CircularRunout (RFS)
+    assert!(
+        illegal_modifier_diags(r#"
+structure def C { let r = CircularRunout(tolerance_value: 0.01mm, feature: box(1mm,1mm,1mm), datum_refs: box(1mm,1mm,1mm)) }
+"#).is_empty(),
+        "CircularRunout(RFS) must be silent"
+    );
+
+    // ProfileOfSurface (RFS)
+    assert!(
+        illegal_modifier_diags(r#"
+structure def C { let p = ProfileOfSurface(tolerance_value: 0.02mm, feature: box(1mm,1mm,1mm)) }
+"#).is_empty(),
+        "ProfileOfSurface(RFS) must be silent"
+    );
+}
