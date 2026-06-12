@@ -424,7 +424,7 @@ fn bt5_single_face_by_normal_coercion() {
     // `top = single(faces_by_normal(b, +Z, 1°))` must coerce
     // (Selector → List<Geometry> → single) to the single +Z face handle.
     let top_id = ValueCellId::new("BT5SingleFace", "top");
-    let top_hash = match result.values.get(&top_id) {
+    let _top_hash = match result.values.get(&top_id) {
         Some(Value::GeometryHandle {
             upstream_values_hash,
             ..
