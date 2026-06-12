@@ -438,7 +438,7 @@ trait ForcingFunction { }
 //
 // Param semantics (PRD §5.1):
 //   at         — the location on the part where the force is applied.
-//                FIXME(location-id-type): encoded as `String` PLACEHOLDER for
+//                FIXME(location-id-type, #4577): encoded as `String` PLACEHOLDER for
 //                the future `LocationId` topology-selector type (not yet landed
 //                in Reify v0.3). Consistent with `FixedSupport.target : String`
 //                (fea_multi_case.ri:309) and `ModalResult.part : String`
@@ -506,7 +506,7 @@ structure def StepForce : ForcingFunction {
 // momentum: F(t) = impulse · δ(t − time), where δ is the Dirac delta.
 //
 // Param semantics (PRD §5.1):
-//   at       — the location on the part. FIXME(location-id-type): `String`
+//   at       — the location on the part. FIXME(location-id-type, #4577): `String`
 //              PLACEHOLDER for the future `LocationId` type (same convention
 //              as `StepForce.at` above).
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
@@ -553,7 +553,7 @@ structure def ImpulseForce : ForcingFunction {
 //     F(t) = amplitude · sin(2π · frequency · t + phase)
 //
 // Param semantics (PRD §5.1):
-//   at        — the application location. FIXME(location-id-type): `String`
+//   at        — the application location. FIXME(location-id-type, #4577): `String`
 //               PLACEHOLDER per the StepForce/ImpulseForce precedent.
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //               `ModalOptions.reference_direction` precedent. Direction carries
@@ -618,7 +618,7 @@ structure def HarmonicForce : ForcingFunction {
 // timestep.
 //
 // Param semantics (PRD §5.1 / §5.3):
-//   at           — application location. FIXME(location-id-type): `String`
+//   at           — application location. FIXME(location-id-type, #4577): `String`
 //                  PLACEHOLDER per the StepForce precedent.
 //   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
 //                  `ModalOptions.reference_direction` precedent. Direction
