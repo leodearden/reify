@@ -1401,14 +1401,13 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         // template's constraint expressions that reference `<param_member>.<field>`.
         let mut full_value_map = reify_ir::ValueMap::new();
         for (param_name, candidate_name) in &outcome.substitution {
-            if let Some(param_member) = param_type_member(parameterized_template, param_name) {
-                if let Some(&candidate_template) =
+            if let Some(param_member) = param_type_member(parameterized_template, param_name)
+                && let Some(&candidate_template) =
                     template_registry.get(candidate_name.as_str())
-                {
-                    let seed = seed_candidate_value_map(candidate_template, param_member);
-                    for (k, v) in seed.iter() {
-                        full_value_map.insert(k.clone(), v.clone());
-                    }
+            {
+                let seed = seed_candidate_value_map(candidate_template, param_member);
+                for (k, v) in seed.iter() {
+                    full_value_map.insert(k.clone(), v.clone());
                 }
             }
         }
@@ -2474,12 +2473,12 @@ fn dfs_search(
         // stub-path no-op semantics (PRD §11.2).
         let mut leaf_values = reify_ir::ValueMap::new();
         for (i, candidate) in current.iter().enumerate() {
-            if let Some(Some(member)) = param_members.get(i) {
-                if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
-                    let seeded = seed_candidate_value_map(candidate_template, member);
-                    for (k, v) in seeded.iter() {
-                        leaf_values.insert(k.clone(), v.clone());
-                    }
+            if let Some(Some(member)) = param_members.get(i)
+                && let Some(&candidate_template) = template_registry.get(candidate.as_str())
+            {
+                let seeded = seed_candidate_value_map(candidate_template, member);
+                for (k, v) in seeded.iter() {
+                    leaf_values.insert(k.clone(), v.clone());
                 }
             }
         }
