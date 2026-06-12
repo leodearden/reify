@@ -179,6 +179,18 @@ fn depth_bound_infeasible_joint_check_emits_bounded_infeasible_error_generated_f
             outcome.substitution,
         );
         assert_exactly_one_bounded_infeasible_error(&diagnostics);
+        // PRD §6.2 step 4: Error is emitted INSTEAD of the Warning.
+        // A regression that emitted both would still pass the above assertion.
+        let depth_warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
+            .collect();
+        assert!(
+            depth_warnings.is_empty(),
+            "param_count={param_count}: expected zero AutoTypeParamDepthBoundExceeded \
+             Warnings on the infeasible path (Error replaces Warning); got:\n{:#?}",
+            depth_warnings,
+        );
     }
 }
 
@@ -260,6 +272,17 @@ structure def S2B : T2 { param x : Real = 4.0 }
         outcome.substitution
     );
     assert_exactly_one_bounded_infeasible_error(&diagnostics);
+    // PRD §6.2 step 4: Error is emitted INSTEAD of the Warning.
+    let cap_warnings: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamCrossProductSizeExceeded))
+        .collect();
+    assert!(
+        cap_warnings.is_empty(),
+        "expected zero AutoTypeParamCrossProductSizeExceeded Warnings on the \
+         infeasible path (Error replaces Warning); got:\n{:#?}",
+        cap_warnings,
+    );
 }
 
 // ─── Feasible controls (PRD §11.2: γ is a no-op on the all-Indeterminate path) ──

@@ -829,14 +829,16 @@ pub(crate) fn filter_feasible_candidates_seeded(
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
+    // `build_constraints_template` is hoisted out of the loop: today
+    // `template.constraints` is byte-identical across all candidates, so
+    // cloning ConstraintNodeId strings once is sufficient.
+    // NOTE(substitution-pass-trigger): once `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution lands, the constraints
+    // expression graph will specialize per-candidate and this build must move
+    // inside the loop.  The per-candidate ValueMap seeding DOES belong inside.
+    let constraints_template = build_constraints_template(parameterized_template);
+
     for candidate in candidates {
-        // Hoist reversion (task 4434 γ, re-homed from task 3637):
-        // `build_constraints_template` and per-candidate `ValueMap` setup
-        // now live INSIDE the per-candidate loop, as the NOTE(substitution-pass-trigger)
-        // required.  Once `Type::TypeParam(T) → Type::StructureRef(candidate)`
-        // substitution lands, the constraints expression graph will specialize
-        // per-candidate; the build must be here for that to work.
-        let constraints_template = build_constraints_template(parameterized_template);
         let candidate_values =
             if let Some(param_member) = param_type_member(parameterized_template, param_name) {
                 if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
@@ -1407,6 +1409,16 @@ fn emit_fallback_warning_and_delegate_to_bfs(
             {
                 let seed = seed_candidate_value_map(candidate_template, param_member);
                 for (k, v) in seed.iter() {
+                    // Distinct TypeParam names map to distinct value cells today
+                    // (invariant: each param's member differs).  A collision here
+                    // would silently overwrite an already-seeded key and produce a
+                    // wrong joint ValueMap.
+                    debug_assert!(
+                        !full_value_map.contains(k),
+                        "joint-recheck merge: key {k:?} already present; \
+                         two type-params resolved to the same value-cell member — \
+                         distinct-member invariant violated",
+                    );
                     full_value_map.insert(k.clone(), v.clone());
                 }
             }
