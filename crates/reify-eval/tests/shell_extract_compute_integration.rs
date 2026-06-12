@@ -4,11 +4,12 @@
 //! See `docs/prds/v0_4/shell-extract-engine-bridge.md` §4–§8 and
 //! `docs/prds/v0_3/compute-node-contract.md` §4 for the full specification.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{ContentHash, DiagnosticCode, RealizationNodeId, Severity};
 use reify_eval::{
-    CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle,
+    CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
     register_shell_extract_compute_fns, shell_extract_compute_fn,
 };
 use reify_ir::{
@@ -660,4 +661,186 @@ fn shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code() {
         msg.contains("solid_no_medial"),
         "expected message to contain body name 'solid_no_medial'; got: {msg:?}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-1 tests for task #4511 (ε dual-source: prefers realization_inputs[0].sdf())
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construct a synthetic thin-slab `SampledField` with doubled in-plane footprint
+/// [0,2.0]² (vs the standard [0,1.0]² fixture), used to prove that the realization
+/// arm, not the value_inputs[1] slab, was the geometry source.
+///
+/// - x: [0.0, 0.5, 1.0, 1.5, 2.0] (5 points, spacing=0.5)
+/// - y: [0.0, 0.5, 1.0, 1.5, 2.0] (5 points, spacing=0.5)
+/// - z: [-0.5, 0.0, 0.5] (3 points, spacing=0.5)
+///
+/// SDF(x,y,z) = |z| − 0.1 — same narrow-band half-thickness as
+/// `synthetic_slab_field`; medial plane at z=0.
+fn synthetic_large_slab_field() -> SampledField {
+    let x_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.5).collect();
+    let y_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.5).collect();
+    let z_grid: Vec<f64> = vec![-0.5, 0.0, 0.5];
+
+    let mut data = Vec::with_capacity(5 * 5 * 3);
+    for &z in &z_grid {
+        for _y in &y_grid {
+            for _x in &x_grid {
+                data.push(z.abs() - 0.1);
+            }
+        }
+    }
+
+    SampledField {
+        name: "synthetic_large_slab".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, -0.5],
+        bounds_max: vec![2.0, 2.0, 0.5],
+        spacing: vec![0.5, 0.5, 0.5],
+        axis_grids: vec![x_grid, y_grid, z_grid],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Extract the maximum x-coordinate across all mid-surface vertices from a
+/// `ComputeOutcome::Completed` result value.
+///
+/// Navigates: `Value::StructureInstance("ShellExtractionResult")`
+///   → `fields["mid_surface"]` → `Value::StructureInstance("MidSurfaceMesh")`
+///   → `fields["vertices"]` → `Value::List` of `Value::List([Real, Real, Real])`
+///   → max of the first (x) coordinate.
+///
+/// Returns `f64::NEG_INFINITY` when the vertex list is empty.
+fn max_mid_surface_vertex_x(result: &Value) -> f64 {
+    let data = match result {
+        Value::StructureInstance(d) => d,
+        other => panic!("expected Value::StructureInstance for result; got: {other:?}"),
+    };
+    let mid_surface = data
+        .fields
+        .get("mid_surface")
+        .expect("missing 'mid_surface' field in ShellExtractionResult");
+    let ms_data = match mid_surface {
+        Value::StructureInstance(d) => d,
+        other => panic!("expected Value::StructureInstance for mid_surface; got: {other:?}"),
+    };
+    let vertices = ms_data
+        .fields
+        .get("vertices")
+        .expect("missing 'vertices' field in MidSurfaceMesh");
+    let vlist = match vertices {
+        Value::List(vs) => vs,
+        other => panic!("expected Value::List for vertices; got: {other:?}"),
+    };
+    vlist
+        .iter()
+        .map(|v| {
+            let coords = match v {
+                Value::List(c) => c,
+                other => panic!("expected Value::List for vertex coords; got: {other:?}"),
+            };
+            match coords.first() {
+                Some(Value::Real(x)) => *x,
+                other => panic!("expected Value::Real as first vertex coord; got: {other:?}"),
+            }
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// Assert that the trampoline reads the realization SDF (footprint [0,2.0]²)
+/// rather than the value_inputs[1] slab (footprint [0,1.0]²) when a non-None
+/// realization handle is present in realization_inputs[0].
+///
+/// Structural basis (not a tuned tolerance): a slab's medial surface is its z=0
+/// mid-plane spanning the in-plane footprint, so the realization field over
+/// [0,2.0]² yields mid-surface vertices reaching x≈2.0 (max x > 1.0), whereas
+/// the [0,1.0]² slab cannot exceed 1.0. The assertion uniquely identifies which
+/// SDF was the geometry source.
+///
+/// RED today: `_realization_inputs` is ignored; value_inputs[1] (the [0,1.0]²
+/// slab) is used → max x ≤ 1.0 → `max_x > 1.0` assertion fails.
+/// GREEN after step-2 implements dual-source selection: realization_inputs[0].sdf()
+/// is Some → large slab is used → max x > 1.0.
+///
+/// Pins docs/prds/v0_6/realization-read-api.md §9 task ε / D3
+/// "prefer realization_inputs[0].sdf() when present".
+#[test]
+fn shell_extract_dual_source_prefers_realization_sdf_over_slab() {
+    // Build realization handle carrying the LARGE [0,2.0]² slab.
+    let large_field = synthetic_large_slab_field();
+    let handle = RealizationReadHandle::new(
+        RealizationNodeId::new("body", 0),
+        ContentHash(1),
+        Some(RealizedContent::Sdf(Arc::new(large_field))),
+    );
+
+    // value_inputs[1] carries the SMALL [0,1.0]² slab (the fallback path).
+    let small_slab = Value::SampledField(synthetic_slab_field());
+
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef, small_slab],
+        &[handle],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // Must succeed (the realization SDF is valid).
+    let result = match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!(
+            "expected ComputeOutcome::Completed when realization SDF is present; \
+             got: {other:?}. (RED until step-2 implements dual-source selection)"
+        ),
+    };
+
+    // Max mid-surface vertex x must exceed the small slab's footprint (1.0),
+    // proving the large realization field [0,2.0]² was the geometry source.
+    let max_x = max_mid_surface_vertex_x(&result);
+    assert!(
+        max_x > 1.0,
+        "expected max mid-surface vertex x > 1.0 (realization [0,2.0]² footprint); \
+         got max_x = {max_x:.4}. If max_x ≤ 1.0, the fallback value_inputs[1] slab \
+         was used instead of the realization SDF — dual-source selection not yet active."
+    );
+}
+
+/// Assert that the trampoline completes successfully when only the realization
+/// SDF is present (value_inputs carries no index 1).
+///
+/// RED today: the current code falls through to `value_inputs.get(1)` → None →
+/// `ComputeOutcome::Failed`. GREEN after step-2 the realization arm is checked
+/// first, so the absence of value_inputs[1] is not an error.
+///
+/// Pins docs/prds/v0_6/realization-read-api.md §9 task ε / D3
+/// "realization_inputs[0].sdf() alone is sufficient".
+#[test]
+fn shell_extract_uses_realization_sdf_when_value_input_slab_absent() {
+    // Build realization handle carrying the LARGE [0,2.0]² slab.
+    let large_field = synthetic_large_slab_field();
+    let handle = RealizationReadHandle::new(
+        RealizationNodeId::new("body", 0),
+        ContentHash(1),
+        Some(RealizedContent::Sdf(Arc::new(large_field))),
+    );
+
+    // value_inputs = [options only]; no index 1 (no slab value).
+    let outcome = shell_extract_compute_fn(
+        &[Value::Undef],
+        &[handle],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    match outcome {
+        ComputeOutcome::Completed { .. } => {}
+        other => panic!(
+            "expected ComputeOutcome::Completed when realization SDF is present \
+             and value_inputs has no index 1; got: {other:?}. \
+             (RED until step-2 implements dual-source selection)"
+        ),
+    }
 }
