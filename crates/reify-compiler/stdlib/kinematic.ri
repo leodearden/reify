@@ -187,12 +187,12 @@ structure def BodyId { }
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
 //   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
-//   joint_parents : Map<String, Real>     — TODO: Map<BodyId, JointParent> placeholder
-//   loop_closures : List<Real>            — TODO(loop-closure-record-type) placeholder
+//   joint_parents : Map<String, Real>     — TODO(map-bodyid-jointparent, #4579): Map<BodyId, JointParent> placeholder
+//   loop_closures : List<Real>            — TODO(loop-closure-record-type, #4579) placeholder
 structure def Mechanism {
     param bodies : List<Real>          // TODO(body-type): List<BodyId> placeholder
-    param joint_parents : Map<String, Real>  // TODO: Map<BodyId,JointParent> placeholder
-    param loop_closures : List<Real>   // TODO(loop-closure-record-type) placeholder
+    param joint_parents : Map<String, Real>  // TODO(map-bodyid-jointparent, #4579): Map<BodyId,JointParent> placeholder
+    param loop_closures : List<Real>   // TODO(loop-closure-record-type, #4579) placeholder
 }
 
 // Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).

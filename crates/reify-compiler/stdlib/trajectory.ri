@@ -319,9 +319,9 @@ structure def PiecewisePolynomialProfile : Profile {
 // completion PRD's `Mechanism` type when that PRD lands. Same shape and
 // rationale as `PiecewisePolynomialProfile.mechanism : Real` above.
 //
-// TODO(modal-result-type): tighten `modal_result : Real` to the modal-
+// TODO(modal-result-type, #4579): tighten `modal_result : Real` to the modal-
 // analysis PRD's `ModalResult` type when that PRD lands. Same encoding
-// rationale as TODO(mechanism-type) above.
+// rationale as the mechanism-type TODO above.
 structure def EndEffectorTrack {
     param mechanism        : Real
     param modal_result     : Real
