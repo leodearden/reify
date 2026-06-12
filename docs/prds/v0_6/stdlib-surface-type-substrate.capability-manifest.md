@@ -1,6 +1,6 @@
 # Capability manifest — stdlib-surface-type-substrate.md (2026-06-12)
 
-Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verified against the working tree 2026-06-12 (post-task-4548 Phase-A: `Impulse`/`Momentum` registered, `ImpulseForce.impulse`→`Impulse`, `Mode.frequency`→`Frequency`). **No FAIL bindings.** Leaf labels match PRD §10 (F/V/R/P/Pt/M/S); real task IDs assigned at decompose.
+Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verified against the working tree 2026-06-12 (post-task-4548 Phase-A: `Impulse`/`Momentum` registered, `ImpulseForce.impulse`→`Impulse`, `Mode.frequency`→`Frequency`). **No FAIL bindings.** Leaf labels match PRD §10. **Filed task IDs (4548 step-8):** F=#4574, V=#4575, R=#4576, P=#4577, Pt=#4578, M=#4579, S=#4580 (all `pending`; V/R/P/M depend on F=#4574).
 
 | Leaf | Capability asserted by signal | Evidence | Verdict |
 |---|---|---|---|

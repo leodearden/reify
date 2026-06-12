@@ -27,15 +27,15 @@ These placeholders were introduced deliberately, with an in-file convention (mod
 
 | Family | Placeholder today | Target | Owner |
 |---|---|---|---|
-| `vec3-type` | `pub type Vec3 = Real`; `param axis : Vec3` | real 3-vector | **routed → V** (existing PRD homes) |
-| `range-type` / `range-angle-type` | `param range : Real`; `prb_validity_range : Real` | `Range<T>` / `Range<Angle>` | **routed → R** (numeric-and-range PRD) |
-| `pose3-type` | `pub type Pose3 = Real` | rigid pose/frame | **owned → P** |
-| `location-id-type` | `pub type LocationId = Real`; `at : String` | topology selector | **owned → P** (threads landed Selector substrate, task 4116) |
-| `part-structdef` | `part : String` | `Part` structure_def | **owned → Pt** |
-| `modal-result-type` | `modal_result : Real` | nominal `ModalResult` | **owned → M** |
-| `loop-closure-record-type` / `Map<BodyId,JointParent>` | `loop_closures : List<Real>`; `joint_parents : Map<String, Real>` | record types | **owned → M** |
-| `force-velocity-acceleration-scalar` | `max_force/velocity_limit/acceleration_limit : Real` | `Scalar<Force/Velocity/Acceleration>` | **owned → S** (Velocity = new named dim) |
-| stdlib module-graph **FOUNDATION** | linear `include_str!` prelude | DAG-loaded / forward-ref-resolved prelude | **owned → F** |
+| `vec3-type` | `pub type Vec3 = Real`; `param axis : Vec3` | real 3-vector | **routed → V #4575** (existing PRD homes) |
+| `range-type` / `range-angle-type` | `param range : Real`; `prb_validity_range : Real` | `Range<T>` / `Range<Angle>` | **routed → R #4576** (numeric-and-range PRD) |
+| `pose3-type` | `pub type Pose3 = Real` | rigid pose/frame | **owned → P #4577** |
+| `location-id-type` | `pub type LocationId = Real`; `at : String` | topology selector | **owned → P #4577** (threads landed Selector substrate, task 4116) |
+| `part-structdef` | `part : String` | `Part` structure_def | **owned → Pt #4578** |
+| `modal-result-type` | `modal_result : Real` | nominal `ModalResult` | **owned → M #4579** |
+| `loop-closure-record-type` / `Map<BodyId,JointParent>` | `loop_closures : List<Real>`; `joint_parents : Map<String, Real>` | record types | **owned → M #4579** |
+| `force-velocity-acceleration-scalar` | `max_force/velocity_limit/acceleration_limit : Real` | `Scalar<Force/Velocity/Acceleration>` | **owned → S #4580** (Velocity = new named dim) |
+| stdlib module-graph **FOUNDATION** | linear `include_str!` prelude | DAG-loaded / forward-ref-resolved prelude | **owned → F #4574** |
 
 Two families (`vec3-type`, `range-type`) already have natural homes on main (the markers self-document this — "retarget to the geometry/pose PRD's Vec3"). This PRD does **not** re-own them; it routes them via §6's seam table and files their tightening tasks as dependents of the owning PRDs. Everything else is genuinely unowned and owned here.
 
@@ -77,12 +77,12 @@ Existing PRDs referenced **read-only** — not edited; routed tasks filed as the
 
 | Seam | Direction | Mechanism | Owner |
 |---|---|---|---|
-| `numeric-and-range-literal-forms.md` | routes-to | `Range<T>` + `.contains`/`.lower`/`.upper` (§1/§2) | **R** filed as dependent; markers `range-type`/`range-angle-type` cite R. tolerancing-gdt §4 decision 6 scopes `Range<Length>` here. |
-| `affine-map-type.md` | routes-to / adjacent | `Vector3<Length>`, `vec3()` (§4.2); `Transform3` rigid pose (§4.4) | **V** (Vec3) filed as dependent. **P** (Pose3) stays owned here but is designed adjacent to `Transform3` so they converge. |
-| `math-linalg-n-generality-and-signatures.md` | routes-to | `vec`/`vec2`/`vec3`/`matrix` construction + compiler signatures (§2/§3) | **V** filed as dependent. |
-| `kinematic-inter-joint-offsets.md` | routes-to | `point3`/`vec3` joint authoring (§3/§7.1) | **V** filed as dependent; the `param axis : Vec3` kinematic.ri sites are this line's consumers. |
-| `module-and-visibility-hardening.md` | complements | `module` path semantics + `import` grammar (§7.1, §8 α/γ); `module_dag.rs` user-project loading | **F** owns the stdlib-prelude load-ORDER / forward-refs (that PRD's §5 leaves it out); F consumes the `import` grammar if it takes the ModuleDag branch. Zero doc edit to that PRD. |
-| Selector substrate (task 4116) | consumes (landed) | `Value::Selector`/`Type::Selector`/`SelectorKind` | **P** threads it for `LocationId`; no new substrate. |
+| `numeric-and-range-literal-forms.md` | routes-to | `Range<T>` + `.contains`/`.lower`/`.upper` (§1/§2) | **R #4576** filed as dependent; markers `range-type`/`range-angle-type` cite #4576. tolerancing-gdt §4 decision 6 scopes `Range<Length>` here. |
+| `affine-map-type.md` | routes-to / adjacent | `Vector3<Length>`, `vec3()` (§4.2); `Transform3` rigid pose (§4.4) | **V #4575** (Vec3) filed as dependent. **P #4577** (Pose3) stays owned here but is designed adjacent to `Transform3` so they converge. |
+| `math-linalg-n-generality-and-signatures.md` | routes-to | `vec`/`vec2`/`vec3`/`matrix` construction + compiler signatures (§2/§3) | **V #4575** filed as dependent. |
+| `kinematic-inter-joint-offsets.md` | routes-to | `point3`/`vec3` joint authoring (§3/§7.1) | **V #4575** filed as dependent; the `param axis : Vec3` kinematic.ri sites are this line's consumers. |
+| `module-and-visibility-hardening.md` | complements | `module` path semantics + `import` grammar (§7.1, §8 α/γ); `module_dag.rs` user-project loading | **F #4574** owns the stdlib-prelude load-ORDER / forward-refs (that PRD's §5 leaves it out); F consumes the `import` grammar if it takes the ModuleDag branch. Zero doc edit to that PRD. |
+| Selector substrate (task 4116) | consumes (landed) | `Value::Selector`/`Type::Selector`/`SelectorKind` | **P #4577** threads it for `LocationId`; no new substrate. |
 | `type-hygiene.md` β (polymorphic zero) | consumes-interim | dimensioned-zero RHS convention | **S** uses `> 0 * 1N` in the interim; β's sweep may later simplify. |
 | `docs/notes/stdlib-real-placeholder-audit.md` | sibling | blocked-surface-type is the residual bucket | this PRD; audit's other buckets closed by #3111/#3115/#3116. |
 
@@ -137,12 +137,12 @@ Every task-4548-listed marker, by family. Line numbers re-verified 2026-06-12 po
 
 | Family → task | Marker sites (file:line, current label) |
 |---|---|
-| `vec3-type` → **V** | `fea_multi_case.ri` TODO(vec3-type) ×2 (≈:305, :433); `kinematic.ri` TODO(vec3-type) ×5 (axis ≈:99/:113/:122, axis_x/axis_y ≈:129/:130); `trajectory.ri` TODO(vec3-type) (alias ≈:94); `fdm.ri` ≈:105 (β-phase build_direction normalization that rides Vec3) |
-| `range-type` / `range-angle-type` → **R** | `kinematic.ri` TODO(range-type) ×2 (SweepDim.range ≈:211/:216); `flexures.ri` TODO(range-angle-type) ×2 (≈:127/:145) |
-| `pose3-type` + `location-id-type` → **P** | `trajectory.ri` TODO(pose3-type) (≈:85), TODO(location-id-type) (≈:104); `modal_analysis.ri` FIXME(location-id-type) ×4 (StepForce/ImpulseForce/HarmonicForce/SampledForce `at` ≈:441/:509/:556/:621) |
-| `part-structdef` → **Pt** | `modal_analysis.ri` FIXME(part-structdef) ×3 (ModalResult.part ≈:216, ForcingTimeHistory.part ≈:682, TransientResponse.part ≈:754) |
-| `modal-result-type` + `loop-closure-record-type` / `Map<BodyId,JointParent>` → **M** | `trajectory.ri` TODO(modal-result-type) (EndEffectorTrack ≈:322, continuation ≈:324); `kinematic.ri` Mechanism: `TODO: Map<BodyId,JointParent>` ×2 (≈:190/:194), TODO(loop-closure-record-type) ×2 (≈:191/:195) |
-| `force-velocity-acceleration-scalar` → **S** | `trajectory.ri` TODO(force-scalar) (JointLimit.max_force ≈:490), TODO(velocity-scalar) (≈:550), TODO(acceleration-scalar) (≈:553), convention prose (≈:536) |
+| `vec3-type` → **V #4575** | `fea_multi_case.ri` TODO(vec3-type) ×2 (≈:305, :433); `kinematic.ri` TODO(vec3-type) ×5 (axis ≈:99/:113/:122, axis_x/axis_y ≈:129/:130); `trajectory.ri` TODO(vec3-type) (alias ≈:94); `fdm.ri` ≈:105 (β-phase build_direction normalization that rides Vec3) |
+| `range-type` / `range-angle-type` → **R #4576** | `kinematic.ri` TODO(range-type) ×2 (SweepDim.range ≈:211/:216); `flexures.ri` TODO(range-angle-type) ×2 (≈:127/:145) |
+| `pose3-type` + `location-id-type` → **P #4577** | `trajectory.ri` TODO(pose3-type) (≈:85), TODO(location-id-type) (≈:104); `modal_analysis.ri` FIXME(location-id-type) ×4 (StepForce/ImpulseForce/HarmonicForce/SampledForce `at` ≈:441/:509/:556/:621) |
+| `part-structdef` → **Pt #4578** | `modal_analysis.ri` FIXME(part-structdef) ×3 (ModalResult.part ≈:216, ForcingTimeHistory.part ≈:682, TransientResponse.part ≈:754) |
+| `modal-result-type` + `loop-closure-record-type` / `Map<BodyId,JointParent>` → **M #4579** | `trajectory.ri` TODO(modal-result-type) (EndEffectorTrack ≈:322, continuation ≈:324); `kinematic.ri` Mechanism: `TODO: Map<BodyId,JointParent>` ×2 (≈:190/:194), TODO(loop-closure-record-type) ×2 (≈:191/:195) |
+| `force-velocity-acceleration-scalar` → **S #4580** | `trajectory.ri` TODO(force-scalar) (JointLimit.max_force ≈:490), TODO(velocity-scalar) (≈:550), TODO(acceleration-scalar) (≈:553), convention prose (≈:536) |
 
 **Deleted by 4548 Phase A (not re-cited):** `FIXME(impulse-dim)` (modal_analysis.ri, resolved by Impulse registration + `impulse : Impulse`); `TODO(frequency-scalar)` ×2 (printer_print_envelope.ri:37/:133, resolved by `Mode.frequency : Frequency`).
 
@@ -150,17 +150,29 @@ Every task-4548-listed marker, by family. Line numbers re-verified 2026-06-12 po
 
 ## 10. Decomposition plan
 
-Letters match task-4548's plan labels; real IDs assigned at decompose (filed via fused-memory `submit_task`). **Spine: F → {V, P, M}; R depends on F only where cross-module; Pt, S independent of F.** Owned tasks (P/Pt/M/S/F) are children of this hub PRD; routed tasks (V/R) are filed as dependents of their owning PRDs (§6).
+Letters match task-4548's plan labels. **Filed 2026-06-12 (task 4548 step-8)** via fused-memory `submit_task(planning_mode=True)` → `commit_planning(pending)`; dependency edges V/R/P/M → F added via `add_dependency`. **Spine: F → {V, P, M}; R depends on F only where cross-module; Pt, S independent of F.** Owned tasks (P/Pt/M/S/F) are children of this hub PRD; routed tasks (V/R) are filed as dependents of their owning PRDs (§6).
 
-- **F — stdlib module-graph / forward-reference FOUNDATION.** Migrate `stdlib_loader.rs::load_stdlib` off the linear `include_str!` vec onto `module_dag.rs`'s topo sort (add `import std.*` decls) OR add forward-reference name-registration to the growing-prelude compile. Modules: reify-compiler (stdlib_loader.rs, stdlib `.ri` headers). Deps: none (consumes landed `module_dag.rs` + `import` grammar). Signal: a shared real `Vec3` defined once is reachable from both an early- and a late-loaded stdlib module; `load_stdlib()` green. **CRITICAL — spine.**
-- **V — Vec3/Vector3 surface type (routed → affine-map / math-linalg / kinematic-offsets).** Tighten `pub type Vec3 = Real` + all `param axis : Vec3` to the real vector type owned by those PRDs; cascade examples. Modules: reify-compiler (stdlib trajectory.ri/kinematic.ri/fea_multi_case.ri/fdm.ri), examples. Deps: **F**. Filed as dependent of the Vec3-owning PRD line. Signal: §8.2 boundary test.
-- **R — Range<T> (routed → numeric-and-range-literal-forms).** Tighten `SweepDim.range` + `prb_validity_range` to `Range<T>`/`Range<Angle>`. Modules: reify-compiler (stdlib kinematic.ri/flexures.ri), examples. Deps: **F** where the range type is cross-module-shared. Filed as dependent of `numeric-and-range-literal-forms.md`. Signal: §8.3.
-- **P — Pose3 + LocationId.** Introduce `Pose3` (adjacent to `Transform3`); route `LocationId` + `at : String` to the Selector substrate (task 4116). Modules: reify-compiler (stdlib trajectory.ri/modal_analysis.ri), reify-eval (selector echo), examples. Deps: **F** (Pose3 cross-module), task 4116 (landed). Signal: §8.4.
-- **Pt — Part structure_def.** Replace the `part : String` placeholders with a real `Part` structure_def; migrate the producer echo. Modules: reify-compiler (stdlib modal_analysis.ri/fea_multi_case.ri), reify-eval (modal_ops.rs), examples. Deps: none hard (Part is single-module-definable, but a cross-module `Part` rides **F**). Signal: §8.5.
-- **M — ModalResult + loop-closure/Map records.** Tighten `EndEffectorTrack.modal_result` to nominal `ModalResult`; introduce `LoopClosure` record + `JointParent` record + `Map<BodyId, JointParent>`. Modules: reify-compiler (stdlib trajectory.ri/kinematic.ri), examples. Deps: **F** (ModalResult defined in std.modal.analysis, consumed in std.trajectory — the canonical cross-module case). Signal: §8.6.
-- **S — force/velocity/acceleration scalar sweep (+ new Velocity dimension).** Add `VELOCITY` to `NAMED_DIMENSIONS` (mirror 4548 Phase-A IMPULSE); retarget `max_force`/`velocity_limit`/`acceleration_limit` to `Scalar<Force/Velocity/Acceleration>`; dimensioned-zero constraints. Modules: reify-core (dimension.rs), reify-compiler (stdlib trajectory.ri), examples. Deps: none. Signal: §8.7.
+**Filed task IDs (re-citation targets for task 4548 steps 9-14):**
 
-Dependency edges added at decompose: V→F, P→F, M→F, (R→F where cross-module). Pt/S independent unless their tightened type is cross-module-shared (then →F).
+| Leaf | Task ID | Family | Status | Depends on |
+|---|---|---|---|---|
+| F | **#4574** | stdlib-module-graph foundation | pending | — (spine) |
+| V | **#4575** | vec3-type (routed) | pending | #4574 |
+| R | **#4576** | range-type / range-angle-type (routed) | pending | #4574 |
+| P | **#4577** | pose3-type + location-id-type | pending | #4574, task 4116 (landed) |
+| Pt | **#4578** | part-structdef | pending | — |
+| M | **#4579** | modal-result-type + loop-closure-record-type | pending | #4574 |
+| S | **#4580** | force/velocity/acceleration-scalar sweep | pending | — |
+
+- **F (#4574) — stdlib module-graph / forward-reference FOUNDATION.** Migrate `stdlib_loader.rs::load_stdlib` off the linear `include_str!` vec onto `module_dag.rs`'s topo sort (add `import std.*` decls) OR add forward-reference name-registration to the growing-prelude compile. Modules: reify-compiler (stdlib_loader.rs, stdlib `.ri` headers). Deps: none (consumes landed `module_dag.rs` + `import` grammar). Signal: a shared real `Vec3` defined once is reachable from both an early- and a late-loaded stdlib module; `load_stdlib()` green. **CRITICAL — spine.**
+- **V (#4575) — Vec3/Vector3 surface type (routed → affine-map / math-linalg / kinematic-offsets).** Tighten `pub type Vec3 = Real` + all `param axis : Vec3` to the real vector type owned by those PRDs; cascade examples. Modules: reify-compiler (stdlib trajectory.ri/kinematic.ri/fea_multi_case.ri/fdm.ri), examples. Deps: **F**. Filed as dependent of the Vec3-owning PRD line. Signal: §8.2 boundary test.
+- **R (#4576) — Range<T> (routed → numeric-and-range-literal-forms).** Tighten `SweepDim.range` + `prb_validity_range` to `Range<T>`/`Range<Angle>`. Modules: reify-compiler (stdlib kinematic.ri/flexures.ri), examples. Deps: **F** where the range type is cross-module-shared. Filed as dependent of `numeric-and-range-literal-forms.md`. Signal: §8.3.
+- **P (#4577) — Pose3 + LocationId.** Introduce `Pose3` (adjacent to `Transform3`); route `LocationId` + `at : String` to the Selector substrate (task 4116). Modules: reify-compiler (stdlib trajectory.ri/modal_analysis.ri), reify-eval (selector echo), examples. Deps: **F** (Pose3 cross-module), task 4116 (landed). Signal: §8.4.
+- **Pt (#4578) — Part structure_def.** Replace the `part : String` placeholders with a real `Part` structure_def; migrate the producer echo. Modules: reify-compiler (stdlib modal_analysis.ri/fea_multi_case.ri), reify-eval (modal_ops.rs), examples. Deps: none hard (Part is single-module-definable, but a cross-module `Part` rides **F**). Signal: §8.5.
+- **M (#4579) — ModalResult + loop-closure/Map records.** Tighten `EndEffectorTrack.modal_result` to nominal `ModalResult`; introduce `LoopClosure` record + `JointParent` record + `Map<BodyId, JointParent>`. Modules: reify-compiler (stdlib trajectory.ri/kinematic.ri), examples. Deps: **F** (ModalResult defined in std.modal.analysis, consumed in std.trajectory — the canonical cross-module case). Signal: §8.6.
+- **S (#4580) — force/velocity/acceleration scalar sweep (+ new Velocity dimension).** Add `VELOCITY` to `NAMED_DIMENSIONS` (mirror 4548 Phase-A IMPULSE); retarget `max_force`/`velocity_limit`/`acceleration_limit` to `Scalar<Force/Velocity/Acceleration>`; dimensioned-zero constraints. Modules: reify-core (dimension.rs), reify-compiler (stdlib trajectory.ri), examples. Deps: none. Signal: §8.7.
+
+Dependency edges (filed): #4575→#4574, #4577→#4574, #4579→#4574, #4576→#4574 (R cross-module). Pt (#4578) / S (#4580) independent unless their tightened type is cross-module-shared (then →#4574).
 
 ## 11. Boundary-test sketch (two-way)
 
