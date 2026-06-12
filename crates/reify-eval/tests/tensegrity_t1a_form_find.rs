@@ -585,6 +585,41 @@ fn trampoline_legacy_line_only_has_empty_surface_stresses() {
     );
 }
 
+/// (γ-b′) A line-only call whose OPTIONAL 4th `surface_stresses` slot is present
+/// but `Undef` must fall back to the line-only path — NOT fail. This pins the
+/// robustness amendment that made `run()` tolerate `Value::Undef` in
+/// `value_inputs[3]` the same way `crack_index_triples` tolerates a missing/Undef
+/// `surfaces` field. Without it, a legacy 3-arg caller whose default `[]` ever
+/// materialized as `Undef` (engine capture / default-padding) would fail with a
+/// spurious `E_FormFindInfeasible` instead of solving the line-only system.
+#[test]
+fn trampoline_undef_surface_stresses_falls_back_to_line_only() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::Undef, // present-but-Undef 4th slot ⇒ treated as empty (line-only)
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed for an Undef 4th input, got {other:?}"),
+    };
+    let echoes = surface_stress_echoes(&fields);
+    assert!(
+        echoes.is_empty(),
+        "Undef surface_stresses ⇒ line-only ⇒ empty echo, got {echoes:?}",
+    );
+}
+
 /// (γ-c) A degenerate (collinear) surface triangle is rejected with a located
 /// `degenerate` diagnostic — never a NaN stencil or a silently-wrong solve.
 #[test]
