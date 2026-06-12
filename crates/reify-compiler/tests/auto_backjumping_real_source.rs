@@ -44,14 +44,19 @@
 //!
 //! Proves BackjumpTo fired and the blame map was non-empty.
 //!
-//! # Test B — no-blame control
+//! # Test B — no-blame control (violations present)
 //!
-//! Template B's constraint references a `Type::Real` cell (not `TypeParam`),
-//! so `build_constraint_blame_map` returns an empty map. No backjump is
-//! possible; the DFS visits all 8 leaves. Count == 8 == full cross-product
-//! (ordinary backtracking, not backjump). The WITH/WITHOUT contrast across
-//! test A and test B makes the count-reduction in test A unambiguously
-//! attributable to the TypeParam blame, not to early-termination.
+//! Template B carries BOTH a `TypeParam("T")` cell (so T-candidate values ARE
+//! seeded and `CountingRealChecker` returns `Violated` for ORingSeal leaves,
+//! exactly as in test A) AND a `Type::Real` cell whose `ValueRef` is used in
+//! the constraint expression. `build_constraint_blame_map` returns an empty map
+//! (constraint references only the Real cell); no `BackjumpTo` fires; the DFS
+//! visits all 8 leaves including the 4 Violated ORingSeal ones. Count == 8.
+//!
+//! This isolates "TypeParam blame drives BackjumpTo" from both "no violations"
+//! and "early-termination": violations alone do not reduce the count — only the
+//! blame-driven `BackjumpTo` in test A does. The WITH/WITHOUT contrast is
+//! therefore airtight.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,6 +139,30 @@ fn build_registries(
     (template_registry, trait_registry)
 }
 
+/// Canonical three-param vec (T:Seal, U:Cooled, W:Hot) shared by both tests.
+fn seal_cooled_hot_params() -> Vec<AutoTypeParam> {
+    vec![
+        AutoTypeParam {
+            name: "T".to_string(),
+            bounds: vec!["Seal".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "U".to_string(),
+            bounds: vec!["Cooled".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+        AutoTypeParam {
+            name: "W".to_string(),
+            bounds: vec!["Hot".to_string()],
+            free: true,
+            use_site_span: SourceSpan::empty(0),
+        },
+    ]
+}
+
 // ─── CountingRealChecker ──────────────────────────────────────────────────
 
 /// A `ConstraintChecker` that reads the per-candidate seeded `ConstraintInput.values`
@@ -180,11 +209,10 @@ impl ConstraintChecker for CountingRealChecker {
         let violated = matches!(input.values.get(&diameter_key), Some(Value::Real(v)) if *v > 5.0);
 
         // Return one ConstraintResult per constraint, using the shared verdict.
-        // For Template A (1 constraint), this gives one Violated or Satisfied
-        // result — the violated_constraints list in check_constraints_leaf
-        // then drives `compute_deepest_blame_level` to return BackjumpTo(0).
-        // For Template B (1 constraint, no TypeParam → no seeding → diameter absent),
-        // `violated = false` and all leaves are Satisfied → no backjump.
+        // For Template A (1 constraint): Violated for ORingSeal, Satisfied for
+        // RubberSeal → blame non-empty → BackjumpTo(0) fires.
+        // For Template B (TypeParam cell for seeding + Real cell in constraint):
+        // same Violated/Satisfied pattern as A, but blame={} → no BackjumpTo.
         input
             .constraints
             .iter()
@@ -238,7 +266,7 @@ fn real_source_backjump_blame_t_prunes_oringen_subtree() {
     //   RubberSeal:  { ValueCellId::new("field_t", "diameter") → Real(2.0)  }
     let field_t = ValueCellId::new("Coupling", "field_t");
     let constraint_expr_a =
-        CompiledExpr::value_ref(field_t.clone(), Type::TypeParam("T".into()));
+        CompiledExpr::value_ref(field_t, Type::TypeParam("T".into()));
     let template_a = TopologyTemplateBuilder::new("Coupling")
         .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
         .constraint("Coupling", 0, None, constraint_expr_a)
@@ -248,26 +276,7 @@ fn real_source_backjump_blame_t_prunes_oringen_subtree() {
     let functions: &[CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
 
-    let params = vec![
-        AutoTypeParam {
-            name: "T".to_string(),
-            bounds: vec!["Seal".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "U".to_string(),
-            bounds: vec!["Cooled".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "W".to_string(),
-            bounds: vec!["Hot".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-    ];
+    let params = seal_cooled_hot_params();
 
     let outcome = resolve_auto_type_params_with_backtracking(
         &params,
@@ -333,40 +342,44 @@ fn real_source_backjump_blame_t_prunes_oringen_subtree() {
     );
 }
 
-// ─── Test B: no-blame control ─────────────────────────────────────────────
+// ─── Test B: no-blame control (violations present) ───────────────────────
 
-/// No-blame control: same candidates, template whose constraint references only
-/// a `Type::Real` cell (not `TypeParam`). `build_constraint_blame_map` returns
-/// an empty map → no `BackjumpTo` → ordinary backtracking → all 8 leaves visited.
+/// No-blame strict control: same violation pattern as test A (ORingSeal Violated,
+/// RubberSeal Satisfied), but template B's constraint references only a
+/// `Type::Real` cell — so `build_constraint_blame_map` returns an empty map.
 ///
-/// The WITH (test A) / WITHOUT (test B) contrast makes test A's count-reduction
-/// unambiguously attributable to the TypeParam blame, not to early-termination.
+/// This isolates "TypeParam blame" from "no violations": violations alone do not
+/// reduce the leaf count; only the blame-driven `BackjumpTo` in test A does.
+/// No `BackjumpTo` fires → the DFS visits all 8 leaves including the 4 Violated
+/// ORingSeal ones. The WITH/WITHOUT contrast is therefore airtight.
 ///
 /// # Assertions
 ///
 /// **(a) Result matches the exhaustive-search baseline.**
-/// No backjump: template B has no `TypeParam` cells → `seed_candidate_value_map`
-/// is never called for T candidates → `input.values` is empty → checker returns
-/// `Satisfied` for all leaves. All 8 leaves are feasible. Lex-first (DFS order):
-/// (ORingSeal, AirCooled, Hot1).
+/// No backjump despite violations: lex-first Satisfied (DFS order) is
+/// (RubberSeal, AirCooled, Hot1) — the same result as test A.
 ///
 /// **(b) Checker.count() == full cross-product.**
-/// No pruning: exactly 8 leaves visited × 1 constraint = 8 calls.
+/// No blame → no pruning → exactly 8 leaves visited × 1 constraint = 8 calls,
+/// including 4 Violated ORingSeal leaves. count == 8 proves that test A's
+/// reduction to 5 is attributable solely to the blame-driven `BackjumpTo`.
 #[test]
-fn no_blame_control_visits_full_cross_product() {
+fn no_blame_with_violations_visits_full_cross_product() {
     let module = parse_and_compile(REAL_SOURCE);
     let (template_registry, trait_registry) = build_registries(&module);
 
-    // Template B: cell `Coupling.field_real : Type::Real` (NOT TypeParam("T")).
-    // `build_constraint_blame_map` produces {} (empty) — no blame, no backjump.
-    // `param_type_member(template_B, "T")` returns None → no seeding for T
-    // candidates → `input.values` is empty for all leaves.
-    // Checker reads `ValueCellId::new("field_t", "diameter")` → absent → Satisfied.
-    let field_real = ValueCellId::new("Coupling", "field_real");
+    // Template B: two cells —
+    //   `Coupling.field_t : TypeParam("T")` enables T-candidate seeding so
+    //   `CountingRealChecker` receives real ORingSeal/RubberSeal diameter values.
+    //   `Coupling.field_control : Type::Real` is used in the constraint expression.
+    // `build_constraint_blame_map` returns {} because the constraint refs only the
+    // Real cell → no BackjumpTo fires even though ORingSeal leaves are Violated.
+    let field_control = ValueCellId::new("Coupling", "field_control");
     let constraint_expr_b =
-        CompiledExpr::value_ref(field_real.clone(), Type::dimensionless_scalar());
+        CompiledExpr::value_ref(field_control, Type::dimensionless_scalar());
     let template_b = TopologyTemplateBuilder::new("Coupling")
-        .param("Coupling", "field_real", Type::dimensionless_scalar(), None)
+        .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
+        .param("Coupling", "field_control", Type::dimensionless_scalar(), None)
         .constraint("Coupling", 0, None, constraint_expr_b)
         .build();
 
@@ -374,26 +387,7 @@ fn no_blame_control_visits_full_cross_product() {
     let functions: &[CompiledFunction] = &[];
     let mut diagnostics = Vec::new();
 
-    let params = vec![
-        AutoTypeParam {
-            name: "T".to_string(),
-            bounds: vec!["Seal".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "U".to_string(),
-            bounds: vec!["Cooled".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-        AutoTypeParam {
-            name: "W".to_string(),
-            bounds: vec!["Hot".to_string()],
-            free: true,
-            use_site_span: SourceSpan::empty(0),
-        },
-    ];
+    let params = seal_cooled_hot_params();
 
     let outcome = resolve_auto_type_params_with_backtracking(
         &params,
@@ -409,31 +403,33 @@ fn no_blame_control_visits_full_cross_product() {
 
     // (a) Result matches the exhaustive-search baseline.
     //
-    // Exhaustive baseline: no TypeParam seeding → checker always Satisfied.
-    // All 8 leaves are feasible. DFS order (T outer, U mid, W inner):
-    //   Lex-first = (ORingSeal, AirCooled, Hot1).
+    // Seeding: field_t : TypeParam("T") → ORingSeal: Violated (10.0 > 5.0),
+    //          RubberSeal: Satisfied (2.0 ≤ 5.0).
+    // Constraint refs field_control (Real) → blame={} → no BackjumpTo.
+    // All 8 leaves visited; lex-first Satisfied (DFS order): (RubberSeal, AirCooled, Hot1).
     assert_eq!(
         outcome.substitution,
         vec![
-            ("T".to_string(), "ORingSeal".to_string()),
+            ("T".to_string(), "RubberSeal".to_string()),
             ("U".to_string(), "AirCooled".to_string()),
             ("W".to_string(), "Hot1".to_string()),
         ],
-        "WITHOUT backjumping (no-blame): lex-first must be (ORingSeal, AirCooled, Hot1); \
+        "VIOLATIONS+NO-BLAME: lex-first Satisfied must be (RubberSeal, AirCooled, Hot1); \
          got: {:?}",
         outcome.substitution
     );
 
     // (b) Checker call count == full cross-product (8).
     //
-    // No blame → no BackjumpTo → ordinary backtracking → all 8 leaves visited.
-    // count == 8 rules out that test A's reduction was due to any
-    // non-backjump-specific early-termination.
+    // Violations are present (ORingSeal subtree) but blame is empty → no BackjumpTo →
+    // all 8 leaves visited. count == 8 proves that test A's reduction (5 vs 8) is
+    // attributable solely to the blame-driven BackjumpTo, not to violations per se.
     let full_cross_product = 2 * 2 * 2;
     assert_eq!(
         checker.count(),
         full_cross_product,
-        "WITHOUT backjumping (no-blame): all {} leaves must be visited × 1 constraint = {} calls; \
+        "VIOLATIONS+NO-BLAME: all {} leaves visited × 1 constraint = {} calls \
+         (incl. 4 Violated ORingSeal leaves — blame-empty proves no BackjumpTo fired); \
          got: {}",
         full_cross_product,
         full_cross_product,
