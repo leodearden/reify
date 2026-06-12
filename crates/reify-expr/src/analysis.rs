@@ -138,9 +138,9 @@ fn wrap_tensor_field(field_val: &Value, op: &str, source_kind: FieldSourceKind) 
 
     let result_codomain = scalar_type_for_dim(elem_dim);
 
-    // FIXME(perf): `field_val.clone()` copies the outer Value::Field struct; only the
+    // FIXME(#4551): `field_val.clone()` copies the outer Value::Field struct; only the
     // inner lambda is O(1) via Arc::clone.  See compute_gradient in calculus.rs for
-    // the full note on the Arc<Value> caller optimization (tracked by task 4551).
+    // the full note on the Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -174,7 +174,7 @@ pub(crate) fn compute_principal_stresses(field_val: &Value) -> Value {
     let scalar_ty = scalar_type_for_dim(elem_dim);
     let result_codomain = Type::List(Box::new(scalar_ty));
 
-    // FIXME(perf): see wrap_tensor_field for note on Arc<Value> caller optimization. (task 4551)
+    // FIXME(#4551): see wrap_tensor_field for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
