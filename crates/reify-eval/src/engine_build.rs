@@ -5596,26 +5596,6 @@ impl Engine {
         table: &TopologyAttributeTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
-        // a fourth explicit call at each build / build_snapshot /
-        // tessellate_from_values site — so all three sites pick it up
-        // automatically (task 3745 consolidation contract). Reborrows the
-        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
-        // (deferred, task 3620) geometric query and does not mutate it.
-        //
-        // ORDERING — TODO(3620): this pass runs BEFORE the selector passes
-        // (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`).
-        // That is safe ONLY while the geometric mass/com/inertia query is
-        // deferred: `body_mass_props`'s body arg resolves to an already-eval'd
-        // let-bound `Value` and the geometric fields are the `Undef` sentinel,
-        // so reading the body before the selector passes cannot observe a stale
-        // value. When the KGQ kernel seam (task 3620) is wired and geometry stops
-        // being deferred, RE-EVALUATE this position: a body produced by a
-        // selector post-process would not yet be populated when this pass reads
-        // it, yielding incorrect geometry — at which point this call likely must
-        // move AFTER the selector passes (or gain an explicit dependency
-        // ordering). Do not wire 3620 without revisiting this ordering.
-        // (re-evaluation owned by task 4538)
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
         // separate explicit call at each build / build_snapshot /
@@ -5634,7 +5614,6 @@ impl Engine {
             &*kernel,
             diagnostics,
         );
-        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(
             template,
@@ -5644,6 +5623,33 @@ impl Engine {
             table,
             diagnostics,
         );
+        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
+        // a fourth explicit call at each build / build_snapshot /
+        // tessellate_from_values site — so all three sites pick it up
+        // automatically (task 3745 consolidation contract). Reborrows the
+        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
+        // geometric query and does not mutate it.
+        //
+        // ORDERING CONTRACT (task 4538): this pass runs LAST — after
+        // post_process_geometry_queries, post_process_topology_selectors, and
+        // post_process_ad_hoc_selectors — so every handle-producing pass has
+        // populated body handles before mass-props reads them. A body whose
+        // cell is produced by a selector pass (e.g. `single(edges(s))`) would
+        // still be `Value::Undef` when mass-props ran in the old (pre-4538)
+        // position, yielding `Undef` geometric fields even though the KGQ
+        // kernel query is live (task 4237 / KGQ-λ). The correct order is
+        // enforced by the regression test
+        // `run_post_processes_selector_produced_body_gets_real_mass_props`
+        // (engine_build.rs tests, task 4538 step-1).
+        //
+        // No inverse dependency: the selector and geometry-query passes consume
+        // geometry handles / points, never a MassProperties value, so this call
+        // has no consumer within run_post_processes and is safe to run last.
+        //
+        // Sibling task 4472 (post_process_mechanism_mass_props) is also
+        // specified to run after the selector passes; when added it should be
+        // placed here, after post_process_body_mass_props.
+        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
@@ -11826,8 +11832,9 @@ mod tests {
              got: {mass_field:?}"
         );
         let mass = match mass_field {
+            Value::Scalar { si_value, .. } => *si_value,
             Value::Real(m) => *m,
-            other => panic!("mass must be Value::Real; got {other:?}"),
+            other => panic!("mass must be a numeric Scalar or Real; got {other:?}"),
         };
         assert!(
             (mass - 6000.0_f64).abs() < 1e-9,
