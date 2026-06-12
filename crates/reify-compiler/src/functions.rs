@@ -57,6 +57,16 @@ pub(crate) fn compile_function(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+    // Build the subset of dimension-kinded type params (those declared with `Q: Dimension`).
+    // Kept alongside `type_param_names` so the FnUnknownTypeParam gate + INV-6/INV-10
+    // back-compat are bit-for-bit unchanged; the kinded resolver consults this set
+    // first in the Scalar/Vector3/Point3 arms and the bare-name path (task ε).
+    let dim_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+        .map(|tp| tp.name.clone())
+        .collect();
     // Resolve parameter types.
     //
     // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
@@ -67,9 +77,10 @@ pub(crate) fn compile_function(
     let mut params: Vec<(String, Type)> = Vec::new();
     let mut param_type_resolved: Vec<bool> = Vec::new();
     for p in &fn_def.params {
-        let (ty, resolved) = match resolve_type_expr_with_aliases(
+        let (ty, resolved) = match resolve_type_expr_with_aliases_kinded(
             &p.type_expr,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -169,9 +180,10 @@ pub(crate) fn compile_function(
     // Resolve return type
     let return_type = match &fn_def.return_type {
         Some(te) => {
-            match resolve_type_expr_with_aliases(
+            match resolve_type_expr_with_aliases_kinded(
                 te,
                 &type_param_names,
+                &dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -341,6 +353,13 @@ pub(crate) fn compile_assoc_function(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+    // Dimension-kinded subset (mirrors compile_function; empty for today's assoc fns).
+    let dim_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+        .map(|tp| tp.name.clone())
+        .collect();
     let receiver_type = Type::StructureRef(conformer_name.to_string());
 
     // Resolve parameter types. The leading `is_self` receiver maps to the
@@ -352,9 +371,10 @@ pub(crate) fn compile_assoc_function(
             params.push((p.name.clone(), receiver_type.clone()));
             continue;
         }
-        let ty = match resolve_type_expr_with_aliases(
+        let ty = match resolve_type_expr_with_aliases_kinded(
             &p.type_expr,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -391,9 +411,10 @@ pub(crate) fn compile_assoc_function(
 
     // Resolve return type (defaults to Real when unannotated).
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_expr_with_aliases(
+        Some(te) => match resolve_type_expr_with_aliases_kinded(
             te,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,

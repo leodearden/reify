@@ -812,6 +812,7 @@ pub(crate) fn resolve_type_alias_expr(
                     &HashSet::new(),
                     &HashSet::new(),
                     &HashSet::new(),
+                    &HashSet::new(), // alias DFS: no dim params in scope
                 ) {
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
@@ -960,9 +961,48 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
 /// Falls through: builtins → type params → non-parameterized aliases →
 /// parameterized aliases → trait names.
 /// Returns None if the type cannot be resolved (caller handles "unresolved" error).
+///
+/// Thin wrapper around [`resolve_type_expr_with_aliases_kinded`] with an empty
+/// `dim_param_names` set.  The ~30 external callers stay untouched; only
+/// function-signature resolution (which knows about dimension-kinded params)
+/// calls the kinded entry directly.
 pub(crate) fn resolve_type_expr_with_aliases(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> Option<Type> {
+    resolve_type_expr_with_aliases_kinded(
+        type_expr,
+        type_param_names,
+        &HashSet::new(),
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    )
+}
+
+/// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
+///
+/// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
+/// names the dimension-kinded type parameters in scope (params declared with
+/// `Q: Dimension`).  These names are threaded into
+/// [`resolve_parameterized_builtin_type`] so that `Scalar<Q>`, `Vector3<Q>`,
+/// and `Point3<Q>` arms can detect a dimension-param in the slot and return
+/// `Type::ScalarParam(Q)` / `Type::vec3(ScalarParam(Q))` / `Type::point3(ScalarParam(Q))`
+/// instead of routing to `resolve_type_alias_expr_to_dimension`.
+///
+/// Called directly by `compile_function` and `compile_assoc_function` (which
+/// build the dim-param set from `fn_def.type_params`).  All other callers go
+/// through the 6-arg wrapper with an empty dim set.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_type_expr_with_aliases_kinded(
+    type_expr: &reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     structure_names: &HashSet<String>,
@@ -1000,6 +1040,7 @@ pub(crate) fn resolve_type_expr_with_aliases(
             structure_names,
             trait_names,
             type_param_names,
+            dim_param_names,
         )
     {
         return Some(ty);
@@ -1597,13 +1638,15 @@ pub(crate) fn resolve_parameterized_builtin_type(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
 ) -> Option<Type> {
     let pre_diag_len = diagnostics.len();
     let result = match name {
         "List" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1612,9 +1655,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::List(Box::new(inner)))
         }
         "Set" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1623,17 +1667,19 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Set(Box::new(inner)))
         }
         "Map" if type_args.len() == 2 => {
-            let key = resolve_type_expr_with_aliases(
+            let key = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
                 trait_names,
             )?;
-            let val = resolve_type_expr_with_aliases(
+            let val = resolve_type_expr_with_aliases_kinded(
                 &type_args[1],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1642,9 +1688,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
         "Keyed" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1653,9 +1700,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Keyed(Box::new(inner)))
         }
         "Option" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1675,10 +1723,21 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
-            // Scalar<Q>: resolve Q to a DimensionVector and wrap.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::Scalar { dimension: dim })
+            // Scalar<Q>: if Q is a bare Named type-arg that is a dimension-param,
+            // return ScalarParam(Q). Otherwise fall through to the concrete dimension path.
+            if let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_args[0].kind
+                && inner.is_empty()
+                && dim_param_names.contains(n.as_str())
+            {
+                Some(Type::ScalarParam(n.clone()))
+            } else {
+                let dim = resolve_type_alias_expr_to_dimension(
+                    &type_args[0],
+                    alias_registry,
+                    diagnostics,
+                )?;
+                Some(Type::Scalar { dimension: dim })
+            }
         }
         "Vector3" if type_args.len() == 1 => {
             // Vector3<Q>: resolve Q to a DimensionVector and wrap as a 3D vector.
@@ -1697,9 +1756,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             let rank =
                 expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
-            let quantity = resolve_type_expr_with_aliases(
+            let quantity = resolve_type_expr_with_aliases_kinded(
                 &type_args[2],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1711,9 +1771,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             // Matrix<m, n, Q>: two integer literals + a quantity type.
             let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
-            let quantity = resolve_type_expr_with_aliases(
+            let quantity = resolve_type_expr_with_aliases_kinded(
                 &type_args[2],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1723,19 +1784,21 @@ pub(crate) fn resolve_parameterized_builtin_type(
         }
         "Field" if type_args.len() == 2 => {
             // Field<D, C>: full-type domain and codomain (Point3, Vector3, Tensor, etc.),
-            // not bare dimensions. Use resolve_type_expr_with_aliases (full-type resolver)
-            // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
-            let domain = resolve_type_expr_with_aliases(
+            // not bare dimensions. Use the kinded resolver so nested Scalar<Q> positions
+            // still see the dim set.
+            let domain = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
                 trait_names,
             )?;
-            let codomain = resolve_type_expr_with_aliases(
+            let codomain = resolve_type_expr_with_aliases_kinded(
                 &type_args[1],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -2654,6 +2717,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             keyed,
@@ -2672,6 +2736,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             list,
@@ -2762,6 +2827,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             keyed,
