@@ -169,6 +169,82 @@ fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
 
+// ── BT7: construction is kernel-free (K2 — zero query() round-trips) ─────────
+
+/// BT7 (producer / K2 invariant): building a bare, unconsumed
+/// `let sel = faces_by_normal(b, dir, tol)` must issue ZERO kernel `query()`
+/// round-trips. The selector cell must hold a typed `Value::Selector(Face)`
+/// with a `ByNormal{+Z, tol>0}` Leaf whose `target.kernel_handle` is the
+/// box's realized handle.
+///
+/// PRD §5 BT7: "construction is kernel-free — K2 invariant".
+///
+/// Uses `CountingMockKernel` to intercept every `query()` call. `execute()`
+/// is NOT counted, so the box realization (which calls `execute()`) does not
+/// inflate the counter. Only `query()` (predicate fns like `faces_by_normal`,
+/// `extract_faces`, face-normal queries) is counted.
+///
+/// RED when fixture `bt7_kernel_free_construction.ri` is absent.
+#[test]
+fn bt7_construction_is_kernel_free() {
+    let source = std::fs::read_to_string(fixture_path("bt7_kernel_free_construction.ri")).expect(
+        "fixture bt7_kernel_free_construction.ri must exist (create in step-6 to turn GREEN)",
+    );
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+
+    // Wrap MockGeometryKernel in CountingMockKernel; capture the Arc<QueryCounts>
+    // BEFORE moving the kernel into Engine::new (Arc survives the move).
+    let counting_kernel = CountingMockKernel::new(MockGeometryKernel::new());
+    let counts = counting_kernel.counts();
+
+    let checker = SimpleConstraintChecker;
+    let kernel: Box<dyn reify_ir::GeometryKernel> = Box::new(counting_kernel);
+    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // (a) `sel` = Value::Selector(Face) with ByNormal{+Z, tol>0} Leaf
+    let sv = selector_cell(&result, "BT7KernelFree", "sel");
+    assert_eq!(
+        sv.kind,
+        SelectorKind::Face,
+        "BT7: BT7KernelFree.sel must be Value::Selector(Face)"
+    );
+    match &sv.node {
+        SelectorNode::Leaf {
+            query: LeafQuery::ByNormal { dir, tol_rad },
+            target,
+        } => {
+            assert_eq!(
+                *dir, [0.0, 0.0, 1.0],
+                "BT7: ByNormal dir must be +Z (0,0,1)"
+            );
+            assert!(
+                *tol_rad > 0.0,
+                "BT7: ByNormal tol_rad must be positive (1deg converted to rad), got {tol_rad}"
+            );
+            // The box is the first `execute()` call → GeometryHandleId(1).
+            assert_eq!(
+                target.kernel_handle,
+                GeometryHandleId(1),
+                "BT7: leaf target.kernel_handle must be the box handle GeometryHandleId(1)"
+            );
+        }
+        other => panic!(
+            "BT7: BT7KernelFree.sel must be a SelectorNode::Leaf with ByNormal query, got: {other:?}"
+        ),
+    }
+
+    // (b) ZERO kernel query() round-trips during construction (K2/BT7).
+    //     execute() (for box realization) is NOT counted — only query().
+    assert_eq!(
+        counts.total(),
+        0,
+        "BT7: selector construction must issue ZERO kernel query() calls (K2 invariant); \
+         if > 0, the selector was resolved eagerly instead of staying lazy"
+    );
+}
+
 // ── BT6: kind-typed param rejects wrong selector at compile time ──────────────
 
 /// BT6 (consumer / kind-typed param): `needs_face(edges(b))` — passing an
