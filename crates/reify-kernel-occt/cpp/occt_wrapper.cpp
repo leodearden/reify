@@ -2089,10 +2089,18 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
 // with V = width·Area exactly (GProp-analytic); centroid.z ≈ 0 (symmetric centering).
 // Curved face guarantee: for a surface patch (e.g. cylindrical) the result is a
 // non-degenerate extruded solid with volume > 0 (PRD G6 smoke bar).
+//
+// NOTE — approximation for curved faces: this implementation extracts a single surface
+// normal at the first (U,V) parameter and extrudes the entire face along that one
+// constant direction (a linear prism).  For planar faces this is exact (the normal is
+// uniform and the prism is a right slab).  For curved patches (e.g. cylindrical) the
+// result is a linear sweep of the curved profile, NOT a true ±width/2 offset zone about
+// the surface.  Proper curved-face zone semantics (e.g. via BRepOffsetAPI_MakeOffsetShape
+// thick-shell of the surface) are deferred; task θ owns the full §9 accuracy matrix.
 std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) {
     return wrap_occt_call("zone_slab_shape", [&]() {
-        if (width <= 0.0) {
-            throw std::runtime_error("zone_slab_shape: width must be positive");
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("zone_slab_shape: width must be finite and positive");
         }
 
         // Step 1: extract the face normal at the first point on the surface.
@@ -2113,6 +2121,7 @@ std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) 
 
         // Step 2: translate the face by -width/2 in the normal direction so the
         // slab will be centered ±width/2 about the nominal face plane.
+        // (For curved faces this uses the single extracted normal — see approximation note above.)
         gp_Vec shift(normal);
         shift.Multiply(-width / 2.0);
         gp_Trsf trsf;

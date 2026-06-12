@@ -5768,15 +5768,11 @@ mod tests {
         // Centering: centroid.z ≈ 0 (±w/2 symmetric offset)
         let centroid = kernel.query(&GeometryQuery::Centroid(slab_h.id)).unwrap();
         match centroid {
-            Value::String(s) => {
-                let z: f64 = {
-                    let z_part = s.split("\"z\":").nth(1).expect("centroid JSON has z field");
-                    let z_str = z_part.trim_end_matches('}').trim();
-                    z_str.parse().expect("z is a number")
-                };
+            Value::String(ref s) => {
+                let (_cx, _cy, cz) = parse_centroid_json(s);
                 assert!(
-                    z.abs() <= 1e-9,
-                    "zone_slab centroid z should be ≈0 (symmetric slab), got {z}"
+                    cz.abs() <= 1e-9,
+                    "zone_slab centroid z should be ≈0 (symmetric slab), got {cz}"
                 );
             }
             other => panic!("expected Value::String (centroid JSON), got {:?}", other),
