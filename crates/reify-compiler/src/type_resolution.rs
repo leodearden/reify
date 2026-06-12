@@ -1630,6 +1630,29 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
 /// diagnostic first.
+
+/// Shared classifier for Scalar/Vector3/Point3 dim-param detection (task ε).
+///
+/// If `type_arg` is a bare `Named` type-expression (no inner type-args) whose
+/// name is present in `dim_param_names`, returns `Some(name)`.  Otherwise returns
+/// `None`, indicating the arm should fall through to the concrete dimension path.
+///
+/// Factored here so all three quantity-slot arms (`Scalar`, `Vector3`, `Point3`)
+/// stay in lock-step: adding a third check only requires editing this one fn.
+fn try_dim_param_slot<'a>(
+    type_arg: &'a reify_ast::TypeExpr,
+    dim_param_names: &HashSet<String>,
+) -> Option<&'a str> {
+    if let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind
+        && inner.is_empty()
+        && dim_param_names.contains(n.as_str())
+    {
+        Some(n.as_str())
+    } else {
+        None
+    }
+}
+
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
@@ -1723,13 +1746,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
-            // Scalar<Q>: if Q is a bare Named type-arg that is a dimension-param,
-            // return ScalarParam(Q). Otherwise fall through to the concrete dimension path.
-            if let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_args[0].kind
-                && inner.is_empty()
-                && dim_param_names.contains(n.as_str())
-            {
-                Some(Type::ScalarParam(n.clone()))
+            // Scalar<Q>: if Q is a bare Named dim-param, return ScalarParam(Q).
+            // Otherwise fall through to the concrete dimension path.
+            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
+                Some(Type::ScalarParam(n.to_string()))
             } else {
                 let dim = resolve_type_alias_expr_to_dimension(
                     &type_args[0],
@@ -1740,16 +1760,32 @@ pub(crate) fn resolve_parameterized_builtin_type(
             }
         }
         "Vector3" if type_args.len() == 1 => {
-            // Vector3<Q>: resolve Q to a DimensionVector and wrap as a 3D vector.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::vec3(Type::Scalar { dimension: dim }))
+            // Vector3<Q>: if Q is a bare Named dim-param, wrap ScalarParam in vec3.
+            // Otherwise resolve Q to a concrete DimensionVector.
+            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
+                Some(Type::vec3(Type::ScalarParam(n.to_string())))
+            } else {
+                let dim = resolve_type_alias_expr_to_dimension(
+                    &type_args[0],
+                    alias_registry,
+                    diagnostics,
+                )?;
+                Some(Type::vec3(Type::Scalar { dimension: dim }))
+            }
         }
         "Point3" if type_args.len() == 1 => {
-            // Point3<Q>: resolve Q to a DimensionVector and wrap as a 3D point.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::point3(Type::Scalar { dimension: dim }))
+            // Point3<Q>: if Q is a bare Named dim-param, wrap ScalarParam in point3.
+            // Otherwise resolve Q to a concrete DimensionVector.
+            if let Some(n) = try_dim_param_slot(&type_args[0], dim_param_names) {
+                Some(Type::point3(Type::ScalarParam(n.to_string())))
+            } else {
+                let dim = resolve_type_alias_expr_to_dimension(
+                    &type_args[0],
+                    alias_registry,
+                    diagnostics,
+                )?;
+                Some(Type::point3(Type::Scalar { dimension: dim }))
+            }
         }
         "Tensor" if type_args.len() == 3 => {
             // Tensor<rank, n, Q>: two integer literals + a quantity type.
