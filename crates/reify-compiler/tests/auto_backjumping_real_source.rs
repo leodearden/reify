@@ -41,6 +41,7 @@
 //! Expected call counts (1 constraint per leaf, no within-leaf short-circuit):
 //! - WITH backjumping: 5 leaves visited = 1 ORingSeal leaf + 4 RubberSeal leaves.
 //! - WITHOUT backjumping: 8 leaves visited (full cross-product 2×2×2).
+//!
 //! Proves BackjumpTo fired and the blame map was non-empty.
 //!
 //! # Test B — no-blame control
@@ -59,7 +60,7 @@ use reify_compiler::auto_type_param::{
     AutoTypeParam, resolve_auto_type_params_with_backtracking,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_core::{DiagnosticCode, SourceSpan, Type, ValueCellId};
+use reify_core::{SourceSpan, Type, ValueCellId};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
     ConstraintResult, Satisfaction, Value,
