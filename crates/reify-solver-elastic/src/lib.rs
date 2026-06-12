@@ -507,6 +507,8 @@ pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     degenerate_shell::{Director, ShellRefCoord3, directors_from_facets},
     hex_p1::HexP1,
+    // Task 4417/ζ: dedicated CST membrane element K_e.
+    membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
     tet_p1::TetP1,
     tet_p2::TetP2,
@@ -575,6 +577,12 @@ pub use geometric_stiffness::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
     geometric_element_stiffness_wedge_p1,
+};
+// Task 4417/ζ: Tensegrity-membrane — CST membrane K_g element kernel,
+// in-plane prestress resultant, and per-element tangent K_t = K_e + K_g.
+// PRD: docs/prds/v0_6/tensegrity-membrane.md §5 / D1 / D2.
+pub use geometric_stiffness::{
+    MembranePrestress, geometric_element_stiffness_membrane_cst, membrane_tangent_stiffness,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
