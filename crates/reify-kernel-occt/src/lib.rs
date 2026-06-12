@@ -5783,6 +5783,39 @@ mod tests {
         }
     }
 
+    /// RED until step-4 adds make_cylindrical_face FFI and wires curved handling.
+    /// PRD G6 smoke bar: zone_slab on a curved (cylindrical) face must not fail
+    /// and must return a solid with volume > 0.
+    #[test]
+    fn zone_slab_curved_face_smoke() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Build an open cylindrical lateral face: radius=0.050 m, height=0.030 m
+        let face_h = ffi::ffi::make_cylindrical_face(0.050, 0.030)
+            .map_err(|e| GeometryError::OperationFailed(e.to_string()))
+            .unwrap();
+        let face_id = kernel.store_with_repr(face_h, crate::BRepKind::Face).id;
+        let w = 0.002_f64; // 2 mm zone width
+        let slab_h = kernel
+            .execute(&GeometryOp::ZoneSlab {
+                target: face_id,
+                width: Value::Real(w),
+            })
+            .expect("zone_slab on curved face must not fail (PRD G6)");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(slab_h.id))
+            .expect("Volume query on slab must succeed");
+        match vol {
+            Value::Real(v) => {
+                assert!(v > 0.0, "zone_slab on curved face must have volume > 0, got {v}");
+            }
+            other => panic!("expected Value::Real, got {:?}", other),
+        }
+    }
+
     #[test]
     fn shell_box_hollow() {
         let mut kernel = OcctKernel::new();
