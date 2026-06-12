@@ -14,7 +14,7 @@ use super::{EvalContext, apply_lambda};
 /// The helper wraps blindly — it does **not** collapse a dimensionless `Type::Scalar`
 /// to `Type::dimensionless_scalar()`.  This is intentional: all three callers (`compute_divergence`,
 /// `compute_curl`, `compute_laplacian`) pre-normalise the codomain upstream via
-/// [`dimensionless_fallback`] before stamping the `Field`, so by the time
+/// `reify_core::field_calculus`'s private `dimensionless_fallback` before stamping the `Field`, so by the time
 /// `wrap_scalar_result` sees the codomain any dimensionless `Scalar` has already been
 /// collapsed to `Type::dimensionless_scalar()`.  Re-normalising here would be redundant work and, worse,
 /// would hide genuinely mis-stamped codomains from the `debug_assert` guards in
@@ -96,15 +96,15 @@ fn validate_differentiable_field<'a>(
     Some((domain_type, codomain_type))
 }
 
-/// Compute the result-codomain type for the gradient operator.
+/// Compute the gradient of a scalar or vector field.
 ///
-/// Returns `Some(result_codomain)` when `domain_type` is scalar (`1D → n = 1`)
-/// or `Point { n, scalar }` (`nD → n`); returns `None` for non-scalar/non-Point
-/// domains.
+/// Returns a new Field with `FieldSourceKind::Gradient` whose lambda slot stores
+/// the original field. The sample handler dispatches to `compute_numerical_gradient_at_point`.
 ///
-/// For `n == 1` returns the gradient quantity directly (scalar derivative);
-/// for `n > 1` wraps it in `Type::Vector { n, quantity: gradient_quantity }`.
-///
+/// For `FieldSourceKind::Sampled` with a real `Value::SampledField` lambda slot, the
+/// operator eager-lowers (ε): dispatches `sampled_differential(Gradient)` and returns a
+/// `source:Sampled` output field.  A Sampled source with any other lambda slot falls through
+/// to `validate_differentiable_field` → `Value::Undef`.
 pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     // ε: Sampled eager-lower — dispatch when the field carries a real SampledField payload.
     // A Sampled source with any other lambda slot (e.g. Value::Lambda, the malformed case in
@@ -1314,206 +1314,6 @@ mod tests {
         }
     }
 
-    // --- scalar_dimension unit tests ---
-
-    #[test]
-    fn scalar_dimension_scalar_length_returns_length() {
-        assert_eq!(
-            scalar_dimension(&Type::length()),
-            Some(DimensionVector::LENGTH)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_scalar_dimensionless_returns_dimensionless() {
-        let ty = Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(scalar_dimension(&ty), Some(DimensionVector::DIMENSIONLESS));
-    }
-
-    #[test]
-    fn scalar_dimension_real_returns_dimensionless() {
-        assert_eq!(
-            scalar_dimension(&Type::dimensionless_scalar()),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_int_returns_dimensionless() {
-        assert_eq!(
-            scalar_dimension(&Type::Int),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn scalar_dimension_point3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::point3(Type::dimensionless_scalar())), None);
-    }
-
-    #[test]
-    fn scalar_dimension_vec3_real_returns_none() {
-        assert_eq!(scalar_dimension(&Type::vec3(Type::dimensionless_scalar())), None);
-    }
-
-    #[test]
-    fn scalar_dimension_bool_returns_none() {
-        assert_eq!(scalar_dimension(&Type::Bool), None);
-    }
-
-    // --- domain_dimension unit tests ---
-
-    #[test]
-    fn domain_dimension_scalar_length_returns_length() {
-        assert_eq!(
-            domain_dimension(&Type::length()),
-            Some(DimensionVector::LENGTH)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_real_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::dimensionless_scalar()),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_int_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::Int),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_point3_scalar_mass_returns_mass() {
-        let ty = Type::point3(Type::Scalar {
-            dimension: DimensionVector::MASS,
-        });
-        assert_eq!(domain_dimension(&ty), Some(DimensionVector::MASS));
-    }
-
-    #[test]
-    fn domain_dimension_point3_real_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::point3(Type::dimensionless_scalar())),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_point3_int_returns_dimensionless() {
-        assert_eq!(
-            domain_dimension(&Type::point3(Type::Int)),
-            Some(DimensionVector::DIMENSIONLESS)
-        );
-    }
-
-    #[test]
-    fn domain_dimension_vec3_real_returns_none() {
-        assert_eq!(domain_dimension(&Type::vec3(Type::dimensionless_scalar())), None);
-    }
-
-    #[test]
-    fn domain_dimension_bool_returns_none() {
-        assert_eq!(domain_dimension(&Type::Bool), None);
-    }
-
-    // --- dim_quotient_type unit tests ---
-
-    #[test]
-    fn dim_quotient_both_dimensional_exp1_returns_scalar() {
-        // LENGTH / TIME (exp=1) → Scalar{LENGTH/TIME}
-        let expected_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::TIME),
-            1,
-            Type::dimensionless_scalar(),
-        );
-        assert_eq!(
-            result,
-            Type::Scalar {
-                dimension: expected_dim
-            }
-        );
-    }
-
-    #[test]
-    fn dim_quotient_both_dimensional_quotient_dimensionless_returns_real() {
-        // LENGTH / LENGTH → DIMENSIONLESS → Type::dimensionless_scalar()
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::LENGTH),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::dimensionless_scalar());
-    }
-
-    #[test]
-    fn dim_quotient_codomain_none_returns_fallback() {
-        let result = dim_quotient_type(None, Some(DimensionVector::LENGTH), 1, Type::Int);
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_domain_none_returns_fallback() {
-        let result = dim_quotient_type(Some(DimensionVector::LENGTH), None, 1, Type::Int);
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_codomain_dimensionless_returns_fallback() {
-        let result = dim_quotient_type(
-            Some(DimensionVector::DIMENSIONLESS),
-            Some(DimensionVector::LENGTH),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_domain_dimensionless_returns_fallback() {
-        let result = dim_quotient_type(
-            Some(DimensionVector::LENGTH),
-            Some(DimensionVector::DIMENSIONLESS),
-            1,
-            Type::Int,
-        );
-        assert_eq!(result, Type::Int);
-    }
-
-    #[test]
-    fn dim_quotient_exp2_divides_by_domain_squared() {
-        // VOLUME (L^3) / LENGTH^2 → LENGTH (L^1) → Scalar{LENGTH}
-        let result = dim_quotient_type(
-            Some(DimensionVector::VOLUME),
-            Some(DimensionVector::LENGTH),
-            2,
-            Type::dimensionless_scalar(),
-        );
-        assert_eq!(
-            result,
-            Type::Scalar {
-                dimension: DimensionVector::LENGTH
-            }
-        );
-    }
-
-    #[test]
-    fn dim_quotient_fallback_returned_verbatim() {
-        // Both None → fallback returned as-is (using a non-trivial fallback)
-        let fallback = Type::length();
-        let result = dim_quotient_type(None, None, 1, fallback.clone());
-        assert_eq!(result, fallback);
-    }
-
     // --- gradient result_dim catch-all guard tests ---
 
     /// Verify that the outer catch-all in `compute_numerical_gradient_at_point`'s
@@ -1872,32 +1672,6 @@ mod tests {
         };
         let result = validate_differentiable_field(&field, "test");
         assert!(result.is_none());
-    }
-
-    // --- dimensionless_fallback unit tests ---
-
-    #[test]
-    fn dimensionless_fallback_dimensionless_scalar_returns_real() {
-        let ty = Type::Scalar {
-            dimension: DimensionVector::DIMENSIONLESS,
-        };
-        assert_eq!(dimensionless_fallback(&ty), Type::dimensionless_scalar());
-    }
-
-    #[test]
-    fn dimensionless_fallback_length_scalar_returns_clone() {
-        let ty = Type::length();
-        assert_eq!(dimensionless_fallback(&ty), ty.clone());
-    }
-
-    #[test]
-    fn dimensionless_fallback_real_returns_real() {
-        assert_eq!(dimensionless_fallback(&Type::dimensionless_scalar()), Type::dimensionless_scalar());
-    }
-
-    #[test]
-    fn dimensionless_fallback_int_returns_int() {
-        assert_eq!(dimensionless_fallback(&Type::Int), Type::Int);
     }
 
     // --- extract_explicit_domain_dim unit tests ---
