@@ -713,5 +713,60 @@ assert "Check 17: stderr contains ERROR about non-git work tree" \
 assert "Check 17: --bidirectional also exits non-zero on non-git repo-root" \
     bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' --bidirectional 2>/dev/null"
 
+# ==============================================================================
+# Check 18: registered-set truncation recovery (forward pass) — task-4586
+# Simulates under-load single-line truncation via REIFY_EVENT_INVENTORY_DROP_REGISTERED
+# seam: drops mesh-update from the extracted registered set.  The recovery guard
+# (step-2 re-check) must confirm that mesh-update IS in the inventory file before
+# flagging an orphan, and must silently skip it.
+# RED today: no re-check → false orphan flagged → assertions a/b/d fail.
+# GREEN after step-2 adds the per-orphan inventory re-confirm.
+# ==============================================================================
+echo ""
+echo "--- Check 18: registered-set truncation recovery (task-4586) ---"
+
+_fix18dir="$_tmpdir/fix18"
+mkdir -p "$_fix18dir/docs" "$_fix18dir/gui/src-tauri/src"
+
+cat > "$_fix18dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `kernel-status` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix18dir/gui/src-tauri/src/main.rs" <<'RUST'
+fn emit_wired(app: &AppHandle) {
+    app.emit("mesh-update", ());
+}
+RUST
+
+_init_repo "$_fix18dir" gui/src-tauri/src/main.rs
+
+_fix18_stderr="$_tmpdir/fix18_stderr.txt"
+REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update \
+    "$CHECK_SCRIPT" --repo-root "$_fix18dir" 2>"$_fix18_stderr" || true
+
+assert "Check 18a: no 'orphan' line in stderr (re-check must recover dropped mesh-update)" \
+    bash -c "! grep -q 'orphan' '$_fix18_stderr'"
+
+assert "Check 18b: 'mesh-update' does NOT appear as orphan in stderr" \
+    bash -c "! grep -q 'mesh-update' '$_fix18_stderr'"
+
+assert "Check 18c: exits 0 in warning mode with fault injection" \
+    bash -c "REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update '$CHECK_SCRIPT' --repo-root '$_fix18dir'"
+
+assert "Check 18d: exits 0 under --strict (no false-positive orphan)" \
+    bash -c "REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update '$CHECK_SCRIPT' --repo-root '$_fix18dir' --strict"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
