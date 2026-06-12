@@ -896,4 +896,73 @@ mod tests {
         ]);
         assert!(dfm_rule_spec(&rule).is_none(), "missing severity should return None");
     }
+
+    // ── step-3: dfm_rule_spec Draft branch + no-handle path ──────────────────
+
+    /// Draft branch: applies_to has draft_angle but NO max_overhang_angle.
+    /// subject = Value::Undef → subject_handle == None.
+    #[test]
+    fn step3_dfm_rule_spec_draft_recognised_no_handle() {
+        let min_draft_rad = 0.05235987756; // ~3 deg
+
+        let applies_to = structure("FormingProc", &[
+            ("draft_angle", angle(min_draft_rad)),
+        ]);
+        let rule = structure("MyFormingRule", &[
+            ("rule_name", Value::String("draft-check".to_string())),
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", Value::Undef), // no live handle
+        ]);
+
+        let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec) for Draft rule");
+        assert_eq!(
+            spec.kind,
+            DfmRuleKind::Draft { min_draft_rad },
+            "should be Draft with the correct angle"
+        );
+        assert_eq!(spec.subject_handle, None, "Undef subject → None handle");
+    }
+
+    /// When applies_to has BOTH max_overhang_angle and draft_angle,
+    /// Overhang takes precedence.
+    #[test]
+    fn step3_dfm_rule_spec_overhang_takes_precedence_over_draft() {
+        let max_angle_rad = 0.7853981633; // 45 deg
+        let draft_angle_rad = 0.05235987756; // 3 deg
+
+        let applies_to = structure("BothCapabilityProc", &[
+            ("max_overhang_angle", angle(max_angle_rad)),
+            ("draft_angle", angle(draft_angle_rad)),
+        ]);
+        let rule = structure("BothRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(7)),
+        ]);
+
+        let spec = dfm_rule_spec(&rule).expect("expected Some(DfmRuleSpec)");
+        assert_eq!(
+            spec.kind,
+            DfmRuleKind::Overhang { max_angle_rad },
+            "Overhang should take precedence when both fields are present"
+        );
+    }
+
+    /// applies_to with NEITHER capability param → None.
+    #[test]
+    fn step3_dfm_rule_spec_no_capability_none() {
+        let applies_to = structure("GenericProc", &[
+            ("duration", Value::Scalar {
+                si_value: 3600.0,
+                dimension: DimensionVector::TIME,
+            }),
+        ]);
+        let rule = structure("NoCapRule", &[
+            ("severity", severity_warning()),
+            ("applies_to", applies_to),
+            ("subject", geometry_handle(1)),
+        ]);
+        assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
+    }
 }
