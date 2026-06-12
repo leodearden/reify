@@ -1046,6 +1046,36 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(ty);
     }
 
+    // Bare dimension-kinded param intercept (task ε, kind-misuse case #2).
+    //
+    // A dimension-kinded type parameter (Q ∈ dim_param_names) may ONLY appear
+    // in a dimension slot (Scalar<Q>, Vector3<Q>, Point3<Q>); using it as a
+    // bare ordinary type — e.g. `fn k<Q: Dimension>(x: Q)` — is a kind error.
+    // Intercept BEFORE resolve_type_with_aliases so we do NOT return
+    // Type::TypeParam("Q") (which would be silently wrong); emit a single
+    // DimParamKind Error + return Some(Type::Error) (anti-cascade poison).
+    //
+    // Guard: type_args is empty (bare name) and name ∈ dim_param_names.
+    // Non-bare usages (Q<…>) fall through to the concrete path as before.
+    // This interception fires ONLY in the kinded path; the thin 6-arg wrapper
+    // passes an empty dim_param_names, so non-fn-signature callers are unaffected.
+    if type_args.is_empty() && dim_param_names.contains(name) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "dimension-kinded type parameter '{}' used as an ordinary type; \
+                 it may only appear in a dimension slot, e.g. `Scalar<{}>`, `Vector3<{}>`, \
+                 or `Point3<{}>`",
+                name, name, name, name
+            ))
+            .with_code(DiagnosticCode::DimParamKind)
+            .with_label(DiagnosticLabel::new(
+                type_expr.span,
+                "dimension-kinded parameter cannot be used as an ordinary type",
+            )),
+        );
+        return Some(Type::Error);
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases,
     // structure names, trait names).
     if let Some(ty) = resolve_type_with_aliases(
