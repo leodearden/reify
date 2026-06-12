@@ -768,5 +768,74 @@ assert "Check 18c: exits 0 in warning mode with fault injection" \
 assert "Check 18d: exits 0 under --strict (no false-positive orphan)" \
     bash -c "REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update '$CHECK_SCRIPT' --repo-root '$_fix18dir' --strict"
 
+# ==============================================================================
+# Check 19: registered extraction completeness / --print-registered — task-4586
+# --print-registered prints the extracted registered set (one channel per line)
+# and exits 0.  Guards extract_registered_channels() against silently dropping
+# a channel, and doubles as a field-debug tool for esc-4578-61.
+# RED today: --print-registered is an unknown option → exits 1, empty stdout →
+# all presence assertions fail.
+# GREEN after step-4 adds the flag and extract_registered_channels().
+# ==============================================================================
+echo ""
+echo "--- Check 19: --print-registered extraction completeness (task-4586) ---"
+
+_fix19dir="$_tmpdir/fix19"
+mkdir -p "$_fix19dir/docs" "$_fix19dir/gui/src-tauri/src"
+
+cat > "$_fix19dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `kernel-status` | wired |
+| `file-changed` | wired |
+| `value-update` | wired |
+| `claude-done` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix19dir/gui/src-tauri/src/main.rs" <<'RUST'
+fn noop() {}
+RUST
+
+_init_repo "$_fix19dir" gui/src-tauri/src/main.rs
+
+_fix19_stdout="$_tmpdir/fix19_stdout.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix19dir" --print-registered > "$_fix19_stdout" 2>/dev/null || true
+
+assert "Check 19: --print-registered exits 0" \
+    "$CHECK_SCRIPT" --repo-root "$_fix19dir" --print-registered
+
+assert "Check 19: mesh-update appears in --print-registered output" \
+    grep -qx 'mesh-update' "$_fix19_stdout"
+
+assert "Check 19: kernel-status appears in --print-registered output" \
+    grep -qx 'kernel-status' "$_fix19_stdout"
+
+assert "Check 19: file-changed appears in --print-registered output" \
+    grep -qx 'file-changed' "$_fix19_stdout"
+
+assert "Check 19: value-update appears in --print-registered output" \
+    grep -qx 'value-update' "$_fix19_stdout"
+
+assert "Check 19: claude-done appears in --print-registered output" \
+    grep -qx 'claude-done' "$_fix19_stdout"
+
+# Stable presence check: file-changed is the exact esc-4578-61 channel; it must
+# appear in the real worktree's extracted registered set regardless of load.
+_fix19_real_stdout="$_tmpdir/fix19_real.txt"
+"$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --print-registered > "$_fix19_real_stdout" 2>/dev/null || true
+
+assert "Check 19: file-changed in real worktree --print-registered output (esc-4578-61)" \
+    grep -qx 'file-changed' "$_fix19_real_stdout"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
