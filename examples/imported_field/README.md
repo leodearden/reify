@@ -71,11 +71,10 @@ cd examples/imported_field
 reify eval openvdb_stress.ri
 ```
 
-Or from the workspace root using an absolute path with `--cwd` (the CLI resolves
-imported field paths relative to the process CWD, not the .ri file's directory):
+Or from the workspace root using a subshell so the CWD is temporarily changed:
 
 ```bash
-REIFY_CWD=examples/imported_field reify eval examples/imported_field/openvdb_stress.ri
+(cd examples/imported_field && reify eval openvdb_stress.ri)
 ```
 
 ## Graceful degradation

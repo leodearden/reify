@@ -184,10 +184,12 @@ fn openvdb_stress_cli_eval_prints_sampled_values() {
         "s_outside should be positive (exterior of cube SDF); got {}",
         s_outside
     );
-    // Surface probe is within the narrow band; just assert it's finite.
+    // Surface probe should be within the narrow band (half_width=3.0 voxels × voxel_size=0.1 → ≈ ±0.3).
+    // A wrong-magnitude regression (e.g. wrong grid, unit scaling error) would still be finite but
+    // would fall outside this range.
     assert!(
-        s_surface.is_finite(),
-        "s_surface should be a finite scalar; got {}",
+        s_surface.abs() < 0.3,
+        "s_surface should be near zero (within narrow band ≈ ±0.3); got {}",
         s_surface
     );
 }
