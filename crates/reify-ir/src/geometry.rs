@@ -3,7 +3,7 @@ use std::fmt;
 
 use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
-use crate::value::Value;
+use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -2475,6 +2475,23 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Densify an OpenVDB voxel grid stored under `handle` into a CPU-resident
+    /// [`SampledField`].
+    ///
+    /// Overridden by `OpenVdbKernel` to run the FFI read-back →
+    /// `build_realized_grid_source` → `lower_to_sampled` pipeline described in
+    /// realization-read-api.md §3.3 (δ).  All other kernels inherit this
+    /// default, which returns
+    /// `Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))`.
+    fn densify_grid_to_sampled(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        Err(QueryError::QueryFailed(
+            "densify_grid_to_sampled not supported by this kernel".into(),
         ))
     }
 
