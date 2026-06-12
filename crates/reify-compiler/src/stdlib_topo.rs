@@ -4,6 +4,114 @@
 //! over a set of `(module_name, source)` pairs, using `Declaration::Import`
 //! edges for ordering and a gray/black DFS for cycle detection.
 
+use std::collections::HashMap;
+
+use reify_core::{Diagnostic, ModulePath};
+
+use crate::CompiledModule;
+
+/// Extract intra-set import edges for one module source.
+///
+/// Returns the indices (into `names`) of modules that this source imports.
+/// Import targets not present in `names` are silently ignored — they represent
+/// external or stdlib imports that drive no ordering here.
+fn import_edges_for(source: &str, module_path: ModulePath, names: &[&str]) -> Vec<usize> {
+    let name_to_idx: HashMap<&str, usize> =
+        names.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+    let parsed = reify_syntax::parse(source, module_path);
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|decl| {
+            if let reify_ast::Declaration::Import(import) = decl {
+                name_to_idx.get(import.path.as_str()).copied()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Stable DFS post-order topological sort.
+///
+/// Returns a permutation of `0..sources.len()` such that every dependency
+/// appears before its dependents.  Independent modules retain their input order
+/// (DFS visits roots in input order; a node with no deps is appended
+/// immediately).
+///
+/// No cycle detection — [`compile_modules_topo`] adds that in step-4.
+fn stable_topo_sort(sources: &[(&str, &str)]) -> Vec<usize> {
+    let n = sources.len();
+    let names: Vec<&str> = sources.iter().map(|(name, _)| *name).collect();
+
+    // Build dependency edge lists
+    let edges: Vec<Vec<usize>> = sources
+        .iter()
+        .map(|(name, source)| {
+            let path = ModulePath::from_dotted(name).expect("valid dotted module name");
+            import_edges_for(source, path, &names)
+        })
+        .collect();
+
+    let mut visited = vec![false; n];
+    let mut result = Vec::with_capacity(n);
+
+    fn dfs(node: usize, edges: &[Vec<usize>], visited: &mut Vec<bool>, result: &mut Vec<usize>) {
+        if visited[node] {
+            return;
+        }
+        visited[node] = true;
+        for &dep in &edges[node] {
+            dfs(dep, edges, visited, result);
+        }
+        result.push(node);
+    }
+
+    for i in 0..n {
+        dfs(i, &edges, &mut visited, &mut result);
+    }
+
+    result
+}
+
+/// Compile `sources` in topological order derived from their `import` declarations.
+///
+/// Each module is compiled against a growing prelude of all previously compiled
+/// modules (dependencies first), using the same `parse_with_prelude_enums` +
+/// `compile_with_prelude` loop as `load_stdlib`.
+///
+/// Returns `Ok(modules)` with per-module diagnostics attached. Modules are
+/// returned in the order they were compiled (topo order, not input order).
+///
+/// The only structural `Err` is a cycle in the import graph — step-4 adds that.
+pub(crate) fn compile_modules_topo(
+    sources: &[(&str, &str)],
+) -> Result<Vec<CompiledModule>, Diagnostic> {
+    let topo_indices = stable_topo_sort(sources);
+
+    let mut compiled_so_far: Vec<CompiledModule> = Vec::with_capacity(sources.len());
+
+    for idx in topo_indices {
+        let (module_name, source) = &sources[idx];
+
+        let prelude_enum_names: Vec<&str> = compiled_so_far
+            .iter()
+            .flat_map(|m: &CompiledModule| m.enum_defs.iter().map(|e| e.name.as_str()))
+            .collect();
+
+        let parsed = reify_syntax::parse_with_prelude_enums(
+            source,
+            ModulePath::from_dotted(module_name).expect("valid dotted module name"),
+            &prelude_enum_names,
+        );
+
+        let compiled = crate::compile_with_prelude(&parsed, &compiled_so_far);
+        compiled_so_far.push(compiled);
+    }
+
+    Ok(compiled_so_far)
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::{ModulePath, Severity};
