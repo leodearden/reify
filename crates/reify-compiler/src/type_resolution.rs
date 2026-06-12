@@ -2994,4 +2994,96 @@ mod tests {
         let subst = subst_of(&[]);
         assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
     }
+
+    // ── Range<T> parameterized resolution (step-1 RED / task 4576) ───────────
+    // `Range<Length>` and `Range<Real>` must resolve to the Range kind.
+    // Arity guard: Range with 0 or 2 args must return None.
+    // Fails until step-2 adds the "Range" arm to resolve_parameterized_builtin_type.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_length() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))),
+            "Range<Length> should resolve to Type::Range(Box::new(Type::Scalar{{LENGTH}}))",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_real() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Real")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::dimensionless_scalar()))),
+            "Range<Real> should resolve to Type::Range(dimensionless_scalar)",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_zero() {
+        let reg = TypeAliasRegistry::new();
+        let mut diags = Vec::new();
+        // Range with 0 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &[],
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result, None,
+            "Range with 0 type-args should return None (arity guard)",
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_two() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length"), named_type_expr("Angle")];
+        let mut diags = Vec::new();
+        // Range with 2 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result, None,
+            "Range with 2 type-args should return None (arity guard)",
+        );
+    }
 }
