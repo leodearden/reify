@@ -328,6 +328,30 @@ pub(crate) fn evaluate_profile_value(profile: &Value, t: &Value) -> Value {
     Value::List(spline.eval(t_si).into_iter().map(Value::Real).collect())
 }
 
+/// First-derivative companion: returns `[q̇(t)]` per joint, or `Value::Undef`.
+pub(crate) fn evaluate_profile_dot_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(spline.eval_dot(t_si).into_iter().map(Value::Real).collect())
+}
+
+/// Second-derivative companion: returns `[q̈(t)]` per joint, or `Value::Undef`.
+pub(crate) fn evaluate_profile_ddot_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(
+        spline.eval_ddot(t_si).into_iter().map(Value::Real).collect(),
+    )
+}
+
 /// Flatten a `Mode.shape` (`List<Vector3<Dimensionless>>`) into a flat
 /// `Vec<f64>` of length `3·n_nodes` — each per-node `Value::Vector` / `List`'s
 /// three components read via [`read_scalar_si`]. A non-`List` / malformed shape

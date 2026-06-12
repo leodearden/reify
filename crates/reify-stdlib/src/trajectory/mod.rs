@@ -88,10 +88,15 @@ pub(crate) fn eval_trajectory(name: &str, args: &[Value]) -> Option<Value> {
             [profile, t] => trampoline::evaluate_profile_value(profile, t),
             _ => Value::Undef,
         }),
-        "piecewise_polynomial"
-        | "evaluate_profile_dot"
-        | "evaluate_profile_ddot"
-        | "profile_duration" => Some(Value::Undef),
+        "evaluate_profile_dot" | "evaluate_profile_dot_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_dot_value(profile, t),
+            _ => Value::Undef,
+        }),
+        "evaluate_profile_ddot" | "evaluate_profile_ddot_at" => Some(match args {
+            [profile, t] => trampoline::evaluate_profile_ddot_value(profile, t),
+            _ => Value::Undef,
+        }),
+        "piecewise_polynomial" | "profile_duration" => Some(Value::Undef),
         _ => None,
     }
 }
