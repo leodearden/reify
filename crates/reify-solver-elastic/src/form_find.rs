@@ -707,4 +707,214 @@ mod tests {
             FormFindError::DegenerateTriangle,
         );
     }
+
+    // ── γ (task 4414): surface-aware form_find_anchored_surfaces ───────────────
+
+    /// Independent (faer-free) reassembly of the global force-density matrix
+    /// `D = CᵀQC` (lines) `+ Σ_T σ_T·L_T` (surface cotangent-Laplacians) at the
+    /// given geometry, as a dense `Vec<Vec<f64>>`. Used to check the *equilibrium*
+    /// residual ‖(D x)_free‖ at the solved geometry — the primary honest signal
+    /// that the solver reached a genuine force-density fixed point (net force on
+    /// each free node ≈ 0), computed without re-using the kernel's faer path.
+    fn reassemble_d(
+        n: usize,
+        members: &[(usize, usize)],
+        q: &[f64],
+        surfaces: &[(usize, usize, usize)],
+        sigmas: &[f64],
+        nodes: &[[f64; 3]],
+    ) -> Vec<Vec<f64>> {
+        let mut d = vec![vec![0.0_f64; n]; n];
+        for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+            d[j][j] += qi;
+            d[k][k] += qi;
+            d[j][k] -= qi;
+            d[k][j] -= qi;
+        }
+        for (&(i, j, k), &s) in surfaces.iter().zip(sigmas.iter()) {
+            let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], s)
+                .expect("non-degenerate triangle in equilibrium reassembly");
+            let idx = [i, j, k];
+            for a in 0..3 {
+                for b in 0..3 {
+                    d[idx[a]][idx[b]] += l[a][b];
+                }
+            }
+        }
+        d
+    }
+
+    /// Max-norm of the free-node equilibrium residual `(D x)_free`, scaled by the
+    /// node-coordinate magnitude so the bound is coordinate-scale-free.
+    fn equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]], is_anchor: &[bool]) -> f64 {
+        let n = nodes.len();
+        let mut resid = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for i in 0..n {
+            if is_anchor[i] {
+                continue;
+            }
+            for axis in 0..3 {
+                let mut net = 0.0;
+                for j in 0..n {
+                    net += d[i][j] * nodes[j][axis];
+                }
+                resid = resid.max(net.abs());
+            }
+        }
+        for p in nodes {
+            for c in p {
+                scale = scale.max(c.abs());
+            }
+        }
+        resid / (1.0 + scale)
+    }
+
+    /// Symmetric "tent" membrane: a diamond boundary of 4 anchored corners in the
+    /// z=0 plane plus one free interior node, fanned by 4 triangles. The minimal
+    /// surface spanning a planar boundary is flat, so the free node settles to the
+    /// in-plane centroid (0,0,0); a wrong cotangent assembly would drive it off
+    /// (0,0,0) or blow up the equilibrium residual (non-circular signal).
+    fn tent_membrane() -> (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>) {
+        let nodes = vec![
+            [0.1, 0.1, 0.3],  // 0: free interior — deliberately off-solution
+            [1.0, 0.0, 0.0],  // 1: anchor
+            [0.0, 1.0, 0.0],  // 2: anchor
+            [-1.0, 0.0, 0.0], // 3: anchor
+            [0.0, -1.0, 0.0], // 4: anchor
+        ];
+        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+        let anchors = vec![1, 2, 3, 4];
+        (nodes, surfaces, anchors)
+    }
+
+    /// Equilibrium-residual bound for the surface solve: a linear solve iterated
+    /// to a cotangent fixed point reaches ~machine precision, so 1e-9 leaves wide
+    /// margin while still catching a non-converged or mis-assembled solve.
+    const SURFACE_EQUIL_TOL: f64 = 1e-9;
+
+    // (a) A fixed-boundary membrane with one free interior node and isotropic σ>0
+    // solves: converged, the equilibrium residual at the solved geometry is
+    // ~machine-precision, and surface_stresses echoes one σ per triangle.
+    #[test]
+    fn surfaces_membrane_solves_to_equilibrium_and_echoes_sigma() {
+        let (nodes, surfaces, anchors) = tent_membrane();
+        let sigma = 2.0;
+        let sigmas = vec![sigma; surfaces.len()];
+        // Pure membrane: no struts/cables.
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        let solve =
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .expect("a well-posed σ>0 membrane must be feasible");
+
+        assert!(solve.converged, "the cotangent fixed point must converge");
+
+        // surface_stresses echoes the prescribed σ, one per triangle.
+        assert_eq!(
+            solve.surface_stresses.len(),
+            surfaces.len(),
+            "one surface stress echo per triangle",
+        );
+        for (t, &s) in solve.surface_stresses.iter().enumerate() {
+            assert!(
+                (s - sigma).abs() < 1e-12,
+                "surface_stresses[{t}] = {s}, expected echoed σ = {sigma}",
+            );
+        }
+
+        // Primary honest signal: the free-node equilibrium residual (net force)
+        // at the SOLVED geometry is ~0.
+        let mut is_anchor = vec![false; nodes.len()];
+        for &a in &anchors {
+            is_anchor[a] = true;
+        }
+        let d = reassemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &solve.nodes);
+        let resid = equilibrium_residual_scaled(&d, &solve.nodes, &is_anchor);
+        assert!(
+            resid < SURFACE_EQUIL_TOL,
+            "equilibrium residual ‖(D x)_free‖/scale = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
+        );
+
+        // By symmetry the planar minimal surface places the free node at the
+        // in-plane centroid (0,0,0).
+        let n0 = solve.nodes[0];
+        assert!(
+            max_coord_err(n0, [0.0, 0.0, 0.0]) < 1e-9,
+            "free node = {n0:?}, expected the symmetric centroid (0,0,0)",
+        );
+    }
+
+    // (b) A non-positive surface stress (σ ≤ 0) is a non-tension membrane —
+    // infeasible input (the surface analogue of the cable q>0 sign contract).
+    #[test]
+    fn surfaces_nonpositive_sigma_is_non_tension() {
+        let (nodes, surfaces, anchors) = tent_membrane();
+        let mut sigmas = vec![1.0; surfaces.len()];
+        sigmas[2] = -0.5; // triangle 2 violates the σ>0 tension contract
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::NonTensionSurfaceStress,
+        );
+    }
+
+    // (c) surfaces and surface_stresses must agree in length — a per-triangle σ
+    // is required for each triangle.
+    #[test]
+    fn surfaces_count_mismatch_is_surface_count_mismatch() {
+        let (nodes, surfaces, anchors) = tent_membrane();
+        let sigmas = vec![1.0; surfaces.len() - 1]; // one short
+        let members: Vec<(usize, usize)> = vec![];
+        let kinds: Vec<MemberKind> = vec![];
+        let q: Vec<f64> = vec![];
+
+        assert_eq!(
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
+                .unwrap_err(),
+            FormFindError::SurfaceCountMismatch,
+        );
+    }
+
+    // (d) The pure-line path (empty surfaces) through the surface-aware entry
+    // must return exactly the landed form_find_anchored result, with an empty
+    // surface_stresses echo — the additive-extension invariant.
+    #[test]
+    fn surfaces_empty_matches_line_only_form_find_anchored() {
+        let nodes = vec![
+            [0.3, 0.2, 0.4],
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.0, -1.0, 1.0],
+        ];
+        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
+        let kinds = [MemberKind::Cable; 4];
+        let q = [1.0, 1.0, 1.0, 1.0];
+        let anchors = [1, 2, 3, 4];
+
+        let line = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
+            .expect("line-only reference solve");
+        let surf =
+            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &[], &[], &anchors)
+                .expect("empty-surface path must match the line-only solve");
+
+        assert!(surf.surface_stresses.is_empty(), "no surfaces ⇒ empty echo");
+        assert_eq!(surf.converged, line.converged);
+        assert_eq!(surf.force_densities, line.force_densities);
+        assert_eq!(surf.member_forces.len(), line.member_forces.len());
+        for (a, b) in surf.member_forces.iter().zip(line.member_forces.iter()) {
+            assert!((a - b).abs() < 1e-12, "member force mismatch: {a} vs {b}");
+        }
+        assert_eq!(surf.nodes.len(), line.nodes.len());
+        for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
+            assert!(max_coord_err(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
+        }
+    }
 }
