@@ -137,46 +137,9 @@ fn compile_with_stdlib(source: &str) -> reify_compiler::CompiledModule {
     reify_test_support::parse_and_compile_with_stdlib(source)
 }
 
-/// An angled box with a ~30 deg overhang face, built via OCCT.
-///
-/// We use a wedge primitive (`wedge(...)`) whose sloped face dips past the
-/// max_overhang_angle (20 deg) — the solid has a face making ~30 deg with
-/// the XY build plane, which exceeds the 20 deg process limit.
-///
-/// The DFMRule applies to an `FDMPrinter` process with `max_overhang_angle =
-/// 20deg`, declared at `Warning` severity.  After `build()` + `check()` the
-/// pass must emit exactly one `W_DFM_OVERHANG` diagnostic.
-///
-/// Overhang tests use a wedge: `wedge(dx, dy, dz, xmin, zmin, xmax, zmax)`.
-/// A wedge with `xmax < dx` has a sloped face whose normal is tilted from +Z.
-/// For a 30-deg dip the slope normal drops sin(30°)=0.5 below the build plane.
-///
-/// Since OCCT wedge/primitive API varies and may not exist as a direct DSL
-/// primitive, we instead use a rotated box: rotate a box 30 deg around the Y
-/// axis, which gives a solid whose faces tilt past any reasonable overhang limit.
-///
-/// Simplest approach: use `box(...)` and expect its faces are axis-aligned
-/// (0 or 90 deg tilt) — all pass a 20 deg limit.  For a FAILING solid we
-/// need a tilted face.  Use the transform `rotate(box(...), axis, angle)` if
-/// available, or construct a geometry that has a tilted face.
-///
-/// **Practical approach**: since writing trig-geometry in pure DSL is complex
-/// and topology_selectors tests already verify the selector logic, the
-/// integration tests here use a box (all faces axis-aligned) against a 20 deg
-/// limit.  A 90-deg face dips 0 deg past the build plane, so it conforms.
-///
-/// To get a FAILING case we supply `max_overhang_angle = 91deg` (> π/2) which
-/// is invalid, causing the selector to return Err → Indeterminate (no diag).
-///
-/// **Better approach**: use an angled prism via sweep or loft primitives, but
-/// that requires complex DSL setup.  Instead, the OCCT tests below use
-/// `sphere(r)` + `max_overhang_angle = 0deg`: a sphere has faces pointing in
-/// all directions, so unsupported_overhang_faces with max_angle=0 will find all
-/// faces pointing "downward" (any face with n·ẑ < 0) as overhang violations.
-///
-/// A box with `max_overhang_angle = 0deg`: the bottom face points straight down
-/// (n·ẑ = -1), so it dips 90 deg past the build plane → violation.
-/// The top and side faces are OK.  This is a clean test.
+/// A box bottom face (normal -Z) dips 90° past the build plane.
+/// `max_overhang_angle = 0deg` means any downward-pointing face is a violation.
+/// Exactly one `W_DFM_OVERHANG` must be emitted (Warning severity).
 #[test]
 fn overhang_warning_rule_emits_w_dfm_overhang() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -468,4 +431,58 @@ structure def DraftRuleOK : DFMRule {
 
     assert_no_dfm_diagnostic(&result, "_DFM_DRAFT");
     assert_no_dfm_diagnostic(&result, "_DFM_UNDERCUT");
+}
+
+// ── dedup: definition + instantiation → exactly one diagnostic ───────────────
+
+/// A DFMRule that is both defined at top level (source A: template iteration)
+/// and instantiated as a sub-component of Part (source B: instance values)
+/// must emit exactly ONE W_DFM_OVERHANG — not two.
+///
+/// The dedup guard in `measure_dfm_rules` keys on `(kind, subject_handle)` and
+/// retains only the first occurrence, so double-emission is prevented even if
+/// both discovery paths resolve to live handles for the same rule.
+#[test]
+fn dedup_rule_defined_and_instantiated_emits_one_diagnostic() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping dedup_rule_defined_and_instantiated_emits_one_diagnostic: OCCT not available"
+        );
+        return;
+    }
+
+    // OverhangRule is a top-level template (source A path) AND is instantiated
+    // inside Part (source B path).  Both discovery sources could find this rule.
+    let source = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+
+structure def Part {
+    let body = box(50mm, 30mm, 20mm)
+    let rule = OverhangRule()
+}
+"#;
+
+    let compiled = compile_with_stdlib(source);
+    let mut engine = make_occt_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    // Exactly one W_DFM_OVERHANG regardless of how many discovery sources fire.
+    assert_dfm_diagnostic_count(&result, "W_DFM_OVERHANG", 1);
 }

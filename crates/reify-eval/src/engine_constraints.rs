@@ -1,7 +1,7 @@
 // Split from lib.rs (task 2032) — constraints methods.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Severity, ValueCellId};
@@ -851,6 +851,22 @@ impl Engine {
             }
         }
 
+        // Dedup by (kind, subject_handle) so that a DFMRule which is both
+        // discovered via its template definition (source A) and an instantiated
+        // sub-component value (source B) emits exactly one diagnostic.  Two
+        // specs with the same kind and the same kernel handle would produce
+        // identical measurement results — keep the first occurrence only.
+        {
+            let mut seen: HashSet<(u8, GeometryHandleId)> = HashSet::new();
+            specs.retain(|spec| {
+                let disc = match &spec.kind {
+                    DfmRuleKind::Overhang { .. } => 0u8,
+                    DfmRuleKind::Draft { .. } => 1u8,
+                };
+                seen.insert((disc, spec.subject_handle.expect("filtered above")))
+            });
+        }
+
         if specs.is_empty() {
             return Vec::new();
         }
@@ -869,6 +885,8 @@ impl Engine {
                     match topology_selectors::unsupported_overhang_faces(
                         kernel,
                         handle,
+                        // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
+                        // A future rule-supplied direction would be threaded in here.
                         [0.0, 0.0, 1.0],
                         max_angle_rad,
                     ) {
@@ -880,8 +898,12 @@ impl Engine {
                                 &verdict,
                             ));
                         }
-                        Err(_) => {
-                            // Indeterminate — never a false violation.
+                        Err(err) => {
+                            // Indeterminate — never a false violation (C1).
+                            tracing::debug!(
+                                ?handle, ?err,
+                                "DFM overhang selector error; treating as Indeterminate"
+                            );
                         }
                     }
                 }
@@ -889,6 +911,8 @@ impl Engine {
                     match topology_selectors::min_draft_angle(
                         kernel,
                         handle,
+                        // +Z is the assumed pull direction (intentional default; PRD §4.4).
+                        // A future rule-supplied direction would be threaded in here.
                         [0.0, 0.0, 1.0],
                     ) {
                         Ok((signed_min_draft, has_undercut)) => {
@@ -902,8 +926,12 @@ impl Engine {
                                 &verdict,
                             ));
                         }
-                        Err(_) => {
-                            // Indeterminate — never a false violation.
+                        Err(err) => {
+                            // Indeterminate — never a false violation (C1).
+                            tracing::debug!(
+                                ?handle, ?err,
+                                "DFM draft selector error; treating as Indeterminate"
+                            );
                         }
                     }
                 }
