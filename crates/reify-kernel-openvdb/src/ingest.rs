@@ -855,6 +855,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Axis => "Axis",
         Type::BoundingBox => "BoundingBox",
         Type::Matrix { .. } => "Matrix",
+        Type::ScalarParam(_) => "ScalarParam",
         Type::Error => "Error",
         Type::Union(_) => "Union",
     }
@@ -965,6 +966,10 @@ mod tests {
         assert_eq!(
             format_type_repr(&Type::Union(vec![Type::Bool, Type::Int])),
             "Union"
+        );
+        assert_eq!(
+            format_type_repr(&Type::ScalarParam("Q".into())),
+            "ScalarParam"
         );
 
         // Two-element tuple variant (1)

@@ -420,6 +420,9 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
+        // Dimension-param scalar: opaque leaf — carries no *type* param
+        // (dimension binding is ζ / D8, not type-param substitution).
+        | Type::ScalarParam(_)
         | Type::Error => false,
     }
 }
@@ -607,6 +610,9 @@ pub(crate) fn unify(
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)
+        // Dimension-param scalar: opaque leaf — binds nothing (dimension binding
+        // is ζ / D8; type-param substitution does not apply here).
+        | (Type::ScalarParam(_), _)
         | (Type::Error, _) => Ok(()),
     }
 }

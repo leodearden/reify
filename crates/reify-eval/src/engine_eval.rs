@@ -70,6 +70,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
         Type::TypeParam(_) => false,
+        // Compile-time-only — dimension-param scalar; erased before eval (D7/D1);
+        // no `Value::ScalarParam` exists (task 4234 ε).
+        Type::ScalarParam(_) => false,
         // Compile-time-only union — value cells must hold a single concrete
         // arm type post-narrowing (task 2373).
         Type::Union(_) => false,

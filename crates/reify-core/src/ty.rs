@@ -160,6 +160,13 @@ pub enum Type {
     Axis,
     /// 3D axis-aligned bounding box defined by min and max corner points.
     BoundingBox,
+    /// A dimensioned scalar whose dimension is the named dimension-param
+    /// (e.g. `Q` in `fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>`).
+    ///
+    /// Compile-time/signature-only — erased before eval (D7/D1). No
+    /// `Value::ScalarParam` exists; this variant is only produced inside
+    /// dimension-kinded generic fn signatures by `resolve_parameterized_builtin_type`.
+    ScalarParam(String),
     /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
     ///
     /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
@@ -465,6 +472,7 @@ impl std::fmt::Display for Type {
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
             Type::BoundingBox => write!(f, "BoundingBox"),
+            Type::ScalarParam(name) => write!(f, "Scalar<{}>", name),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
             Type::Selector(kind) => write!(f, "{}", kind),
             Type::AnySelector => write!(f, "Selector"),

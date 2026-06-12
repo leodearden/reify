@@ -412,6 +412,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Error => true,
         // Compile-time-only union over guarded-decl-group arm types (task 2373)
         Type::Union(_) => true,
+        // Dimension-param scalar: compile-time/signature-only (task 4234 ε)
+        Type::ScalarParam(_) => true,
     };
 }
 
@@ -466,14 +468,14 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
     };
 }
 
-/// Verify that `assert_all_type_variants_listed` covers all 29 `Type` variants
+/// Verify that `assert_all_type_variants_listed` covers all 30 `Type` variants
 /// by constructing one instance of each and calling the guard.
 ///
 /// If a new variant is ever added to `Type` without being listed in
 /// `assert_all_type_variants_listed`, this file will fail to compile.
 #[test]
 fn checkpoint_type_variant_coverage() {
-    // Build one instance of each of the 29 Type variants.
+    // Build one instance of each of the 30 Type variants.
     let all_types: Vec<Type> = vec![
         // Primitive scalars (4)
         Type::Bool,
@@ -547,12 +549,14 @@ fn checkpoint_type_variant_coverage() {
         ]),
         // Kind-agnostic topology selector (task 4369 / A2) (1)
         Type::AnySelector,
+        // Dimension-param scalar: compile-time/signature-only (task 4234 ε) (1)
+        Type::ScalarParam("Q".to_string()),
     ];
 
     assert_eq!(
         all_types.len(),
-        29,
-        "expected exactly 29 Type variants; update this test if the enum changes"
+        30,
+        "expected exactly 30 Type variants; update this test if the enum changes"
     );
 
     // Drive the exhaustiveness guard with each variant. Compile error here means

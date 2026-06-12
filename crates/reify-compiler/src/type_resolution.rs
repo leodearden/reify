@@ -1245,6 +1245,9 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
+        // Dimension-param scalar: opaque leaf — substitutes to itself.
+        // Dimension binding is ζ / D8 and does not go through this walk.
+        | Type::ScalarParam(_)
         | Type::Error => ty.clone(),
     }
 }

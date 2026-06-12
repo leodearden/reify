@@ -1164,6 +1164,10 @@ fn type_carries_type_param(t: &Type) -> bool {
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
+        // Dimension-param scalar: opaque leaf — carries no *type* param.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (drift reproduces esc-4231-120/126).
+        | Type::ScalarParam(_)
         | Type::Error => false,
     }
 }
