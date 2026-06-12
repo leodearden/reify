@@ -66,6 +66,13 @@ pub enum FormFindError {
     /// cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)` diverge as `2·Area → 0`.
     /// Surfaced instead of assembling a NaN/∞ stencil. (γ / NFDM surfaces.)
     DegenerateTriangle,
+    /// A membrane surface stress `σ ≤ 0` — a non-tension (slack/compressed)
+    /// surface is infeasible prestress input, the surface analogue of a cable
+    /// with `q ≤ 0`. (γ / NFDM surfaces.)
+    NonTensionSurfaceStress,
+    /// `surfaces` and `surface_stresses` disagree in length — each triangle
+    /// needs exactly one isotropic σ. (γ / NFDM surfaces.)
+    SurfaceCountMismatch,
 }
 
 /// Result of an anchored Force-Density form-find solve.
@@ -79,6 +86,11 @@ pub struct FormFindSolve {
     pub member_forces: Vec<f64>,
     /// Echo of the input force densities (struts-then-cables order).
     pub force_densities: Vec<f64>,
+    /// Per-triangle echo of the prescribed isotropic surface stress σ (in
+    /// `surfaces` declaration order); empty on the line-only path. The
+    /// equilibrium form was solved holding these σ fixed, so the echo is the
+    /// physically-carried per-triangle stress. (γ / NFDM surfaces.)
+    pub surface_stresses: Vec<f64>,
     /// Whether the solve succeeded (non-singular `D_ff`).
     pub converged: bool,
 }
@@ -130,18 +142,10 @@ pub fn form_find_anchored(
         }
     }
 
-    // Force-density Laplacian D = Cᵀ Q C, accumulated directly without
-    // materialising the m×N connectivity C. For a member (j, k) with force
-    // density qᵢ, the row Cᵢ has +1 at j and −1 at k, so the rank-1 update
-    // Cᵢᵀ qᵢ Cᵢ adds qᵢ to D[j,j] and D[k,k] and −qᵢ to D[j,k] and D[k,j] — the
-    // standard FDM (weighted graph Laplacian) assembly.
-    let mut d = Mat::<f64>::zeros(n, n);
-    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-        d[(j, j)] += qi;
-        d[(k, k)] += qi;
-        d[(j, k)] -= qi;
-        d[(k, j)] -= qi;
-    }
+    // Force-density Laplacian D = CᵀQC for the line members (no surfaces on
+    // this entry). Assembled by the shared `assemble_d` so the surface-aware
+    // entry adds Σ_T σ_T·L_T into the identical matrix before the same solve.
+    let d = assemble_d(n, members, q, &[], &[], nodes)?;
 
     // Partition node indices into anchored A and free F (both ascending).
     let mut is_anchor = vec![false; n];
@@ -159,64 +163,10 @@ pub fn form_find_anchored(
     }
 
     // Reduced free-node system D_ff X_f = −D_fa X_a (prestress-only: no external
-    // load term). All three coordinate axes are solved at once as an |F|×3 RHS
-    // so D_ff is factored only once.
-    let mut dff = Mat::<f64>::zeros(nf, nf);
-    let mut rhs = Mat::<f64>::zeros(nf, 3);
-    for (fi, &gi) in free_indices.iter().enumerate() {
-        for (fj, &gj) in free_indices.iter().enumerate() {
-            dff[(fi, fj)] = d[(gi, gj)];
-        }
-        for &ga in &anchor_indices {
-            let coupling = d[(gi, ga)];
-            let xa = nodes[ga];
-            rhs[(fi, 0)] -= coupling * xa[0];
-            rhs[(fi, 1)] -= coupling * xa[1];
-            rhs[(fi, 2)] -= coupling * xa[2];
-        }
-    }
-
-    // Retain the unmodified RHS — `solve_in_place` overwrites `rhs` with the
-    // solution, but the post-solve residual check below needs the original.
-    let rhs_orig = rhs.clone();
-
-    let plu = dff.partial_piv_lu();
-    plu.solve_in_place(&mut rhs);
-
-    // Scatter solved free-node rows back into original node order; anchors keep
-    // their exact input coordinates (no solve round-trip).
-    let mut out_nodes = nodes.to_vec();
-    for (fi, &gi) in free_indices.iter().enumerate() {
-        out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
-    }
-
-    // ---- Post-solve guard: a singular / disconnected D_ff (e.g. a free node
-    // with no member path to any anchor leaves a zero row) makes the LU solve
-    // produce a non-finite or non-equilibrium result. Detect both and surface
-    // SingularReducedStiffness rather than returning NaNs or a silently wrong
-    // geometry. ----
-    let any_nonfinite = out_nodes
-        .iter()
-        .any(|p| p.iter().any(|c| !c.is_finite()));
-    // Residual ‖D_ff · X_f − RHS‖∞, scaled by the RHS magnitude so the
-    // tolerance is meaningful regardless of the system's coordinate scale.
-    // (NaN/Inf in the solution slip past this max-reduction, but are caught by
-    // the non-finite check above — the two guards are complementary.)
-    let mut residual_inf = 0.0_f64;
-    let mut rhs_scale = 0.0_f64;
-    for fi in 0..nf {
-        for axis in 0..3 {
-            let mut row_dot = 0.0;
-            for fj in 0..nf {
-                row_dot += dff[(fi, fj)] * rhs[(fj, axis)];
-            }
-            residual_inf = residual_inf.max((row_dot - rhs_orig[(fi, axis)]).abs());
-            rhs_scale = rhs_scale.max(rhs_orig[(fi, axis)].abs());
-        }
-    }
-    if any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale) {
-        return Err(FormFindError::SingularReducedStiffness);
-    }
+    // load term), solved once via the shared `solve_reduced` core (partition →
+    // faer partial-pivot LU → non-finite + scaled-residual guard). The
+    // surface-aware entry reuses the identical core per fixed-point iteration.
+    let out_nodes = solve_reduced(&d, nodes, &free_indices, &anchor_indices)?;
 
     // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry, in
     // struts-then-cables member order (the input ordering).
@@ -238,6 +188,8 @@ pub fn form_find_anchored(
         nodes: out_nodes,
         member_forces,
         force_densities: q.to_vec(),
+        // Line-only path carries no surfaces.
+        surface_stresses: Vec::new(),
         converged: true,
     })
 }
@@ -249,6 +201,245 @@ pub fn form_find_anchored(
 // membrane each triangle contributes a cotangent-Laplacian (discrete
 // Laplace–Beltrami operator) scaled by its surface stress σ, assembled with the
 // identical rank-1 edge pattern the line solve uses for the member q.
+
+/// Relative coordinate-change tolerance for the cotangent fixed-point iteration:
+/// once the free nodes move by less than `ε·(1+scale)` between solves the
+/// geometry has settled and `D(x*)·x*` ≈ 0 on the free rows (the honest
+/// equilibrium signal).
+const SURFACE_FIXED_POINT_TOL: f64 = 1e-12;
+
+/// Iteration cap for the cotangent fixed point. Well-posed seeded membranes
+/// settle in a handful of iterations; the cap only bounds a pathological
+/// non-converging input (which then reports `converged == false`).
+const MAX_SURFACE_ITERS: usize = 1000;
+
+/// Solve the anchored Force-Density form-finding problem WITH isotropic NFDM
+/// surface (membrane) contributions (PRD §4, D1/D3 — γ / task 4414).
+///
+/// The line contribution is the landed `D = CᵀQC`; each surface triangle adds
+/// its cotangent-Laplacian `σ_T·L_T` into the SAME global matrix `D`. Because
+/// the cotangent edge weights depend on geometry, the solve iterates a
+/// force-density fixed point: assemble `D` at the current geometry, solve the
+/// reduced anchored system `D_ff X_f = −D_fa X_a` for the free nodes, and repeat
+/// until the free coordinates settle. At a fixed point `x*`, `D(x*)·x* = 0` on
+/// the free rows — prestress-only equilibrium of the combined cable/strut +
+/// membrane network. With no surfaces this reduces to a single solve, identical
+/// to [`form_find_anchored`].
+///
+/// `surfaces` are triangle corner index triples `(i, j, k)` into `nodes`;
+/// `surface_stresses` is the matching per-triangle isotropic stress `σ` (one per
+/// triangle, struts/cables order for `members`/`q` as before). Returns a
+/// [`FormFindSolve`] whose `surface_stresses` echoes the prescribed σ.
+///
+/// # Errors
+/// - [`FormFindError::DimensionMismatch`] — `members`/`kinds`/`q` disagree.
+/// - [`FormFindError::SurfaceCountMismatch`] — `surfaces`/`surface_stresses`
+///   disagree.
+/// - [`FormFindError::SignViolation`] — a member violates its q-sign contract.
+/// - [`FormFindError::NonTensionSurfaceStress`] — a surface `σ ≤ 0`.
+/// - [`FormFindError::DegenerateTriangle`] — a zero-area surface triangle.
+/// - [`FormFindError::EmptyFreeSet`] — every node anchored.
+/// - [`FormFindError::SingularReducedStiffness`] — rank-deficient `D_ff`.
+pub fn form_find_anchored_surfaces(
+    nodes: &[[f64; 3]],
+    members: &[(usize, usize)],
+    kinds: &[MemberKind],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    anchors: &[usize],
+) -> Result<FormFindSolve, FormFindError> {
+    let n = nodes.len();
+
+    // ---- Feasibility guards (mirror the line contract; PRD §8.1). ----
+    if members.len() != kinds.len() || members.len() != q.len() {
+        return Err(FormFindError::DimensionMismatch);
+    }
+    if surfaces.len() != surface_stresses.len() {
+        return Err(FormFindError::SurfaceCountMismatch);
+    }
+    // Member sign contract: cables carry tension (q > 0), struts compression.
+    for (&kind, &qi) in kinds.iter().zip(q.iter()) {
+        let sign_ok = match kind {
+            MemberKind::Cable => qi > 0.0,
+            MemberKind::Strut => qi < 0.0,
+        };
+        if !sign_ok {
+            return Err(FormFindError::SignViolation);
+        }
+    }
+    // Surface tension contract: isotropic prestress σ must be strictly positive
+    // (a slack / compressed membrane is infeasible — the surface analogue of the
+    // cable q > 0 rule).
+    for &s in surface_stresses {
+        if s <= 0.0 {
+            return Err(FormFindError::NonTensionSurfaceStress);
+        }
+    }
+
+    // Partition node indices into anchored A and free F (both ascending).
+    let mut is_anchor = vec![false; n];
+    for &a in anchors {
+        is_anchor[a] = true;
+    }
+    let free_indices: Vec<usize> = (0..n).filter(|&i| !is_anchor[i]).collect();
+    let anchor_indices: Vec<usize> = (0..n).filter(|&i| is_anchor[i]).collect();
+    if free_indices.is_empty() {
+        return Err(FormFindError::EmptyFreeSet);
+    }
+
+    // Iterate the cotangent fixed point. With no surfaces `D` is
+    // geometry-independent, so a single solve is exact (the line-only case);
+    // with surfaces the weights depend on geometry, so re-assemble and re-solve
+    // until the free coordinates settle.
+    let mut current = nodes.to_vec();
+    let mut converged = surfaces.is_empty();
+    let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
+    for _ in 0..max_iters {
+        let d = assemble_d(n, members, q, surfaces, surface_stresses, &current)?;
+        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
+        // Relative max-coordinate change over the free nodes.
+        let mut delta = 0.0_f64;
+        let mut scale = 0.0_f64;
+        for &gi in &free_indices {
+            for axis in 0..3 {
+                delta = delta.max((solved[gi][axis] - current[gi][axis]).abs());
+                scale = scale.max(solved[gi][axis].abs());
+            }
+        }
+        current = solved;
+        if surfaces.is_empty() || delta <= SURFACE_FIXED_POINT_TOL * (1.0 + scale) {
+            converged = true;
+            break;
+        }
+    }
+    let out_nodes = current;
+
+    // Per-member axial force Nᵢ = qᵢ · Lᵢ on the solved geometry.
+    let member_forces: Vec<f64> = members
+        .iter()
+        .zip(q.iter())
+        .map(|(&(j, k), &qi)| {
+            let pj = out_nodes[j];
+            let pk = out_nodes[k];
+            let len = ((pj[0] - pk[0]).powi(2)
+                + (pj[1] - pk[1]).powi(2)
+                + (pj[2] - pk[2]).powi(2))
+            .sqrt();
+            qi * len
+        })
+        .collect();
+
+    Ok(FormFindSolve {
+        nodes: out_nodes,
+        member_forces,
+        force_densities: q.to_vec(),
+        surface_stresses: surface_stresses.to_vec(),
+        converged,
+    })
+}
+
+/// Assemble the global force-density matrix `D = CᵀQC` (line members) `+ Σ_T
+/// σ_T·L_T` (surface cotangent-Laplacians, at the given geometry) into a dense
+/// `n×n` faer matrix. Shared by both anchored entries; the line loop is the
+/// landed FDM rank-1 update, the surface loop scatters each per-triangle local
+/// 3×3 into the triangle's global node indices. Propagates
+/// [`FormFindError::DegenerateTriangle`] from a zero-area triangle.
+fn assemble_d(
+    n: usize,
+    members: &[(usize, usize)],
+    q: &[f64],
+    surfaces: &[(usize, usize, usize)],
+    surface_stresses: &[f64],
+    nodes: &[[f64; 3]],
+) -> Result<Mat<f64>, FormFindError> {
+    let mut d = Mat::<f64>::zeros(n, n);
+    // Line members: rank-1 FDM update — qᵢ to D[j,j], D[k,k]; −qᵢ to D[j,k], D[k,j].
+    for (&(j, k), &qi) in members.iter().zip(q.iter()) {
+        d[(j, j)] += qi;
+        d[(k, k)] += qi;
+        d[(j, k)] -= qi;
+        d[(k, j)] -= qi;
+    }
+    // Surface triangles: add σ_T·L_T into the SAME matrix.
+    for (&(i, j, k), &sigma) in surfaces.iter().zip(surface_stresses.iter()) {
+        let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], sigma)?;
+        let idx = [i, j, k];
+        for a in 0..3 {
+            for b in 0..3 {
+                d[(idx[a], idx[b])] += l[a][b];
+            }
+        }
+    }
+    Ok(d)
+}
+
+/// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
+/// (already-assembled) `D` and geometry, scattering the solved free rows back
+/// into a full node vector. The partition → faer partial-pivot LU → non-finite +
+/// scaled-residual guard is the landed line-solve core, extracted verbatim so
+/// the line and surface entries share it (the surface entry calls it once per
+/// fixed-point iteration). Returns [`FormFindError::SingularReducedStiffness`]
+/// when the reduced system is rank-deficient.
+fn solve_reduced(
+    d: &Mat<f64>,
+    nodes: &[[f64; 3]],
+    free_indices: &[usize],
+    anchor_indices: &[usize],
+) -> Result<Vec<[f64; 3]>, FormFindError> {
+    let nf = free_indices.len();
+    // All three coordinate axes are solved at once as an |F|×3 RHS so D_ff is
+    // factored only once.
+    let mut dff = Mat::<f64>::zeros(nf, nf);
+    let mut rhs = Mat::<f64>::zeros(nf, 3);
+    for (fi, &gi) in free_indices.iter().enumerate() {
+        for (fj, &gj) in free_indices.iter().enumerate() {
+            dff[(fi, fj)] = d[(gi, gj)];
+        }
+        for &ga in anchor_indices {
+            let coupling = d[(gi, ga)];
+            let xa = nodes[ga];
+            rhs[(fi, 0)] -= coupling * xa[0];
+            rhs[(fi, 1)] -= coupling * xa[1];
+            rhs[(fi, 2)] -= coupling * xa[2];
+        }
+    }
+
+    // Retain the unmodified RHS — `solve_in_place` overwrites `rhs` with the
+    // solution, but the post-solve residual check below needs the original.
+    let rhs_orig = rhs.clone();
+    let plu = dff.partial_piv_lu();
+    plu.solve_in_place(&mut rhs);
+
+    // Scatter solved free-node rows back into original node order; anchors keep
+    // their exact input coordinates (no solve round-trip).
+    let mut out_nodes = nodes.to_vec();
+    for (fi, &gi) in free_indices.iter().enumerate() {
+        out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
+    }
+
+    // Post-solve guard: a singular / disconnected D_ff makes the LU solve
+    // produce a non-finite or non-equilibrium result — surface
+    // SingularReducedStiffness rather than NaNs / a silently wrong geometry.
+    let any_nonfinite = out_nodes.iter().any(|p| p.iter().any(|c| !c.is_finite()));
+    let mut residual_inf = 0.0_f64;
+    let mut rhs_scale = 0.0_f64;
+    for fi in 0..nf {
+        for axis in 0..3 {
+            let mut row_dot = 0.0;
+            for fj in 0..nf {
+                row_dot += dff[(fi, fj)] * rhs[(fj, axis)];
+            }
+            residual_inf = residual_inf.max((row_dot - rhs_orig[(fi, axis)]).abs());
+            rhs_scale = rhs_scale.max(rhs_orig[(fi, axis)].abs());
+        }
+    }
+    if any_nonfinite || residual_inf > 1e-6 * (1.0 + rhs_scale) {
+        return Err(FormFindError::SingularReducedStiffness);
+    }
+
+    Ok(out_nodes)
+}
 
 /// Relative threshold below which a triangle is judged degenerate: when
 /// `2·Area ≤ ε · (max squared edge length)` the corners are effectively
@@ -351,6 +542,11 @@ fn triangle_cotangent_laplacian(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A membrane test case: `(nodes, surface triangles, anchor indices)`.
+    /// Aliased to keep the surface-test helper signatures readable (and to
+    /// silence `clippy::type_complexity` on the bare nested-tuple return).
+    type MembraneCase = (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>);
 
     /// Tolerance for the analytic FD-identity goldens. The reduced linear solve
     /// reproduces these exact identities to ~1e-13; 1e-9 leaves ~4 orders of
@@ -643,6 +839,7 @@ mod tests {
     //   diagonals      D[A,A]=σ=1,  D[B,B]=D[C,C]=σ/2=0.5
     // This is closed-form exactness (a known cotangent), NOT a convergence claim.
     #[test]
+    #[allow(clippy::needless_range_loop)] // explicit 3×3 stencil index checks incl. transpose l[col][r]
     fn triangle_cotangent_laplacian_stencil_is_exact_for_right_isosceles() {
         let a = [0.0, 0.0, 0.0];
         let b = [1.0, 0.0, 0.0];
@@ -746,6 +943,7 @@ mod tests {
 
     /// Max-norm of the free-node equilibrium residual `(D x)_free`, scaled by the
     /// node-coordinate magnitude so the bound is coordinate-scale-free.
+    #[allow(clippy::needless_range_loop)] // explicit row/axis indexing of the dense D and node coords
     fn equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]], is_anchor: &[bool]) -> f64 {
         let n = nodes.len();
         let mut resid = 0.0_f64;
@@ -770,12 +968,16 @@ mod tests {
         resid / (1.0 + scale)
     }
 
-    /// Symmetric "tent" membrane: a diamond boundary of 4 anchored corners in the
-    /// z=0 plane plus one free interior node, fanned by 4 triangles. The minimal
-    /// surface spanning a planar boundary is flat, so the free node settles to the
-    /// in-plane centroid (0,0,0); a wrong cotangent assembly would drive it off
-    /// (0,0,0) or blow up the equilibrium residual (non-circular signal).
-    fn tent_membrane() -> (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>) {
+    /// "Tent" membrane: a diamond boundary of 4 anchored corners in the z=0
+    /// plane plus one free interior node (seeded off-plane at z=0.3), fanned by
+    /// 4 triangles. The minimal surface spanning a planar boundary is flat, so a
+    /// correct cotangent assembly pulls the free node back into the boundary
+    /// plane (z→0) and leaves a ~0 equilibrium residual; a wrong assembly drives
+    /// it off-plane or blows up the residual (non-circular signal). The in-plane
+    /// (x,y) position is NOT unique — the flat surface has constant area for any
+    /// interior position, so the cotangent-Laplacian vanishes across the whole
+    /// interior — hence the tests assert planarity + residual, not an (x,y).
+    fn tent_membrane() -> MembraneCase {
         let nodes = vec![
             [0.1, 0.1, 0.3],  // 0: free interior — deliberately off-solution
             [1.0, 0.0, 0.0],  // 1: anchor
@@ -838,12 +1040,26 @@ mod tests {
             "equilibrium residual ‖(D x)_free‖/scale = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
         );
 
-        // By symmetry the planar minimal surface places the free node at the
-        // in-plane centroid (0,0,0).
+        // The boundary is planar (all anchors at z=0), so the equilibrium
+        // membrane is flat: the free node's z is the cotangent-weighted average
+        // of the anchor z's (all 0), hence exactly 0 at any non-degenerate
+        // equilibrium — a genuine signal here, since the seed sits at z=0.3.
+        //
+        // We deliberately do NOT assert the in-plane (x,y) position. With a
+        // planar boundary the flat surface has CONSTANT area for any interior
+        // position (the fan triangles always tile the same diamond), so the
+        // area gradient — the cotangent-Laplacian (D x)_free — vanishes across
+        // the WHOLE interior: a continuum of equilibria, not a unique centroid.
+        // The solver lands on the seed-nearest one (verified: net force ~1e-16
+        // at (0,0,0), (0.092,0.092,0), (-0.2,0.3,0), … alike). Pinning an exact
+        // (x,y) would assert a non-unique coordinate and violate the G6 honesty
+        // mandate ("never an exact coordinate"); the equilibrium residual above
+        // is the honest in-plane signal.
         let n0 = solve.nodes[0];
         assert!(
-            max_coord_err(n0, [0.0, 0.0, 0.0]) < 1e-9,
-            "free node = {n0:?}, expected the symmetric centroid (0,0,0)",
+            n0[2].abs() < 1e-9,
+            "free node z = {}, expected ~0 (planar boundary ⇒ flat membrane)",
+            n0[2],
         );
     }
 

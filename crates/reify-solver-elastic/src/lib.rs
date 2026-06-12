@@ -659,7 +659,12 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // PRD: docs/prds/v0_6/tensegrity-structures.md §4. Pure numeric kernel behind
 // the `solver::form_find` ComputeNode target; the Value-cracking trampoline
 // lives in reify-eval's compute_targets/form_find.rs.
-pub use form_find::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
+// Task 4414: Tensegrity-membrane γ — `form_find_anchored_surfaces` adds isotropic
+// NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
+// (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
+pub use form_find::{
+    FormFindError, FormFindSolve, MemberKind, form_find_anchored, form_find_anchored_surfaces,
+};
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
