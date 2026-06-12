@@ -515,4 +515,86 @@ mod tests {
             FormFindError::DimensionMismatch,
         );
     }
+
+    // ── γ (task 4414): per-triangle cotangent-Laplacian (NFDM surface) stencil ──
+
+    /// Tolerance for the closed-form cotangent-stencil identity. The local 3×3
+    /// contribution is a handful of exact float ops (two dots, one cross, one
+    /// divide), so it reproduces the hand-computed weights to ~machine epsilon;
+    /// 1e-12 is honest closed-form exactness, NOT a mesh-convergence claim.
+    const STENCIL_TOL: f64 = 1e-12;
+
+    // (a) The per-triangle cotangent-Laplacian stencil is EXACT for a
+    // right-isosceles triangle A=(0,0,0), B=(1,0,0), C=(0,1,0) with isotropic
+    // surface stress σ=1. Interior angles: 90° at A (cot 0), 45° at B and C
+    // (cot 1). The discrete Laplace–Beltrami edge weight opposite vertex v is
+    // (σ/2)·cot(θ_v), so the assembled local contribution D_T = σ·L_T is
+    //   off-diagonals  D[A,B]=D[A,C]=−σ/2=−0.5,  D[B,C]=0
+    //   diagonals      D[A,A]=σ=1,  D[B,B]=D[C,C]=σ/2=0.5
+    // This is closed-form exactness (a known cotangent), NOT a convergence claim.
+    #[test]
+    fn triangle_cotangent_laplacian_stencil_is_exact_for_right_isosceles() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        let c = [0.0, 1.0, 0.0];
+        let sigma = 1.0;
+
+        let l = triangle_cotangent_laplacian(a, b, c, sigma)
+            .expect("a non-degenerate triangle must yield a cotangent-Laplacian");
+
+        // Expected local 3×3 (rows/cols 0=A, 1=B, 2=C).
+        let expected = [
+            [1.0, -0.5, -0.5],
+            [-0.5, 0.5, 0.0],
+            [-0.5, 0.0, 0.5],
+        ];
+        for r in 0..3 {
+            for col in 0..3 {
+                assert!(
+                    (l[r][col] - expected[r][col]).abs() < STENCIL_TOL,
+                    "L[{r}][{col}] = {}, expected {} (right-isosceles cotangent stencil)",
+                    l[r][col],
+                    expected[r][col],
+                );
+            }
+        }
+
+        // The FDM rank-1 pattern writes each edge weight to BOTH off-diagonal
+        // slots, so L must be symmetric.
+        for r in 0..3 {
+            for col in 0..3 {
+                assert!(
+                    (l[r][col] - l[col][r]).abs() < STENCIL_TOL,
+                    "cotangent-Laplacian must be symmetric; L[{r}][{col}] != L[{col}][{r}]",
+                );
+            }
+        }
+
+        // A graph Laplacian annihilates the constant function, so every row must
+        // sum to ~0 (diag = Σ incident edge weights, off-diags = −those weights).
+        for r in 0..3 {
+            let row_sum: f64 = l[r].iter().sum();
+            assert!(
+                row_sum.abs() < STENCIL_TOL,
+                "cotangent-Laplacian row {r} must sum to 0, got {row_sum}",
+            );
+        }
+    }
+
+    // (b) A degenerate (collinear, zero-area) triangle makes
+    // cot(θ)=dot/(2·Area) blow up as 2·Area→0. The helper must return
+    // DegenerateTriangle rather than a NaN/∞ stencil that would silently poison
+    // the assembled global system.
+    #[test]
+    fn triangle_cotangent_laplacian_rejects_degenerate_triangle() {
+        // Three collinear points on the x-axis → zero area.
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        let c = [2.0, 0.0, 0.0];
+
+        assert_eq!(
+            triangle_cotangent_laplacian(a, b, c, 1.0).unwrap_err(),
+            FormFindError::DegenerateTriangle,
+        );
+    }
 }
