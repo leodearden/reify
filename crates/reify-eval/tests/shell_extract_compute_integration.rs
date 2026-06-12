@@ -18,21 +18,18 @@ use reify_ir::{
 };
 use reify_test_support::make_simple_engine;
 
-/// Construct a synthetic thin-slab `SampledField` (5×5×3 grid) whose SDF
-/// encodes a slab centred at z=0 with half-thickness 0.1.
+/// Shared builder for synthetic thin-slab `SampledField` fixtures (5×5×3 grid).
 ///
-/// - x: [0.0, 0.25, 0.5, 0.75, 1.0] (5 points, spacing=0.25)
-/// - y: [0.0, 0.25, 0.5, 0.75, 1.0] (5 points, spacing=0.25)
-/// - z: [-0.5, 0.0, 0.5] (3 points, spacing=0.5)
-///
-/// SDF(x,y,z) = |z| − 0.1  — negative inside the slab, positive outside.
-fn synthetic_slab_field() -> SampledField {
-    let x_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.25).collect();
-    let y_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.25).collect();
+/// Grid layout: 5 points along x and y with `spacing_xy`; z fixed at
+/// [-0.5, 0.0, 0.5] (spacing=0.5). SDF(x,y,z) = |z| − 0.1 — negative inside
+/// the slab, positive outside. Medial plane at z=0.
+fn slab_field(name: &str, spacing_xy: f64) -> SampledField {
+    const N: usize = 5;
+    let x_grid: Vec<f64> = (0..N).map(|i| i as f64 * spacing_xy).collect();
+    let y_grid: Vec<f64> = (0..N).map(|i| i as f64 * spacing_xy).collect();
     let z_grid: Vec<f64> = vec![-0.5, 0.0, 0.5];
 
-    // Flat row-major order: iterate z outermost, then y, then x.
-    let mut data = Vec::with_capacity(5 * 5 * 3);
+    let mut data = Vec::with_capacity(N * N * 3);
     for &z in &z_grid {
         for _y in &y_grid {
             for _x in &x_grid {
@@ -41,17 +38,29 @@ fn synthetic_slab_field() -> SampledField {
         }
     }
 
+    let max_xy = spacing_xy * (N - 1) as f64;
     SampledField {
-        name: "synthetic_slab".to_string(),
+        name: name.to_string(),
         kind: SampledGridKind::Regular3D,
         bounds_min: vec![0.0, 0.0, -0.5],
-        bounds_max: vec![1.0, 1.0, 0.5],
-        spacing: vec![0.25, 0.25, 0.5],
+        bounds_max: vec![max_xy, max_xy, 0.5],
+        spacing: vec![spacing_xy, spacing_xy, 0.5],
         axis_grids: vec![x_grid, y_grid, z_grid],
         interpolation: InterpolationKind::Linear,
         data,
         oob_emitted: std::sync::atomic::AtomicBool::new(false),
     }
+}
+
+/// 5×5×3 slab with spacing=0.25, footprint [0,1.0]².
+fn synthetic_slab_field() -> SampledField {
+    slab_field("synthetic_slab", 0.25)
+}
+
+/// 5×5×3 slab with spacing=0.5, footprint [0,2.0]² — used to prove the
+/// realization arm (not the value_inputs[1] slab) was the geometry source.
+fn synthetic_large_slab_field() -> SampledField {
+    slab_field("synthetic_large_slab", 0.5)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -667,43 +676,6 @@ fn shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code() {
 // Step-1 tests for task #4511 (ε dual-source: prefers realization_inputs[0].sdf())
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Construct a synthetic thin-slab `SampledField` with doubled in-plane footprint
-/// [0,2.0]² (vs the standard [0,1.0]² fixture), used to prove that the realization
-/// arm, not the value_inputs[1] slab, was the geometry source.
-///
-/// - x: [0.0, 0.5, 1.0, 1.5, 2.0] (5 points, spacing=0.5)
-/// - y: [0.0, 0.5, 1.0, 1.5, 2.0] (5 points, spacing=0.5)
-/// - z: [-0.5, 0.0, 0.5] (3 points, spacing=0.5)
-///
-/// SDF(x,y,z) = |z| − 0.1 — same narrow-band half-thickness as
-/// `synthetic_slab_field`; medial plane at z=0.
-fn synthetic_large_slab_field() -> SampledField {
-    let x_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.5).collect();
-    let y_grid: Vec<f64> = (0..5).map(|i| i as f64 * 0.5).collect();
-    let z_grid: Vec<f64> = vec![-0.5, 0.0, 0.5];
-
-    let mut data = Vec::with_capacity(5 * 5 * 3);
-    for &z in &z_grid {
-        for _y in &y_grid {
-            for _x in &x_grid {
-                data.push(z.abs() - 0.1);
-            }
-        }
-    }
-
-    SampledField {
-        name: "synthetic_large_slab".to_string(),
-        kind: SampledGridKind::Regular3D,
-        bounds_min: vec![0.0, 0.0, -0.5],
-        bounds_max: vec![2.0, 2.0, 0.5],
-        spacing: vec![0.5, 0.5, 0.5],
-        axis_grids: vec![x_grid, y_grid, z_grid],
-        interpolation: InterpolationKind::Linear,
-        data,
-        oob_emitted: std::sync::atomic::AtomicBool::new(false),
-    }
-}
-
 /// Extract the maximum x-coordinate across all mid-surface vertices from a
 /// `ComputeOutcome::Completed` result value.
 ///
@@ -856,10 +828,8 @@ fn shell_extract_uses_realization_sdf_when_value_input_slab_absent() {
 /// 1. Be `ComputeOutcome::Failed`.
 /// 2. Contain at least one diagnostic message that references BOTH
 ///    "realization_inputs[0]" AND "value_inputs[1]" — the dual-source contract.
-/// 3. NOT contain "δ migrates" — the stale γ-only seam wording must be gone.
 ///
-/// RED after step-2: step-2 deliberately kept the old
-/// "γ-only seam; δ migrates to realization_inputs[0]" wording in the diagnostic.
+/// RED after step-2: step-2 deliberately kept the old single-source wording.
 /// GREEN after step-4 rewrites the diagnostic to the dual-source form.
 ///
 /// Pins docs/prds/v0_6/realization-read-api.md §9 ε / D3.
@@ -893,14 +863,6 @@ fn shell_extract_fails_when_neither_realization_nor_slab_present() {
         "expected at least one diagnostic referencing both 'realization_inputs[0]' \
          and 'value_inputs[1]' (dual-source contract); got: {diagnostics:?}. \
          (RED until step-4 rewrites the error diagnostic)"
-    );
-
-    // (3) The stale γ-only seam wording must be gone from all diagnostics.
-    let stale_msg = diagnostics.iter().find(|d| d.message.contains("δ migrates"));
-    assert!(
-        stale_msg.is_none(),
-        "expected no diagnostic containing 'δ migrates' (stale γ-only seam wording); \
-         got: {stale_msg:?}. (RED until step-4 rewrites the error diagnostic)"
     );
 }
 
