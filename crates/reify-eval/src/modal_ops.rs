@@ -778,6 +778,20 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
     }
 }
 
+/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
+/// `type_name` is `"Part"`.  All four production echo sites emit this value
+/// for the `part` field until the Part registry is wired (task 4578).
+/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
+/// other degenerate builders in this file.
+fn placeholder_part() -> Value {
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Part".to_string(),
+        version: 1,
+        fields: PersistentMap::default(),
+    }))
+}
+
 /// Build a degenerate `ModalResult` `Value::StructureInstance`: an empty `modes`
 /// list and zeroed matrix norms — the result returned when the modal solve is
 /// short-circuited (no mass matrix). Shaped to the α structure-def (6 fields,
@@ -786,7 +800,7 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
 /// `pre_stress`), and `StructureTypeId(u32::MAX)` is the registry-free sentinel.
 fn degenerate_modal_result() -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(Vec::new())),
         ("boundary_conditions".to_string(), Value::List(Vec::new())),
         ("damping".to_string(), Value::Undef),
@@ -1067,7 +1081,7 @@ pub(crate) fn run_modal_analysis(
     let boundary_conditions = field_or(options, "boundary_conditions", Value::List(Vec::new()));
     let damping = field_or(options, "damping", Value::Undef);
     let result_fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), boundary_conditions),
         ("damping".to_string(), damping),
@@ -1149,7 +1163,7 @@ pub fn solve_modal_analysis_trampoline(
 /// the registry-free sentinel, mirroring [`degenerate_modal_result`].
 fn degenerate_displacement_history() -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modal_result".to_string(), degenerate_modal_result()),
         ("t_samples".to_string(), Value::List(Vec::new())),
         ("mode_coords".to_string(), Value::List(Vec::new())),
@@ -1689,7 +1703,7 @@ pub(crate) fn run_transient_response(
             .collect(),
     );
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modal_result".to_string(), modal_result),
         ("t_samples".to_string(), t_samples),
         ("mode_coords".to_string(), Value::List(mode_coords)),
