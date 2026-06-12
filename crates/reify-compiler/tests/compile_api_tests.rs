@@ -379,6 +379,51 @@ fn compile_thicken_produces_realization() {
 }
 
 #[test]
+fn compile_offset_solid_produces_realization() {
+    let source = r#"structure S {
+    param w: Length = 10mm
+    let grown = offset_solid(w, 2mm)
+}"#;
+    let parsed =
+        reify_syntax::parse(source, reify_core::ModulePath::single("test_offset_solid"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = compile(&parsed);
+    let template = &compiled.templates[0];
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "expected 1 realization for offset_solid call, got {}",
+        template.realizations.len()
+    );
+    let op = &template.realizations[0].operations[0];
+    assert!(
+        matches!(
+            op,
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::OffsetSolid,
+                ..
+            }
+        ),
+        "expected Modify(OffsetSolid), got {:?}",
+        op
+    );
+    // arg names must be exactly ["target", "distance"]
+    if let CompiledGeometryOp::Modify { args, .. } = op {
+        let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["target", "distance"],
+            "arg names mismatch: {:?}",
+            names
+        );
+    }
+}
+
+#[test]
 fn compile_draft_produces_realization() {
     let source = r#"structure S {
     param w: Length = 10mm

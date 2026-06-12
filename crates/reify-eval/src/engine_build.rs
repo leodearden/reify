@@ -1124,6 +1124,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
@@ -1194,6 +1195,7 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. } => {
             sub(target);
         }
@@ -1336,6 +1338,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
         // Transform
         GeometryOp::Translate { .. } => Operation::TransformTranslate,
@@ -1421,7 +1424,8 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
 
         // Modify — BRep-only consumers
-        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => Some(BREP_ONLY),
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
+        | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1511,6 +1515,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
+            ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
             TransformKind::Translate => Operation::TransformTranslate,
@@ -6502,6 +6507,7 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
@@ -9958,6 +9964,14 @@ mod tests {
                 label: "Thicken → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(85),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(85)],
+                label: "OffsetSolid → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -10334,6 +10348,14 @@ mod tests {
                 },
                 expected: Operation::ModifyThicken,
                 label: "Thicken → ModifyThicken",
+            },
+            Case {
+                op: GeometryOp::OffsetSolid {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSolid,
+                label: "OffsetSolid → ModifyOffsetSolid",
             },
             // Transform
             Case {
@@ -12378,6 +12400,7 @@ mod mixed_region_tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyOffsetSolid,
         ] {
             assert!(
                 op_accepts_repr(&mod_op, ReprKind::BRep),
