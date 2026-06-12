@@ -230,43 +230,19 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 // `Value::Field { source: Analytical, lambda: Arc(lambda) }` from
                 // the evaluated first argument (which must be a `Value::Lambda`).
                 //
-                // domain_type / codomain_type are read from `expr.result_type`
-                // (α's `field_op_result_type` stamps this as `Field<D,C>` at
-                // compile time; verified and pinned by `field_op_typing_tests.rs`).
-                // The Real/Real fallback is harmless: `sample_field_at`'s
-                // `(Value::Lambda, _)` arm dispatches via
-                // `apply_lambda_with_point_unpacking` and ignores domain/codomain
-                // — so even a mistyped tree still samples correctly.
-                //
-                // No new sample arm is needed: sampling reuses the existing
-                // `(Value::Lambda { .. }, _)` arm in `sample_field_at` (lib.rs
-                // below) → `apply_lambda_with_point_unpacking` → result.
+                // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
+                // recursive frame small in debug builds — the two `Type` locals
+                // (`domain_type`, `codomain_type`) would otherwise sit on every
+                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+                // evaluation (same rationale as `eval_structure_instance_ctor`,
+                // `eval_quantifier`, etc.; pinned by
+                // `eval_user_fn_recursion_depth_exceeded`).
                 "fn_field"
                     if evaluated_args.len() == 1
                         && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
                 {
-                    // In debug/test builds, assert that α's `field_op_result_type`
-                    // has stamped `result_type = Field<D,C>`.  A typing regression
-                    // would otherwise silently produce a `Value::Field` with wrong
-                    // domain/codomain rather than surfacing as a loud failure.
-                    debug_assert!(
-                        matches!(&expr.result_type, Type::Field { .. }),
-                        "fn_field result_type should be Field<D,C>, stamped by \
-                         field_op_result_type (task 4219 α); got {:?}",
-                        &expr.result_type
-                    );
-                    let (domain_type, codomain_type) =
-                        if let Type::Field { domain, codomain } = &expr.result_type {
-                            ((**domain).clone(), (**codomain).clone())
-                        } else {
-                            (Type::Real, Type::Real)
-                        };
-                    Value::Field {
-                        domain_type,
-                        codomain_type,
-                        source: FieldSourceKind::Analytical,
-                        lambda: Arc::new(evaluated_args[0].clone()),
-                    }
+                    eval_fn_field(&evaluated_args[0], &expr.result_type)
                 }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
@@ -1992,6 +1968,39 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
         }));
     }
     result
+}
+
+/// Wrap a user lambda as a `Value::Field { source: Analytical, .. }`.
+///
+/// Implements the `fn_field` intercepting builtin (task 4220 β,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.2).
+///
+/// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
+/// debug builds — the `domain_type` and `codomain_type` locals (each a
+/// `Type`) would otherwise sit on every recursive `eval_expr` frame and
+/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// levels of user-fn recursion (same rationale as
+/// `eval_structure_instance_ctor`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "fn_field result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4219 α); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::Real, Type::Real)
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda.clone()),
+    }
 }
 
 /// Apply a lambda closure to a list of argument values.
