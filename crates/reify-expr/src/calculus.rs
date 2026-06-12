@@ -2822,6 +2822,40 @@ mod tests {
         }
     }
 
+    /// Build a Regular3D stride-1 (scalar) SampledField: one value per node.
+    /// Used to construct dimension/stride mismatch scenarios for totality regression tests.
+    fn make_3d_scalar_sf(
+        nx: usize,
+        ny: usize,
+        nz: usize,
+        h: f64,
+        f: impl Fn(f64, f64, f64) -> f64,
+    ) -> reify_ir::SampledField {
+        use std::sync::atomic::AtomicBool;
+        let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+        let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+        let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+        let mut data = Vec::with_capacity(nx * ny * nz);
+        for &x in &xs {
+            for &y in &ys {
+                for &z in &zs {
+                    data.push(f(x, y, z));
+                }
+            }
+        }
+        reify_ir::SampledField {
+            name: "test-3d-scalar".to_string(),
+            kind: reify_ir::SampledGridKind::Regular3D,
+            bounds_min: vec![0.0, 0.0, 0.0],
+            bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+            spacing: vec![h, h, h],
+            axis_grids: vec![xs, ys, zs],
+            interpolation: reify_ir::InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
     /// compute_divergence on a well-formed 3D Sampled vector field F=(x, 2y, 3z)
     /// returns a Sampled field whose data equals the exact divergence (6.0 everywhere,
     /// <1e-12) and whose codomain_type is Real (dimensionless strain quotient).
@@ -3028,5 +3062,136 @@ mod tests {
             Value::Undef,
             "curl of Sampled field with non-SampledField lambda must return Undef"
         );
+    }
+
+    // ─── ζ amend: stride-mismatch totality regression pins ────────────────────
+
+    /// compute_divergence with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch passes `divergence_result_codomain` (type-check succeeds:
+    /// n=3, vec_n=3), then calls `sampled_differential(sf, Divergence)` where the actual
+    /// grid has `in_stride=1` vs `n_axes=3`.  The totality path (`in_stride != n_axes`)
+    /// returns a zero-filled stride-1 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` scalar `Field`, NOT
+    /// `Value::Undef`.  Callers must not supply a type/stride mismatch; this test locks the
+    /// observed behaviour so any future change (e.g. returning `Undef` instead) requires a
+    /// deliberate test update.
+    #[test]
+    fn divergence_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1 but n_axes=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_divergence(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch divergence must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch divergence lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch divergence must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-1 scalar output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count,
+            "degenerate divergence output must be stride-1 (len={grid_count}), got {}",
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "node {g}: degenerate divergence must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
+    }
+
+    /// compute_curl with a declared/actual stride mismatch:
+    /// declared `Point{3}/Vector{3}` types over a stride-1 (scalar) Regular3D grid.
+    ///
+    /// The eager-lower dispatch passes `curl_result_codomain` (type-check succeeds: domain
+    /// `Point{3}`, codomain `Vector{3}`), then calls `sampled_differential(sf, Curl)` where
+    /// the actual grid has `in_stride=1` vs the required `3`.  The totality path
+    /// (`in_stride != 3`) returns a zero-filled stride-3 degenerate field without panicking.
+    ///
+    /// **Contract pinned here:** the result is a zero-filled `Sampled` vec3 `Field`, NOT
+    /// `Value::Undef`.
+    #[test]
+    fn curl_sampled_stride_mismatch_returns_degenerate_zero_field() {
+        // stride-1 (scalar) Regular3D grid — in_stride=1, curl requires in_stride=3 → mismatch
+        let sf = make_3d_scalar_sf(3, 3, 3, 1.0, |x, y, z| x + y + z);
+        let grid_count = 3 * 3 * 3;
+        let domain = Type::Point { n: 3, quantity: Box::new(Type::dimensionless_scalar()) };
+        let codomain = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        // Declared codomain says "vector" but actual data is scalar stride-1 → mismatch
+        let field = make_sampled_field_value(sf, domain, codomain);
+
+        let result = compute_curl(&field);
+
+        // Must be a Sampled Field (not Undef) — sampled_fd totality contract
+        let out_sf = match &result {
+            Value::Field { source, lambda, .. } => {
+                assert_eq!(
+                    *source,
+                    FieldSourceKind::Sampled,
+                    "stride-mismatch curl must return source=Sampled, got {:?}",
+                    source
+                );
+                match lambda.as_ref() {
+                    Value::SampledField(sf) => sf,
+                    other => panic!(
+                        "stride-mismatch curl lambda must be SampledField, got {:?}",
+                        other
+                    ),
+                }
+            }
+            other => panic!(
+                "stride-mismatch curl must return Value::Field (degenerate zero), got {:?}",
+                other
+            ),
+        };
+
+        // Degenerate: stride-3 vector output, every value 0.0
+        assert_eq!(
+            out_sf.data.len(),
+            grid_count * 3,
+            "degenerate curl output must be stride-3 (len={}), got {}",
+            grid_count * 3,
+            out_sf.data.len()
+        );
+        for (g, &v) in out_sf.data.iter().enumerate() {
+            assert_eq!(
+                v, 0.0,
+                "degenerate curl data[{g}] must be 0.0 (sampled_fd totality), got {v}"
+            );
+        }
     }
 }
