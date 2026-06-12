@@ -22,7 +22,6 @@
 mod common;
 
 use reify_compiler::CompiledFieldSource;
-use reify_core::Severity;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// Read the shipped example from disk, compile it, and assert structural invariants.
