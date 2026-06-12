@@ -27,8 +27,8 @@ use std::hash::{Hash, Hasher};
 use reify_core::Diagnostic;
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
-    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, StructureInstanceData,
-    StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
+    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, SampledField,
+    StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_shell_extract::{
     GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
@@ -338,22 +338,27 @@ fn parse_elastic_options_from_value(
 /// for synthetic-slab runtimes; tighter inner-loop granularity deferred to ε.
 pub fn shell_extract_compute_fn(
     value_inputs: &[Value],
-    _realization_inputs: &[RealizationReadHandle],
+    realization_inputs: &[RealizationReadHandle],
     options: &Value,
     _prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // ── Read SampledField from value_inputs[1] (γ-only seam) ─────────────────
-    let sdf = match value_inputs.get(1) {
-        Some(Value::SampledField(sf)) => sf,
-        _ => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(
-                    "shell-extract::extract: value_inputs[1] must be Value::SampledField \
-                     (γ-only seam; δ migrates to realization_inputs[0])",
-                )],
-            };
-        }
+    // ── Dual-source SDF read: prefer realization_inputs[0].sdf(), fall back to
+    // value_inputs[1] Value::SampledField (realization-read-api.md §9 ε / D3,
+    // task ε=#4511). ──────────────────────────────────────────────────────────
+    let sdf: &SampledField = match realization_inputs.first().and_then(|h| h.sdf()) {
+        Some(sf) => sf,
+        None => match value_inputs.get(1) {
+            Some(Value::SampledField(sf)) => sf,
+            _ => {
+                return ComputeOutcome::Failed {
+                    diagnostics: vec![Diagnostic::error(
+                        "shell-extract::extract: value_inputs[1] must be Value::SampledField \
+                         (γ-only seam; δ migrates to realization_inputs[0])",
+                    )],
+                };
+            }
+        },
     };
 
     // ── Parse options ─────────────────────────────────────────────────────────
