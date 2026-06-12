@@ -3,20 +3,33 @@
 //!
 //! # Contract
 //!
-//! Receives the three `value_inputs` matching the `form_find` signature
+//! Receives the `value_inputs` matching the `form_find` signature
 //! (`tensegrity.ri`):
 //!
 //! ```text
 //! [0] structure        : Tensegrity      (Value::StructureInstance)
 //! [1] force_densities   : List<Real>      (Value::List of Value::Real)
 //! [2] anchors           : List<Int>       (Value::List of Value::Int)
+//! [3] surface_stresses  : List<Real>      (OPTIONAL; γ / NFDM surfaces)
 //! ```
 //!
 //! It cracks the Tensegrity into node coordinates + member connectivity (struts
 //! then cables, so `force_densities` indexing is unambiguous — the same ordering
-//! `tensegrity_wires` emits), calls the pure FD kernel
-//! [`reify_solver_elastic::form_find_anchored`], and rebuilds a `FormFindResult`
-//! `Value::StructureInstance`.
+//! `tensegrity_wires` emits) + surface triangle connectivity (from
+//! `structure.surfaces`), calls the pure FD kernel
+//! [`reify_solver_elastic::form_find_anchored_surfaces`], and rebuilds a
+//! `FormFindResult` `Value::StructureInstance`.
+//!
+//! # γ / NFDM surfaces (additive)
+//!
+//! Surface CONNECTIVITY is read from `structure.surfaces` (task-α), not a new
+//! argument — Tensegrity stays the single topology source. The only new input is
+//! the OPTIONAL 4th `surface_stresses` (one isotropic σ per triangle). With fewer
+//! than four inputs (or an empty list — how the stdlib default-pads a 3-arg call)
+//! and no `surfaces` field, the solve is the landed line-only FDM unchanged, so
+//! the original 3-input contract and its tests are preserved. The result gains a
+//! per-triangle `surface_stresses` echo: real values when surfaces are present,
+//! an empty list (NEVER `Undef`) otherwise.
 //!
 //! # Failure → diagnostic (PRD §8.1)
 //!
@@ -43,11 +56,13 @@
 use reify_core::{Diagnostic, DimensionVector};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_solver_elastic::{
-    FormFindError, FormFindSolve, ForceDensitySpec, FreeFormError, MemberKind, form_find_anchored,
-    form_find_free,
+    FormFindError, FormFindSolve, ForceDensitySpec, FreeFormError, MemberKind,
+    form_find_anchored_surfaces, form_find_free,
 };
 
-use super::tensegrity_crack::{check_index, crack_index_pairs, crack_nodes, scalar_f64};
+use super::tensegrity_crack::{
+    check_index, crack_index_pairs, crack_index_triples, crack_nodes, scalar_f64,
+};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Diagnostic mnemonic for this trampoline, threaded into the shared
@@ -92,12 +107,33 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
         ));
     }
 
-    let (nodes, members, kinds) = crack_tensegrity(&value_inputs[0])?;
+    let (nodes, members, kinds, surfaces) = crack_tensegrity(&value_inputs[0])?;
     let q = crack_reals(&value_inputs[1], "force_densities")?;
     let anchors = crack_anchors(&value_inputs[2], nodes.len())?;
 
-    let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-        .map_err(|e| format!("E_FormFindInfeasible: {}", describe(e)))?;
+    // γ / NFDM surfaces: an OPTIONAL 4th input carries one isotropic σ per
+    // triangle (in `structure.surfaces` order). It is absent on the landed
+    // 3-input path and `[]` when a 3-arg caller is default-padded by the stdlib
+    // signature — both crack to an empty list, the line-only case (the
+    // surface-aware kernel with empty surfaces is byte-identical to the landed
+    // line solve). When `surfaces` is non-empty the kernel cross-checks the two
+    // lengths (SurfaceCountMismatch).
+    let surface_stresses = if value_inputs.len() >= 4 {
+        crack_reals(&value_inputs[3], "surface_stresses")?
+    } else {
+        Vec::new()
+    };
+
+    let solve = form_find_anchored_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &q,
+        &surfaces,
+        &surface_stresses,
+        &anchors,
+    )
+    .map_err(|e| format!("E_FormFindInfeasible: {}", describe(e)))?;
 
     Ok(build_result(&solve))
 }
@@ -110,12 +146,21 @@ fn run(value_inputs: &[Value]) -> Result<Value, String> {
 // (anchors, force-density reals, group ids / reference group).
 
 /// Cracked Tensegrity topology: node coordinates, member index pairs in
-/// struts-then-cables order, and the matching per-member [`MemberKind`] tags.
-type CrackedTopology = (Vec<[f64; 3]>, Vec<(usize, usize)>, Vec<MemberKind>);
+/// struts-then-cables order, the matching per-member [`MemberKind`] tags, and the
+/// surface triangle corner index-triples (empty on a line-only tensegrity).
+type CrackedTopology = (
+    Vec<[f64; 3]>,
+    Vec<(usize, usize)>,
+    Vec<MemberKind>,
+    Vec<(usize, usize, usize)>,
+);
 
-/// Crack the Tensegrity StructureInstance into node coordinates plus members in
-/// struts-then-cables order with their matching [`MemberKind`] tags. Member
-/// indices are range-checked here so the kernel never indexes out of bounds.
+/// Crack the Tensegrity StructureInstance into node coordinates, members in
+/// struts-then-cables order with their matching [`MemberKind`] tags, and surface
+/// triangles. Every member and surface index is range-checked here so the kernel
+/// never indexes out of bounds. `surfaces` is the γ membrane connectivity source
+/// (read from the structure, not supplied as a call argument); a missing/empty
+/// `surfaces` field yields an empty triangle list — the line-only path.
 fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
     let fields = match v {
         Value::StructureInstance(d) if d.type_name == "Tensegrity" => &d.fields,
@@ -130,6 +175,8 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
     let n = nodes.len();
     let struts = crack_index_pairs(fields.get(&"struts".to_string()), "struts", n, CODE)?;
     let cables = crack_index_pairs(fields.get(&"cables".to_string()), "cables", n, CODE)?;
+    // Surface connectivity (γ / NFDM). Missing field ⇒ empty ⇒ line-only.
+    let surfaces = crack_index_triples(fields.get(&"surfaces".to_string()), "surfaces", n, CODE)?;
 
     // Struts first, then cables — `force_densities[i]` aligns with this order.
     let mut members = Vec::with_capacity(struts.len() + cables.len());
@@ -142,7 +189,7 @@ fn crack_tensegrity(v: &Value) -> Result<CrackedTopology, String> {
         members.push(pair);
         kinds.push(MemberKind::Cable);
     }
-    Ok((nodes, members, kinds))
+    Ok((nodes, members, kinds, surfaces))
 }
 
 /// Crack a `List<Int>` of node indices (the anchors), range-checked against `n`.
@@ -215,12 +262,27 @@ fn build_result(solve: &FormFindSolve) -> Value {
         .iter()
         .map(|&q| Value::Real(q))
         .collect();
+    // Per-triangle echo of the prescribed isotropic σ (empty on the line-only
+    // path — NEVER Undef). Encoded as bare `Value::Real`, mirroring the
+    // `force_densities` echo above: both are declared `List<Real>` in the stdlib
+    // `FormFindResult` (a force density and a membrane prestress are the same
+    // dimensionless-in-the-DSL scalar inputs the solve was run for), so the echo
+    // matches its declared field type exactly. (γ / NFDM surfaces.)
+    let surface_stresses: Vec<Value> = solve
+        .surface_stresses
+        .iter()
+        .map(|&s| Value::Real(s))
+        .collect();
 
     let fields: PersistentMap<String, Value> = [
         ("nodes".to_string(), Value::List(nodes)),
         ("member_forces".to_string(), Value::List(member_forces)),
         ("force_densities".to_string(), Value::List(force_densities)),
         ("converged".to_string(), Value::Bool(solve.converged)),
+        (
+            "surface_stresses".to_string(),
+            Value::List(surface_stresses),
+        ),
     ]
     .into_iter()
     .collect();
@@ -312,7 +374,9 @@ fn run_free(value_inputs: &[Value]) -> Result<Value, String> {
         ));
     }
 
-    let (nodes, members, kinds) = crack_tensegrity(&value_inputs[0])?;
+    // Surfaces are a γ-only (anchored membrane) concept; the free-standing path
+    // ignores them, but cracking keeps the index range-check uniform.
+    let (nodes, members, kinds, _surfaces) = crack_tensegrity(&value_inputs[0])?;
     let raw_group_ids = crack_group_ids(&value_inputs[1])?;
     let seed_ratios = crack_reals(&value_inputs[2], "seed_ratios")?;
     let reference_group = crack_usize(&value_inputs[3], "reference_group")?;
@@ -391,6 +455,9 @@ fn build_result_free(
         ("member_forces".to_string(), Value::List(forces_val)),
         ("force_densities".to_string(), Value::List(fds_val)),
         ("converged".to_string(), Value::Bool(converged)),
+        // Free-standing form-finding has no surfaces; the now-5-field
+        // FormFindResult stays well-formed with an empty (NEVER Undef) echo.
+        ("surface_stresses".to_string(), Value::List(vec![])),
     ]
     .into_iter()
     .collect();
