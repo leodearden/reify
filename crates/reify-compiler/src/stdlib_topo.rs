@@ -118,6 +118,39 @@ mod tests {
     use crate::CompiledModule;
     use super::compile_modules_topo;
 
+    /// SIGNAL #3: a cyclic import pair is rejected with a "circular dependency" error.
+    ///
+    /// RED until step-4 adds gray/black cycle detection to the topo sort.
+    #[test]
+    fn signal_3_cyclic_import_pair_returns_err_with_circular_dependency_message() {
+        let a_src = "import b\n\npub type A = Real";
+        let b_src = "import a\n\npub type B = Real";
+
+        let set: &[(&str, &str)] = &[("a", a_src), ("b", b_src)];
+
+        let result = compile_modules_topo(set);
+        let diag = result.expect_err(
+            "compile_modules_topo must return Err for a cyclic module set",
+        );
+
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Error,
+            "cycle diagnostic must have Error severity"
+        );
+        assert!(
+            diag.message.contains("circular dependency"),
+            "cycle diagnostic message must contain 'circular dependency', got: {:?}",
+            diag.message
+        );
+        // Both module names must appear in the chain
+        assert!(
+            diag.message.contains('a') && diag.message.contains('b'),
+            "cycle diagnostic message must name both modules, got: {:?}",
+            diag.message
+        );
+    }
+
     /// SIGNAL #1: a shared surface type declared AFTER its consumers in input order
     /// is reachable from both early and late consumers when compiled via
     /// `compile_modules_topo`.
