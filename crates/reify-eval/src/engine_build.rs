@@ -5470,8 +5470,16 @@ impl Engine {
     /// PSD hook (engine_eval.rs) classifies an `Undef` inertia as `Skip`, so
     /// such instances are neither clobbered nor flagged.
     ///
+    /// **Ordering contract (task 4538):** this pass runs AFTER both selector
+    /// passes (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`)
+    /// inside `run_post_processes`. A body produced by a selector (e.g.
+    /// `single(edges(s))`) would still be `Value::Undef` if this pass ran
+    /// first, causing the kernel queries to be silently skipped. The ordering
+    /// is pinned by the regression test
+    /// `run_post_processes_selector_produced_body_gets_real_mass_props`.
+    ///
     /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only holds
-    /// the kernel for the future geometric query and does not mutate it);
+    /// the kernel for the geometric query and does not mutate it);
     /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
     /// Called from `run_post_processes` so build / build_snapshot /
     /// tessellate_from_values agree on the patched value (task 3745).
