@@ -562,14 +562,14 @@ impl crate::Engine {
         let mut seen = std::collections::HashSet::new();
 
         for arg in arg_values {
-            if let Value::GeometryHandle { realization_ref, .. } = arg {
-                if seen.insert(realization_ref) {
-                    let (handle, arg_diags) =
-                        self.project_realization_read_handle(realization_ref, graph);
-                    inputs.push(realization_ref.clone());
-                    handles.push(handle);
-                    diags.extend(arg_diags);
-                }
+            if let Value::GeometryHandle { realization_ref, .. } = arg
+                && seen.insert(realization_ref)
+            {
+                let (handle, arg_diags) =
+                    self.project_realization_read_handle(realization_ref, graph);
+                inputs.push(realization_ref.clone());
+                handles.push(handle);
+                diags.extend(arg_diags);
             }
         }
 
