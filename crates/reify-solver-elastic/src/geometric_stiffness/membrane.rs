@@ -154,6 +154,7 @@ pub fn membrane_tangent_stiffness(
 mod tests {
     use super::*;
     use crate::assembly::test_support::assert_close;
+    use crate::elements::membrane_cst::element_stiffness_membrane_cst;
 
     /// Unit triangle in the xy-plane: R = I, area A = 0.5,
     /// dn = [(-1,-1), (1,0), (0,1)].
@@ -266,5 +267,79 @@ mod tests {
             resultant: [[f64::NAN, 0.0], [0.0, 0.0]],
         };
         let _ = geometric_element_stiffness_membrane_cst(&UNIT_TRI, &bad);
+    }
+
+    // ---------- S7: per-element tangent K_t = K_e + K_g ----------
+
+    /// ν = 0 plane-stress material (closed-form D_pl = diag(E, E, E/2)).
+    fn nu_zero_material(e: f64) -> IsotropicElastic {
+        IsotropicElastic {
+            youngs_modulus: e,
+            poisson_ratio: 0.0,
+        }
+    }
+
+    /// Apply a 3×3 rotation `q` to a global 3-vector (tilt a flat triangle out
+    /// of the xy-plane so the test exercises the local→global rotation path).
+    fn apply_q(q: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+        [
+            q[0][0] * v[0] + q[0][1] * v[1] + q[0][2] * v[2],
+            q[1][0] * v[0] + q[1][1] * v[1] + q[1][2] * v[2],
+            q[2][0] * v[0] + q[2][1] * v[1] + q[2][2] * v[2],
+        ]
+    }
+
+    // (a) tangent returns 9×9.
+    #[test]
+    fn kt_returns_9x9() {
+        let kt = membrane_tangent_stiffness(
+            &UNIT_TRI,
+            0.1,
+            &nu_zero_material(2.0),
+            &MembranePrestress::isotropic(100.0),
+        );
+        assert_eq!(kt.n_dofs, 9);
+        assert_eq!(kt.data.len(), 81);
+    }
+
+    // (b) zero prestress ⇒ K_t equals K_e entrywise (K_g is identically zero,
+    // so the tangent collapses to the elastic stiffness).
+    #[test]
+    fn kt_zero_prestress_equals_ke() {
+        let t = 0.1_f64;
+        let mat = nu_zero_material(70.0e9);
+        let ke = element_stiffness_membrane_cst(&UNIT_TRI, t, &mat);
+        let kt = membrane_tangent_stiffness(&UNIT_TRI, t, &mat, &MembranePrestress::zero());
+        for i in 0..81 {
+            assert_close(kt.data[i], ke.data[i], 1e-12, &format!("kt==ke idx {i}"));
+        }
+    }
+
+    // (c) oblique/tilted triangle with nonzero isotropic prestress: K_t equals
+    // K_e + K_g entrywise. Exercises the local→global rotation in BOTH kernels,
+    // confirming the tangent superposes the rotated elastic and geometric blocks.
+    #[test]
+    fn kt_entrywise_equals_ke_plus_kg_tilted() {
+        let t = 0.2_f64;
+        let mat = nu_zero_material(1.0e5);
+        let n = 350.0_f64;
+        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let tilted = [
+            apply_q(&q, UNIT_TRI[0]),
+            apply_q(&q, UNIT_TRI[1]),
+            apply_q(&q, UNIT_TRI[2]),
+        ];
+        let ke = element_stiffness_membrane_cst(&tilted, t, &mat);
+        let kg =
+            geometric_element_stiffness_membrane_cst(&tilted, &MembranePrestress::isotropic(n));
+        let kt = membrane_tangent_stiffness(&tilted, t, &mat, &MembranePrestress::isotropic(n));
+        for i in 0..81 {
+            assert_close(
+                kt.data[i],
+                ke.data[i] + kg.data[i],
+                1e-12,
+                &format!("kt==ke+kg idx {i}"),
+            );
+        }
     }
 }
