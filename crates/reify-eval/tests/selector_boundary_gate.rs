@@ -169,6 +169,71 @@ fn occt_available() -> bool {
     reify_kernel_occt::OCCT_AVAILABLE
 }
 
+// ── BT6: kind-typed param rejects wrong selector at compile time ──────────────
+
+/// BT6 (consumer / kind-typed param): `needs_face(edges(b))` — passing an
+/// `EdgeSelector` where a `FaceSelector` is expected — must be rejected at
+/// compile time with exactly ONE Error-severity diagnostic whose message names
+/// both "FaceSelector" and "EdgeSelector".
+///
+/// PRD §5 BT6: "kind-typed param rejects wrong selector at compile time".
+///
+/// **Ratified divergence (esc-4120-17):** PRD says `E_SELECTOR_KIND_MISMATCH`.
+/// Empirically: the error carries `code = None` ("no matching overload for
+/// needs_face(EdgeSelector), candidates: needs_face(FaceSelector)").
+/// `SelectorKindMismatch` is composition-ONLY. This test asserts the ACTUAL
+/// behavior (overload-mismatch, `code = None`, message names both kinds).
+///
+/// The fixture also contains a positive-control structure (`BT6Accept` with
+/// `needs_face(faces(b))`) which must compile with no additional errors —
+/// verified by asserting exactly ONE error total (from `BT6Reject`).
+///
+/// RED when fixture `bt6_kind_typed_param.ri` is absent (`.expect()` panics).
+#[test]
+fn bt6_kind_typed_param_rejects_wrong_kind() {
+    let source = std::fs::read_to_string(fixture_path("bt6_kind_typed_param.ri")).expect(
+        "fixture bt6_kind_typed_param.ri must exist (create it in step-4 to turn GREEN)",
+    );
+
+    // Compile via compile_source_with_stdlib — we expect errors.
+    let compiled = compile_source_with_stdlib(&source);
+    let errors: Vec<&Diagnostic> = errors_only(&compiled);
+
+    // (a) exactly ONE error-severity diagnostic
+    //     (BT6Accept positive-control contributes zero errors implicitly)
+    assert_eq!(
+        errors.len(),
+        1,
+        "BT6: expected exactly 1 overload-mismatch error (from BT6Reject), \
+         got {} errors:\n{:#?}",
+        errors.len(),
+        errors
+    );
+
+    let err = errors[0];
+
+    // (b) code = None (NOT SelectorKindMismatch — that is composition-only;
+    //     param-binding goes through the overload-resolution NoMatch arm).
+    assert_eq!(
+        err.code, None,
+        "BT6: param-binding error must have code = None (esc-4120-17), got: {:?}",
+        err.code
+    );
+
+    // (c) message names BOTH the expected kind (FaceSelector) and the found
+    //     kind (EdgeSelector) so the user can diagnose the mismatch.
+    assert!(
+        err.message.contains("FaceSelector"),
+        "BT6: error message must name FaceSelector (expected kind), got: {:?}",
+        err.message
+    );
+    assert!(
+        err.message.contains("EdgeSelector"),
+        "BT6: error message must name EdgeSelector (found kind), got: {:?}",
+        err.message
+    );
+}
+
 // ── BT1: wrong-kind union rejected at compile time ────────────────────────────
 
 /// BT1 (producer / type-checker): `union(faces(b), edges(b))` must be rejected
