@@ -12,6 +12,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::Engine;
+use crate::cache::NodeId;
+use crate::demand::DemandRegistry;
+
 /// Per-edit measurement of how much of the production eval-set the observed
 /// demand cone would prune, were it enforced as the demand cone.
 ///
@@ -53,5 +57,55 @@ impl WouldPruneByKind {
     /// Total count of would-prune nodes across all kinds.
     pub fn total(&self) -> usize {
         self.value + self.constraint + self.realization + self.resolution + self.compute
+    }
+}
+
+/// Engine-level observed-demand side-channel (task 4532).
+///
+/// These methods operate EXCLUSIVELY on `self.observed_demand` — they never
+/// touch the production `self.demand` registry and the observed cone is never
+/// passed to `compute_eval_set`. This is the structural guarantee behind the
+/// zero-behavior-change contract: registering observed demand cannot perturb
+/// `EvalResult` / `last_eval_set`. See `docs/prds/v0_6/selective-demand.md` §G6.
+impl Engine {
+    /// Register `node` as an observed-demand root (e.g. a viewport-visible
+    /// realization, a displayed property cell, a panel constraint). Call
+    /// [`Engine::rebuild_observed_cone`] afterward to refresh the cone.
+    pub fn add_observed_demand(&mut self, node: NodeId) {
+        self.observed_demand.add_demand(node);
+    }
+
+    /// Remove `node` from the observed-demand roots. Call
+    /// [`Engine::rebuild_observed_cone`] afterward to refresh the cone.
+    pub fn remove_observed_demand(&mut self, node: &NodeId) {
+        self.observed_demand.remove_demand(node);
+    }
+
+    /// Rebuild the observed-demand cone against the current snapshot graph.
+    ///
+    /// No-op when there is no eval state (no `eval()` has run yet). Mirrors the
+    /// production cone-rebuild in
+    /// [`Engine::rebuild_purpose_infrastructure`](crate::Engine) but rebuilds
+    /// the OBSERVED registry — never `self.demand`.
+    pub fn rebuild_observed_cone(&mut self) {
+        if let Some(state) = self.eval_state.as_ref() {
+            self.observed_demand.rebuild_cone(&state.snapshot.graph);
+        }
+    }
+
+    /// Clear all observed-demand roots and the observed cone.
+    pub fn reset_observed_demand(&mut self) {
+        self.observed_demand = DemandRegistry::new();
+    }
+
+    /// Whether `node` is in the observed-demand cone (post-rebuild). Inspection
+    /// only — has no effect on evaluation.
+    pub fn observed_demand_is_demanded(&self, node: &NodeId) -> bool {
+        self.observed_demand.is_demanded(node)
+    }
+
+    /// Size of the observed-demand cone (post-rebuild). Inspection only.
+    pub fn observed_demand_cone_size(&self) -> usize {
+        self.observed_demand.cone_size()
     }
 }
