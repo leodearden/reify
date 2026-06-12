@@ -497,6 +497,7 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
   - **Prereqs:** η. Plus the v0.2 imported-field-source PRD's tasks 2667/2668 (parser-side; already wired per M-001).
   - **Crates touched:** reify-eval (engine_eval.rs), reify-kernel-openvdb (ingest.rs API surface stable).
   - **Resolves:** GR-003 (cluster C-17) per the 2026-05-12 contested-ownership disposition.
+  - **Status:** **DELIVERED** — engine arm landed under task 3576; observable signal (example + CLI smoke test) delivered under task 4537. `examples/imported_field/openvdb_stress.ri` exists in the repo; `crates/reify-cli/tests/cli_imported_field_eval.rs` (cfg(has_openvdb)) verifies `reify eval` prints signed SDF scalars. Fixture `fixtures/sample.vdb` is generated at test time (not committed); see `examples/imported_field/README.md`.
 
 ### Phase 5 — Voxel→Mesh + Sdf→Mesh follow-on convert edges
 

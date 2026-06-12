@@ -260,4 +260,65 @@ describe('convertRawGuiState', () => {
     const state = convertRawGuiState(raw);
     expect(state.tensegrity_wires).toEqual([]);
   });
+
+  // ── β: tensegrity_surfaces conversion tests ──────────────────────────────
+
+  it('passes tensegrity_surfaces through from RawGuiState when present', () => {
+    // RED until TensegritySurfaceData is added to types.ts and convertRawGuiState copies it.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_surfaces: [
+        {
+          entity_path: 'Patch',
+          kind: 'membrane',
+          i0: 0, i1: 1, i2: 2,
+          x0: 0.0, y0: 0.0, z0: 0.0,
+          x1: 1.0, y1: 0.0, z1: 0.0,
+          x2: 0.5, y2: 0.866, z2: 0.0,
+        },
+        {
+          entity_path: 'Patch',
+          kind: 'membrane',
+          i0: 1, i1: 3, i2: 2,
+          x0: 1.0, y0: 0.0, z0: 0.0,
+          x1: 1.5, y1: 0.866, z1: 0.0,
+          x2: 0.5, y2: 0.866, z2: 0.0,
+        },
+      ],
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.tensegrity_surfaces).toHaveLength(2);
+    expect(state.tensegrity_surfaces[0].kind).toBe('membrane');
+    expect(state.tensegrity_surfaces[0].entity_path).toBe('Patch');
+    expect(state.tensegrity_surfaces[0].i0).toBe(0);
+    expect(state.tensegrity_surfaces[0].i1).toBe(1);
+    expect(state.tensegrity_surfaces[0].i2).toBe(2);
+    expect(state.tensegrity_surfaces[0].x0).toBe(0.0);
+    expect(state.tensegrity_surfaces[0].y0).toBe(0.0);
+    expect(state.tensegrity_surfaces[0].z0).toBe(0.0);
+    expect(state.tensegrity_surfaces[0].x2).toBe(0.5);
+    expect(state.tensegrity_surfaces[1].kind).toBe('membrane');
+    expect(state.tensegrity_surfaces[1].i0).toBe(1);
+  });
+
+  it('yields tensegrity_surfaces: [] when the field is absent from RawGuiState', () => {
+    // Forward-compat: older backend payloads without tensegrity_surfaces must not crash.
+    // RED until convertRawGuiState uses the `?? []` default.
+    const raw: RawGuiState = {
+      meshes: [],
+      values: [],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      // tensegrity_surfaces intentionally omitted
+    };
+    const state = convertRawGuiState(raw);
+    expect(state.tensegrity_surfaces).toEqual([]);
+  });
 });

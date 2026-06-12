@@ -207,12 +207,13 @@ structure def Snapshot {
 
 // SweepDim — one dimension of a kinematic sweep study (PRD §7.1).
 //
-//   joint  : Real    — TODO(joint-type): the swept joint (DrivingJoint placeholder)
-//   range  : Real    — TODO(range-type): Range<T> not yet a surface type in
-//                      type_resolution.rs — Real placeholder for now
-//   steps  : Int     — number of discrete steps across the range
+//   joint  : Real          — TODO(joint-type): the swept joint (DrivingJoint placeholder)
+//   range  : Range<JointValue> — swept joint-coordinate interval (task 4576).
+//                              JointValue = Real = dimensionless; the runtime per-joint
+//                              LENGTH/ANGLE dimension check stays in sweep.rs::validate_range_with_dimension.
+//   steps  : Int           — number of discrete steps across the range
 structure def SweepDim {
-    param joint : Real   // TODO(joint-type): DrivingJoint placeholder
-    param range : Real   // TODO(range-type): Range<T> not yet a surface type
+    param joint : Real             // TODO(joint-type): DrivingJoint placeholder
+    param range : Range<JointValue> // tightened from Real (task 4576)
     param steps : Int
 }

@@ -34,11 +34,16 @@
 //! `(∇N_a · σ⁰ · ∇N_b) · V_e` per node pair `(a, b)`.
 
 pub mod bar;
+// Task 4417/ζ: CST membrane geometric stiffness K_g + prestress + tangent.
+pub mod membrane;
 pub mod stubs;
 pub mod tet;
 pub mod tet_p2;
 
 pub use bar::{bar_tangent_stiffness, geometric_element_stiffness_bar_p1};
+pub use membrane::{
+    MembranePrestress, geometric_element_stiffness_membrane_cst, membrane_tangent_stiffness,
+};
 pub use stubs::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_wedge_p1,

@@ -185,7 +185,7 @@ use reify_solver_elastic::{
     AnisotropicMaterial, AssemblyElement, CgIterationControl, CgSolverOptions, CgWarmState,
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GridSpec, IsotropicElastic,
     OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
-    apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
+    apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
     assemble_global_stiffness, element_stiffness, element_stiffness_p1_with_field,
     element_stress_p1, recover_nodal_stress_p1, resample_multi_nodal_to_grid,
     resolve_execution_modes, solve_cg_with_warm_state, solve_cg_with_warm_state_progress,
@@ -337,7 +337,8 @@ pub fn solve_elastic_static_trampoline(
     //
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase.
-    let (tip_force, pressures) = extract_loads(&value_inputs[4]);
+    let (tip_force, pressures, body_force) =
+        extract_loads(&value_inputs[4], extract_density(&value_inputs[0]));
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -579,8 +580,8 @@ pub fn solve_elastic_static_trampoline(
     // cache key (the trampoline does not hash ElasticOptions).
     let (deterministic, threads_opt) = extract_execution_params(&value_inputs[6]);
     let (fea, fresh_warm) = solve_cantilever_fea(
-        &model, length, width, height, tip_force, prior_cg, &pressures, deterministic, threads_opt,
-        progress_opt,
+        &model, length, width, height, tip_force, prior_cg, &pressures, body_force,
+        deterministic, threads_opt, progress_opt,
     );
 
     // ── (6b) Cancel check ─────────────────────────────────────────────────────
@@ -859,9 +860,10 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 ///   `aniso.d_matrix_global()`.
 ///
 /// Returns `(CantileverFeaSolve, CgWarmState)`.
-// 9 args: the helper threads mesh geometry, tip load, pressures, CG warm-state,
-// and the task-2926 execution-mode knobs (`deterministic`, `threads`) into a
-// single cohesive solve; splitting them into a struct would not aid clarity.
+// 10 args: the helper threads mesh geometry, tip load, pressures, gravity body
+// force, CG warm-state, and the task-2926 execution-mode knobs (`deterministic`,
+// `threads`) into a single cohesive solve; splitting them into a struct would not
+// aid clarity.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_cantilever_fea(
     model: &MaterialModel,
@@ -871,6 +873,7 @@ pub(crate) fn solve_cantilever_fea(
     tip_force: [f64; 3],
     prior_cg: Option<CgWarmState>,
     pressures: &[PressureSpec],
+    body_force: [f64; 3],
     deterministic: bool,
     threads: Option<usize>,
     progress: Option<&mut dyn FnMut(usize, f64) -> CgIterationControl>,
@@ -1043,6 +1046,13 @@ pub(crate) fn solve_cantilever_fea(
     // PressureLoad face tractions are accumulated into the same `f` vector.
     // An empty `pressures` slice is a no-op, preserving the existing tip-only path.
     assemble_box_face_pressures(&mut f, &coords, &tet_connectivity, pressures, length, width, height);
+
+    // ── Gravity body force (task 4440 β) ──────────────────────────────────────
+    //
+    // Gravity body-force vector (N·m⁻³ = ρ·g·direction) is assembled per-element
+    // via `apply_body_force`.  All-zero body_force is a guarded no-op, preserving
+    // byte-identical output for every existing gravity-free solve.
+    assemble_body_force(&mut f, &coords, &tet_connectivity, body_force);
 
     // ── Dirichlet BCs: clamp all DOFs at root face (ix == 0) ─────────────────
     let root_nodes: Vec<usize> = (0..nz1)
@@ -1504,8 +1514,26 @@ fn extract_scalar_si(val: &Value) -> f64 {
     }
 }
 
+/// Extract the `density` SI value (kg·m⁻³) from a material `Value::StructureInstance`.
+///
+/// Returns `0.0` when the material value is not a `StructureInstance`, or when
+/// the `density` field is absent or not a `Value::Scalar`.  This is intentionally
+/// non-panicking — every `ElasticMaterial` conformer declares `density`, so any
+/// missing/malformed density is a defensive fallback (matching `extract_loads`'
+/// silent-skip convention for unrecognised load items).
+fn extract_density(val: &Value) -> f64 {
+    let data = match val {
+        Value::StructureInstance(d) => d,
+        _ => return 0.0,
+    };
+    match data.fields.get("density") {
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        _ => 0.0,
+    }
+}
+
 /// Extract all load contributions from a `Value::List` of load `StructureInstance`s
-/// in a **single pass**, returning `(tip_force, pressures)`.
+/// in a **single pass**, returning `(tip_force, pressures, body_force)`.
 ///
 /// - `tip_force` — per-axis `[f64; 3]` sum of `force * direction` over all
 ///   `PointLoad` items.  Direction magnitude is significant: supplying a
@@ -1515,11 +1543,15 @@ fn extract_scalar_si(val: &Value) -> f64 {
 ///   Passed as-is to `solve_cantilever_fea`.
 /// - `pressures` — one `PressureSpec` per `PressureLoad` item; items of any
 ///   other type (e.g. `FixedSupport`) are silently skipped.
+/// - `body_force` — per-axis `[f64; 3]` accumulated gravity body-force vector
+///   `Σ ρ·magnitude·direction` (N·m⁻³) over all `Gravity` items, where `ρ`
+///   is the material density passed as `density`.  The caller obtains `density`
+///   from `extract_density(&value_inputs[0])`.
 ///
 /// Panics with a descriptive message if `val` is not a `Value::List`.
-/// A scene may mix `PointLoad` and `PressureLoad`; both accumulate into
-/// the same force vector `f` via their respective kernel primitives.
-fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
+/// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
+/// into their respective targets in a single pass.
+fn extract_loads(val: &Value, density: f64) -> ([f64; 3], Vec<PressureSpec>, [f64; 3]) {
     let items = match val {
         Value::List(v) => v,
         other => panic!(
@@ -1529,6 +1561,7 @@ fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
     };
     let mut tip_force_vec = [0.0f64; 3];
     let mut pressures = Vec::new();
+    let mut body_force = [0.0f64; 3];
     for item in items {
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
@@ -1571,10 +1604,34 @@ fn extract_loads(val: &Value) -> ([f64; 3], Vec<PressureSpec>) {
                     _ => "normal".to_string(),
                 };
                 pressures.push(PressureSpec { magnitude, face, direction });
+            } else if data.type_name == "Gravity" {
+                // body_force_axis = ρ · magnitude · direction[axis]  (N·m⁻³)
+                let magnitude = match data.fields.get("magnitude") {
+                    Some(Value::Real(m)) => *m,
+                    Some(Value::Scalar { si_value, .. }) => *si_value,
+                    _ => continue,
+                };
+                let dir = match data.fields.get("direction") {
+                    Some(Value::List(elems)) if elems.len() == 3 => {
+                        let mut d = [0.0f64; 3];
+                        for (i, e) in elems.iter().enumerate() {
+                            match e {
+                                Value::Real(v) => d[i] = *v,
+                                Value::Scalar { si_value, .. } => d[i] = *si_value,
+                                _ => {}
+                            }
+                        }
+                        d
+                    }
+                    _ => [0.0, 0.0, -1.0],
+                };
+                for axis in 0..3 {
+                    body_force[axis] += density * magnitude * dir[axis];
+                }
             }
         }
     }
-    (tip_force_vec, pressures)
+    (tip_force_vec, pressures, body_force)
 }
 
 /// A single pressure load parsed from a `PressureLoad` StructureInstance.
@@ -1743,6 +1800,32 @@ fn assemble_box_face_pressures(
             let tri_phys = [coords[tri[0]], coords[tri[1]], coords[tri[2]]];
             apply_traction_load(f, FaceOrder::P1Tri, tri, &tri_phys, traction);
         }
+    }
+}
+
+/// Assemble a gravity body-force vector into the global force vector `f`.
+///
+/// For each tet, gathers its 4 physical node positions and calls
+/// `apply_body_force(f, ElementOrder::P1, conn, &phys, body_force)`, which
+/// integrates the constant body-force field against the P1 shape functions
+/// (each node receives `body_force × volume / 4`).
+///
+/// **No-op guard:** when `body_force` is all-zero (the common case for
+/// gravity-free solves), the function returns immediately without iterating
+/// the mesh, preserving byte-identical output for existing test fixtures.
+fn assemble_body_force(
+    f: &mut [f64],
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    body_force: [f64; 3],
+) {
+    if body_force == [0.0f64; 3] {
+        return;
+    }
+    for tet in tets {
+        let conn = [tet[0], tet[1], tet[2], tet[3]];
+        let phys: [[f64; 3]; 4] = [coords[tet[0]], coords[tet[1]], coords[tet[2]], coords[tet[3]]];
+        apply_body_force(f, ElementOrder::P1, &conn, &phys, body_force);
     }
 }
 
@@ -2072,7 +2155,7 @@ mod tests {
 
         let (result, _warm) =
             solve_cantilever_fea(
-                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, true, None, None,
+                &model, length, width, height, [0.0, 0.0, 0.0], None, &pressures, [0.0; 3], true, None, None,
             );
 
         assert!(result.converged, "FEA must converge under x_max pressure");
@@ -2141,6 +2224,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2222,6 +2306,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2235,6 +2320,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2348,6 +2434,7 @@ mod tests {
             [0.0, 0.0, -tip_force],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2509,6 +2596,7 @@ mod tests {
             [0.0, 0.0, -1000.0],
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -2905,14 +2993,14 @@ mod tests {
 
         // (a) explicit direction [0,-1,0] with force 1000 → [0,-1000,0]
         let loads_a = Value::List(vec![make_point_load_with_dir(1000.0, [0.0, -1.0, 0.0])]);
-        let ([fx, fy, fz], _) = extract_loads(&loads_a);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0);
         assert!((fx).abs() < 1e-9, "(a) expected fx≈0, got {fx}");
         assert!((fy - (-1000.0)).abs() < 1e-9, "(a) expected fy=-1000, got {fy}");
         assert!((fz).abs() < 1e-9, "(a) expected fz≈0, got {fz}");
 
         // (b) no direction field → default [0,0,-1]; force 500 → [0,0,-500]
         let loads_b = Value::List(vec![make_point_load_no_dir(500.0)]);
-        let ([fx, fy, fz], _) = extract_loads(&loads_b);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0);
         assert!((fx).abs() < 1e-9, "(b) expected fx≈0, got {fx}");
         assert!((fy).abs() < 1e-9, "(b) expected fy≈0, got {fy}");
         assert!((fz - (-500.0)).abs() < 1e-9, "(b) expected fz=-500, got {fz}");
@@ -2922,7 +3010,7 @@ mod tests {
             make_point_load_with_dir(1000.0, [0.0, 0.0, -1.0]),
             make_point_load_with_dir(500.0, [0.0, -1.0, 0.0]),
         ]);
-        let ([fx, fy, fz], _) = extract_loads(&loads_c);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_c, 0.0);
         assert!((fx).abs() < 1e-9, "(c) expected fx≈0, got {fx}");
         assert!((fy - (-500.0)).abs() < 1e-9, "(c) expected fy=-500, got {fy}");
         assert!((fz - (-1000.0)).abs() < 1e-9, "(c) expected fz=-1000, got {fz}");
@@ -2960,7 +3048,7 @@ mod tests {
         }));
 
         let loads = Value::List(vec![point_load]);
-        let ([fx, fy, fz], _) = extract_loads(&loads);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0);
         // force=800, direction=[0,-1,0] → tip_force_vec=[0,-800,0]
         assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
         assert!((fy - (-800.0)).abs() < 1e-9, "expected fy=-800, got {fy}");
@@ -2999,7 +3087,7 @@ mod tests {
         // (a) too-short list [0.0, -1.0] → fallback to [0,0,-1]; force=300
         let short_dir = Value::List(vec![Value::Real(0.0), Value::Real(-1.0)]);
         let loads_a = Value::List(vec![make_point_load(300.0, short_dir)]);
-        let ([fx, fy, fz], _) = extract_loads(&loads_a);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0);
         assert!((fx).abs() < 1e-9, "(a) fx: expected 0, got {fx}");
         assert!((fy).abs() < 1e-9, "(a) fy: expected 0, got {fy}");
         assert!(
@@ -3010,12 +3098,249 @@ mod tests {
         // (b) direction is a String (entirely wrong type) → fallback to [0,0,-1]
         let str_dir = Value::String("neg_z".to_string());
         let loads_b = Value::List(vec![make_point_load(400.0, str_dir)]);
-        let ([fx, fy, fz], _) = extract_loads(&loads_b);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0);
         assert!((fx).abs() < 1e-9, "(b) fx: expected 0, got {fx}");
         assert!((fy).abs() < 1e-9, "(b) fy: expected 0, got {fy}");
         assert!(
             (fz - (-400.0)).abs() < 1e-9,
             "(b) fz: expected -400 (default -Z fallback), got {fz}"
+        );
+    }
+
+    // ── task 4440 β: Gravity arm → body_force ────────────────────────────────
+
+    /// step-1 RED (task 4440 β): `extract_loads` must accept a `density: f64`
+    /// second argument and return a 3-tuple `([f64;3], Vec<PressureSpec>, [f64;3])`
+    /// where the third element is the accumulated gravity body-force vector
+    /// `Σ ρ·magnitude·direction` over all `Gravity` items.
+    ///
+    /// Cases:
+    ///   (a) Gravity{ρ=7850, m=9.80665, dir=[0,0,-1]} → body_force≈[0,0,-76982.2]
+    ///   (b) Gravity{magnitude=0} → body_force=[0,0,0]
+    ///   (c) Gravity{dir=[1,0,0]} → body_force along +X only
+    ///   (d) mixed [Gravity, PointLoad] → Gravity→body_force AND PointLoad→tip_force
+    ///       (both accumulate, disjoint)
+    ///   (e) two Gravity items accumulate (sum)
+    ///
+    /// RED: `extract_loads` currently has signature `(val: &Value) ->
+    /// ([f64;3], Vec<PressureSpec>)` (1 arg, 2-tuple); calling it with a
+    /// density argument and destructuring as a 3-tuple is a compile-fail.
+    #[test]
+    fn extract_loads_gravity_arm_computes_body_force() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        fn make_gravity(magnitude_si: f64, direction: [f64; 3]) -> Value {
+            let fields: PersistentMap<String, Value> = [
+                (
+                    "magnitude".to_string(),
+                    Value::Scalar {
+                        si_value: magnitude_si,
+                        dimension: DimensionVector::ACCELERATION,
+                    },
+                ),
+                (
+                    "direction".to_string(),
+                    Value::List(vec![
+                        Value::Real(direction[0]),
+                        Value::Real(direction[1]),
+                        Value::Real(direction[2]),
+                    ]),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "Gravity".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        fn make_point_load(force: f64) -> Value {
+            let fields: PersistentMap<String, Value> =
+                [("force".to_string(), Value::Real(force))].into_iter().collect();
+            Value::StructureInstance(Box::new(StructureInstanceData {
+                type_name: "PointLoad".to_string(),
+                type_id: StructureTypeId(u32::MAX),
+                version: 0,
+                fields,
+            }))
+        }
+
+        const DENSITY: f64 = 7850.0;
+        const GRAV: f64 = 9.80665;
+        // body_force_z = -(ρ · g) = -(7850 · 9.80665) ≈ -76982.2 N/m³
+        let expected_bfz = -(DENSITY * GRAV);
+        const TOL: f64 = 1e-3;
+
+        // (a) Standard gravity, direction [0,0,-1] → body_force≈[0,0,-76982.2]
+        let loads_a = Value::List(vec![make_gravity(GRAV, [0.0, 0.0, -1.0])]);
+        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) =
+            extract_loads(&loads_a, DENSITY);
+        assert!(pressures_a.is_empty(), "(a) no pressures expected");
+        assert!((tfx).abs() < 1e-9, "(a) tip_force x must be 0, got {tfx}");
+        assert!((tfy).abs() < 1e-9, "(a) tip_force y must be 0, got {tfy}");
+        assert!((tfz).abs() < 1e-9, "(a) tip_force z must be 0, got {tfz}");
+        assert!((bfx).abs() < TOL, "(a) body_force x must be ~0, got {bfx}");
+        assert!((bfy).abs() < TOL, "(a) body_force y must be ~0, got {bfy}");
+        assert!(
+            (bfz - expected_bfz).abs() < TOL,
+            "(a) body_force z must be ≈{expected_bfz:.1}, got {bfz}"
+        );
+
+        // (b) magnitude=0 → body_force=[0,0,0]
+        let loads_b = Value::List(vec![make_gravity(0.0, [0.0, 0.0, -1.0])]);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_b, DENSITY);
+        assert!((bfx).abs() < 1e-9, "(b) body_force x must be 0, got {bfx}");
+        assert!((bfy).abs() < 1e-9, "(b) body_force y must be 0, got {bfy}");
+        assert!((bfz).abs() < 1e-9, "(b) body_force z must be 0, got {bfz}");
+
+        // (c) direction [1,0,0] → body_force along +X only
+        let loads_c = Value::List(vec![make_gravity(GRAV, [1.0, 0.0, 0.0])]);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_c, DENSITY);
+        assert!(
+            (bfx - (DENSITY * GRAV)).abs() < TOL,
+            "(c) body_force x must be ≈{:.1}, got {bfx}",
+            DENSITY * GRAV
+        );
+        assert!((bfy).abs() < 1e-9, "(c) body_force y must be 0, got {bfy}");
+        assert!((bfz).abs() < 1e-9, "(c) body_force z must be 0, got {bfz}");
+
+        // (d) mixed [Gravity, PointLoad]: Gravity→body_force, PointLoad→tip_force
+        let loads_d = Value::List(vec![
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+            make_point_load(500.0),
+        ]);
+        let ([tfx, tfy, tfz], _, [bfx, bfy, bfz]) = extract_loads(&loads_d, DENSITY);
+        // PointLoad (no direction) → default -Z → tip_force = [0, 0, -500]
+        assert!((tfx).abs() < 1e-9, "(d) tip_force x must be 0, got {tfx}");
+        assert!((tfy).abs() < 1e-9, "(d) tip_force y must be 0, got {tfy}");
+        assert!((tfz - (-500.0)).abs() < 1e-9, "(d) tip_force z must be -500, got {tfz}");
+        // Gravity → body_force z ≈ -76982.2
+        assert!((bfx).abs() < TOL, "(d) body_force x must be 0, got {bfx}");
+        assert!((bfy).abs() < TOL, "(d) body_force y must be 0, got {bfy}");
+        assert!(
+            (bfz - expected_bfz).abs() < TOL,
+            "(d) body_force z must be ≈{expected_bfz:.1}, got {bfz}"
+        );
+
+        // (e) two Gravity items accumulate: 2 × body_force_z
+        let loads_e = Value::List(vec![
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+            make_gravity(GRAV, [0.0, 0.0, -1.0]),
+        ]);
+        let (_, _, [_, _, bfz]) = extract_loads(&loads_e, DENSITY);
+        let expected_double = 2.0 * expected_bfz;
+        assert!(
+            (bfz - expected_double).abs() < TOL,
+            "(e) two Gravity items: body_force z must be ≈{expected_double:.1}, got {bfz}"
+        );
+    }
+
+    /// Pins the non-panicking fallback of `extract_density`:
+    ///
+    /// - A `StructureInstance` with a well-formed `Scalar density` field returns
+    ///   the SI value.
+    /// - A `StructureInstance` missing the `density` field returns `0.0`.
+    /// - A non-`StructureInstance` value (e.g. `Value::Real`) returns `0.0`.
+    ///
+    /// This test makes the defensive fallback explicit so it is distinguishable
+    /// from a latent bug.  Every `ElasticMaterial` conformer declares `density`,
+    /// so the fallback paths arise only from malformed or absent material values.
+    #[test]
+    fn extract_density_fallback_returns_zero_when_field_absent() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        // (a) Well-formed material → correct SI density
+        let fields_a: PersistentMap<String, Value> = [(
+            "density".to_string(),
+            Value::Scalar {
+                si_value: 7850.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let material_a = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Steel_AISI_1045".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: fields_a,
+        }));
+        assert!(
+            (extract_density(&material_a) - 7850.0).abs() < 1e-9,
+            "(a) well-formed material → density 7850.0"
+        );
+
+        // (b) StructureInstance with no density field → 0.0 (intentional silent fallback)
+        let fields_b: PersistentMap<String, Value> = [].into_iter().collect();
+        let material_b = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "NoFieldMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields: fields_b,
+        }));
+        assert_eq!(
+            extract_density(&material_b),
+            0.0,
+            "(b) absent density field → 0.0"
+        );
+
+        // (c) Non-StructureInstance value → 0.0
+        assert_eq!(
+            extract_density(&Value::Real(42.0)),
+            0.0,
+            "(c) non-StructureInstance → 0.0"
+        );
+    }
+
+    /// Pins the density=0 + Gravity-present fallback: when `density` resolves to
+    /// `0.0`, `extract_loads` silently returns a zero body-force vector.
+    ///
+    /// Combined with the all-zero guard in `assemble_body_force`, a scene with a
+    /// `Gravity` load whose material density is missing/malformed produces
+    /// zero gravitational displacement — indistinguishable from a gravity-free
+    /// solve.  This behavior is intentional and matches `extract_loads`' silent-
+    /// skip convention; it is covered here so the fallback is documented rather
+    /// than a hidden side-effect.
+    #[test]
+    fn extract_loads_gravity_zero_density_produces_zero_body_force() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: 9.80665,
+                    dimension: DimensionVector::ACCELERATION,
+                },
+            ),
+            (
+                "direction".to_string(),
+                Value::List(vec![
+                    Value::Real(0.0),
+                    Value::Real(0.0),
+                    Value::Real(-1.0),
+                ]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let gravity = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Gravity".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+        let loads = Value::List(vec![gravity]);
+
+        // density=0.0 → body_force = ρ·magnitude·direction = 0·anything = [0,0,0]
+        let (_, _, body_force) = extract_loads(&loads, 0.0);
+        assert_eq!(
+            body_force,
+            [0.0, 0.0, 0.0],
+            "density=0 + Gravity → body_force must be [0,0,0] (intentional silent fallback)"
         );
     }
 
@@ -3050,6 +3375,7 @@ mod tests {
             tip_force,
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             Some(&mut |_iter: usize, _residual: f64| -> CgIterationControl {
@@ -3089,6 +3415,7 @@ mod tests {
             tip_force,
             None,
             &[],
+            [0.0; 3],
             true,
             None,
             None,
@@ -3123,7 +3450,7 @@ mod tests {
 
         let (result, _) =
             solve_cantilever_fea(
-                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], true, None, None,
+                &model, 1.0, 0.1, 0.1, [0.0, -1000.0, 0.0], None, &[], [0.0; 3], true, None, None,
             );
 
         assert!(result.converged, "directional Y-load solve must converge");

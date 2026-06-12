@@ -1124,7 +1124,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
+        | GeometryOp::OffsetSolid { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
@@ -1194,7 +1196,9 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => {
+        | GeometryOp::OffsetSolid { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => {
             sub(target);
         }
 
@@ -1336,6 +1340,8 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
+        GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
         // Transform
         GeometryOp::Translate { .. } => Operation::TransformTranslate,
@@ -1421,7 +1427,8 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
 
         // Modify — BRep-only consumers
-        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => Some(BREP_ONLY),
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
+        | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1511,6 +1518,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
+            ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
+            ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
             TransformKind::Translate => Operation::TransformTranslate,
@@ -5461,8 +5470,16 @@ impl Engine {
     /// PSD hook (engine_eval.rs) classifies an `Undef` inertia as `Skip`, so
     /// such instances are neither clobbered nor flagged.
     ///
+    /// **Ordering contract (task 4538):** this pass runs AFTER both selector
+    /// passes (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`)
+    /// inside `run_post_processes`. A body produced by a selector (e.g.
+    /// `single(edges(s))`) would still be `Value::Undef` if this pass ran
+    /// first, causing the kernel queries to be silently skipped. The ordering
+    /// is pinned by the regression test
+    /// `run_post_processes_selector_produced_body_gets_real_mass_props`.
+    ///
     /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only holds
-    /// the kernel for the future geometric query and does not mutate it);
+    /// the kernel for the geometric query and does not mutate it);
     /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
     /// Called from `run_post_processes` so build / build_snapshot /
     /// tessellate_from_values agree on the patched value (task 3745).
@@ -5493,6 +5510,40 @@ impl Engine {
             ) {
                 values.insert(cell.id.clone(), value);
             }
+        }
+    }
+
+    /// Build-time mechanism-mass pre-derivation pass (task 4472, rung (b)).
+    ///
+    /// Iterates all entries in `values`, calls
+    /// [`crate::dynamics_ops::derive_mechanism_mass_props`] on each, and
+    /// writes back any `Some(patched)` results after the iteration loop (so
+    /// the immutable borrow from `values.iter()` is fully released before the
+    /// mutable insert). Non-mechanism cells and mechanism cells with no
+    /// geometry-backed body are silently skipped (the `None`-means-skip
+    /// post-process contract).
+    ///
+    /// Takes `kernel: &dyn GeometryKernel` (immutable — the derivation pass
+    /// only issues read-only KGQ round-trips and does not mutate the kernel);
+    /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
+    /// Wired into `run_post_processes` AFTER the selector passes (resolves the
+    /// task-3620 ordering guard — see the comment in `run_post_processes`).
+    fn post_process_mechanism_mass_props(
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect all patched (id, value) pairs first, then insert — avoids
+        // holding the immutable `values.iter()` borrow while mutating `values`.
+        let patches: Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> = values
+            .iter()
+            .filter_map(|(id, v)| {
+                crate::dynamics_ops::derive_mechanism_mass_props(v, kernel, diagnostics)
+                    .map(|patched| (id.clone(), patched))
+            })
+            .collect();
+        for (id, patched) in patches {
+            values.insert(id, patched);
         }
     }
 
@@ -5587,26 +5638,6 @@ impl Engine {
         table: &TopologyAttributeTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
-        // a fourth explicit call at each build / build_snapshot /
-        // tessellate_from_values site — so all three sites pick it up
-        // automatically (task 3745 consolidation contract). Reborrows the
-        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
-        // (deferred, task 3620) geometric query and does not mutate it.
-        //
-        // ORDERING — TODO(3620): this pass runs BEFORE the selector passes
-        // (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`).
-        // That is safe ONLY while the geometric mass/com/inertia query is
-        // deferred: `body_mass_props`'s body arg resolves to an already-eval'd
-        // let-bound `Value` and the geometric fields are the `Undef` sentinel,
-        // so reading the body before the selector passes cannot observe a stale
-        // value. When the KGQ kernel seam (task 3620) is wired and geometry stops
-        // being deferred, RE-EVALUATE this position: a body produced by a
-        // selector post-process would not yet be populated when this pass reads
-        // it, yielding incorrect geometry — at which point this call likely must
-        // move AFTER the selector passes (or gain an explicit dependency
-        // ordering). Do not wire 3620 without revisiting this ordering.
-        // (re-evaluation owned by task 4538)
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
         // separate explicit call at each build / build_snapshot /
@@ -5625,7 +5656,6 @@ impl Engine {
             &*kernel,
             diagnostics,
         );
-        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
         Engine::post_process_ad_hoc_selectors(
             template,
@@ -5635,6 +5665,44 @@ impl Engine {
             table,
             diagnostics,
         );
+        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
+        // a fourth explicit call at each build / build_snapshot /
+        // tessellate_from_values site — so all three sites pick it up
+        // automatically (task 3745 consolidation contract). Reborrows the
+        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
+        // geometric query and does not mutate it.
+        //
+        // ORDERING CONTRACT (task 4538): this pass runs LAST — after
+        // post_process_geometry_queries, post_process_topology_selectors, and
+        // post_process_ad_hoc_selectors — so every handle-producing pass has
+        // populated body handles before mass-props reads them. A body whose
+        // cell is produced by a selector pass (e.g. `single(edges(s))`) would
+        // still be `Value::Undef` when mass-props ran in the old (pre-4538)
+        // position, yielding `Undef` geometric fields even though the KGQ
+        // kernel query is live (task 4237 / KGQ-λ). The correct order is
+        // enforced by the regression test
+        // `run_post_processes_selector_produced_body_gets_real_mass_props`
+        // (engine_build.rs tests, task 4538 step-1).
+        //
+        // No inverse dependency: the selector and geometry-query passes consume
+        // geometry handles / points, never a MassProperties value, so this call
+        // has no consumer within run_post_processes and is safe to run last.
+        //
+        // Sibling task 4472 (post_process_mechanism_mass_props) is also
+        // specified to run after the selector passes; when added it should be
+        // placed here, after post_process_body_mass_props.
+        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
+        // Mechanism-mass pre-derivation pass (task 4472, rung (b)). Placed here,
+        // after post_process_body_mass_props, exactly as the ORDERING CONTRACT
+        // above (task 4538) directs: both mass-props passes run AFTER the
+        // selector passes, so every handle-producing pass has populated body
+        // handles before either pass issues its LIVE (non-deferred) per-body
+        // kernel query. Running this before the selector passes would risk
+        // reading a mechanism body whose value a selector post-process has not
+        // yet populated. This is the mechanism-body half of the task-3620
+        // wiring that task 4538 re-evaluated and resolved by moving the
+        // body-mass pass last; the same resolution covers this sibling pass.
+        Engine::post_process_mechanism_mass_props(values, &*kernel, diagnostics);
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
@@ -6502,6 +6570,8 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyZoneSlab, ReprKind::BRep),
+                (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
@@ -9958,6 +10028,14 @@ mod tests {
                 label: "Thicken → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(85),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(85)],
+                label: "OffsetSolid → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -9965,6 +10043,14 @@ mod tests {
                 },
                 expected: vec![GeometryHandleId(84)],
                 label: "Shell → [target]",
+            },
+            Case {
+                op: GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(90),
+                    width: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(90)],
+                label: "ZoneSlab → [target]",
             },
             Case {
                 op: GeometryOp::Draft {
@@ -10334,6 +10420,22 @@ mod tests {
                 },
                 expected: Operation::ModifyThicken,
                 label: "Thicken → ModifyThicken",
+            },
+            Case {
+                op: GeometryOp::ZoneSlab {
+                    target: h(1),
+                    width: r(0.002),
+                },
+                expected: Operation::ModifyZoneSlab,
+                label: "ZoneSlab → ModifyZoneSlab",
+            },
+            Case {
+                op: GeometryOp::OffsetSolid {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSolid,
+                label: "OffsetSolid → ModifyOffsetSolid",
             },
             // Transform
             Case {
@@ -11509,6 +11611,478 @@ mod tests {
              after cache-hit short-circuit (both-tables case)"
         );
     }
+
+    // ── step-1 (task 4538): pass-ordering regression test ─────────────────────
+
+    /// Regression guard (task 4538): `run_post_processes` must populate `mp`
+    /// with real mass-props when the body is a selector-produced
+    /// `Value::GeometryHandle`.
+    ///
+    /// Before task 4538 this test would have failed: `post_process_body_mass_props`
+    /// ran before the selector passes, so `sel_body` was still `Value::Undef` when
+    /// the mass-props pass read it → body arg had no geometry handle → all three
+    /// geometric fields (`mass`/`com`/`inertia`) stayed `Value::Undef`.
+    /// The reorder (step-2) placed the selector passes first; this test now guards
+    /// the corrected order — a future re-reordering would immediately fail here.
+    ///
+    /// A SANITY PRECONDITION (`post_process_topology_selectors` on a clone)
+    /// verifies that the selector expression is correctly constructed; a RED
+    /// failure in the MAIN assertion is therefore unambiguously about ordering.
+    ///
+    /// Template:
+    ///   `sel_body` = `single(edges(s))` — a selector-produced geometry handle
+    ///   `mp`       = `body_mass_props(sel_body, rho)` — reads sel_body
+    ///
+    /// MockGeometryKernel:
+    ///   `extract_edges(parent_id)` → `[edge_id]`    (one edge → single() unwraps)
+    ///   `Volume(edge_id)` → `Real(3.0)`              (mass = 2000 × 3 = 6000)
+    ///   `CenterOfMass(edge_id, 2000.0)` → JSON CoM
+    ///   `InertiaTensor(edge_id, 2000.0)` → nested list inertia
+    #[test]
+    fn run_post_processes_selector_produced_body_gets_real_mass_props() {
+        use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
+        use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
+
+        // ── geometry-handle fixture IDs ───────────────────────────────────────
+        let parent_id = GeometryHandleId(100);
+        let edge_id = GeometryHandleId(101);
+        let parent_rr = RealizationNodeId::new("Design", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+
+        // ── value-cell IDs ────────────────────────────────────────────────────
+        let s_cell = ValueCellId::new("Design", "s");
+        let sel_body_cell = ValueCellId::new("Design", "sel_body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mp_cell = ValueCellId::new("Design", "mp");
+
+        // ── local helper: build a one-arg FunctionCall CompiledExpr ──────────
+        //
+        // Follows the pattern of `call_expr` in dynamics_ops::tests:674 and
+        // `topology_selector_call_one_value_ref` in geometry_ops::tests:11837.
+        fn one_arg_call(fn_name: &str, arg: CompiledExpr, result_type: Type) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(arg.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![arg],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── local helper: build a two-arg FunctionCall CompiledExpr ──────────
+        fn two_arg_call(
+            fn_name: &str,
+            a1: CompiledExpr,
+            a2: CompiledExpr,
+            result_type: Type,
+        ) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(a1.content_hash)
+                .combine(a2.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![a1, a2],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── default_expr for sel_body: single(edges(s)) ──────────────────────
+        //
+        // `edges(s)` → FunctionCall("edges", [ValueRef(s_cell, Geometry)])
+        //   `try_eval_topology_selector` returns Value::Selector(Edge, All)
+        //
+        // `single(edges(s))` → FunctionCall("single", [edges_expr])
+        //   `try_eval_resolve_selector` matches the `single` arm (geometry_ops
+        //   :3031), resolves the inner selector via `resolve_selector_to_list`,
+        //   gets a one-element list, and unwraps the sole Value::GeometryHandle.
+        //
+        // Note: the inner arg is a bare FunctionCall (not wrapped in
+        // ResolveSelector) — handled by the "Defensive" arm at geometry_ops:3037.
+        let s_vref = CompiledExpr::value_ref(s_cell.clone(), Type::Geometry);
+        let edges_expr = one_arg_call(
+            "edges",
+            s_vref,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let single_edges_expr = one_arg_call("single", edges_expr, Type::Geometry);
+
+        // ── default_expr for mp: body_mass_props(sel_body, rho) ──────────────
+        //
+        // Mirrors the call_expr helper in dynamics_ops::tests:674.  The body
+        // arg is a ValueRef to sel_body — which starts as Undef (no
+        // GeometryHandle) and is patched to a GeometryHandle by the selector
+        // pass if the ordering is correct.
+        let sel_body_vref =
+            CompiledExpr::value_ref(sel_body_cell.clone(), Type::Geometry);
+        let rho_vref =
+            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let mp_expr = two_arg_call(
+            "body_mass_props",
+            sel_body_vref,
+            rho_vref,
+            Type::StructureRef("MassProperties".to_string()),
+        );
+
+        // ── TopologyTemplate: two Let cells ──────────────────────────────────
+        //
+        // `sel_body` — post_process_topology_selectors patches this Undef →
+        //              GeometryHandle{edge_id} via try_eval_resolve_selector
+        // `mp`       — post_process_body_mass_props reads sel_body and
+        //              assembles the MassProperties instance
+        //
+        // `s` and `rho` are seeded directly in the ValueMap; the selector and
+        // mass-props passes read them from `values` without needing template
+        // cells (only cells with default_expr are iterated by the passes).
+        let template = TopologyTemplateBuilder::new("Design")
+            .let_binding(
+                "Design",
+                "sel_body",
+                Type::Geometry,
+                single_edges_expr.clone(),
+            )
+            .let_binding(
+                "Design",
+                "mp",
+                Type::StructureRef("MassProperties".to_string()),
+                mp_expr,
+            )
+            .build();
+
+        // ── initial ValueMap ──────────────────────────────────────────────────
+        // sel_body and mp start as Undef (the pure eval_expr left them there);
+        // the post-process passes must promote them to real values.
+        let mut values = ValueMap::new();
+        values.insert(
+            s_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_id,
+            },
+        );
+        values.insert(sel_body_cell.clone(), Value::Undef);
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(mp_cell.clone(), Value::Undef);
+
+        // ── MockGeometryKernel fixture ────────────────────────────────────────
+        // Volume = 3.0 m³ → expected mass = 2000.0 × 3.0 = 6000.0 kg
+        // CoM injected as JSON; inertia as nested list with distinct diagonal.
+        let injected_com =
+            Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string());
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(parent_id, vec![edge_id])
+            .with_volume_result(edge_id, Value::Real(3.0))
+            .with_center_of_mass_result(edge_id, 2000.0, injected_com)
+            .with_inertia_tensor_result(edge_id, 2000.0, injected_inertia);
+
+        let named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let table = TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // ── SANITY PRECONDITION ───────────────────────────────────────────────
+        //
+        // Run `post_process_topology_selectors` alone on a fresh clone to
+        // confirm that the single(edges(s)) expression is correctly built and
+        // resolves to a Value::GeometryHandle{edge_id}. If this assertion fires,
+        // the bug is in the selector expression itself; if it passes, any
+        // failure in the MAIN assertion below is unambiguously about ordering.
+        {
+            let mut values_clone = values.clone();
+            let mut kernel2 =
+                MockGeometryKernel::new().with_extracted_edges(parent_id, vec![edge_id]);
+            let mut diags2: Vec<Diagnostic> = Vec::new();
+            Engine::post_process_topology_selectors(
+                &template,
+                &named_steps,
+                &mut values_clone,
+                &mut kernel2 as &mut dyn GeometryKernel,
+                &mut diags2,
+            );
+            let patched = values_clone
+                .get(&sel_body_cell)
+                .expect("sel_body must be present after post_process_topology_selectors");
+            assert!(
+                matches!(
+                    patched,
+                    Value::GeometryHandle { kernel_handle, .. }
+                        if *kernel_handle == edge_id
+                ),
+                "SANITY: post_process_topology_selectors must patch sel_body to \
+                 GeometryHandle{{kernel_handle: {edge_id:?}}}; got: {patched:?}"
+            );
+        }
+
+        // ── MAIN ASSERTION ────────────────────────────────────────────────────
+        //
+        // Before task 4538 (post_process_body_mass_props ran BEFORE selectors):
+        //   body_mass_props read sel_body = Undef → no handle → mp's mass/
+        //   com/inertia fields stayed Undef — this assertion would have failed.
+        //
+        // Fixed order (task 4538 / step-2):
+        //   post_process_topology_selectors runs first → sel_body becomes
+        //   GeometryHandle{edge_id} → body_mass_props queries the kernel →
+        //   mass = density × Volume = 2000.0 × 3.0 = 6000.0.
+        Engine::run_post_processes(
+            &template,
+            &named_steps,
+            &mut values,
+            &functions,
+            &meta_map,
+            &mut kernel as &mut dyn GeometryKernel,
+            &table,
+            &mut diagnostics,
+        );
+
+        let mp_val = values
+            .get(&mp_cell)
+            .expect("mp must be present in values after run_post_processes");
+        let data = match mp_val {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "mp must be a MassProperties StructureInstance after \
+                 run_post_processes; got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+
+        // `mass` must not be Undef: this is the ordering-contract assertion.
+        // On the RED path the selector pass hasn't run yet so there is no
+        // GeometryHandle → mass stays Undef.
+        let mass_field = data
+            .fields
+            .get("mass")
+            .expect("MassProperties must have a `mass` field");
+        assert!(
+            !matches!(mass_field, Value::Undef),
+            "ordering regression: `post_process_body_mass_props` ran before the \
+             selector passes populated `sel_body` (task 4538 fix). \
+             Expected mass = density × volume = 2000.0 × 3.0 = 6000.0; \
+             got: {mass_field:?}"
+        );
+        let mass = match mass_field {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(m) => *m,
+            other => panic!("mass must be a numeric Scalar or Real; got {other:?}"),
+        };
+        assert!(
+            (mass - 6000.0_f64).abs() < 1e-9,
+            "mass = density × volume = 2000.0 × 3.0 = 6000.0; got {mass}"
+        );
+
+        // CoM and inertia: assert non-Undef (real kernel values).
+        let com_field = data
+            .fields
+            .get("com")
+            .expect("MassProperties must have a `com` field");
+        assert!(
+            !matches!(com_field, Value::Undef),
+            "com must not be Undef after run_post_processes; got {com_field:?}"
+        );
+
+        let inertia_field = data
+            .fields
+            .get("inertia")
+            .expect("MassProperties must have an `inertia` field");
+        let inertia = crate::dynamics_psd::inertia_3x3_from_value(inertia_field)
+            .expect("inertia must parse as 3×3 via inertia_3x3_from_value");
+        assert!(
+            (inertia[0][0] - 1.0).abs() < 1e-9,
+            "inertia[0][0] must be 1.0; got {}",
+            inertia[0][0]
+        );
+        assert!(
+            (inertia[1][1] - 2.0).abs() < 1e-9,
+            "inertia[1][1] must be 2.0; got {}",
+            inertia[1][1]
+        );
+        assert!(
+            (inertia[2][2] - 3.0).abs() < 1e-9,
+            "inertia[2][2] must be 3.0; got {}",
+            inertia[2][2]
+        );
+
+        // Explicit density arg → no default-water diagnostic.
+        assert!(
+            diagnostics.iter().all(|d| {
+                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsDefaultDensity))
+            }),
+            "explicit density must suppress the default-water warning; \
+             diagnostics: {diagnostics:?}"
+        );
+    }
+
+    /// Regression guard (task 4538, direct-body path): a body cell that already
+    /// holds a `Value::GeometryHandle` before `run_post_processes` runs must
+    /// still produce real mass-props in the new (last) ordering.
+    ///
+    /// The reorder moved `post_process_body_mass_props` to the end of
+    /// `run_post_processes`; this test confirms the common pre-existing case
+    /// (a directly let-bound body, not produced by a selector) is unaffected —
+    /// real values arrive regardless of whether mass-props runs first or last
+    /// relative to the selector passes.
+    #[test]
+    fn run_post_processes_direct_body_gets_real_mass_props() {
+        use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
+        use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
+
+        let body_id = GeometryHandleId(200);
+        let body_rr = RealizationNodeId::new("Design", 0);
+        let body_hash: [u8; 32] = [0xBBu8; 32];
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mp_cell = ValueCellId::new("Design", "mp");
+
+        // ── two-arg helper (mirrors the one in the selector-produced test) ────
+        fn two_arg_call(
+            fn_name: &str,
+            a1: CompiledExpr,
+            a2: CompiledExpr,
+            result_type: Type,
+        ) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(a1.content_hash)
+                .combine(a2.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![a1, a2],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── default_expr for mp: body_mass_props(body, rho) ──────────────────
+        let body_vref = CompiledExpr::value_ref(body_cell.clone(), Type::Geometry);
+        let rho_vref =
+            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let mp_expr = two_arg_call(
+            "body_mass_props",
+            body_vref,
+            rho_vref,
+            Type::StructureRef("MassProperties".to_string()),
+        );
+
+        // Only `mp` needs a template cell; body and rho are seeded in the
+        // ValueMap and read directly by `post_process_body_mass_props`.
+        let template = TopologyTemplateBuilder::new("Design")
+            .let_binding(
+                "Design",
+                "mp",
+                Type::StructureRef("MassProperties".to_string()),
+                mp_expr,
+            )
+            .build();
+
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: body_rr,
+                upstream_values_hash: body_hash,
+                kernel_handle: body_id,
+            },
+        );
+        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(mp_cell.clone(), Value::Undef);
+
+        // Volume = 5.0 m³ → expected mass = 2000.0 × 5.0 = 10000.0 kg
+        let injected_com =
+            Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string());
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(4.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(5.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(6.0)]),
+        ]);
+        let mut kernel = MockGeometryKernel::new()
+            .with_volume_result(body_id, Value::Real(5.0))
+            .with_center_of_mass_result(body_id, 2000.0, injected_com)
+            .with_inertia_tensor_result(body_id, 2000.0, injected_inertia);
+
+        let named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let table = TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        Engine::run_post_processes(
+            &template,
+            &named_steps,
+            &mut values,
+            &functions,
+            &meta_map,
+            &mut kernel as &mut dyn GeometryKernel,
+            &table,
+            &mut diagnostics,
+        );
+
+        let mp_val = values
+            .get(&mp_cell)
+            .expect("mp must be present after run_post_processes");
+        let data = match mp_val {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "direct body: mp must be a MassProperties StructureInstance; \
+                 got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+
+        let mass_field = data
+            .fields
+            .get("mass")
+            .expect("MassProperties must have a `mass` field");
+        let mass = match mass_field {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(m) => *m,
+            other => panic!(
+                "direct body: mass must be a numeric Scalar or Real; got {other:?}"
+            ),
+        };
+        assert!(
+            (mass - 10_000.0_f64).abs() < 1e-9,
+            "direct body: mass = density × volume = 2000.0 × 5.0 = 10000.0; \
+             got {mass}"
+        );
+
+        let com_field = data
+            .fields
+            .get("com")
+            .expect("MassProperties must have a `com` field");
+        assert!(
+            !matches!(com_field, Value::Undef),
+            "direct body: com must not be Undef after run_post_processes; \
+             got {com_field:?}"
+        );
+    }
 }
 
 // ── dispatch_volume_mesh unit tests ──────────────────────────────────────────
@@ -12378,6 +12952,8 @@ mod mixed_region_tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
+            Operation::ModifyOffsetSolid,
         ] {
             assert!(
                 op_accepts_repr(&mod_op, ReprKind::BRep),
@@ -12738,5 +13314,194 @@ mod mixed_region_tests {
                  classify it BRep-vs-Mesh per PRD §3a.4 (task 4049)"
             );
         }
+    }
+}
+
+// ── post_process_mechanism_mass_props unit tests (task 4472 step-7) ───────────
+//
+// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+// The test calls it directly to verify the engine pass iterates values and
+// writes `derived_mass_props` back into mechanism cells.
+
+#[cfg(test)]
+mod post_process_mechanism_mass_props_tests {
+    use std::collections::BTreeMap;
+
+    use reify_core::{RealizationNodeId, Severity};
+    use reify_core::identity::ValueCellId;
+    use reify_ir::{GeometryHandleId, Value, ValueMap};
+    use reify_test_support::mocks::MockGeometryKernel;
+
+    use super::Engine;
+
+    /// Fixed kernel handle for the geometry-backed body in these tests.
+    const HANDLE_ID: GeometryHandleId = GeometryHandleId(77);
+
+    /// Build a minimal mechanism `Value::Map`: kind="mechanism", bodies=[body]
+    /// where body.solid is the given `solid_value`.
+    fn one_body_mechanism(solid_value: Value) -> Value {
+        let mut body = BTreeMap::new();
+        body.insert(Value::String("id".to_string()), Value::Int(0));
+        body.insert(Value::String("solid".to_string()), solid_value);
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body)]),
+        );
+        Value::Map(mech)
+    }
+
+    /// Build a `Value::GeometryHandle` for `HANDLE_ID`.
+    fn geometry_handle() -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Design", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: HANDLE_ID,
+        }
+    }
+
+    /// Build a `MockGeometryKernel` with injected Volume / CenterOfMass /
+    /// InertiaTensor replies for `HANDLE_ID` at the water-default density
+    /// (1000.0 kg/m³). Volume=6.0 → mass=6000.0 kg.
+    fn mock_kernel() -> MockGeometryKernel {
+        let inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        MockGeometryKernel::new()
+            .with_volume_result(HANDLE_ID, Value::Real(6.0))
+            .with_center_of_mass_result(
+                HANDLE_ID,
+                1000.0,
+                Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string()),
+            )
+            .with_inertia_tensor_result(HANDLE_ID, 1000.0, inertia)
+    }
+
+    /// The engine pass must iterate over a ValueMap containing a mechanism cell,
+    /// call `derive_mechanism_mass_props`, and write the patched mechanism back
+    /// into the ValueMap so that values.get(cell_id) yields a mechanism whose
+    /// first body carries `derived_mass_props`.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_writes_derived_back_into_value_map() {
+        let cell_id = ValueCellId::new("Design", "mech");
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), one_body_mechanism(geometry_handle()));
+
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // The mechanism cell must now hold a patched value.
+        let patched = values
+            .get(&cell_id)
+            .expect("mechanism cell must still be present after pass");
+
+        // Extract the first body from the patched mechanism.
+        let mech_map = match patched {
+            Value::Map(m) => m,
+            other => panic!("mechanism cell must be a Map, got {other:?}"),
+        };
+        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("patched mechanism missing bodies"),
+        };
+        assert_eq!(bodies.len(), 1, "must have exactly one body");
+        let body_map = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body must be a Map, got {other:?}"),
+        };
+
+        // The body must carry `derived_mass_props` (additive write).
+        let derived = body_map
+            .get(&Value::String("derived_mass_props".to_string()))
+            .expect("body must carry derived_mass_props after engine pass");
+
+        // Must be a MassProperties StructureInstance.
+        let data = match derived {
+            Value::StructureInstance(d) => d,
+            other => panic!("derived_mass_props must be a StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            data.type_name, "MassProperties",
+            "derived_mass_props type_name must be MassProperties"
+        );
+
+        // The original `solid` GeometryHandle must still be present — additive write.
+        assert!(
+            body_map.contains_key(&Value::String("solid".to_string())),
+            "body must still carry `solid` after additive pass"
+        );
+
+        // No diagnostics expected on the success path.
+        assert!(
+            diags.is_empty(),
+            "no diagnostics expected on success path; got: {diags:?}"
+        );
+    }
+
+    /// A ValueMap cell that is NOT a mechanism (e.g. a plain Real) must be
+    /// left untouched by the pass.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_leaves_non_mechanism_cells_untouched() {
+        let cell_id = ValueCellId::new("Design", "x");
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), Value::Real(42.0));
+
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // Cell must still hold its original value.
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&Value::Real(42.0)),
+            "non-mechanism cell must be left untouched"
+        );
+        assert!(diags.is_empty(), "no diagnostics for non-mechanism cells");
+    }
+
+    /// A geometry-backed body whose kernel query fails (no injected results) must
+    /// cause the pass to skip that body (emit a Warning), and since no body was
+    /// patched the mechanism cell is left with its original value unchanged.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_emits_warning_on_kernel_failure() {
+        let cell_id = ValueCellId::new("Design", "mech");
+        let original = one_body_mechanism(geometry_handle());
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), original.clone());
+
+        // Bare kernel — no replies injected, so Volume query will fail.
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // Cell must be unchanged (no body was patched).
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&original),
+            "mechanism cell must be unchanged when kernel fails for all bodies"
+        );
+
+        // A Warning diagnostic must be emitted.
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "must emit a Warning when kernel query fails; got: {diags:?}"
+        );
     }
 }

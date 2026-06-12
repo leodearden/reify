@@ -941,6 +941,20 @@ pub(crate) fn compile_geometry_op(
                         offset,
                     })
                 }
+                reify_compiler::ModifyKind::ZoneSlab => {
+                    let width = eval_arg("width")?;
+                    Ok(reify_ir::GeometryOp::ZoneSlab {
+                        target: target_id,
+                        width,
+                    })
+                }
+                reify_compiler::ModifyKind::OffsetSolid => {
+                    let distance = eval_arg("distance")?;
+                    Ok(reify_ir::GeometryOp::OffsetSolid {
+                        target: target_id,
+                        distance,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {

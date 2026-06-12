@@ -778,6 +778,20 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
     }
 }
 
+/// Opaque `Part` placeholder — a zero-field `StructureInstance` whose
+/// `type_name` is `"Part"`.  All four production echo sites emit this value
+/// for the `part` field until the Part registry is wired (task 4578).
+/// `StructureTypeId(u32::MAX)` is the registry-free sentinel, mirroring the
+/// other degenerate builders in this file.
+fn placeholder_part() -> Value {
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Part".to_string(),
+        version: 1,
+        fields: PersistentMap::default(),
+    }))
+}
+
 /// Build a degenerate `ModalResult` `Value::StructureInstance`: an empty `modes`
 /// list and zeroed matrix norms — the result returned when the modal solve is
 /// short-circuited (no mass matrix). Shaped to the α structure-def (6 fields,
@@ -786,7 +800,7 @@ fn no_mass_matrix_outcome() -> ComputeOutcome {
 /// `pre_stress`), and `StructureTypeId(u32::MAX)` is the registry-free sentinel.
 fn degenerate_modal_result() -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(Vec::new())),
         ("boundary_conditions".to_string(), Value::List(Vec::new())),
         ("damping".to_string(), Value::Undef),
@@ -1067,7 +1081,7 @@ pub(crate) fn run_modal_analysis(
     let boundary_conditions = field_or(options, "boundary_conditions", Value::List(Vec::new()));
     let damping = field_or(options, "damping", Value::Undef);
     let result_fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modes".to_string(), Value::List(modes_list)),
         ("boundary_conditions".to_string(), boundary_conditions),
         ("damping".to_string(), damping),
@@ -1149,7 +1163,7 @@ pub fn solve_modal_analysis_trampoline(
 /// the registry-free sentinel, mirroring [`degenerate_modal_result`].
 fn degenerate_displacement_history() -> Value {
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modal_result".to_string(), degenerate_modal_result()),
         ("t_samples".to_string(), Value::List(Vec::new())),
         ("mode_coords".to_string(), Value::List(Vec::new())),
@@ -1689,7 +1703,7 @@ pub(crate) fn run_transient_response(
             .collect(),
     );
     let fields: PersistentMap<String, Value> = [
-        ("part".to_string(), Value::String(String::new())),
+        ("part".to_string(), placeholder_part()),
         ("modal_result".to_string(), modal_result),
         ("t_samples".to_string(), t_samples),
         ("mode_coords".to_string(), Value::List(mode_coords)),
@@ -2209,11 +2223,13 @@ mod tests {
     use super::{
         ModalAnalysisCache, ModalAssembly, ModalCoreResult, ModalMesh, ModalTrampolineRun,
         TransientCache, assemble_modal_km, build_beam_mesh, build_dirichlet_bcs,
+        degenerate_displacement_history, degenerate_modal_result,
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, read_real_list, read_scalar_si, resolve_location_node,
-        run_modal_analysis, run_transient_response, simply_supported_pin_pin_bcs,
-        solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
+        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
+        resolve_location_node, run_modal_analysis, run_transient_response,
+        simply_supported_pin_pin_bcs, solve_modal_analysis_trampoline, solve_modal_core,
+        solve_transient_response_trampoline,
     };
     use crate::{CancellationHandle, ComputeOutcome};
 
@@ -4971,5 +4987,71 @@ mod tests {
             has_water_warning,
             "dynamics water tail must emit W_DynamicsDefaultDensity; got {water_diags:?}",
         );
+    }
+
+    // ── Part-field echo migration (step-5 RED / step-6 GREEN) ────────────────
+
+    #[test]
+    fn echo_part_field_is_part_instance() {
+        // placeholder_part() must return a zero-field opaque Part StructureInstance.
+        // The two non-degenerate runtime paths (run_modal_analysis, run_transient_response)
+        // call placeholder_part() directly, so a regression there would also break
+        // this assertion via the shared helper — no separate integration test needed.
+        let part_val = placeholder_part();
+        match &part_val {
+            Value::StructureInstance(si) => {
+                assert_eq!(si.type_name, "Part", "placeholder_part type_name must be Part");
+                assert!(
+                    si.fields.is_empty(),
+                    "placeholder_part must be zero-field; got {:?}",
+                    si.fields
+                );
+            }
+            other => panic!("placeholder_part() must be StructureInstance; got {other:?}"),
+        }
+
+        // degenerate_modal_result().fields["part"] must be a Part StructureInstance.
+        let modal_result = degenerate_modal_result();
+        match &modal_result {
+            Value::StructureInstance(si) => {
+                let part = si
+                    .fields
+                    .get("part")
+                    .expect("degenerate_modal_result must have a 'part' field");
+                match part {
+                    Value::StructureInstance(p) => {
+                        assert_eq!(p.type_name, "Part");
+                        assert!(p.fields.is_empty());
+                    }
+                    other => {
+                        panic!("degenerate_modal_result.part must be Part StructureInstance; got {other:?}")
+                    }
+                }
+            }
+            other => panic!("degenerate_modal_result() must be StructureInstance; got {other:?}"),
+        }
+
+        // degenerate_displacement_history().fields["part"] must also be Part.
+        let dth = degenerate_displacement_history();
+        match &dth {
+            Value::StructureInstance(si) => {
+                let part = si
+                    .fields
+                    .get("part")
+                    .expect("degenerate_displacement_history must have a 'part' field");
+                match part {
+                    Value::StructureInstance(p) => {
+                        assert_eq!(p.type_name, "Part");
+                        assert!(p.fields.is_empty());
+                    }
+                    other => {
+                        panic!("degenerate_displacement_history.part must be Part StructureInstance; got {other:?}")
+                    }
+                }
+            }
+            other => {
+                panic!("degenerate_displacement_history() must be StructureInstance; got {other:?}")
+            }
+        }
     }
 }

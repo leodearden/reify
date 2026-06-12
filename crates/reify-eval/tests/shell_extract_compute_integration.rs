@@ -453,11 +453,13 @@ fn shell_extract_double_registration_panics_naming_target() {
 //
 // Coverage note (esc-3837 reviewer suggestion 2)
 // ──────────────────────────────────────────────
-// Four of the seven §7 error-code arms are tested by integration tests in this
+// Five of the seven §7 error-code arms are tested by integration tests in this
 // file or the e2e fixture tests:
 //
 //   ShellBadThreshold   — step-5 test above (invalid threshold = 0.0)
 //   ShellNoVoxelGrid    — step-9 test below (empty axis grid → Phase 1 fails)
+//   ShellNoMedial       — shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code
+//                         below (uniform far-outside SDF → empty medial mask)
 //   ShellTooThick       — shell_too_thick_at_shell_annotation_errors.rs (e2e)
 //                         and shell_too_thick_at_auto_falls_back.rs (e2e)
 //
@@ -556,5 +558,106 @@ fn shell_extract_empty_axis_grid_returns_failed_with_shell_no_voxel_grid_code() 
         coded.is_some(),
         "expected at least one diagnostic with code=DiagnosticCode::ShellNoVoxelGrid; \
          got: {diagnostics:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-1 test for task #4514 (empty medial mask → E_SHELL_NO_MEDIAL)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `SampledField` whose SDF is UNIFORM and far outside the narrow band
+/// (constant φ = -100.0, 3×3×3, unit spacing), which guarantees an empty
+/// medial mask via TWO independent rejection mechanisms:
+///
+/// 1. Narrow-band filter: |φ| = 100 ≫ band_width ≈ 3 (narrow_band_half_width_voxels=3.0
+///    × min_spacing=1.0) — every voxel is outside the narrow band.
+/// 2. Degenerate-gradient filter: a uniform field has zero central-difference
+///    gradient everywhere — all voxels fail the non-zero-gradient check.
+///
+/// The field passes `validate_regular3d` and `compute_medial_mask`'s geometry
+/// checks, then returns `Ok(MedialMask { voxels: vec![] })` — the empty-mask
+/// Ok path that `ShellNoMedial` guards.
+fn solid_no_medial_field() -> SampledField {
+    let axis: Vec<f64> = vec![0.0, 1.0, 2.0];
+    SampledField {
+        name: "solid_no_medial".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![2.0, 2.0, 2.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![axis.clone(), axis.clone(), axis],
+        interpolation: InterpolationKind::Linear,
+        // Uniform φ = -100.0 across all 3×3×3 = 27 voxels.
+        data: vec![-100.0; 27],
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Dispatch `shell_extract_compute_fn` with a uniform far-outside SDF that
+/// yields an empty medial mask, and verify the failure is mapped to
+/// `DiagnosticCode::ShellNoMedial` per PRD §7 (E_SHELL_NO_MEDIAL).
+///
+/// Asserts:
+/// 1. The outcome is `ComputeOutcome::Failed { diagnostics }`.
+/// 2. At least one diagnostic has `code == Some(DiagnosticCode::ShellNoMedial)`.
+///
+/// RED before task #4514 step-2: the empty medial mask falls through to later
+/// phases without the Phase-1 guard, so no diagnostic carries `ShellNoMedial`
+/// (or a non-Failed outcome trips the `other => panic!` arm).
+/// GREEN after step-2 adds the `medial_mask.voxels.is_empty()` guard that
+/// short-circuits with `ComputeOutcome::Failed` + `ShellNoMedial`.
+#[test]
+fn shell_extract_empty_medial_mask_returns_failed_with_shell_no_medial_code() {
+    let field = solid_no_medial_field();
+    let options_value = Value::Undef;
+    let sdf_value = Value::SampledField(field);
+
+    let outcome = shell_extract_compute_fn(
+        &[options_value, sdf_value],
+        &[],
+        &Value::Undef,
+        None,
+        &CancellationHandle::new(),
+    );
+
+    // (1) Must return Failed on empty medial mask
+    let diagnostics = match outcome {
+        ComputeOutcome::Failed { diagnostics } => diagnostics,
+        other => {
+            panic!(
+                "expected ComputeOutcome::Failed for uniform-SDF (empty medial mask) input, \
+                 got: {other:?}"
+            )
+        }
+    };
+
+    // (2) At least one diagnostic must carry ShellNoMedial code
+    let coded = diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ShellNoMedial));
+    assert!(
+        coded.is_some(),
+        "expected at least one diagnostic with code=DiagnosticCode::ShellNoMedial; \
+         got: {diagnostics:?}"
+    );
+
+    // (3) Severity must be Error (not Warning or Info)
+    let d = coded.unwrap();
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "expected Severity::Error for ShellNoMedial diagnostic; got: {:?}",
+        d.severity
+    );
+
+    // (4) Message must contain the canonical phrase and the body name
+    let msg = &d.message;
+    assert!(
+        msg.contains("no medial axis found"),
+        "expected message to contain 'no medial axis found'; got: {msg:?}"
+    );
+    assert!(
+        msg.contains("solid_no_medial"),
+        "expected message to contain body name 'solid_no_medial'; got: {msg:?}"
     );
 }

@@ -118,3 +118,56 @@ pub(crate) fn crack_index_pairs(
     }
     Ok(out)
 }
+
+/// Crack a `List<List<Int>>` surface-connectivity field (`field` is the field
+/// name, e.g. `"surfaces"`) into triangle corner index-triples, range-checking
+/// each of the three corners against the node count `n` so an out-of-range
+/// surface index is a located trampoline-level error rather than an out-of-bounds
+/// kernel panic. Each inner list must hold exactly three integer indices.
+///
+/// Unlike [`crack_index_pairs`], a MISSING field — `None`, or a present-but-Undef
+/// value — yields an EMPTY `Vec` rather than an error. This honours the task-α
+/// `tensegrity_surfaces` accessor contract: `surfaces` is legitimately absent for
+/// a line-only (cable/strut) tensegrity, so the line-only form-find path must see
+/// an empty triangle list, not an infeasibility diagnostic.
+pub(crate) fn crack_index_triples(
+    v: Option<&Value>,
+    field: &str,
+    n: usize,
+    code: &str,
+) -> Result<Vec<(usize, usize, usize)>, String> {
+    let list = match v {
+        // Missing or Undef ⇒ no surfaces (line-only path): empty, not an error.
+        None | Some(Value::Undef) => return Ok(Vec::new()),
+        Some(Value::List(tris)) => tris,
+        other => {
+            return Err(format!(
+                "{code}: Tensegrity.{field} must be a list of index triples, got {other:?}"
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, tri) in list.iter().enumerate() {
+        let (a, b, c) = match tri {
+            Value::List(idx) if idx.len() == 3 => match (&idx[0], &idx[1], &idx[2]) {
+                (Value::Int(a), Value::Int(b), Value::Int(c)) => (*a, *b, *c),
+                _ => {
+                    return Err(format!(
+                        "{code}: Tensegrity.{field}[{i}] must be three integer indices"
+                    ));
+                }
+            },
+            _ => {
+                return Err(format!(
+                    "{code}: Tensegrity.{field}[{i}] must be a 3-element index list"
+                ));
+            }
+        };
+        out.push((
+            check_index(a, n, &format!("Tensegrity.{field}[{i}].0"), code)?,
+            check_index(b, n, &format!("Tensegrity.{field}[{i}].1"), code)?,
+            check_index(c, n, &format!("Tensegrity.{field}[{i}].2"), code)?,
+        ));
+    }
+    Ok(out)
+}

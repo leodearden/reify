@@ -713,5 +713,137 @@ assert "Check 17: stderr contains ERROR about non-git work tree" \
 assert "Check 17: --bidirectional also exits non-zero on non-git repo-root" \
     bash -c "! '$CHECK_SCRIPT' --repo-root '$_fix17dir' --bidirectional 2>/dev/null"
 
+# ==============================================================================
+# Check 18: registered-set truncation recovery (forward pass) — task-4586
+# Simulates under-load single-line truncation via REIFY_EVENT_INVENTORY_DROP_REGISTERED
+# seam: drops mesh-update from the extracted registered set.  The recovery guard
+# (step-2 re-check) must confirm that mesh-update IS in the inventory file before
+# flagging an orphan, and must silently skip it.
+# RED today: no re-check → false orphan flagged → assertions a/b/d fail.
+# GREEN after step-2 adds the per-orphan inventory re-confirm.
+# ==============================================================================
+echo ""
+echo "--- Check 18: registered-set truncation recovery (task-4586) ---"
+
+_fix18dir="$_tmpdir/fix18"
+mkdir -p "$_fix18dir/docs" "$_fix18dir/gui/src-tauri/src"
+
+cat > "$_fix18dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `kernel-status` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix18dir/gui/src-tauri/src/main.rs" <<'RUST'
+fn emit_wired(app: &AppHandle) {
+    app.emit("mesh-update", ());
+}
+RUST
+
+_init_repo "$_fix18dir" gui/src-tauri/src/main.rs
+
+_fix18_stderr="$_tmpdir/fix18_stderr.txt"
+REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update \
+    "$CHECK_SCRIPT" --repo-root "$_fix18dir" 2>"$_fix18_stderr" || true
+
+assert "Check 18a: no 'orphan' line in stderr (re-check must recover dropped mesh-update)" \
+    bash -c "! grep -q 'orphan' '$_fix18_stderr'"
+
+assert "Check 18b: 'mesh-update' does NOT appear as orphan in stderr" \
+    bash -c "! grep -q 'mesh-update' '$_fix18_stderr'"
+
+assert "Check 18c: exits 0 in warning mode with fault injection" \
+    bash -c "REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update '$CHECK_SCRIPT' --repo-root '$_fix18dir'"
+
+assert "Check 18d: exits 0 under --strict (no false-positive orphan)" \
+    bash -c "REIFY_EVENT_INVENTORY_DROP_REGISTERED=mesh-update '$CHECK_SCRIPT' --repo-root '$_fix18dir' --strict"
+
+# ==============================================================================
+# Check 19: registered extraction completeness / --print-registered — task-4586
+# --print-registered prints the extracted registered set (one channel per line)
+# and exits 0.  Guards extract_registered_channels() against silently dropping
+# a channel, and doubles as a field-debug tool for esc-4578-61.
+# RED today: --print-registered is an unknown option → exits 1, empty stdout →
+# all presence assertions fail.
+# GREEN after step-4 adds the flag and extract_registered_channels().
+# ==============================================================================
+echo ""
+echo "--- Check 19: --print-registered extraction completeness (task-4586) ---"
+
+_fix19dir="$_tmpdir/fix19"
+mkdir -p "$_fix19dir/docs" "$_fix19dir/gui/src-tauri/src"
+
+cat > "$_fix19dir/docs/gui-event-channels.md" <<'INVENTORY'
+# GUI Event Channel Inventory
+
+## §1 — Wired channels (production today)
+
+| Channel | Notes |
+|---|---|
+| `mesh-update` | wired |
+| `kernel-status` | wired |
+| `file-changed` | wired |
+| `value-update` | wired |
+| `claude-done` | wired |
+
+## §2 — Channels this PRD adds (FICTION → WIRED via GR-016 decomposition)
+
+| Channel | Notes |
+|---|---|
+INVENTORY
+
+cat > "$_fix19dir/gui/src-tauri/src/main.rs" <<'RUST'
+fn noop() {}
+RUST
+
+_init_repo "$_fix19dir" gui/src-tauri/src/main.rs
+
+_fix19_stdout="$_tmpdir/fix19_stdout.txt"
+"$CHECK_SCRIPT" --repo-root "$_fix19dir" --print-registered > "$_fix19_stdout" 2>/dev/null || true
+
+assert "Check 19: --print-registered exits 0" \
+    "$CHECK_SCRIPT" --repo-root "$_fix19dir" --print-registered
+
+assert "Check 19: mesh-update appears in --print-registered output" \
+    grep -qx 'mesh-update' "$_fix19_stdout"
+
+assert "Check 19: kernel-status appears in --print-registered output" \
+    grep -qx 'kernel-status' "$_fix19_stdout"
+
+assert "Check 19: file-changed appears in --print-registered output" \
+    grep -qx 'file-changed' "$_fix19_stdout"
+
+assert "Check 19: value-update appears in --print-registered output" \
+    grep -qx 'value-update' "$_fix19_stdout"
+
+assert "Check 19: claude-done appears in --print-registered output" \
+    grep -qx 'claude-done' "$_fix19_stdout"
+
+# Generic property assertion: every | `name` | row in the real inventory must
+# appear in --print-registered output.  Decoupled from specific channel names —
+# a legitimate rename/removal of any channel won't break this test for the wrong
+# reason.  The esc-4578-61 regression (file-changed dropping under load) is
+# covered generically: if ANY registered channel is missing the assertion fails.
+_fix19_real_stdout="$_tmpdir/fix19_real.txt"
+"$CHECK_SCRIPT" --repo-root "$REPO_ROOT" --print-registered > "$_fix19_real_stdout" 2>/dev/null || true
+
+_fix19_inv_channels=$(grep -oP '\| `\K[a-z0-9-]+(?=` \|)' \
+    "$REPO_ROOT/docs/gui-event-channels.md" 2>/dev/null | sort -u || true)
+while IFS= read -r _ch19; do
+    [[ -z "$_ch19" ]] && continue
+    assert "Check 19: '$_ch19' (real inventory) in --print-registered output" \
+        grep -qx "$_ch19" "$_fix19_real_stdout"
+done <<< "$_fix19_inv_channels"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

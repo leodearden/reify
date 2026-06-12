@@ -4,15 +4,15 @@
 **Auditor:** audit-auto-resolution-backtracking
 **Date:** 2026-05-12
 **Mechanism count:** 14
-**Gap count:** 8 (3 PARTIAL on top of the v0.2 algorithm + 2 PARTIAL on shared infra + 1 DRIFT + 1 TODO + 1 FICTION at v0.2 surface, plus 1 FICTION on shared parser/pipeline)
+**Gap count:** 2 (1 PARTIAL + 1 DRIFT remain; all other gaps resolved by 3558, α/4431, β/4433, γ/4434, δ/4435, ε/4436)
 
-Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,006,007), TODO=1 (M-013), FICTION=2 (M-002,014), DRIFT=1 (M-010), ORPHAN=0.
+Breakdown by state: WIRED=12 (M-002,003,004,005,006,007,008,009,011,012,013,014), PARTIAL=1 (M-001), TODO=0, FICTION=0, DRIFT=1 (M-010), ORPHAN=0.
 
 ## Top concerns
 
-- **The DFS library is wired, the parser now accepts `auto:` in `type_arg_list`, but the compile pipeline never invokes the resolver.** Since commit `a46e7d3888` (2026-05-14), `tree-sitter-reify/grammar.js:710-729` admits `auto: <bound>` and `auto(free): <bound>` via the `auto_type_arg` rule. However, no compile-pipeline call-site of `resolve_auto_type_params` *or* `resolve_auto_type_params_with_backtracking` exists outside tests, so the substitution is still never produced from source. The PRD's first stated pre-condition ("v0.1 alpha has shipped with per-parameter BFS") is **superficially true at the library level and false at the user-facing level** — every PRD claim from the user's perspective is still dead code, but the dead branch is now the resolver call-site, not the parser.
+- ~~**The DFS library is wired, the parser now accepts `auto:` in `type_arg_list`, but the compile pipeline never invokes the resolver.**~~ **RESOLVED by 3558 (commit `8d1cf09598`):** The compile-pipeline call-site now exists at `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs:148` (`resolve_auto_type_params_with_backtracking`). `CompiledModule.auto_type_substitution` is populated at `:214` (`AutoTypeSubstitution::new(...)`). M-002 and M-014 flipped FICTION/PARTIAL→WIRED.
 - **Constraint-feasibility incremental binding is deferred per the PRD itself, but the deferral has a soundness implication the PRD doesn't acknowledge.** A `TODO(post-substitution-mechanics)` block at `auto_type_param.rs:1322-1336` notes that the BFS-fallback used by both depth-bound and 100k-cap branches is *only* sound today because Phase B's verdict does not depend on the candidate binding (empty `ValueMap`). Once substitution lands, BFS may silently pick a per-param-feasible combination that is infeasible at the cross-product — producing wrong substitutions while the warning still reads "fell back to BFS". The PRD describes BFS fallback as a graceful degradation; in practice it will become latently wrong.
-- **Backjumping correctness is gated on `Type::TypeParam` references actually appearing in constraint expressions, which requires the deferred substitution pass.** `build_constraint_blame_map` walks for `Type::TypeParam(name)` typed `ValueRef` cells. Today, because substitution isn't run and most templates won't naturally type cells as `Type::TypeParam`, the blame map is typically empty and the algorithm degenerates to ordinary backtracking. The "absent ↔ ordinary backtrack" contract preserves the strict-Ambiguous and NonUnique test outcomes, but the *backjumping* path (task 2660's core claim) has no real-source-level exercise; the e2e regressions all use `MockConstraintChecker.with_call_queue` to script per-leaf verdicts because production constraints can't yet produce them.
+- ~~**Backjumping correctness is gated on `Type::TypeParam` references actually appearing in constraint expressions, which requires the deferred substitution pass.**~~ **RESOLVED by β/4433 + ε/4436:** `seed_candidate_value_map` (γ/4434) seeds per-candidate literal defaults into `ConstraintInput.values` so a real, data-driven `ConstraintChecker` can produce per-leaf verdicts. `crates/reify-compiler/tests/auto_backjumping_real_source.rs` (ε/4436) is the first integration test exercising backjumping from real `.ri` candidate data with no `MockConstraintChecker`. M-007 flipped PARTIAL→WIRED.
 - **The PRD's "smallest infeasibility witness" guarantee is partially substituted by a structural approximation in implementation.** Code comments at `auto_type_param.rs:425-471` (in `emit_no_feasible_cross_product_diagnostic`) explain that when DFS exits with zero feasibles, the search has by construction proved the entire cross-product infeasible and the "first-param prefix" message is used as a structural witness rather than the user-actionable smallest-rule-out partial assignment the PRD specifies. This is documented but is technically a DRIFT from the PRD wording.
 
 ## Mechanisms
@@ -27,11 +27,10 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 ### M-002: Parser accepts `auto:` / `auto(free):` in `type_arg_list`
 
-- **State:** PARTIAL (parser landed; compile-pipeline wiring still missing)
-- **Failure mode:** F1 → reclassified to F4 (parser surface lands but the compile pipeline never calls the resolver, so source-level `Bearing<auto: Seal>` parses but produces no substitution)
-- **Evidence:** `tree-sitter-reify/grammar.js:710-714` admits `choice($.type_expr, $.number_literal, $.auto_type_arg)`; the `auto_type_arg` rule at `grammar.js:725-729` reuses `auto_keyword` (defined at ~`grammar.js:459`, accepts both `auto` and `auto(free)`) followed by `':' <bound>`. Corpus tests at `tree-sitter-reify/test/corpus/auto_type_arg.txt` exercise both `Bearing<auto: Seal>` and `Bearing<auto(free): Seal>`; landed in commit `a46e7d3888` ("GREEN – extend type_arg_list to admit auto: / auto(free): type-args"). The remaining gap is the semantic wiring: no compile-pipeline call site invokes `resolve_auto_type_params` / `resolve_auto_type_params_with_backtracking`, so source-level `auto:` in type-arg position still produces no substitution. The module doc-comment at `auto_type_param.rs:100-106` and the e2e test header at `crates/reify-eval/tests/auto_backtracking_e2e.rs:14-24` are themselves now stale (they still assert the parser doesn't accept `auto: TraitName` and cite the obsolete `grammar.js:601-605` range); follow-up task 3896 filed to refresh those source citations. No task in the 2659-2664 sibling list owns the orchestrator call-site wiring.
-- **Blocks:** Every user-visible v0.2 backtracking scenario. Without this, the entire orchestrator API is reachable only from tests.
-- **Note:** Both v0.1 and v0.2 PRDs assume this exists. Sibling v0.1 PRD `docs/prds/auto-type-param-resolution.md` does not surface this gap either.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** `tree-sitter-reify/grammar.js:710-714` admits `choice($.type_expr, $.number_literal, $.auto_type_arg)`; the `auto_type_arg` rule at `grammar.js:725-729` reuses `auto_keyword` (defined at ~`grammar.js:459`, accepts both `auto` and `auto(free)`) followed by `':' <bound>`. Corpus tests at `tree-sitter-reify/test/corpus/auto_type_arg.txt` exercise both `Bearing<auto: Seal>` and `Bearing<auto(free): Seal>`; landed in commit `a46e7d3888`. Compile-pipeline call-site wired at `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs:148` (`resolve_auto_type_params_with_backtracking`) via 3558 (commit `8d1cf09598`). Follow-up task 3896 filed to refresh stale source citations in module doc-comment and e2e test header.
+- **Note:** Previously PARTIAL (parser landed; compile-pipeline wiring missing). Resolved by 3558 (commit `8d1cf09598`). Both v0.1 and v0.2 PRDs assume this exists. Sibling v0.1 PRD `docs/prds/auto-type-param-resolution.md` does not surface this gap.
 
 ### M-003: DFS over cross-product of `auto:` candidate sets
 
@@ -49,27 +48,26 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 ### M-005: Depth-bound fallback to BFS with `AutoTypeParamDepthBoundExceeded` warning
 
-- **State:** PARTIAL
-- **Failure mode:** F2 (mechanism wired, but soundness depends on a deferred mechanism)
-- **Evidence:** `auto_type_param.rs:1338-1356`; diagnostic registered at `crates/reify-types/src/diagnostics.rs:646`; `NOTE(substitution-pass-trigger)` at `auto_type_param.rs:1322-1336` flags that BFS-fallback is sound *only* because substitution is not yet active. Once the deferred `Type::TypeParam → Type::StructureRef` pass lands, BFS may silently pick wrong substitutions.
-- **Blocks:** Promotion to "warning" semantic vs. error is itself contingent on the substitution work; the NOTE recommends revisiting at that point.
-- **Resolution (task 3637):** The latent-correctness-hazard portion is now mitigated by an in-line diagnostic caveat: the `AutoTypeParamDepthBoundExceeded` message produced at fallback time explicitly states "BFS-fallback soundness is contingent on … substitution remaining deferred". The `TODO(post-substitution-mechanics)` marker has been replaced with `NOTE(substitution-pass-trigger)` carrying an inline soundness rationale. PARTIAL state is retained — full resolution still requires the substitution pass to land and this entry to be revisited at that point.
-- **Note:** The PRD frames BFS fallback as a soft cap; the implementation flags it as a latent correctness hazard. This is a documented drift between PRD intent and implementation reality.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** `auto_type_param.rs:1338-1356`; diagnostic registered at `crates/reify-core/src/diagnostics.rs` (formerly `crates/reify-types/src/diagnostics.rs:646`); `NOTE(substitution-pass-trigger)` at `auto_type_param.rs:1322-1336`. α=4431 landed the substitution mechanics; γ=4434 delivered the single joint-recheck at fallback with `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` and reverted post-substitution hoists (task 3637), closing the soundness gap.
+- **Resolution (tasks 3637, γ=4434):** `TODO(post-substitution-mechanics)` markers replaced with `NOTE(substitution-pass-trigger)` (task 3637). γ=4434 delivered the single joint-recheck + reverted hoists, closing the previously-deferred substitution-deferral soundness hazard. BFS fallback is now sound end-to-end.
+- **Note:** Previously PARTIAL (soundness gated on deferred substitution). Closed by γ=4434 joint-recheck + hoists revert. The PRD frames BFS fallback as a soft cap; this is now the implementation reality as well.
 
 ### M-006: Configurable `max_cross_product_size` cap (default 100,000) with BFS fallback
 
-- **State:** PARTIAL
-- **Failure mode:** F2 (same as M-005 — soundness gated on deferred substitution)
-- **Evidence:** `auto_type_param.rs:1442-1495`; `crates/reify-config/src/lib.rs` `DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE = 100_000`; `crates/reify-config/tests/auto_type_params_config.rs:67-100`; diagnostic registered at `crates/reify-types/src/diagnostics.rs:677`. Task 2662 done.
-- **Resolution (task 3637):** Mirror of M-005 resolution. The `AutoTypeParamCrossProductSizeExceeded` message produced at fallback time now explicitly states "BFS-fallback soundness is contingent on … substitution remaining deferred" (M-006 audit citation). The `TODO(post-substitution-mechanics)` marker has been replaced with `NOTE(substitution-pass-trigger)`. PARTIAL state retained pending substitution pass.
-- **Note:** Saturating multiply guards `usize` overflow. Like M-005, the BFS fallback inherits the substitution-deferral soundness hazard.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** `auto_type_param.rs:1442-1495`; `crates/reify-config/src/lib.rs` `DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE = 100_000`; `crates/reify-config/tests/auto_type_params_config.rs:67-100`; diagnostic registered at `crates/reify-core/src/diagnostics.rs` (formerly `crates/reify-types/src/diagnostics.rs:677`). Task 2662 done.
+- **Resolution (tasks 3637, γ=4434):** Mirror of M-005 resolution. `TODO(post-substitution-mechanics)` marker replaced with `NOTE(substitution-pass-trigger)` (task 3637). γ=4434 delivered the single joint-recheck + reverted hoists, closing the substitution-deferral soundness hazard in the cross-product-size-cap branch.
+- **Note:** Previously PARTIAL (same soundness gap as M-005). Saturating multiply guards `usize` overflow. Closed by γ=4434 joint-recheck + hoists revert.
 
 ### M-007: Backjumping via static constraint-blame map (`build_constraint_blame_map`)
 
-- **State:** PARTIAL
-- **Failure mode:** F2 (algorithm wired but inert at runtime today)
-- **Evidence:** `auto_type_param.rs:1902-1941` (`build_constraint_blame_map`), `:2111-2123` (`compute_deepest_blame_level`), `:2174-2268` (`dfs_search` with `DfsControl::BackjumpTo`); test coverage in `tests/auto_type_param_backtracking_tests.rs`. Task 2660 done (`ebc94ff262`). However, the map only fires when constraint expressions reference `ValueRef` cells typed `Type::TypeParam(name)`. Today, the deferred substitution mechanics (see M-013) mean cells are typically NOT typed as `TypeParam` at the point Phase A/B/C runs, so the map is typically empty.
-- **Note:** Code is correct; the "absent ↔ ordinary backtrack" contract preserves test outcomes when blame is unavailable. But the PRD's CSP-optimisation claim ("rather than backtrack one level") is conditionally inert until substitution lands. None of the e2e tests exercise it from real source — they use `MockConstraintChecker` to script per-leaf verdicts.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** `auto_type_param.rs:1902-1941` (`build_constraint_blame_map`), `:2111-2123` (`compute_deepest_blame_level`), `:2174-2268` (`dfs_search` with `DfsControl::BackjumpTo`); test coverage in `tests/auto_type_param_backtracking_tests.rs`. Task 2660 done (`ebc94ff262`). β=4433 wired real-checker candidate substitution in-loop; γ=4434 seeds per-candidate literal defaults into `ConstraintInput.values` via `seed_candidate_value_map`. `crates/reify-compiler/tests/auto_backjumping_real_source.rs` (ε/4436) is the first integration test exercising backjumping from real `.ri` candidate data with no `MockConstraintChecker`, proving the blame map fires and `DfsControl::BackjumpTo` prunes subtrees from real source.
+- **Note:** Previously PARTIAL (algorithm wired but inert — cells not yet typed `TypeParam`). Closed by β=4433 + γ=4434 + ε/4436 real-source test. The "absent ↔ ordinary backtrack" contract preserves correctness in the non-blame path.
 
 ### M-008: `auto(free)` cross-product NonUnique enumeration + lex-first pick
 
@@ -108,20 +106,18 @@ Breakdown by state: WIRED=6 (M-003,004,008,009,011,012), PARTIAL=4 (M-001,005,00
 
 ### M-013: Type-substitution mechanics (`Type::TypeParam(T) → Type::StructureRef(candidate)`)
 
-- **State:** TODO
-- **Failure mode:** F5 (PRD-declared deferred precondition; no production code exists)
-- **Evidence:** PRD §"Resolved design decisions" line 52 "Constraint-feasibility incremental binding deferred"; `auto_type_param.rs:32-35`, `:84-86`; `NOTE(substitution-pass-trigger)` blocks at hoist sites (previously `TODO(post-substitution-mechanics)`, renamed by task 3637); `:1322-1336` (soundness implication of fallback); no production code in any crate substitutes `Type::TypeParam` to `Type::StructureRef`. No task in 2659-2664 owns this; PRD says "Tracker for the optimization filed separately as a v0.2.x bookmark task" — no such task located in the searched sample.
-- **Blocks:** True end-to-end exercise of M-007 backjumping; promotion of M-005/M-006 BFS fallbacks from "soft" to "sound".
-- **Cross-reference (task 3637):** Task 3637 wired diagnostic self-documentation for M-005/M-006 (the BFS-fallback messages now explicitly state the substitution-soundness hazard at emission time) and replaced dangling `TODO(post-substitution-mechanics)` markers with `NOTE(substitution-pass-trigger)` plus inline soundness rationale. The substitution pass itself (this entry) remains TODO.
-- **Note:** PRD self-declares this as deferred; calling it a gap is interpretive. Listing here so Phase 3 can decide whether the v0.2.x bookmark task actually exists.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** α=4431 landed the `Type::TypeParam → Type::StructureRef` apply/substitution mechanics (apply pass); δ=4435 wired value-population consumers. `auto_type_param.rs:32-35`, `:84-86` reflect updated typings. `NOTE(substitution-pass-trigger)` blocks at hoist sites (task 3637) document the historical deferral context and replaced the former `TODO(post-substitution-mechanics)` markers.
+- **Cross-reference (task 3637):** Diagnostic self-documentation for M-005/M-006 wired (BFS-fallback messages state the substitution-soundness hazard at emission time). Dangling `TODO(post-substitution-mechanics)` markers replaced with `NOTE(substitution-pass-trigger)` plus inline soundness rationale.
+- **Note:** Previously TODO (PRD-declared deferred precondition; no production code). Resolved by α=4431 (substitution mechanics) + δ=4435 (value population). M-005/M-006 soundness gap closed by γ=4434 joint-recheck.
 
 ### M-014: Compile-pipeline integration (call-site that invokes the orchestrator from `compile`/`compile_with_*`)
 
-- **State:** FICTION
-- **Failure mode:** F1 (no caller from production code)
-- **Evidence:** `crates/reify-compiler/src/lib.rs:114-380` (all `compile*` entry points) contain no reference to `auto_type_param::*`; module export is `pub mod auto_type_param;` at line 9 only. Grep confirms only test files and the orchestrator's own internal call (BFS-fallback delegate) reach the orchestrators. No task in 2659-2664 owns this integration.
-- **Blocks:** Same as M-002 — every user-facing v0.2 claim. The orchestrators are reachable from the LSP-diagnostic surface only via library callers that don't exist.
-- **Note:** Discovered alongside M-002. Even if the parser learned `auto:`, the compile pipeline would still need a Phase-A/B/C invocation site, candidate substitution into resolved type-arg lists, and a result-handling path for `SelectionResult::Ambiguous`.
+- **State:** WIRED
+- **Failure mode:** N/A
+- **Evidence:** Compile-pipeline call-site wired at `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs:148` (`resolve_auto_type_params_with_backtracking`); `CompiledModule.auto_type_substitution` populated at `:214` (`AutoTypeSubstitution::new(...)`). Resolved by 3558 (commit `8d1cf09598`). Task 3558 done.
+- **Note:** Previously FICTION (no caller from production code). Resolved by 3558 (commit `8d1cf09598`). Discovered alongside M-002; both gaps closed by the same commit. The Phase-A/B/C invocation site, candidate substitution into resolved type-arg lists, and `SelectionResult::Ambiguous` result-handling path are all present in the new phase module.
 
 ## Cross-PRD breadcrumbs
 

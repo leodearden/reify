@@ -258,6 +258,19 @@ fn thicken_arg_count_diagnostic_has_span_label() {
 }
 
 #[test]
+fn offset_solid_arg_count_diagnostic_has_span_label() {
+    // offset_solid() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let s = offset_solid(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "offset_solid() expects 2 arguments",
+    );
+}
+
+#[test]
 fn draft_arg_count_diagnostic_has_span_label() {
     // draft() expects 3 arguments — passing 1 should produce a labeled diagnostic
     assert_arg_count_label(
@@ -295,6 +308,19 @@ fn fillet_arg_count_diagnostic_has_span_label() {
             }
         "#,
         "fillet() expects 2 or 3 arguments",
+    );
+}
+
+#[test]
+fn fillet_all_arg_count_diagnostic_has_span_label() {
+    // fillet_all() expects exactly 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let f = fillet_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "fillet_all() expects 2 arguments",
     );
 }
 

@@ -3,8 +3,11 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
-use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Severity, ValueCellId};
+use reify_compiler::{CompiledConstraint, CompiledModule, CompiledTrait, TopologyTemplate, satisfies_trait_bound};
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, Severity,
+    SourceSpan, ValueCellId,
+};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
     DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, StructureInstanceData,
@@ -117,6 +120,27 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     };
 
     Some(DfmRuleSpec { kind, subject_handle, rule_value: v.clone() })
+}
+
+// ── GD&T callout descriptor (C1, task 4475 β) ───────────────────────────────
+
+/// A single GD&T callout instance enumerated by [`Engine::enumerate_gdt_callouts`].
+///
+/// Descriptor returned by the C1 enumerator (task 4475 β), reused verbatim by
+/// the η conformance pass.
+#[derive(Debug, Clone)]
+pub struct GdtCallout {
+    /// Structure type name (e.g. `"Flatness"`, `"Position"`).
+    pub type_name: String,
+    /// Instantiation source span (`ValueCellDecl.span`) — the ctor-let site.
+    /// Anchor for the B7 "at the instantiation span" diagnostic label.
+    pub span: SourceSpan,
+    /// `material_condition` field variant, if the field was a concrete
+    /// [`Value::Enum`] at eval time (e.g. `Some("MMC")`). `None` when absent
+    /// or not a concrete enum value — no-false-positive invariant.
+    pub material_condition: Option<String>,
+    /// `zone_shape` field variant, if present and concrete (e.g. `Some("Width")`).
+    pub zone_shape: Option<String>,
 }
 
 impl Engine {
@@ -986,6 +1010,10 @@ impl Engine {
         let dfm_diags = self.measure_dfm_rules(module, &eval_result.values);
         diagnostics.extend(dfm_diags);
 
+        // ── C2 GD&T legality pass (task 4475 β) ──────────────────────────────
+        diagnostics.extend(self.check_gdt_legality(module, &eval_result.values));
+
+
         CheckResult {
             values: eval_result.values,
             constraint_results,
@@ -993,6 +1021,283 @@ impl Engine {
             resolved_params: eval_result.resolved_params,
         }
     }
+
+    // ── C1 enumerator (task 4475 β) ──────────────────────────────────────────
+
+    /// Enumerate all GD&T callout instances in the module.
+    ///
+    /// A callout is a [`Value::StructureInstance`] in the post-eval `values` map
+    /// whose declared structure template transitively conforms to the
+    /// `GeometricTolerance` trait (via the canonical `satisfies_trait_bound` walk
+    /// over `module.trait_defs`).
+    ///
+    /// Returned in declaration order (template order, then value-cell order within
+    /// each template).  Dead / guard-inactive branches are naturally skipped because
+    /// they produce no live `Value::StructureInstance` in `values`.
+    ///
+    /// # No-false-positive invariant
+    /// If a modifier field (`material_condition`, `zone_shape`) is not a concrete
+    /// [`Value::Enum`] at eval time, its slot in the returned [`GdtCallout`] is
+    /// `None` — the enumerator never emits on an indeterminate value.  This mirrors
+    /// the `RepresentationWithin` C1 invariant at `engine_constraints.rs:42-62`.
+    ///
+    /// # Fast-path
+    /// After building the trait/template registries, returns an empty `Vec`
+    /// immediately if no evaluated `Value::StructureInstance` in `values` conforms
+    /// to `GeometricTolerance`.  This is a real guard: the prelude always contains
+    /// GeometricTolerance-conforming *templates* (Flatness, Position, etc.), so a
+    /// template-only check would be vacuously true for every module.  Checking
+    /// *instance values* instead correctly fast-paths non-GD&T modules that happen
+    /// to load the stdlib tolerancing prelude.
+    ///
+    /// # Reuse contract (C1 — task 4475 β)
+    /// This function is the *shared* enumerator: it is consumed unchanged by
+    /// `check_gdt_legality` (β) and will be reused verbatim by the η conformance
+    /// pass.  Do not add β-specific logic here.
+    pub fn enumerate_gdt_callouts(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<GdtCallout> {
+        // Build trait registry from prelude trait_defs + user module trait_defs.
+        // Stdlib traits like GeometricTolerance live in the prelude, not in
+        // module.trait_defs (which only holds user-defined traits).
+        let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        for prelude_mod in self.prelude {
+            for t in &prelude_mod.trait_defs {
+                trait_registry.insert(t.name.clone(), t);
+            }
+        }
+        for t in &module.trait_defs {
+            trait_registry.insert(t.name.clone(), t);
+        }
+
+        // Build combined template lookup from prelude + user templates.
+        // Stdlib types (Flatness, Position, etc.) live in the prelude, not in
+        // module.templates (which only holds user-defined structure templates).
+        let mut template_by_name: HashMap<&str, &TopologyTemplate> = HashMap::new();
+        for prelude_mod in self.prelude {
+            for t in &prelude_mod.templates {
+                template_by_name.insert(t.name.as_str(), t);
+            }
+        }
+        for t in &module.templates {
+            template_by_name.insert(t.name.as_str(), t);
+        }
+
+        // Fast-path: if no evaluated StructureInstance value conforms to
+        // GeometricTolerance, there are no GD&T callouts to collect.
+        // Checking values (not templates) is correct: the prelude always carries
+        // GeometricTolerance-conforming templates, so a template-only check would
+        // be vacuously true for every module that loads the tolerancing stdlib.
+        let has_gdt_instance = values.iter().any(|(_, v)| match v {
+            Value::StructureInstance(data) => template_by_name
+                .get(data.type_name.as_str())
+                .map(|t| satisfies_trait_bound(&t.trait_bounds, "GeometricTolerance", &trait_registry))
+                .unwrap_or(false),
+            _ => false,
+        });
+        if !has_gdt_instance {
+            return Vec::new();
+        }
+
+        let mut callouts = Vec::new();
+
+        // Walk templates in declaration order, then value_cells in declaration order.
+        for template in &module.templates {
+            for cell in &template.value_cells {
+                // Look up the evaluated value for this cell.
+                let value = match values.get(&cell.id) {
+                    Some(v) => v,
+                    None => continue,
+                };
+
+                // Only care about StructureInstances.
+                let instance_data = match value {
+                    Value::StructureInstance(data) => data,
+                    _ => continue,
+                };
+
+                // Look up the instance's template to check trait bounds.
+                let instance_tmpl = match template_by_name.get(instance_data.type_name.as_str()) {
+                    Some(t) => t,
+                    None => continue, // unknown type — skip; no false positive
+                };
+
+                // Check if the instance conforms to GeometricTolerance.
+                if !satisfies_trait_bound(
+                    &instance_tmpl.trait_bounds,
+                    "GeometricTolerance",
+                    &trait_registry,
+                ) {
+                    continue;
+                }
+
+                // Extract modifier fields; skip (None) if not a concrete enum.
+                let material_condition =
+                    enum_field_variant(&instance_data.fields, "material_condition");
+                let zone_shape = enum_field_variant(&instance_data.fields, "zone_shape");
+
+                callouts.push(GdtCallout {
+                    type_name: instance_data.type_name.clone(),
+                    span: cell.span,
+                    material_condition,
+                    zone_shape,
+                });
+            }
+        }
+
+        callouts
+    }
+
+    // ── C2 rule table (task 4475 β) ──────────────────────────────────────────
+
+    /// Apply the GD&T legality rule table to all callouts in `module`.
+    ///
+    /// Returns zero or more diagnostics:
+    /// - [`DiagnosticCode::GdtIllegalModifier`] (Error) for any callout whose
+    ///   characteristic family is RFS-only but carries `MMC` or `LMC`.
+    /// - [`DiagnosticCode::GdtRemoved2018`] (Warning) for `Concentricity` /
+    ///   `Symmetry` (added in step-8).
+    ///
+    /// Unknown user-defined `GeometricTolerance` subtypes are silently skipped
+    /// (no false error).
+    ///
+    /// Fast-path: delegates to `enumerate_gdt_callouts`, which returns empty for
+    /// modules with no `GeometricTolerance`-conforming templates — keeping every
+    /// non-GD&T `check()` byte-identical.
+    pub(crate) fn check_gdt_legality(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<Diagnostic> {
+        let callouts = self.enumerate_gdt_callouts(module, values);
+        if callouts.is_empty() {
+            return Vec::new();
+        }
+
+        let mut diags = Vec::new();
+
+        for callout in &callouts {
+            classify_callout(callout, &mut diags);
+        }
+
+        diags
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
+/// Returns `None` if the key is absent or the value is not a concrete `Value::Enum`.
+/// No-false-positive invariant: only concrete enum values produce `Some(...)`.
+fn enum_field_variant(fields: &PersistentMap<String, Value>, field_name: &str) -> Option<String> {
+    match fields.get(&field_name.to_string()) {
+        Some(Value::Enum { variant, .. }) => Some(variant.clone()),
+        _ => None,
+    }
+}
+
+/// Returns `true` if `modifier` is `MMC` or `LMC` (i.e. not RFS and not unknown).
+#[inline]
+fn is_non_rfs(modifier: Option<&str>) -> bool {
+    matches!(modifier, Some("MMC") | Some("LMC"))
+}
+
+/// Classify a single GDT callout against the C2 rule table and push diagnostics.
+///
+/// Family classification (β legality table):
+/// - Form (Flatness, Straightness, Circularity, Cylindricity): RFS-only.
+/// - FormAxis (StraightnessOfAxis): MMC-eligible (FOS axis variant).
+/// - Orientation (Parallelism, Perpendicularity, Angularity): MMC-eligible iff
+///   zone_shape == Cylindrical; Width zone is RFS-only.
+/// - Location Position: MMC-eligible (default Cylindrical zone).
+/// - Removed (Concentricity, Symmetry): emits GdtRemoved2018 warning (step-8).
+/// - Runout (CircularRunout, TotalRunout): RFS-only.
+/// - Profile (ProfileOfSurface, ProfileOfLine, …Related): RFS-only.
+///
+/// Unknown user-defined GeometricTolerance subtypes → skip (no false error).
+fn classify_callout(callout: &GdtCallout, diags: &mut Vec<Diagnostic>) {
+    let mc = callout.material_condition.as_deref();
+
+    match callout.type_name.as_str() {
+        // ── RFS-only Form family ───────────────────────────────────────────
+        "Flatness" | "Straightness" | "Circularity" | "Cylindricity" => {
+            if is_non_rfs(mc) {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // ── FOS-axis Form variant: MMC-eligible unconditionally ───────────
+        "StraightnessOfAxis" => {
+            // MMC/LMC is permitted on the FOS derived median line.
+        }
+
+        // ── Orientation: MMC-eligible only with Cylindrical zone ──────────
+        "Parallelism" | "Perpendicularity" | "Angularity" => {
+            let cylindrical = callout.zone_shape.as_deref() == Some("Cylindrical");
+            if is_non_rfs(mc) && !cylindrical {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // ── Location Position: MMC-eligible (default Cylindrical zone) ────
+        "Position" => {
+            // Cylindrical zone (the default) makes this FOS-eligible — permit MMC/LMC.
+        }
+
+        // ── Removed-in-2018 family ────────────────────────────────────────
+        // Concentricity and Symmetry were removed from ASME Y14.5-2018.
+        // Emit a warning unconditionally (independent of material_condition);
+        // suppress GdtIllegalModifier so an MMC callout yields only this warning.
+        "Concentricity" | "Symmetry" => {
+            diags.push(
+                Diagnostic::warning(format!(
+                    "`{}` was removed in ASME Y14.5-2018; \
+                     use Position, ProfileOfSurface, or Runout instead",
+                    callout.type_name
+                ))
+                .with_code(DiagnosticCode::GdtRemoved2018)
+                .with_label(DiagnosticLabel::new(
+                    callout.span,
+                    "removed in ASME Y14.5-2018",
+                )),
+            );
+        }
+
+        // ── RFS-only Runout family ────────────────────────────────────────
+        "CircularRunout" | "TotalRunout" => {
+            if is_non_rfs(mc) {
+                diags.push(illegal_modifier_error(callout));
+            }
+        }
+
+        // ── RFS-only Profile family ───────────────────────────────────────
+        "ProfileOfSurface"
+        | "ProfileOfLine"
+        | "ProfileOfSurfaceRelated"
+        | "ProfileOfLineRelated"
+            if is_non_rfs(mc) => {
+            diags.push(illegal_modifier_error(callout));
+        }
+
+        // Unknown user-defined GeometricTolerance subtypes → no opinion.
+        _ => {}
+    }
+}
+
+/// Build a `GdtIllegalModifier` error diagnostic anchored at `callout.span`.
+fn illegal_modifier_error(callout: &GdtCallout) -> Diagnostic {
+    Diagnostic::error(format!(
+        "`{}` is an RFS-only tolerance characteristic; \
+         material condition modifiers (MMC/LMC) are not permitted",
+        callout.type_name
+    ))
+    .with_code(DiagnosticCode::GdtIllegalModifier)
+    .with_label(DiagnosticLabel::new(
+        callout.span,
+        "illegal material condition modifier applied here",
+    ))
 }
 
 // ── Unit tests for DFM auto-measurement helpers ───────────────────────────────

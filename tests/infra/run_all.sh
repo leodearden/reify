@@ -10,6 +10,11 @@
 # and run as subshell invocations. test_helpers.sh is excluded by name
 # (it is a shared library, not a test runner).
 #
+# Output: After the "=== Summary: N discovered, M failed ===" line, if any
+# tests failed, a dedicated "=== FAILED: <space-separated names> ===" line
+# is emitted naming every failing test so the tail of captured merge-gate
+# output is attributable without re-running.
+#
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 
 set -euo pipefail
@@ -34,6 +39,7 @@ export DF_VERIFY_ROLE=task
 
 failures=0
 discovered=0
+failed_names=()
 
 echo "=== Running all infra tests in: $INFRA_DIR ==="
 
@@ -55,11 +61,15 @@ for test_file in "$INFRA_DIR"/test_*.sh; do
     else
         echo "  RESULT: FAIL ($basename)"
         failures=$((failures + 1))
+        failed_names+=("$basename")
     fi
 done
 
 echo ""
 echo "=== Summary: $discovered discovered, $failures failed ==="
+if [ "${#failed_names[@]}" -gt 0 ]; then
+    echo "=== FAILED: ${failed_names[*]} ==="
+fi
 
 if [ "$failures" -eq 0 ]; then
     exit 0

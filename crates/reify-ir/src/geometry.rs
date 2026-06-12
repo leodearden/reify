@@ -3,7 +3,7 @@ use std::fmt;
 
 use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
-use crate::value::Value;
+use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -293,6 +293,10 @@ pub enum Operation {
     ModifyDraft,
     /// Thicken a surface by offset.
     ModifyThicken,
+    /// Offset a face ±width/2 and cap into a centered slab solid.
+    ModifyZoneSlab,
+    /// Offset a solid outward/inward by distance.
+    ModifyOffsetSolid,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -800,6 +804,16 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         offset: Value,
     },
+    /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
+    ZoneSlab {
+        target: GeometryHandleId,
+        width: Value,
+    },
+    /// Offset a solid outward (positive) or inward (negative) by distance.
+    OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
+    },
     /// Shell a solid (hollow it out, removing specified faces).
     Shell {
         target: GeometryHandleId,
@@ -892,6 +906,8 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::ZoneSlab { .. } => "ZoneSlab",
+            GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
             GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
@@ -2459,6 +2475,23 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Densify an OpenVDB voxel grid stored under `handle` into a CPU-resident
+    /// [`SampledField`].
+    ///
+    /// Overridden by `OpenVdbKernel` to run the FFI read-back →
+    /// `build_realized_grid_source` → `lower_to_sampled` pipeline described in
+    /// realization-read-api.md §3.3 (δ).  All other kernels inherit this
+    /// default, which returns
+    /// `Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))`.
+    fn densify_grid_to_sampled(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        Err(QueryError::QueryFailed(
+            "densify_grid_to_sampled not supported by this kernel".into(),
         ))
     }
 
@@ -5742,12 +5775,14 @@ mod tests {
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
-            // Modify (5)
+            // Modify (7)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
+            Operation::ModifyOffsetSolid,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -5849,6 +5884,8 @@ mod tests {
             Operation::ModifyShell => {}
             Operation::ModifyDraft => {}
             Operation::ModifyThicken => {}
+            Operation::ModifyZoneSlab => {}
+            Operation::ModifyOffsetSolid => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -6575,6 +6612,20 @@ mod tests {
                 },
             ),
             (
+                "ZoneSlab",
+                GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(1),
+                    width: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSolid",
+                GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                },
+            ),
+            (
                 "Shell",
                 GeometryOp::Shell {
                     target: GeometryHandleId(1),
@@ -6609,7 +6660,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 41;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 43;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6973,6 +7024,24 @@ mod tests {
                 "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
             ),
         }
+    }
+
+    /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`
+    /// when called through a trait object on a kernel that does not override it.
+    ///
+    /// Mirrors the `ingest_mesh_default_returns_does_not_accept_via_trait_object`
+    /// pattern.  Pins realization-read-api.md §3.3 (δ): kernels that never set up
+    /// a voxel grid must propagate honest failure, not panic or silently return a
+    /// fabricated field.
+    #[test]
+    fn densify_grid_to_sampled_default_returns_query_failed_via_trait_object() {
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(DefaultsOnlyKernel);
+        let result = boxed.densify_grid_to_sampled(GeometryHandleId(1));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from default \
+             densify_grid_to_sampled; got: {result:?}",
+        );
     }
 
     // ── STL serializer unit tests ────────────────────────────────────────────

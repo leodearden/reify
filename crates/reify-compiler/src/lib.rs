@@ -39,6 +39,7 @@ mod scc;
 mod scope;
 pub mod si_units;
 pub mod stdlib_loader;
+pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
@@ -48,6 +49,7 @@ mod types;
 mod units;
 
 pub use compile_builder::pre_pass::check_module_path_decl;
+pub use entity::satisfies_trait_bound;
 pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};

@@ -3762,7 +3762,7 @@ pub(crate) fn check_type_param_bounds(
 ///
 /// Returns true if any of the `structure_trait_bounds` equals `required_trait`
 /// or refines it (directly or transitively) through the `trait_registry`.
-pub(crate) fn satisfies_trait_bound(
+pub fn satisfies_trait_bound(
     structure_trait_bounds: &[String],
     required_trait: &str,
     trait_registry: &HashMap<String, &CompiledTrait>,

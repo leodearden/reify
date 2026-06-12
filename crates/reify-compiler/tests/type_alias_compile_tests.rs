@@ -674,9 +674,14 @@ fn alias_declared_after_use_forward_reference() {
 #[test]
 fn alias_forward_ref_function() {
     // Function uses alias that is declared later in the source.
+    // NOTE: "Velocity" was originally used here but is now a builtin named
+    // dimension (task 4580). Renamed to "Foo" (not a builtin) so the test
+    // continues to cover forward-referenced user-alias resolution without
+    // shadowing the Velocity builtin. The asserted dimension (LENGTH) is
+    // unchanged — Foo = Length still round-trips to Scalar{LENGTH}.
     let source = r#"
-        fn compute(x: Velocity) -> Real { x }
-        type Velocity = Length
+        fn compute(x: Foo) -> Real { x }
+        type Foo = Length
     "#;
     let module = compile_source(source);
     let errs = errors_only(&module);
@@ -695,7 +700,7 @@ fn alias_forward_ref_function() {
         Type::Scalar {
             dimension: reify_core::DimensionVector::LENGTH,
         },
-        "forward-referenced Velocity alias should resolve to Scalar{{LENGTH}}"
+        "forward-referenced Foo alias should resolve to Scalar{{LENGTH}}"
     );
 }
 

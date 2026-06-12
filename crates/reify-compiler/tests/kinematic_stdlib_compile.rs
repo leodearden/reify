@@ -432,11 +432,22 @@ fn sweep_dim_has_correct_params() {
         "SweepDim.joint should be Type::dimensionless_scalar() (DrivingJoint placeholder)"
     );
 
+    // range: Range<JointValue> (JointValue = Real = dimensionless; tightened by task 4576).
+    // RED until step-4 changes kinematic.ri param type to Range<JointValue>.
     let range = params.iter().find(|p| p.id.member == "range").unwrap();
     assert_eq!(
         range.cell_type,
-        Type::dimensionless_scalar(),
-        "SweepDim.range should be Type::dimensionless_scalar() (Range<T> not yet a surface type)"
+        Type::Range(Box::new(Type::dimensionless_scalar())),
+        "SweepDim.range should be Type::Range(dimensionless) (Range<JointValue>, task 4576)"
+    );
+    // Boundary guards: a Range literal is accepted; a bare scalar is rejected.
+    assert!(
+        type_compatible(&range.cell_type, &Type::range(Type::dimensionless_scalar())),
+        "SweepDim.range must accept a Range<JointValue> value (type_compatible == true)",
+    );
+    assert!(
+        !type_compatible(&range.cell_type, &Type::dimensionless_scalar()),
+        "SweepDim.range must reject a bare Real/JointValue scalar (type_compatible == false)",
     );
 
     let steps = params.iter().find(|p| p.id.member == "steps").unwrap();
