@@ -310,6 +310,46 @@ fn bt4_index_access_coercion_realizes_face() {
     }
 }
 
+// ── BT4b: fillet call-site transparency (compile-only) ───────────────────────
+
+/// BT4b (consumer / call-site transparency / D4): `fillet(b,
+/// edges_at_height(b, 0mm, 0.01mm), 1mm)` must compile with zero error
+/// diagnostics — the edge-selector argument is accepted at the existing fillet
+/// call site (D4 transparency).
+///
+/// PRD §5 BT4: "eager coercion realizes the asserted geometry — D4
+/// transparency: every existing consumer compiles UNCHANGED."
+///
+/// **Scope note (esc-4118-52):** fillet's edge-selector RUNTIME resolution is
+/// OUT OF SCOPE for this task. This is a COMPILE-ONLY transparency check:
+/// we assert the selector argument is accepted at the fillet call site without
+/// asserting any build output or geometry handle. The geometry golden for BT4
+/// uses the wired `faces(b)[0]` IndexAccess shape (bt4_index_access_coercion.ri
+/// / `bt4_index_access_coercion_realizes_face`).
+///
+/// RED when fixture `bt4_fillet_transparency.ri` is absent.
+#[test]
+fn bt4_fillet_call_site_compiles_transparently() {
+    let source = std::fs::read_to_string(fixture_path("bt4_fillet_transparency.ri")).expect(
+        "fixture bt4_fillet_transparency.ri must exist (create in step-16 to turn GREEN)",
+    );
+
+    // Compile with compile_source_with_stdlib — we assert NO errors.
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = errors_only(&compiled);
+
+    // D4 transparency: the edge-selector arg is accepted at the fillet call site.
+    // fillet RUNTIME resolution is out of scope (esc-4118-52): this test proves
+    // compile-time acceptance ONLY.
+    assert!(
+        errors.is_empty(),
+        "BT4b: bt4_fillet_transparency.ri must compile with zero error diagnostics \
+         (D4 call-site transparency — fillet accepts EdgeSelector arg at compile time), \
+         got:\n{:#?}",
+        errors
+    );
+}
+
 // ── BT8: named-leaf interim — resolve returns [] + one TopologyTagStale ──────
 
 /// BT8 (producer / Named-leaf interim / D8): `face(b, "nope")` must build a
