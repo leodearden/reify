@@ -19,7 +19,9 @@
 
 use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{build_shell_frame, membrane_node_pair_block, plane_stress_d};
+use crate::shell_assembly::{
+    build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+};
 use crate::shell_kinematics::shell_kinematics;
 
 /// Compute the 9×9 elastic stiffness `K_e` for a flat 3-node CST membrane
@@ -95,53 +97,15 @@ pub fn element_stiffness_membrane_cst(
 /// maps as `K_glob = Tᵀ K_loc T` with `T = blockdiag(R)`, so `u_globᵀ K_glob u_glob
 /// = u_locᵀ K_loc u_loc` — the strain-energy invariance the objectivity test pins.
 ///
-/// Kept `pub(crate)` so the membrane K_g kernel
+/// Thin wrapper over [`crate::shell_assembly::rotate_blockdiag`] at `N = 9`; the
+/// block-rotation arithmetic is shared with the MITC3 shell path. Kept
+/// `pub(crate)` so the membrane K_g kernel
 /// ([`crate::geometric_stiffness::membrane`]) reuses the identical rotation.
-#[allow(clippy::needless_range_loop)]
 pub(crate) fn rotate_membrane_local_to_global(
     k_loc: &[[f64; 9]; 9],
     r: &[[f64; 3]; 3],
 ) -> [[f64; 9]; 9] {
-    // Rᵀ (local-to-global): rt[i][j] = r[j][i].
-    let rt = [
-        [r[0][0], r[1][0], r[2][0]],
-        [r[0][1], r[1][1], r[2][1]],
-        [r[0][2], r[1][2], r[2][2]],
-    ];
-    let mut k_glob = [[0.0_f64; 9]; 9];
-    for bi in 0..3 {
-        for bj in 0..3 {
-            // Extract the 3×3 nodal block K_loc[3bi.., 3bj..].
-            let mut sub = [[0.0_f64; 3]; 3];
-            for p in 0..3 {
-                for q in 0..3 {
-                    sub[p][q] = k_loc[3 * bi + p][3 * bj + q];
-                }
-            }
-            // rt_sub = Rᵀ · sub.
-            let mut rt_sub = [[0.0_f64; 3]; 3];
-            for p in 0..3 {
-                for q in 0..3 {
-                    let mut s = 0.0;
-                    for m in 0..3 {
-                        s += rt[p][m] * sub[m][q];
-                    }
-                    rt_sub[p][q] = s;
-                }
-            }
-            // K_glob block = rt_sub · R.
-            for p in 0..3 {
-                for q in 0..3 {
-                    let mut s = 0.0;
-                    for m in 0..3 {
-                        s += rt_sub[p][m] * r[m][q];
-                    }
-                    k_glob[3 * bi + p][3 * bj + q] = s;
-                }
-            }
-        }
-    }
-    k_glob
+    rotate_blockdiag::<9>(k_loc, r)
 }
 
 #[cfg(test)]

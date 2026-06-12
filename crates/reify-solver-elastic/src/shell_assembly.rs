@@ -346,21 +346,30 @@ fn symmetrize_in_place(k_loc: &mut [[f64; NDOF_ELEM]; NDOF_ELEM]) {
     }
 }
 
-/// Rotate a local-frame 18×18 element matrix into the global frame:
-/// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
+/// Rotate a local-frame element matrix into the global frame by a `blockdiag(R)`
+/// congruence: `K_glob[3a..3a+3, 3b..3b+3] = Rᵀ · K_loc[3a.., 3b..] · R` over each
+/// 3-DOF nodal block.
 ///
-/// `T = blkdiag(R, …, R)` over the 2·N_NODES three-DOF blocks (a displacement
-/// triple and a rotation triple per node). Shared verbatim by both element
-/// variants — the only thing that differs between bare MITC3 and MITC3+ is the
-/// transverse-shear treatment that produced `k_loc`, not this rotation.
+/// `N` is the matrix dimension and must be a multiple of 3; the block count is
+/// `N / 3` and `T = blkdiag(R, …, R)` over those blocks. Shared by the MITC3
+/// shell (`N = 18` ⇒ six displacement/rotation triples) and the CST membrane
+/// (`N = 9` ⇒ three translation triples), so the block-rotation arithmetic lives
+/// in exactly one place. Each per-block `Rᵀ·sub·R` uses the same `mat3_mul`
+/// order as the original per-element code, so callers stay bit-identical.
 #[inline]
 #[allow(clippy::needless_range_loop)]
-fn rotate_local_to_global(
-    k_loc: &[[f64; NDOF_ELEM]; NDOF_ELEM],
+pub(crate) fn rotate_blockdiag<const N: usize>(
+    k_loc: &[[f64; N]; N],
     r: &[[f64; 3]; 3],
-) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
-    let n_blocks = 2 * NN_ELEM; // displacement triple + rotation triple per node
-    let mut k_glob = [[0.0_f64; NDOF_ELEM]; NDOF_ELEM];
+) -> [[f64; N]; N] {
+    let n_blocks = N / 3;
+    // Rᵀ (local→global), built once and reused across every nodal block.
+    let rt = [
+        [r[0][0], r[1][0], r[2][0]],
+        [r[0][1], r[1][1], r[2][1]],
+        [r[0][2], r[1][2], r[2][2]],
+    ];
+    let mut k_glob = [[0.0_f64; N]; N];
     for bi in 0..n_blocks {
         for bj in 0..n_blocks {
             let row_off = 3 * bi;
@@ -371,14 +380,7 @@ fn rotate_local_to_global(
                     sub[p][q] = k_loc[row_off + p][col_off + q];
                 }
             }
-            let rt_sub = mat3_mul(
-                &[
-                    [r[0][0], r[1][0], r[2][0]],
-                    [r[0][1], r[1][1], r[2][1]],
-                    [r[0][2], r[1][2], r[2][2]],
-                ],
-                &sub,
-            );
+            let rt_sub = mat3_mul(&rt, &sub);
             let rt_sub_r = mat3_mul(&rt_sub, r);
             for p in 0..3 {
                 for q in 0..3 {
@@ -388,6 +390,21 @@ fn rotate_local_to_global(
         }
     }
     k_glob
+}
+
+/// Rotate a local-frame 18×18 shell element matrix into the global frame:
+/// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
+///
+/// Thin wrapper over [`rotate_blockdiag`] at `N = NDOF_ELEM` (the `2·N_NODES`
+/// three-DOF displacement/rotation blocks). Shared verbatim by both shell
+/// variants — the only thing that differs between bare MITC3 and MITC3+ is the
+/// transverse-shear treatment that produced `k_loc`, not this rotation.
+#[inline]
+fn rotate_local_to_global(
+    k_loc: &[[f64; NDOF_ELEM]; NDOF_ELEM],
+    r: &[[f64; 3]; 3],
+) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
+    rotate_blockdiag::<NDOF_ELEM>(k_loc, r)
 }
 
 /// Compute the 18×18 element stiffness matrix for a MITC3 shell element.
