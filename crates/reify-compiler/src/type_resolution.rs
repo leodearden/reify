@@ -579,7 +579,7 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Selector" => Some(Type::AnySelector),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
-        "Real" => Some(Type::Real),
+        "Real" => Some(Type::dimensionless_scalar()),
         "String" => Some(Type::String),
         // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
         // None for it); mirror the special-case used in resolve_dimension_type.
@@ -1230,7 +1230,6 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -2881,17 +2880,17 @@ mod tests {
     #[test]
     fn substitute_bare_type_param_bound() {
         // (a) bare TypeParam("T") with {T: Real} → Real.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
-            Type::Real
+            Type::dimensionless_scalar()
         );
     }
 
     #[test]
     fn substitute_unbound_type_param_passthrough() {
         // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
             Type::TypeParam("D".to_string())
@@ -2916,7 +2915,7 @@ mod tests {
         // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
         //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
         //     D stays unbound (nested partial substitution).
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Field {
@@ -2927,7 +2926,7 @@ mod tests {
             ),
             Type::Field {
                 domain: Box::new(Type::TypeParam("D".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }
         );
     }
@@ -2952,7 +2951,7 @@ mod tests {
     fn substitute_function_params_and_return() {
         // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
         //     with {T: Real} → both positions substituted.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Function {
@@ -2962,8 +2961,8 @@ mod tests {
                 &subst
             ),
             Type::Function {
-                params: vec![Type::Real],
-                return_type: Box::new(Type::List(Box::new(Type::Real))),
+                params: vec![Type::dimensionless_scalar()],
+                return_type: Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
             }
         );
     }

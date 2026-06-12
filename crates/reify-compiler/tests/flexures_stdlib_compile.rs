@@ -128,7 +128,7 @@ fn std_flexures_module_loads_with_no_errors() {
 /// Test pins three invariants: (a) the alias is present in
 /// `module.type_aliases`, (b) `is_pub == true` so downstream modules /
 /// user code can reference the canonical spelling, (c) the alias resolves
-/// transitively to `Type::Real`. Assertion shape mirrors
+/// transitively to `Type::dimensionless_scalar()`. Assertion shape mirrors
 /// `type_alias_compile_tests.rs:33-52` and `:481-498`.
 ///
 /// `RotationalStiffness` now lives in `std.flexures` (single module, task
@@ -163,8 +163,8 @@ fn rotational_stiffness_alias_resolves_to_real() {
 
     assert_eq!(
         alias.resolved_type,
-        Some(Type::Real),
-        "RotationalStiffness placeholder alias must resolve to Type::Real; \
+        Some(Type::dimensionless_scalar()),
+        "RotationalStiffness placeholder alias must resolve to Type::dimensionless_scalar(); \
          got: {:?}",
         alias.resolved_type
     );
@@ -242,14 +242,14 @@ fn flexure_compliance_struct_has_correct_param_shape() {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("yield_margin", Type::Real),
+        ("yield_margin", Type::dimensionless_scalar()),
         (
             "parasitic_error",
             Type::Option(Box::new(Type::Scalar {
                 dimension: DimensionVector::LENGTH,
             })),
         ),
-        ("prb_validity_range", Type::Real),
+        ("prb_validity_range", Type::dimensionless_scalar()),
         ("at_yield", Type::Bool),
     ];
 
@@ -647,7 +647,7 @@ fn flexure_compliance_accessor_fn_signature_and_eval() {
     // The probe arg must carry a LENGTH `result_type`: `eval_user_function_call`
     // → `find_matching_compiled_function` selects the overload by exact arg-
     // `result_type` ↔ param-type equality, and λ retyped the `joint` param to
-    // `Length` (see (a) above). A `Type::Real` arg (the β probe) would miss the
+    // `Length` (see (a) above). A `Type::dimensionless_scalar()` arg (the β probe) would miss the
     // overload and eval to `Undef`. A zero-length `0m` is still a non-joint
     // value (not a Map carrying `__flexure_compliance`), so the
     // `__flexure_compliance_get` intrinsic returns the sentinel default record.

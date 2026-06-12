@@ -478,7 +478,7 @@ fn real_matrix_type() -> Type {
     Type::Matrix {
         m: 3,
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     }
 }
 
@@ -508,7 +508,7 @@ fn make_constant_tensor_field(tensor: Value) -> (Value, Type) {
         body: Box::new(body),
         captures: ValueMap::new(),
     };
-    let domain = Type::Real;
+    let domain = Type::dimensionless_scalar();
     let codomain = real_matrix_type();
     let field = Value::Field {
         domain_type: domain.clone(),
@@ -548,7 +548,7 @@ fn make_sample_at(field_expr: CompiledExpr, point: f64, result_type: Type) -> Co
         "sample",
         vec![
             field_expr,
-            CompiledExpr::literal(Value::Real(point), Type::Real),
+            CompiledExpr::literal(Value::Real(point), Type::dimensionless_scalar()),
         ],
         result_type,
     )
@@ -582,8 +582,8 @@ fn assert_real_approx(val: &Value, expected: f64, label: &str) {
 ///   3. Wrap in `sample(…, 0.5)`.
 ///   4. Evaluate and return the `Value`.
 ///
-/// `codomain` is the scalar/list return type of `fn_name`, e.g. `Type::Real` for
-/// von_mises / max_shear, `Type::List(Box::new(Type::Real))` for principal_stresses.
+/// `codomain` is the scalar/list return type of `fn_name`, e.g. `Type::dimensionless_scalar()` for
+/// von_mises / max_shear, `Type::List(Box::new(Type::dimensionless_scalar()))` for principal_stresses.
 /// `extra_args` carries any additional literal arguments (e.g. yield stress for
 /// safety_factor) as `(Value, Type)` pairs.
 fn eval_sampled_analysis(
@@ -600,7 +600,7 @@ fn eval_sampled_analysis(
             .map(|(v, t)| CompiledExpr::literal(v, t)),
     );
     let ft = Type::Field {
-        domain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
         codomain: Box::new(codomain.clone()),
     };
     let inner = make_function_call(fn_name, args, ft);
@@ -612,8 +612,8 @@ fn eval_sampled_analysis(
 
 #[test]
 fn test_make_sample_at_produces_sample_call() {
-    let field_expr = CompiledExpr::literal(Value::Real(0.0), Type::Real);
-    let result = make_sample_at(field_expr.clone(), 0.5, Type::Real);
+    let field_expr = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
+    let result = make_sample_at(field_expr.clone(), 0.5, Type::dimensionless_scalar());
 
     // Verify kind is FunctionCall with name "sample"
     match &result.kind {
@@ -641,7 +641,7 @@ fn test_make_sample_at_produces_sample_call() {
         }
         other => panic!("expected FunctionCall kind, got {:?}", other),
     }
-    assert_eq!(result.result_type, Type::Real, "result_type should be Real");
+    assert_eq!(result.result_type, Type::dimensionless_scalar(), "result_type should be Real");
 }
 
 // ── Helper test: assert_real_approx behavior ─────────────────────────────────
@@ -728,15 +728,15 @@ fn eval_sample_von_mises_field_dispatch() {
     // von_mises(Field) wraps via analysis::compute_von_mises in eval_expr's "von_mises" arm.
     // sample(VonMisesField, point) dispatches via the FieldSourceKind::VonMises match arm in eval_expr's "sample" arm.
     let vm_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let vm_expr = make_function_call(
         "von_mises",
         vec![CompiledExpr::literal(field, field_type)],
         vm_field_type.clone(),
     );
-    let sample_expr = make_sample_at(vm_expr, 0.5, Type::Real);
+    let sample_expr = make_sample_at(vm_expr, 0.5, Type::dimensionless_scalar());
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -756,15 +756,15 @@ fn eval_sample_principal_stresses_field_dispatch() {
 
     // Build nested expr: sample(principal_stresses(field_literal), 0.5)
     let ps_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::List(Box::new(Type::Real))),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
     };
     let ps_expr = make_function_call(
         "principal_stresses",
         vec![CompiledExpr::literal(field, field_type)],
         ps_field_type.clone(),
     );
-    let sample_expr = make_sample_at(ps_expr, 0.5, Type::List(Box::new(Type::Real)));
+    let sample_expr = make_sample_at(ps_expr, 0.5, Type::List(Box::new(Type::dimensionless_scalar())));
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -806,15 +806,15 @@ fn eval_sample_max_shear_field_dispatch() {
 
     // Build nested expr: sample(max_shear(field_literal), 0.5)
     let ms_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let ms_expr = make_function_call(
         "max_shear",
         vec![CompiledExpr::literal(field, field_type)],
         ms_field_type.clone(),
     );
-    let sample_expr = make_sample_at(ms_expr, 0.5, Type::Real);
+    let sample_expr = make_sample_at(ms_expr, 0.5, Type::dimensionless_scalar());
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -837,18 +837,18 @@ fn eval_sample_safety_factor_field_dispatch() {
     // safety_factor(Field, yield) intercepts via analysis::compute_safety_factor in eval_expr's "safety_factor" arm.
     // sample dispatches via the (_, FieldSourceKind::SafetyFactor) match arm in eval_expr's "sample" arm.
     let sf_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sf_expr = make_function_call(
         "safety_factor",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(yield_val), Type::Real),
+            CompiledExpr::literal(Value::Real(yield_val), Type::dimensionless_scalar()),
         ],
         sf_field_type.clone(),
     );
-    let sample_expr = make_sample_at(sf_expr, 0.5, Type::Real);
+    let sample_expr = make_sample_at(sf_expr, 0.5, Type::dimensionless_scalar());
 
     let values = ValueMap::new();
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -871,7 +871,7 @@ fn eval_sample_safety_factor_field_dispatch() {
 fn eval_sample_von_mises_zero_tensor_dispatch() {
     // Zero tensor: all entries 0 → von Mises = 0
     let tensor = make_stress_tensor(&[&[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
-    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::dimensionless_scalar());
 
     match &result {
         Value::Real(v) => assert!(
@@ -895,8 +895,8 @@ fn eval_sample_safety_factor_zero_tensor_dispatch() {
     let result = eval_sampled_analysis(
         "safety_factor",
         tensor,
-        vec![(Value::Real(yield_val), Type::Real)],
-        Type::Real,
+        vec![(Value::Real(yield_val), Type::dimensionless_scalar())],
+        Type::dimensionless_scalar(),
     );
 
     assert!(
@@ -913,7 +913,7 @@ fn eval_sample_von_mises_hydrostatic_dispatch() {
     // Hydrostatic tensor diag(p, p, p): all deviatoric differences are zero → von Mises = 0
     let p = 100.0_f64;
     let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
-    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::Real);
+    let result = eval_sampled_analysis("von_mises", tensor, vec![], Type::dimensionless_scalar());
 
     match &result {
         Value::Real(v) => assert!(
@@ -939,7 +939,7 @@ fn eval_sample_principal_stresses_hydrostatic_dispatch() {
         "principal_stresses",
         tensor,
         vec![],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     // Eigenvalues of diag(p, p, p) = [p, p, p] sorted ascending
@@ -977,7 +977,7 @@ fn eval_sample_max_shear_hydrostatic_dispatch() {
     // Hydrostatic tensor diag(p, p, p): eigenvalues all equal → max_shear = (p−p)/2 = 0
     let p = 100.0_f64;
     let tensor = make_stress_tensor(&[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]]);
-    let result = eval_sampled_analysis("max_shear", tensor, vec![], Type::Real);
+    let result = eval_sampled_analysis("max_shear", tensor, vec![], Type::dimensionless_scalar());
 
     match &result {
         Value::Real(v) => assert!(
@@ -1003,8 +1003,8 @@ fn eval_sample_safety_factor_hydrostatic_dispatch() {
     let result = eval_sampled_analysis(
         "safety_factor",
         tensor,
-        vec![(Value::Real(yield_val), Type::Real)],
-        Type::Real,
+        vec![(Value::Real(yield_val), Type::dimensionless_scalar())],
+        Type::dimensionless_scalar(),
     );
 
     assert!(
@@ -1029,7 +1029,7 @@ fn eval_sample_principal_stresses_full_symmetric_dispatch() {
         "principal_stresses",
         tensor,
         vec![],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     let Value::List(items) = &result else {
@@ -1087,8 +1087,8 @@ fn eval_sample_von_mises_spatially_varying_field() {
 
     // Build lambda body:  if p > 50.0 { tensor_a } else { tensor_b }
     let p_id = ValueCellId::new("$lambda0", "p");
-    let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
-    let threshold = CompiledExpr::literal(Value::Real(50.0), Type::Real);
+    let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::dimensionless_scalar());
+    let threshold = CompiledExpr::literal(Value::Real(50.0), Type::dimensionless_scalar());
     let cond_expr = CompiledExpr::binop(BinOp::Gt, p_ref, threshold, Type::Bool);
     let then_branch = CompiledExpr::literal(tensor_a, real_matrix_type());
     let else_branch = CompiledExpr::literal(tensor_b, real_matrix_type());
@@ -1109,7 +1109,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         body: Box::new(body),
         captures: ValueMap::new(),
     };
-    let domain = Type::Real;
+    let domain = Type::dimensionless_scalar();
     let codomain = real_matrix_type();
     let field = Value::Field {
         domain_type: domain.clone(),
@@ -1123,8 +1123,8 @@ fn eval_sample_von_mises_spatially_varying_field() {
     };
 
     let vm_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
 
     // Sample at 75.0 → condition true → tensor_a → von Mises ≈ 100
@@ -1133,7 +1133,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         vec![CompiledExpr::literal(field.clone(), field_type.clone())],
         vm_field_type.clone(),
     );
-    let sample_high = make_sample_at(vm_expr_high, 75.0, Type::Real);
+    let sample_high = make_sample_at(vm_expr_high, 75.0, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result_high = eval_expr(&sample_high, &EvalContext::simple(&values));
     assert_real_approx(&result_high, sigma_a, "point=75 (>50): von Mises");
@@ -1144,7 +1144,7 @@ fn eval_sample_von_mises_spatially_varying_field() {
         vec![CompiledExpr::literal(field, field_type)],
         vm_field_type,
     );
-    let sample_low = make_sample_at(vm_expr_low, 25.0, Type::Real);
+    let sample_low = make_sample_at(vm_expr_low, 25.0, Type::dimensionless_scalar());
     let result_low = eval_expr(&sample_low, &EvalContext::simple(&values));
     assert_real_approx(&result_low, sigma_b, "point=25 (<50): von Mises");
 }

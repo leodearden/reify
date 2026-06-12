@@ -10474,14 +10474,14 @@ fn make_elastic_result_value_map(
     use std::sync::Arc;
 
     let stress_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(stress_sf)),
     };
     let disp_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(disp_sf)),
     };

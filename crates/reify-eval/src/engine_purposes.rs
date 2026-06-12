@@ -784,7 +784,7 @@ fn purpose_binding_token(bindings: &[(String, String)]) -> String {
 ///   2. Fires `debug_assert!(false, ...)` — halt loudly in debug builds
 ///      (same posture as the `PurposeReflectiveAggregation` arm in
 ///      `eval_expr`, `crates/reify-expr/src/lib.rs`).
-///   3. Falls back to `Type::Real` for release-build anti-cascade safety.
+///   3. Falls back to `Type::dimensionless_scalar()` for release-build anti-cascade safety.
 ///
 /// This is qualitatively different from the empty-list case (absent
 /// `ResolvedSchemaQuery` — intentional vacuous-true) and the present-cell
@@ -921,7 +921,7 @@ fn expand_purpose_reflective_placeholders(
                             // diverged, or a wiring bug picked the wrong
                             // entity_ref. Warn first (visible in release
                             // builds), debug_assert second (halts in debug),
-                            // then fall back to Type::Real for anti-cascade
+                            // then fall back to Type::dimensionless_scalar() for anti-cascade
                             // safety (matches the Value::Undef posture in the
                             // PurposeReflectiveAggregation arm of eval_expr).
                             tracing::warn!(
@@ -933,7 +933,7 @@ fn expand_purpose_reflective_placeholders(
                                 "graph-vs-resolved-query inconsistency: \
                                  ResolvedSchemaQuery references a value cell \
                                  missing from snapshot.graph.value_cells; \
-                                 falling back to Type::Real"
+                                 falling back to Type::dimensionless_scalar()"
                             );
                             debug_assert!(
                                 false,
@@ -944,7 +944,7 @@ fn expand_purpose_reflective_placeholders(
                                  entity={:?})",
                                 cell_id, param_name_str, query_kind_str, entity_ref
                             );
-                            Type::Real
+                            Type::dimensionless_scalar()
                         }
                     };
                     CompiledExpr::value_ref(cell_id, elem_type)
@@ -1143,7 +1143,7 @@ mod tests {
                 ValueCellNode {
                     id: cell.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(&cell.member),
                 },
@@ -1153,7 +1153,7 @@ mod tests {
         let mut expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         expand_purpose_reflective_placeholders(
@@ -1202,7 +1202,7 @@ mod tests {
     /// `elements.is_empty()` — it does not pin the outer `Type::List` element-type contract.
     /// This unit test pins that contract independently of the integration path.
     ///
-    /// Test fails RED before step-08 (current impl returns `Type::List(Box::new(Type::Real))`);
+    /// Test fails RED before step-08 (current impl returns `Type::List(Box::new(Type::dimensionless_scalar()))`);
     /// passes GREEN after step-08 changes the fallback to `unwrap_or(Type::Error)`.
     #[test]
     fn expand_empty_resolved_query_yields_list_error_element_type() {
@@ -1216,7 +1216,7 @@ mod tests {
         let mut expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         expand_purpose_reflective_placeholders(
@@ -1252,7 +1252,7 @@ mod tests {
     /// the former (to trigger the missing-cell branch in
     /// `expand_purpose_reflective_placeholders`), and `expr` is a
     /// `PurposeReflectiveAggregation` placeholder for `("subject", "params",
-    /// Type::List(Type::Real))`.
+    /// Type::List(Type::dimensionless_scalar()))`.
     fn missing_cell_fixture() -> (
         &'static str,
         Vec<ResolvedSchemaQuery>,
@@ -1275,7 +1275,7 @@ mod tests {
             ValueCellNode {
                 id: cell_present.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("present"),
             },
@@ -1284,7 +1284,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         (entity, queries, value_cells, expr)
@@ -1350,7 +1350,7 @@ mod tests {
         // PurposeReflectiveAggregation — there is no post-call expanded state
         // to assert on. In release builds the expand call completes: verify
         // that both cells (the present one and the absent-fallback one) produce
-        // ValueRef elements typed as Type::Real, and that the ListLiteral has
+        // ValueRef elements typed as Type::dimensionless_scalar(), and that the ListLiteral has
         // exactly 2 elements.
         //
         // CI dependency: this block executes only in release builds; it is
@@ -1382,9 +1382,9 @@ mod tests {
             for elem in elements {
                 assert_eq!(
                     elem.result_type,
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     "anti-cascade contract: missing-cell fallback must use \
-                     Type::Real for the absent cell (elem kind: {:?})",
+                     Type::dimensionless_scalar() for the absent cell (elem kind: {:?})",
                     elem.kind
                 );
                 assert!(
@@ -1502,7 +1502,7 @@ mod tests {
                 ValueCellNode {
                     id: cell.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(&cell.member),
                 },
@@ -1512,7 +1512,7 @@ mod tests {
         let mut expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         expand_purpose_reflective_placeholders(
@@ -1614,7 +1614,7 @@ mod tests {
             ValueCellNode {
                 id: cell_x.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("x"),
             },
@@ -1623,7 +1623,7 @@ mod tests {
             CompiledExpr::purpose_reflective_aggregation(
                 "subject".to_string(),
                 "params".to_string(),
-                Type::List(Box::new(Type::Real)),
+                Type::List(Box::new(Type::dimensionless_scalar())),
             )
         };
 
@@ -1718,7 +1718,7 @@ mod tests {
                             patterns: vec!["_".to_string()],
                             body: ph,
                         }],
-                        Type::List(Box::new(Type::Real)),
+                        Type::List(Box::new(Type::dimensionless_scalar())),
                     )
                 }),
             ),
@@ -1763,7 +1763,7 @@ mod tests {
                             QuantifierKind::ForAll,
                             "i".to_string(),
                             variable_id.clone(),
-                            CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real))),
+                            CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar()))),
                             ph,
                         )
                     }
@@ -1814,7 +1814,7 @@ mod tests {
             (
                 "UnOp operand",
                 Box::new(|ph: CompiledExpr| {
-                    CompiledExpr::unop(UnOp::Neg, ph, Type::List(Box::new(Type::Real)))
+                    CompiledExpr::unop(UnOp::Neg, ph, Type::List(Box::new(Type::dimensionless_scalar())))
                 }),
             ),
             (
@@ -1827,11 +1827,11 @@ mod tests {
                 "Lambda body",
                 Box::new(|ph: CompiledExpr| {
                     CompiledExpr::lambda(
-                        vec![("x".to_string(), Some(Type::Real))],
+                        vec![("x".to_string(), Some(Type::dimensionless_scalar()))],
                         vec![ValueCellId::new("L", "x")],
                         ph,
                         vec![],
-                        Type::List(Box::new(Type::Real)),
+                        Type::List(Box::new(Type::dimensionless_scalar())),
                     )
                 }),
             ),
@@ -1840,7 +1840,7 @@ mod tests {
                 Box::new(|ph: CompiledExpr| {
                     CompiledExpr::list_literal(
                         vec![ph],
-                        Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+                        Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
                     )
                 }),
             ),
@@ -1849,7 +1849,7 @@ mod tests {
                 Box::new(|ph: CompiledExpr| {
                     CompiledExpr::set_literal(
                         vec![ph],
-                        Type::Set(Box::new(Type::List(Box::new(Type::Real)))),
+                        Type::Set(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
                     )
                 }),
             ),
@@ -1859,7 +1859,7 @@ mod tests {
                     CompiledExpr::map_literal(
                         vec![(ph, CompiledExpr::literal(Value::Int(0), Type::Int))],
                         Type::Map(
-                            Box::new(Type::List(Box::new(Type::Real))),
+                            Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
                             Box::new(Type::Int),
                         ),
                     )
@@ -1872,7 +1872,7 @@ mod tests {
                         vec![(CompiledExpr::literal(Value::Int(0), Type::Int), ph)],
                         Type::Map(
                             Box::new(Type::Int),
-                            Box::new(Type::List(Box::new(Type::Real))),
+                            Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
                         ),
                     )
                 }),
@@ -1883,7 +1883,7 @@ mod tests {
                     CompiledExpr::index_access(
                         ph,
                         CompiledExpr::literal(Value::Int(0), Type::Int),
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                     )
                 }),
             ),
@@ -1893,7 +1893,7 @@ mod tests {
                     CompiledExpr::index_access(
                         CompiledExpr::literal(Value::Int(0), Type::Int),
                         ph,
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                     )
                 }),
             ),
@@ -1919,7 +1919,7 @@ mod tests {
                 Box::new(|ph: CompiledExpr| {
                     CompiledExpr::option_some(
                         ph,
-                        Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+                        Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
                     )
                 }),
             ),
@@ -1931,7 +1931,7 @@ mod tests {
                         None,
                         true,
                         false,
-                        Type::Range(Box::new(Type::Real)),
+                        Type::Range(Box::new(Type::dimensionless_scalar())),
                     )
                 }),
             ),
@@ -1943,7 +1943,7 @@ mod tests {
                         Some(ph),
                         false,
                         true,
-                        Type::Range(Box::new(Type::Real)),
+                        Type::Range(Box::new(Type::dimensionless_scalar())),
                     )
                 }),
             ),
@@ -1996,7 +1996,7 @@ mod tests {
                 ValueCellNode {
                     id: cell.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(&cell.member),
                 },
@@ -2006,7 +2006,7 @@ mod tests {
         let mut expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         expand_purpose_reflective_placeholders(
@@ -2052,15 +2052,15 @@ mod tests {
 
         assert_eq!(
             expr.result_type,
-            Type::List(Box::new(Type::Real)),
-            "outer list result_type must be Type::List(Type::Real)"
+            Type::List(Box::new(Type::dimensionless_scalar())),
+            "outer list result_type must be Type::List(Type::dimensionless_scalar())"
         );
     }
 
     /// task-4137 step-5 (RED): pins that `expand_purpose_reflective_placeholders`
     /// resolves `geometric_params` to a non-empty `ReflectiveCellList` containing
     /// exactly the Length-typed `width` cell, while excluding the dimensionless `x`
-    /// (Type::Real). Renamed from `expand_emits_empty_reflective_cell_list_for_geometric_params`
+    /// (Type::dimensionless_scalar()). Renamed from `expand_emits_empty_reflective_cell_list_for_geometric_params`
     /// (task-2458); converted from an empty-list pin to a positive resolution test.
     ///
     /// RED until task-4137 step-6 generalises the wildcard value_cells-scan fallback
@@ -2081,7 +2081,7 @@ mod tests {
             ValueCellNode {
                 id: cell_x.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("x"),
             },

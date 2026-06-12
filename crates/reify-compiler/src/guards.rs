@@ -178,10 +178,10 @@ pub(crate) fn register_guarded_names<'a>(
                                     "unknown type name",
                                 )),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     })
                 } else {
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets (mirrors entity.rs pre-pass).
@@ -203,7 +203,7 @@ pub(crate) fn register_guarded_names<'a>(
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
-                    scope.register(&let_decl.name, Type::Real);
+                    scope.register(&let_decl.name, Type::dimensionless_scalar());
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {

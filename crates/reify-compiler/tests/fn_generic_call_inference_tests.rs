@@ -173,7 +173,7 @@ fn generic_constant_field_call_substitutes_codomain_tolerates_unbound_domain() {
         v_expr.result_type,
         Type::Field {
             domain: Box::new(Type::TypeParam("D".to_string())),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         "constant_field(42.5) result_type should be Field<TypeParam(D), Real> (C bound, D unbound), got {:?}",
         v_expr.result_type

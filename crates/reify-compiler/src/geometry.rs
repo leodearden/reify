@@ -1100,10 +1100,10 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
-                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::Real),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::Real);
+            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -1533,7 +1533,7 @@ pub(crate) fn compile_geometry_call(
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
             let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::Real);
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::dimensionless_scalar());
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -2483,7 +2483,7 @@ mod tests {
     fn resolve_loft_like_args_debug_asserts_guide_suffix_requires_two_args() {
         let compiled_args = vec![CompiledExpr::literal(
             Value::Real(0.0),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         )];
         let geom_refs: HashMap<usize, GeomRef> = HashMap::new();
         // guide_suffix=true with only 1 arg must panic via debug_assert!
@@ -2510,7 +2510,7 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::Real))
+                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::dimensionless_scalar()))
                 .collect()
         }
 
@@ -3784,9 +3784,9 @@ mod tests {
     fn try_hoist_geometry_conditional_returns_none_when_box_is_user_shadowed() {
         // Simulate `fn box(w, h, d) { … }` in user code.
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3794,12 +3794,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_hoist_stub"),
                 },
             },
@@ -3838,9 +3838,9 @@ mod tests {
     #[test]
     fn merge_branches_returns_scalar_conditional_when_box_is_user_shadowed() {
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3848,12 +3848,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_merge_stub"),
                 },
             },

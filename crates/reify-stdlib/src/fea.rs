@@ -1196,7 +1196,7 @@ fn envelope_reduce(args: &[Value], find_min: bool) -> Value {
     // codomain_type and domain_type are propagated unchanged from the
     // validated reference case — pinned by
     // `envelope_max_pressure_codomain_preserves_dimension`. Future
-    // refactors must NOT silently rewrap (e.g. coerce to Type::Real) or
+    // refactors must NOT silently rewrap (e.g. coerce to Type::dimensionless_scalar()) or
     // a Pressure-codomain envelope would be incompatible with downstream
     // dimensional comparisons (`max(envelope) < yield_stress`).
     Value::Field {
@@ -1538,7 +1538,7 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let data = vec![1.0, 5.0, 3.0, 4.0, 2.0];
         let sf = make_sampled_1d("f", axis.clone(), data.clone());
-        let field = wrap_sampled_field(sf, Type::Real, Type::Real);
+        let field = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let map = make_envelope_map(&[("only", field)]);
 
         let result = eval_fea("envelope_max", &[map]).unwrap();
@@ -1555,7 +1555,7 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let data = vec![1.0, 5.0, 3.0, 4.0, 2.0];
         let sf = make_sampled_1d("f", axis.clone(), data.clone());
-        let field = wrap_sampled_field(sf, Type::Real, Type::Real);
+        let field = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let map = make_envelope_map(&[("only", field)]);
 
         let result = eval_fea("envelope_min", &[map]).unwrap();
@@ -1571,8 +1571,8 @@ mod tests {
         // A single-case Analytical (or any non-Sampled-source) Field
         // must reject to Undef rather than leaking through unchanged.
         let analytical = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -1602,13 +1602,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0, 4.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0, 1.0, 5.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1631,8 +1631,8 @@ mod tests {
                 source,
                 ..
             } => {
-                assert_eq!(*domain_type, Type::Real);
-                assert_eq!(*codomain_type, Type::Real);
+                assert_eq!(*domain_type, Type::dimensionless_scalar());
+                assert_eq!(*codomain_type, Type::dimensionless_scalar());
                 assert!(matches!(source, FieldSourceKind::Sampled));
             }
             other => panic!("expected Value::Field, got {:?}", other),
@@ -1644,13 +1644,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0, 3.0, 4.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, 5.0, 3.0, 4.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![3.0, 2.0, 4.0, 1.0, 5.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1672,12 +1672,12 @@ mod tests {
         };
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![100e6, 250e6, 180e6]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             pressure.clone(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![150e6, 200e6, 220e6]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             pressure.clone(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
@@ -1703,13 +1703,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![f64::NAN, 5.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1729,13 +1729,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![f64::NAN, 5.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1756,13 +1756,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![3.0, f64::INFINITY, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1812,13 +1812,13 @@ mod tests {
         // Under total_cmp:  +0.0 > -0.0, so envelope_max must pick +0.0 at every index.
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![0.0, -0.0, 0.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![-0.0, 0.0, -0.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1849,13 +1849,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![0.0, -0.0, 0.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![-0.0, 0.0, -0.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -1899,13 +1899,13 @@ mod tests {
                 vec![0.0, 1.0, 2.0, 3.0, 4.0],
                 vec![1.0, 2.0, 3.0, 4.0, 5.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
         assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
@@ -1915,13 +1915,13 @@ mod tests {
     fn envelope_max_grid_bounds_min_mismatch_returns_undef() {
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", vec![1.0, 2.0, 3.0, 4.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
         assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
@@ -1934,8 +1934,8 @@ mod tests {
         // this; the grid-kind / axis-count check rejects.
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_2d(
@@ -1944,8 +1944,8 @@ mod tests {
                 vec![0.0, 1.0],
                 vec![1.0, 2.0, 3.0, 4.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
         assert!(eval_fea("envelope_max", &[map]).unwrap().is_undef());
@@ -1956,12 +1956,12 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::Scalar {
                 dimension: DimensionVector::PRESSURE,
             },
@@ -2029,8 +2029,8 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let mut bad_map = BTreeMap::new();
         bad_map.insert(Value::String("a".to_string()), case_a);
@@ -2055,12 +2055,12 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let analytical = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -2086,12 +2086,12 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let degenerate_sampled = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef),
         };
@@ -2191,13 +2191,13 @@ mod tests {
         // not the first non-finite seen and not 0.0.
         let case_a = wrap_sampled_field(
             make_sampled_1d("a", axis.clone(), vec![1.0, f64::NAN, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_b = wrap_sampled_field(
             make_sampled_1d("b", axis.clone(), vec![3.0, f64::INFINITY, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let map = make_envelope_map(&[("a", case_a), ("b", case_b)]);
 
@@ -2639,10 +2639,10 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
 
         let disp_sf = make_sampled_1d("disp", axis.clone(), vec![1.0, 2.0, 3.0]);
-        let disp_field = wrap_sampled_field(disp_sf, Type::Real, Type::Real);
+        let disp_field = wrap_sampled_field(disp_sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
         let stress_sf = make_sampled_1d("stress", axis.clone(), vec![10.0, 20.0, 30.0]);
-        let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
+        let stress_field = wrap_sampled_field(stress_sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
@@ -2727,23 +2727,23 @@ mod tests {
 
         let d_disp = wrap_sampled_field(
             make_sampled_1d("disp_d", axis.clone(), vec![1.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let d_stress = wrap_sampled_field(
             make_sampled_1d("stress_d", axis.clone(), vec![100.0, 200.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let l_disp = wrap_sampled_field(
             make_sampled_1d("disp_l", axis.clone(), vec![10.0, 20.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let l_stress = wrap_sampled_field(
             make_sampled_1d("stress_l", axis.clone(), vec![1000.0, 2000.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
 
         let case_d = make_er(d_disp, d_stress);
@@ -2812,23 +2812,23 @@ mod tests {
         let axis = vec![0.0, 1.0];
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis.clone(), vec![10.0, 20.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis.clone(), vec![100.0, 200.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = wrap_sampled_field(
             make_sampled_1d("db", axis.clone(), vec![4.0, 8.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", axis.clone(), vec![40.0, 80.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
         let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
@@ -2884,8 +2884,8 @@ mod tests {
                 vec![0.0, 1.0, 2.0, 3.0, 4.0],
                 vec![1.0, 2.0, 3.0, 4.0, 5.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d(
@@ -2893,18 +2893,18 @@ mod tests {
                 vec![0.0, 1.0, 2.0, 3.0, 4.0],
                 vec![10.0, 20.0, 30.0, 40.0, 50.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = wrap_sampled_field(
             make_sampled_1d("db", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", vec![0.0, 1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0, 40.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
         let case_b = make_fixture_elastic_result_with_fields(b_disp, b_stress);
@@ -2926,18 +2926,18 @@ mod tests {
         let axis_b = vec![1.0, 2.0, 3.0]; // different bounds
         let shared = wrap_sampled_field(
             make_sampled_1d("d", axis_a.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis_a.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", axis_b, vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(shared.clone(), a_stress);
         let case_b = make_fixture_elastic_result_with_fields(shared, b_stress);
@@ -2958,17 +2958,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_disp = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::Scalar {
                 dimension: DimensionVector::PRESSURE,
             },
@@ -2992,17 +2992,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_stress = wrap_sampled_field(
             make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -3025,17 +3025,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_stress = wrap_sampled_field(
             make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef), // Sampled but non-SampledField lambda
         };
@@ -3067,23 +3067,23 @@ mod tests {
 
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis.clone(), vec![1.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = wrap_sampled_field(
             make_sampled_1d("db", axis.clone(), vec![1.0, 2.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
 
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis.clone(), vec![100e6, 250e6]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             pressure.clone(),
         );
         let b_stress = wrap_sampled_field(
             make_sampled_1d("sb", axis.clone(), vec![150e6, 200e6]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             pressure.clone(),
         );
 
@@ -3143,14 +3143,14 @@ mod tests {
 
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         // Stress data with NaN at index 1.
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis.clone(), vec![100.0, f64::NAN, 300.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
 
         let case_a = make_fixture_elastic_result_with_fields(a_disp, a_stress);
@@ -3197,14 +3197,14 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         // All stress data is NaN — no finite values.
         let stress_field = wrap_sampled_field(
             make_sampled_1d("s", axis, vec![f64::NAN, f64::NAN, f64::NAN]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
@@ -3255,8 +3255,8 @@ mod tests {
         let axis = vec![0.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis, vec![1.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         // Stress field with zero data points — construct directly since
         // make_sampled_1d panics on empty axis.
@@ -3271,7 +3271,7 @@ mod tests {
             data: vec![],
             oob_emitted: AtomicBool::new(false),
         };
-        let stress_field = wrap_sampled_field(empty_stress_sf, Type::Real, Type::Real);
+        let stress_field = wrap_sampled_field(empty_stress_sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
         let mut wm = BTreeMap::new();
@@ -3314,8 +3314,8 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let stress_field = wrap_sampled_field(
             make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         // Build a partial ElasticResult missing the displacement key.
         let mut partial = BTreeMap::new();
@@ -3344,8 +3344,8 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         // Build a partial ElasticResult missing the stress key.
         let mut partial = BTreeMap::new();
@@ -3375,13 +3375,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let stress_field = wrap_sampled_field(
             make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
@@ -3405,13 +3405,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let stress_field = wrap_sampled_field(
             make_sampled_1d("s", axis, vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
@@ -3452,13 +3452,13 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let disp_field = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let stress_field = wrap_sampled_field(
             make_sampled_1d("s", axis, vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
@@ -3489,17 +3489,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_disp = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis, vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -3523,17 +3523,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_disp = wrap_sampled_field(
             make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_stress = wrap_sampled_field(
             make_sampled_1d("sa", axis, vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_stress = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Sampled,
             lambda: Arc::new(Value::Undef), // Sampled but non-SampledField lambda
         };
@@ -3559,9 +3559,9 @@ mod tests {
         // accidentally restricts to Real would silently break integer weights.
         let axis = vec![0.0, 1.0, 2.0];
         let disp_sf = make_sampled_1d("d", axis.clone(), vec![1.0, 2.0, 3.0]);
-        let disp_field = wrap_sampled_field(disp_sf, Type::Real, Type::Real);
+        let disp_field = wrap_sampled_field(disp_sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let stress_sf = make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]);
-        let stress_field = wrap_sampled_field(stress_sf, Type::Real, Type::Real);
+        let stress_field = wrap_sampled_field(stress_sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let case_a = make_fixture_elastic_result_with_fields(disp_field, stress_field);
         let mcr = multi_case_result_value(&[("A", case_a)]);
 
@@ -3597,17 +3597,17 @@ mod tests {
         let axis = vec![0.0, 1.0, 2.0];
         let shared_stress = wrap_sampled_field(
             make_sampled_1d("s", axis.clone(), vec![10.0, 20.0, 30.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let a_disp = wrap_sampled_field(
             make_sampled_1d("da", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let b_disp = wrap_sampled_field(
             make_sampled_1d("db", axis.clone(), vec![1.0, 2.0, 3.0]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::Scalar {
                 dimension: DimensionVector::PRESSURE,
             }, // codomain mismatch
@@ -3650,7 +3650,7 @@ mod tests {
             n: 3,
             quantity: Box::new(pressure.clone()),
         };
-        let domain = Type::Real;
+        let domain = Type::dimensionless_scalar();
 
         let a_tensors: Vec<[f64; 9]> = vec![
             [100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // P0 uniaxial σ_xx=100
@@ -3678,7 +3678,7 @@ mod tests {
         let disp_placeholder = wrap_sampled_field(
             make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let case_a = make_er(disp_placeholder.clone(), a_stress);
         let case_b = make_er(disp_placeholder, b_stress);
@@ -3757,7 +3757,7 @@ mod tests {
             n: 3,
             quantity: Box::new(pressure.clone()),
         };
-        let domain = Type::Real;
+        let domain = Type::dimensionless_scalar();
 
         let a_tensors: Vec<[f64; 9]> = vec![
             [100.0, 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.0, 20.0],
@@ -3785,7 +3785,7 @@ mod tests {
         let disp_placeholder = wrap_sampled_field(
             make_sampled_1d("disp", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let case_a = make_er(disp_placeholder.clone(), a_stress);
         let case_b = make_er(disp_placeholder, b_stress);
@@ -3855,7 +3855,7 @@ mod tests {
             n: 3,
             quantity: Box::new(length.clone()),
         };
-        let domain = Type::Real;
+        let domain = Type::dimensionless_scalar();
 
         let a_vectors: Vec<[f64; 3]> = vec![[3.0, 4.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]];
         let b_vectors: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [6.0, 8.0, 0.0], [2.0, 0.0, 0.0]];
@@ -3875,7 +3875,7 @@ mod tests {
         let stress_placeholder = wrap_sampled_field(
             make_sampled_1d("stress", axis.clone(), vec![0.0, 0.0, 0.0]),
             domain.clone(),
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let case_a = make_er(a_disp, stress_placeholder.clone());
         let case_b = make_er(b_disp, stress_placeholder);
@@ -3975,7 +3975,7 @@ mod tests {
             .collect();
         wrap_sampled_field(
             make_sampled_tensor_3x3_1d("valid_stress", grid.to_vec(), tensors),
-            Type::Real,
+            Type::dimensionless_scalar(),
             tensor_codomain,
         )
     }
@@ -3993,7 +3993,7 @@ mod tests {
         let vectors: Vec<[f64; 3]> = grid.iter().map(|_| [1.0, 0.0, 0.0]).collect();
         wrap_sampled_field(
             make_sampled_vector3_1d("valid_disp", grid.to_vec(), vectors),
-            Type::Real,
+            Type::dimensionless_scalar(),
             vector_codomain,
         )
     }
@@ -4185,8 +4185,8 @@ mod tests {
         // three helpers (which need Matrix3x3 or Vector3 codomain).
         let bad_field = wrap_sampled_field(
             make_sampled_1d("bad", grid, vec![1.0, 2.0, 3.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
         let mcr = multi_case_result_value(&[("A", bad_case)]);
@@ -4231,7 +4231,7 @@ mod tests {
         // check `data.len() != grid_count * stride`.
         let bad_data: Vec<f64> = (0..bad_data_len).map(|i| i as f64).collect();
         let bad_sf = make_sampled_1d("bad_stride", grid, bad_data);
-        let bad_field = wrap_sampled_field(bad_sf, Type::Real, expected_codomain);
+        let bad_field = wrap_sampled_field(bad_sf, Type::dimensionless_scalar(), expected_codomain);
         let bad_case = make_elastic_result_with_only_field(field_name, bad_field);
         let mcr = multi_case_result_value(&[("A", bad_case)]);
         assert!(eval_fea(name, &[mcr]).unwrap().is_undef());
@@ -4372,8 +4372,8 @@ mod tests {
                 vec![0.0, 1.0, 2.0, 3.0, 4.0],
                 vec![1.0, 2.0, 3.0, 4.0, 5.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let op_stress = wrap_sampled_field(
             make_sampled_1d(
@@ -4381,18 +4381,18 @@ mod tests {
                 vec![0.0, 1.0, 2.0, 3.0, 4.0],
                 vec![10.0, 20.0, 30.0, 40.0, 50.0],
             ),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let ov_disp = wrap_sampled_field(
             make_sampled_1d("vd", vec![0.0, 1.0, 2.0, 3.0], vec![1.0, 2.0, 3.0, 4.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let ov_stress = wrap_sampled_field(
             make_sampled_1d("vs", vec![0.0, 1.0, 2.0, 3.0], vec![10.0, 20.0, 30.0, 40.0]),
-            Type::Real,
-            Type::Real,
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
         );
         let operating = make_er(op_disp, op_stress);
         let overload = make_er(ov_disp, ov_stress);

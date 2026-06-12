@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn trait_def_content_hash_differs_by_requirement_inner_type() {
         let ct1 = TraitDefBuilder::new("Rigid")
-            .requirement("val", RequirementKind::Param(Type::Real))
+            .requirement("val", RequirementKind::Param(Type::dimensionless_scalar()))
             .build();
         let ct2 = TraitDefBuilder::new("Rigid")
             .requirement("val", RequirementKind::Param(Type::Int))
@@ -417,7 +417,7 @@ mod tests {
             .add_default(
                 Some("d"),
                 DefaultKind::Param {
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_decl: reify_ast::ParamDecl {
                         is_priv: false,
                         name: "d".to_string(),
@@ -611,7 +611,7 @@ mod trait_builder_tests {
     fn trait_builder_refinement_and_multiple_requirements() {
         let t: CompiledTrait = CompiledTraitBuilder::new("RigidMount")
             .refinement("Rigid")
-            .require_let("vol", Type::Real)
+            .require_let("vol", Type::dimensionless_scalar())
             .require_sub("mount", "MountPoint")
             .build();
         assert_eq!(t.refinements.len(), 1);
@@ -637,10 +637,10 @@ mod trait_builder_tests {
     #[test]
     fn compiled_trait_builder_hash_differs_by_requirement_kind() {
         let t1: CompiledTrait = CompiledTraitBuilder::new("Rigid")
-            .require_param("val", Type::Real)
+            .require_param("val", Type::dimensionless_scalar())
             .build();
         let t2: CompiledTrait = CompiledTraitBuilder::new("Rigid")
-            .require_let("val", Type::Real)
+            .require_let("val", Type::dimensionless_scalar())
             .build();
         assert_ne!(
             t1.content_hash, t2.content_hash,
@@ -651,7 +651,7 @@ mod trait_builder_tests {
     #[test]
     fn compiled_trait_builder_hash_differs_by_requirement_type() {
         let t1: CompiledTrait = CompiledTraitBuilder::new("Rigid")
-            .require_param("val", Type::Real)
+            .require_param("val", Type::dimensionless_scalar())
             .build();
         let t2: CompiledTrait = CompiledTraitBuilder::new("Rigid")
             .require_param("val", Type::Int)

@@ -581,7 +581,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(name),
                 },
@@ -656,7 +656,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(name),
                 },
@@ -745,7 +745,7 @@ mod tests {
             ValueCellNode {
                 id: b.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("b"),
             },
@@ -840,7 +840,7 @@ mod tests {
             ValueCellNode {
                 id: b.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("b"),
             },
@@ -931,7 +931,7 @@ mod tests {
             ValueCellNode {
                 id: b.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("b"),
             },
@@ -1021,7 +1021,7 @@ mod tests {
             ValueCellNode {
                 id: a.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("a"),
             },

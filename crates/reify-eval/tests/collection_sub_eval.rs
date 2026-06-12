@@ -299,8 +299,8 @@ fn eval_collection_list_aggregation() {
         .param(
             "Bolt",
             "grade",
-            Type::Real,
-            Some(CompiledExpr::literal(Value::Real(8.8), Type::Real)),
+            Type::dimensionless_scalar(),
+            Some(CompiledExpr::literal(Value::Real(8.8), Type::dimensionless_scalar())),
         )
         .build();
 
@@ -320,10 +320,10 @@ fn eval_collection_list_aggregation() {
         .let_binding(
             "Parent",
             "grades",
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             CompiledExpr::value_ref(
                 ValueCellId::new("Parent", "__list_bolts__grade"),
-                Type::List(Box::new(Type::Real)),
+                Type::List(Box::new(Type::dimensionless_scalar())),
             ),
         )
         .build();

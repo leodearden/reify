@@ -248,7 +248,7 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
             // (z ∈ [0, h]) down so the centroid lands at z = 0.
             //
             // Two bugs would silently pass without this check:
-            //   (a) dz typed as bare Real (Type::Real) — eval.as_f64() would
+            //   (a) dz typed as bare Real (Type::dimensionless_scalar()) — eval.as_f64() would
             //       return the dimensionless 0.5 instead of the SI-metres value,
             //       shifting by 0.5m rather than height/2.
             //   (b) A positive factor — the cylinder would shift UP instead of down.
@@ -259,7 +259,7 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
 
             assert_ne!(
                 dz_expr.result_type,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "dz must be typed as a dimensioned Scalar (Length), not bare Real — \
                  units would be silently dropped by eval.as_f64(); got {:?}",
                 dz_expr.result_type

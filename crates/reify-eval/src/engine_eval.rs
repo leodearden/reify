@@ -83,7 +83,6 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // rather than silently inheriting `true`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -4999,7 +4998,7 @@ mod invariant_tests {
         let mut graph = EvaluationGraph::default();
         for (entity, member, ty) in [
             ("E", "a", Type::Int),
-            ("E", "b", Type::Real),
+            ("E", "b", Type::dimensionless_scalar()),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
             // StructureRef is permitted (task 1876): struct-typed params like

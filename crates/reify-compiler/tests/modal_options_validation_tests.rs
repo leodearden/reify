@@ -253,7 +253,7 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
-    let expected: &[(&str, Type)] = &[("alpha", Type::Real), ("beta", Type::Real)];
+    let expected: &[(&str, Type)] = &[("alpha", Type::dimensionless_scalar()), ("beta", Type::dimensionless_scalar())];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
         assert_eq!(
@@ -340,13 +340,13 @@ fn mode_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("frequency", Type::Real),
+        ("frequency", Type::dimensionless_scalar()),
         (
             "shape",
             Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
         ),
-        ("participation_mass", Type::Real),
-        ("damping_ratio", Type::Real),
+        ("participation_mass", Type::dimensionless_scalar()),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
@@ -477,8 +477,8 @@ fn modal_result_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("mass_matrix_norm", Type::Real),
-        ("stiffness_matrix_norm", Type::Real),
+        ("mass_matrix_norm", Type::dimensionless_scalar()),
+        ("stiffness_matrix_norm", Type::dimensionless_scalar()),
     ];
 
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
@@ -599,8 +599,8 @@ fn modal_options_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("sigma", Type::Real),
-        ("tol", Type::Real),
+        ("sigma", Type::dimensionless_scalar()),
+        ("tol", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         (
             "reference_direction",
@@ -974,7 +974,7 @@ fn impulse_force_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("at", Type::String),
         ("direction", Type::vec3(Type::dimensionless_scalar())),
-        ("impulse", Type::Real), // PLACEHOLDER for ImpulseDim (design-decision-3)
+        ("impulse", Type::dimensionless_scalar()), // PLACEHOLDER for ImpulseDim (design-decision-3)
         (
             "time",
             Type::Scalar {

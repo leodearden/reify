@@ -449,7 +449,7 @@ fn rigid_refines_physical_with_moment_of_inertia() {
     );
 
     // moment_of_inertia should be MomentOfInertia (Scalar{MOMENT_OF_INERTIA})
-    // after task α tightening (was Type::Real on main before step-2).
+    // after task α tightening (was Type::dimensionless_scalar() on main before step-2).
     let moi = rigid
         .required_members
         .iter()

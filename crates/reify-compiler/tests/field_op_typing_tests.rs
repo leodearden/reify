@@ -47,8 +47,8 @@ fn field_op_sample_types_as_codomain_not_field() {
     assert_eq!(
         f_expr.result_type,
         Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         "fn_field(|p| 2.0 * p) must type as Field<Real,Real> (PRD §5.1), got {:?}",
         f_expr.result_type
@@ -66,7 +66,7 @@ fn field_op_sample_types_as_codomain_not_field() {
         .expect("cell 's' must have a default_expr");
     assert_eq!(
         s_expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "sample(fn_field(|p| 2.0 * p), 3.0) must type as Real (codomain), not Field or \
          Function (PRD §5.1 THE FIX), got {:?}",
         s_expr.result_type

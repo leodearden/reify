@@ -674,7 +674,7 @@ mod tests {
     fn call_expr(fn_name: &str, arg_cells: &[ValueCellId]) -> CompiledExpr {
         let args: Vec<CompiledExpr> = arg_cells
             .iter()
-            .map(|c| CompiledExpr::value_ref(c.clone(), Type::Real))
+            .map(|c| CompiledExpr::value_ref(c.clone(), Type::dimensionless_scalar()))
             .collect();
         let mut content_hash =
             ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL]).combine(ContentHash::of_str(fn_name));

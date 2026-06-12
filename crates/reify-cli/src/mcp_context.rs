@@ -503,12 +503,10 @@ impl ReifyToolContext for CliToolContext {
 
         // Construct the appropriate Value based on the cell's type
         let new_value = match &ty {
-            reify_core::ty::Type::Scalar { dimension } => Value::Scalar {
-                si_value: numeric_val,
-                dimension: *dimension,
-            },
+            reify_core::ty::Type::Scalar { dimension } if !dimension.is_dimensionless() => {
+                Value::Scalar { si_value: numeric_val, dimension: *dimension }
+            }
             reify_core::ty::Type::Int => Value::Int(numeric_val as i64),
-            reify_core::ty::Type::Real => Value::Real(numeric_val),
             _ => Value::Real(numeric_val),
         };
 

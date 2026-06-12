@@ -212,16 +212,16 @@ fn elastic_options_struct_has_correct_param_shape() {
             })),
         ),
         ("max_iter", Type::Int),
-        ("cg_tolerance", Type::Real),
+        ("cg_tolerance", Type::dimensionless_scalar()),
         ("threads", Type::Option(Box::new(Type::Int))),
-        ("shell_threshold", Type::Real),
+        ("shell_threshold", Type::dimensionless_scalar()),
         (
             "shell_voxel_size",
             Type::Option(Box::new(Type::Scalar {
                 dimension: DimensionVector::LENGTH,
             })),
         ),
-        ("shell_branch_prune_ratio", Type::Real),
+        ("shell_branch_prune_ratio", Type::dimensionless_scalar()),
         ("shell_force", Type::Enum("ShellForce".to_string())),
         ("force_tet", Type::Bool),
         ("require_hex_wedge", Type::Bool),
@@ -931,7 +931,7 @@ fn elastic_result_struct_has_correct_param_shape() {
                 codomain: Box::new(Type::Matrix {
                     m: 3,
                     n: 3,
-                    quantity: Box::new(Type::Real),
+                    quantity: Box::new(Type::dimensionless_scalar()),
                 }),
             },
         ),

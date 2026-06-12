@@ -882,7 +882,7 @@ mod tests {
             ValueCellNode {
                 id: load.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("load"),
             },
@@ -930,7 +930,7 @@ mod tests {
             ValueCellNode {
                 id: a.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("a"),
             },
@@ -992,7 +992,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(name),
                 },
@@ -1269,9 +1269,9 @@ mod tests {
         let b = ValueCellId::new("A", "y");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert_eq!(
@@ -1297,9 +1297,9 @@ mod tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert_eq!(
@@ -1330,8 +1330,8 @@ mod tests {
         let flag = ValueCellId::new("A", "flag");
         let x = ValueCellId::new("A", "x");
         let condition = CompiledExpr::value_ref(flag.clone(), Type::Bool);
-        let then_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
-        let else_branch = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let then_branch = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
+        let else_branch = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
         let expr = reify_test_support::builders::expr::conditional_expr(
             condition,
             then_branch,
@@ -1378,8 +1378,8 @@ mod tests {
         let then_cell = ValueCellId::new("A", "then_val");
         let else_cell = ValueCellId::new("A", "else_val");
         let condition = CompiledExpr::value_ref(cond_cell.clone(), Type::Bool);
-        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::Real);
-        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::Real);
+        let then_branch = CompiledExpr::value_ref(then_cell.clone(), Type::dimensionless_scalar());
+        let else_branch = CompiledExpr::value_ref(else_cell.clone(), Type::dimensionless_scalar());
         let expr = reify_test_support::builders::expr::conditional_expr(
             condition,
             then_branch,
@@ -1484,7 +1484,7 @@ mod tests {
             ValueCellNode {
                 id: h.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("h"),
             },
@@ -1514,9 +1514,9 @@ mod tests {
             "std::edges_at_height",
             vec![
                 CompiledExpr::value_ref(b.clone(), Type::Geometry),
-                CompiledExpr::value_ref(h.clone(), Type::Real),
+                CompiledExpr::value_ref(h.clone(), Type::dimensionless_scalar()),
             ],
-            Type::Real, // selector return type (simplified)
+            Type::dimensionless_scalar(), // selector return type (simplified)
         );
         let top_edges = ValueCellId::new(e, "top_edges");
         graph.value_cells.insert(
@@ -1524,7 +1524,7 @@ mod tests {
             ValueCellNode {
                 id: top_edges.clone(),
                 kind: ValueCellKind::Let,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(edges_expr),
                 content_hash: ContentHash::of_str("top_edges"),
             },
@@ -1537,7 +1537,7 @@ mod tests {
             "volume",
             "std::volume",
             vec![CompiledExpr::value_ref(b.clone(), Type::Geometry)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let v = ValueCellId::new(e, "v");
         graph.value_cells.insert(
@@ -1545,7 +1545,7 @@ mod tests {
             ValueCellNode {
                 id: v.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(vol_expr),
                 content_hash: ContentHash::of_str("v"),
             },
@@ -1554,9 +1554,9 @@ mod tests {
         // ── Param cell `w`: reads only scalar `h` (no geometry) ───────────────
         let w_expr = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(h.clone(), Type::Real),
-            CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(h.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let w = ValueCellId::new(e, "w");
         graph.value_cells.insert(
@@ -1564,7 +1564,7 @@ mod tests {
             ValueCellNode {
                 id: w.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: Some(w_expr),
                 content_hash: ContentHash::of_str("w"),
             },
@@ -1672,7 +1672,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(tag),
                 },
@@ -1699,9 +1699,9 @@ mod tests {
             "volume",
             "std::volume",
             vec![CompiledExpr::value_ref(body.clone(), Type::Geometry)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
-        let max_val = CompiledExpr::literal(Value::Real(1000.0), Type::Real);
+        let max_val = CompiledExpr::literal(Value::Real(1000.0), Type::dimensionless_scalar());
         let c0_expr = CompiledExpr::binop(BinOp::Lt, vol_body, max_val, Type::Bool);
         let c0 = ConstraintNodeId::new(e, 0);
         graph.constraints.insert(
@@ -1718,8 +1718,8 @@ mod tests {
         // ── constraint c1: `width < height` (scalar only, no geometry reads) ──
         let c1_expr = CompiledExpr::binop(
             BinOp::Lt,
-            CompiledExpr::value_ref(width.clone(), Type::Real),
-            CompiledExpr::value_ref(height.clone(), Type::Real),
+            CompiledExpr::value_ref(width.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(height.clone(), Type::dimensionless_scalar()),
             Type::Bool,
         );
         let c1 = ConstraintNodeId::new(e, 1);
@@ -1911,9 +1911,9 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
         let z_id = ValueCellId::new("A", "z");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(y.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let trace = extract_dependency_trace(&expr);
         assert!(trace.reads.contains(&x), "sanity: trace contains x");
@@ -2488,7 +2488,7 @@ mod extract_value_deps_tests {
     #[test]
     fn extract_value_deps_literal_returns_empty() {
         use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(reify_ir::Value::Real(PI), Type::Real);
+        let expr = CompiledExpr::literal(reify_ir::Value::Real(PI), Type::dimensionless_scalar());
         let deps = extract_value_deps(&expr);
         assert!(
             deps.is_empty(),
@@ -2501,7 +2501,7 @@ mod extract_value_deps_tests {
     #[test]
     fn extract_value_deps_value_ref_returns_id() {
         let cell = ValueCellId::new("A", "x");
-        let expr = CompiledExpr::value_ref(cell.clone(), Type::Real);
+        let expr = CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar());
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 1, "ValueRef should have 1 dep");
         assert!(deps.contains(&cell), "deps should contain 'x'");
@@ -2514,9 +2514,9 @@ mod extract_value_deps_tests {
         let b = ValueCellId::new("A", "b");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 2, "BinOp should have 2 deps");
@@ -2533,15 +2533,15 @@ mod extract_value_deps_tests {
         let c = ValueCellId::new("A", "c");
         let inner = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            CompiledExpr::value_ref(b.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = CompiledExpr::binop(
             BinOp::Mul,
             inner,
-            CompiledExpr::value_ref(c.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(c.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 3, "Nested BinOp should have 3 deps");
@@ -2556,8 +2556,8 @@ mod extract_value_deps_tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::unop(
             UnOp::Neg,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(deps.len(), 1, "UnOp should have 1 dep");
@@ -2571,9 +2571,9 @@ mod extract_value_deps_tests {
         let x = ValueCellId::new("A", "x");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         assert_eq!(
@@ -2595,12 +2595,12 @@ mod extract_value_deps_tests {
             BinOp::Add,
             CompiledExpr::binop(
                 BinOp::Add,
-                CompiledExpr::value_ref(c.clone(), Type::Real),
-                CompiledExpr::value_ref(b.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(c.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(b.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            CompiledExpr::value_ref(a.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(a.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let deps = extract_value_deps(&expr);
         // Should be sorted: a, b, c

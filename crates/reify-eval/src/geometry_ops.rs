@@ -6554,7 +6554,7 @@ mod tests {
 
     /// Helper: build a CompiledExpr literal from a constant f64.
     fn literal_f64(v: f64) -> reify_ir::CompiledExpr {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::Real)
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), reify_core::Type::dimensionless_scalar())
     }
 
     /// Helper: build a CompiledExpr literal from a Scalar with LENGTH dimension.
@@ -6646,7 +6646,7 @@ mod tests {
     #[test]
     fn resolve_density_arg_diagnostics() {
         fn make_value_ref(cell: reify_core::ValueCellId) -> reify_ir::CompiledExpr {
-            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::Real)
+            reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar())
         }
 
         // (a) ValueRef → LENGTH Scalar → None + 1 Warning
@@ -8516,7 +8516,7 @@ mod tests {
         // silently dropped it; the strict arm errors on it.
         let malformed_selector = reify_ir::CompiledExpr::literal(
             reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
-            reify_core::Type::List(Box::new(reify_core::Type::Real)),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
         );
         let op = CompiledGeometryOp::Modify {
             kind: reify_compiler::ModifyKind::Fillet,
@@ -9990,7 +9990,7 @@ mod tests {
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // Value::Undef is the universal no-value sentinel — `as_f64()` returns None.
         let undef_expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::dimensionless_scalar());
         let args = vec![("width".to_string(), undef_expr)];
 
         let result = eval_named_arg_f64(
@@ -10322,7 +10322,7 @@ mod tests {
     /// Build a `CompiledExpr` for `is_watertight(<literal_real>)`.
     fn conformance_call_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg.content_hash);
@@ -11266,14 +11266,14 @@ mod tests {
                 },
                 args: vec![s_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
 
         // Lambda body: ListLiteral([inner])
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11285,7 +11285,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11300,7 +11300,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11442,13 +11442,13 @@ mod tests {
                 },
                 args: vec![s_ref, id_a_ref, id_b_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
 
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11459,7 +11459,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![id_a_cell, id_b_cell],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11473,7 +11473,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -11638,12 +11638,12 @@ mod tests {
                 },
                 args: vec![s_ref, id_a_ref, id_b_ref],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: reify_core::ContentHash(0),
         };
         let lambda_body = reify_ir::CompiledExpr {
             kind: reify_ir::CompiledExprKind::ListLiteral(vec![inner]),
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
         let lambda_arg = reify_ir::CompiledExpr {
@@ -11653,7 +11653,7 @@ mod tests {
                 body: Box::new(lambda_body),
                 captures: vec![id_a_cell, id_b_cell],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
         let snaps_ref =
@@ -11666,7 +11666,7 @@ mod tests {
                 },
                 args: vec![snaps_ref, lambda_arg],
             },
-            result_type: Type::List(Box::new(Type::Real)),
+            result_type: Type::List(Box::new(Type::dimensionless_scalar())),
             content_hash: reify_core::ContentHash(0),
         };
 
@@ -12050,9 +12050,9 @@ mod tests {
     /// `conformance_call_literal_arg` above.
     fn topology_selector_call_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -12838,9 +12838,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12888,9 +12888,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -12939,9 +12939,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -13024,11 +13024,11 @@ mod tests {
         // Build angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))).
         let arg_a = reify_ir::CompiledExpr::literal(
             vec3_value(1.0, 0.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let arg_b = reify_ir::CompiledExpr::literal(
             vec3_value(0.0, 1.0, 0.0),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str("angle"));
@@ -13091,9 +13091,9 @@ mod tests {
             "angle",
             "AngleSmoke",
             "a",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             "b",
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
             reify_core::Type::angle(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -13162,9 +13162,9 @@ mod tests {
                 "angle",
                 "T",
                 "a",
-                reify_core::Type::vec3(reify_core::Type::Real),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
                 "b",
-                reify_core::Type::vec3(reify_core::Type::Real),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
                 reify_core::Type::angle(),
             );
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -14706,11 +14706,11 @@ mod tests {
     /// gate for arity-3 helpers (like `geo_equiv`) passes.
     fn topology_selector_call_three_literal_args(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg_a =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let arg_b =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(2.0), reify_core::Type::dimensionless_scalar());
         let arg_c =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(3.0), reify_core::Type::dimensionless_scalar());
         let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name));
         content_hash = content_hash.combine(arg_a.content_hash);
@@ -15034,7 +15034,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -15145,7 +15145,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -15205,7 +15205,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -15279,7 +15279,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::vec3(reify_core::Type::Real),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -16536,7 +16536,7 @@ mod tests {
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -16628,7 +16628,7 @@ mod tests {
             "b",
             Type::Geometry,
             "dir",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -16726,7 +16726,7 @@ mod tests {
             "b",
             Type::Geometry,
             "axis",
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             "tol",
             Type::angle(),
             Type::List(Box::new(Type::Geometry)),
@@ -17729,7 +17729,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real, // placeholder result type — unused on dispatch path
+            reify_core::Type::dimensionless_scalar(), // placeholder result type — unused on dispatch path
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -17796,7 +17796,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -17850,7 +17850,7 @@ mod tests {
             reify_core::Type::Geometry,
             "pt",
             reify_core::Type::point3(reify_core::Type::length()),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -17939,7 +17939,7 @@ mod tests {
     /// literal arg. Used for 1-arg literal fall-through tests.
     fn topology_selector_call_one_literal_arg(helper_name: &str) -> reify_ir::CompiledExpr {
         let arg =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(1.0), reify_core::Type::dimensionless_scalar());
         let content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
             .combine(reify_core::ContentHash::of_str(helper_name))
             .combine(arg.content_hash);
@@ -17951,7 +17951,7 @@ mod tests {
                 },
                 args: vec![arg],
             },
-            result_type: reify_core::Type::Real,
+            result_type: reify_core::Type::dimensionless_scalar(),
             content_hash,
         }
     }
@@ -18764,7 +18764,7 @@ mod tests {
     #[test]
     fn eval_sub_pose_non_pose_value_returns_undef_with_diagnostic() {
         let expr =
-            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::Real);
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Real(5.0), reify_core::Type::dimensionless_scalar());
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -19050,7 +19050,7 @@ mod tests {
         // Build an expression that evaluates to Value::Undef directly.
         let expr = reify_ir::CompiledExpr::literal(
             reify_ir::Value::Undef,
-            reify_core::Type::Real, // type doesn't matter; the value is Undef
+            reify_core::Type::dimensionless_scalar(), // type doesn't matter; the value is Undef
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = super::eval_sub_pose(
@@ -19722,7 +19722,7 @@ mod tests {
             "solid",
             Type::Geometry,
             "plane",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::List(Box::new(Type::Geometry)),
         );
         let mut diagnostics: Vec<Diagnostic> = Vec::new();

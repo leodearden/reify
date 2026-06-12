@@ -31,9 +31,9 @@ fn make_double_lambda(scope: &str) -> Value {
         params: vec![("p".to_string(), p_id.clone())],
         body: Box::new(CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(p_id, Type::Real),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(p_id, Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         )),
         captures: ValueMap::new(),
     }
@@ -48,8 +48,8 @@ fn make_double_lambda(scope: &str) -> Value {
 fn make_fn_field_call(lambda: Value) -> CompiledExpr {
     let hash = ContentHash::of(b"fn_field_dispatch_test");
     let lambda_type = Type::Function {
-        params: vec![Type::Real],
-        return_type: Box::new(Type::Real),
+        params: vec![Type::dimensionless_scalar()],
+        return_type: Box::new(Type::dimensionless_scalar()),
     };
     CompiledExpr {
         kind: CompiledExprKind::FunctionCall {
@@ -60,8 +60,8 @@ fn make_fn_field_call(lambda: Value) -> CompiledExpr {
             args: vec![CompiledExpr::literal(lambda, lambda_type)],
         },
         result_type: Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         content_hash: hash,
     }
@@ -80,10 +80,10 @@ fn make_sample_of_expr(field_expr: CompiledExpr, at: Value) -> CompiledExpr {
             },
             args: vec![
                 field_expr,
-                CompiledExpr::literal(at, Type::Real),
+                CompiledExpr::literal(at, Type::dimensionless_scalar()),
             ],
         },
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: hash,
     }
 }
@@ -92,7 +92,7 @@ fn make_sample_of_expr(field_expr: CompiledExpr, at: Value) -> CompiledExpr {
 
 /// `fn_field(|p| 2.0 * p)` must evaluate to a `Value::Field` whose source is
 /// `FieldSourceKind::Analytical`, lambda slot contains the original
-/// `Value::Lambda`, and domain/codomain are both `Type::Real` (read from
+/// `Value::Lambda`, and domain/codomain are both `Type::dimensionless_scalar()` (read from
 /// the node's `result_type = Field<Real,Real>` stamped by α).
 ///
 /// **RED before step-2**: no fn_field arm → falls through to
@@ -112,10 +112,12 @@ fn fn_field_evaluates_to_analytical_field() {
             &result,
             Value::Field {
                 source: FieldSourceKind::Analytical,
-                domain_type: Type::Real,
-                codomain_type: Type::Real,
+                domain_type,
+                codomain_type,
                 lambda,
-            } if matches!(lambda.as_ref(), Value::Lambda { .. })
+            } if *domain_type == Type::dimensionless_scalar()
+              && *codomain_type == Type::dimensionless_scalar()
+              && matches!(lambda.as_ref(), Value::Lambda { .. })
         ),
         "fn_field(|p| 2.0 * p) must yield Value::Field {{ source: Analytical, \
          domain_type: Real, codomain_type: Real, lambda: Value::Lambda{{..}} }}; got {:?}",
@@ -176,11 +178,11 @@ fn fn_field_non_lambda_arg_falls_through_to_undef() {
                 name: "fn_field".to_string(),
                 qualified_name: "std::fn_field".to_string(),
             },
-            args: vec![CompiledExpr::literal(Value::Real(3.0), Type::Real)],
+            args: vec![CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar())],
         },
         result_type: Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
         content_hash: hash,
     };

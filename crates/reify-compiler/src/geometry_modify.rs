@@ -158,7 +158,7 @@ mod tests {
     use super::*;
 
     fn scalar_literal(v: f64) -> CompiledExpr {
-        CompiledExpr::literal(Value::Real(v), Type::Real)
+        CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
     #[test]

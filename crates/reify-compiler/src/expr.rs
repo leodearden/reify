@@ -502,14 +502,14 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 ///
 /// When a purpose body accesses `subject.<name>` where `subject` has type
 /// `StructureRef(_)` and `<name>` is in this list, the compiler emits an empty
-/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::dimensionless_scalar()))`.
 ///
 /// Semantics:
 /// - Compile-time only: runtime expansion of the list elements against the bound
 ///   entity's actual params is deferred to a follow-up task.
 /// - The empty list means `forall p in subject.params: ...` evaluates vacuously
 ///   true at eval time, which is safe and anti-cascade-consistent.
-/// - `Type::Real` element type is future-proof; a later task can refine to
+/// - `Type::dimensionless_scalar()` element type is future-proof; a later task can refine to
 ///   `List<ParamRef>` without changing call-site patterns.
 ///
 /// Deferred names (documented in `crates/reify-mcp/src/tools/chunks/purposes.md`
@@ -716,12 +716,12 @@ pub(crate) fn compile_expr_guarded(
                     CompiledExpr::literal(Value::Int(i), Type::Int)
                 }
                 reify_ast::NumberClass::Real(f) => {
-                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                    CompiledExpr::literal(Value::Real(f), Type::dimensionless_scalar())
                 }
                 // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
                 reify_ast::NumberClass::LossyReal(f) => {
                     diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
-                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                    CompiledExpr::literal(Value::Real(f), Type::dimensionless_scalar())
                 }
             }
         }
@@ -860,7 +860,7 @@ pub(crate) fn compile_expr_guarded(
             // Intercept `none` before scope lookup — it's a language-level keyword.
             // Default inner type is Real; contextual override happens at param/let sites.
             if name == "none" {
-                return CompiledExpr::option_none(Type::Option(Box::new(Type::Real)));
+                return CompiledExpr::option_none(Type::Option(Box::new(Type::dimensionless_scalar())));
             }
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
@@ -994,6 +994,7 @@ pub(crate) fn compile_expr_guarded(
                     // in step-7 via `DiagnosticCode::NonIntegerExponentOnDimensioned`.
                     if bin_op == BinOp::Pow
                         && let Type::Scalar { dimension } = compiled_left.result_type
+                        && !dimension.is_dimensionless()
                     {
                             // Extract a signed integer literal from the right AST node.
                             let int_exp: Option<i32> = match &right.kind {
@@ -1028,7 +1029,7 @@ pub(crate) fn compile_expr_guarded(
                                             // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
                                             // matching the existing BinOp::Div dimensionless→Real
                                             // convention.
-                                            Type::Real
+                                            Type::dimensionless_scalar()
                                         } else {
                                             Type::Scalar { dimension: scaled }
                                         };
@@ -1126,9 +1127,10 @@ pub(crate) fn compile_expr_guarded(
                                     expr.span,
                                 ));
                             }
-                            // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
-                            (Type::Scalar { .. }, Type::Int | Type::Real)
-                            | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                            // Dimensioned Scalar + Int or Int + Dimensioned Scalar
+                            (Type::Scalar { dimension }, Type::Int)
+                            | (Type::Int, Type::Scalar { dimension })
+                            if !dimension.is_dimensionless() => {
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "incompatible types in {}: {} vs {}",
@@ -1271,8 +1273,9 @@ pub(crate) fn compile_expr_guarded(
                             expr.span,
                         ));
                     }
-                    (Type::Scalar { .. }, Type::Int | Type::Real)
-                    | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                    (Type::Scalar { dimension }, Type::Int)
+                    | (Type::Int, Type::Scalar { dimension })
+                    if !dimension.is_dimensionless() => {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "incompatible types in range: {} vs {}",
@@ -2112,7 +2115,7 @@ pub(crate) fn compile_expr_guarded(
                                         "zero-arg function: return type inferred as Real",
                                     )),
                                 );
-                                Type::Real
+                                Type::dimensionless_scalar()
                             })
                     };
 
@@ -2347,7 +2350,7 @@ pub(crate) fn compile_expr_guarded(
                         // concrete types the same way the general method-call path does.
                         //
                         // For any *unknown* member, the diagnostic above already captures the
-                        // root cause.  We must NOT fall back to Type::Real here: doing so lets
+                        // root cause.  We must NOT fall back to Type::dimensionless_scalar() here: doing so lets
                         // downstream BinOp consumers see `Real + Real = Real` and swallow the
                         // error, defeating the Type::Error anti-cascade policy described in
                         // the `make_poison_literal` doc-block in this module and the
@@ -2365,7 +2368,7 @@ pub(crate) fn compile_expr_guarded(
                             // any downstream check against that concrete type is not cascade
                             // (plan design decision #2, task 3639 review).
                             "count" => Type::Int,
-                            "sum" | "keys" | "values" => Type::Real,
+                            "sum" | "keys" | "values" => Type::dimensionless_scalar(),
                             _ => scope
                                 .sub_member_types
                                 .get(sub_name.as_str())
@@ -2774,7 +2777,7 @@ pub(crate) fn compile_expr_guarded(
                     return CompiledExpr::purpose_reflective_aggregation(
                         id.member.clone(),
                         member.clone(),
-                        Type::List(Box::new(Type::Real)),
+                        Type::List(Box::new(Type::dimensionless_scalar())),
                     );
                 } else {
                     // Regular member access (e.g., `subject.mass`):
@@ -2805,7 +2808,7 @@ pub(crate) fn compile_expr_guarded(
                     //     against a hypothetical future stdlib "Structure" template;
                     //     the registry-miss guard covers other unregistered wildcard
                     //     kinds (e.g., "Occurrence").
-                    //   - Type::Real is a compile-time fallback; member-type
+                    //   - Type::dimensionless_scalar() is a compile-time fallback; member-type
                     //     resolution (e.g., Length vs. Mass) is a separate
                     //     follow-up task and is NOT addressed here.
                     let struct_name = match &compiled_obj.result_type {
@@ -2844,7 +2847,7 @@ pub(crate) fn compile_expr_guarded(
                     // conjunct — no second lookup or `.expect()` needed.
                     let stamp_entity = format!("{}::{}", id.entity, param_root);
                     let member_id = ValueCellId::new(&stamp_entity, member);
-                    return CompiledExpr::value_ref(member_id, Type::Real);
+                    return CompiledExpr::value_ref(member_id, Type::dimensionless_scalar());
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
@@ -2867,7 +2870,7 @@ pub(crate) fn compile_expr_guarded(
             // resolve the declared field type from the structure-def template
             // in `scope.template_registry` (esc-3540-177-threaded). For a
             // `TraitObject` the concrete runtime type is not statically known
-            // (traits are not in `template_registry`); fall back to `Type::Real`
+            // (traits are not in `template_registry`); fall back to `Type::dimensionless_scalar()`
             // — a permissive, non-poison type so the chain neither cascades nor
             // is rejected. The runtime `Value` is whatever the field actually
             // holds (e.g. a `Value::Scalar`), independent of this static type.
@@ -2887,7 +2890,7 @@ pub(crate) fn compile_expr_guarded(
                             .find(|vc| vc.id.member == *member)
                             .map(|vc| vc.cell_type.clone())
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or(Type::dimensionless_scalar());
                 let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
             }
@@ -2908,15 +2911,15 @@ pub(crate) fn compile_expr_guarded(
                     "count" => Type::Int,
                     "sum" => match &compiled_obj.result_type {
                         Type::List(inner) => (**inner).clone(),
-                        _ => Type::Real,
+                        _ => Type::dimensionless_scalar(),
                     },
                     "keys" => match &compiled_obj.result_type {
                         Type::Map(k, _) => Type::List(k.clone()),
-                        _ => Type::List(Box::new(Type::Real)),
+                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
                     },
                     "values" => match &compiled_obj.result_type {
                         Type::Map(_, v) => Type::List(v.clone()),
-                        _ => Type::List(Box::new(Type::Real)),
+                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
                     },
                     // task-2066 amend: this arm is structurally unreachable today — the outer
                     // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
@@ -2990,7 +2993,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "empty list")),
                     );
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
@@ -3020,7 +3023,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "empty set")),
                     );
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
@@ -3068,7 +3071,7 @@ pub(crate) fn compile_expr_guarded(
                 .unwrap_or_else(|| {
                     // Warning already emitted for empty map at key_type step above;
                     // no second warning needed for the value type.
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
@@ -3109,14 +3112,14 @@ pub(crate) fn compile_expr_guarded(
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
             // poisoned, propagate Type::Error rather than falling back to
-            // Type::Real.
+            // Type::dimensionless_scalar().
             let result_type = if compiled_obj.result_type.is_error() {
                 Type::Error
             } else {
                 match &compiled_obj.result_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::Map(_, val) => (**val).clone(),
-                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::dimensionless_scalar().
                     // Anti-cascade policy: Type::Error propagates downstream via existing
                     // is_error() guards so no cascade of type-mismatch errors follows.
                     _ => {
@@ -3282,7 +3285,7 @@ pub(crate) fn compile_expr_guarded(
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
             // Undef literal as a safe fallback.
-            CompiledExpr::literal(Value::Undef, Type::Real)
+            CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
         }
         reify_ast::ExprKind::Conditional {
             condition,
@@ -3384,7 +3387,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                     }
                 } else {
-                    Type::Real // default untyped params to Real
+                    Type::dimensionless_scalar() // default untyped params to Real
                 };
 
                 let param_id = ValueCellId::new(&lambda_entity, &param.name);
@@ -3459,13 +3462,13 @@ pub(crate) fn compile_expr_guarded(
             // Infer element type from the collection's result type.
             // Anti-cascade guard (task-448): if the collection is already
             // poisoned, propagate Type::Error into elem_type rather than
-            // falling back to Type::Real.
+            // falling back to Type::dimensionless_scalar().
             let elem_type = if compiled_collection.result_type.is_error() {
                 Type::Error
             } else {
                 match &compiled_collection.result_type {
                     Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::dimensionless_scalar().
                     // Type::Error propagates into quant_scope so the bound variable also
                     // carries Type::Error; existing is_error() guards in the predicate suppress
                     // cascade (anti-cascade policy).
@@ -3746,7 +3749,7 @@ pub(crate) fn compile_expr_guarded(
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "member not found in scope")),
                     );
-                    CompiledExpr::literal(Value::Undef, Type::Real)
+                    CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
                 }
             }
         }
@@ -4414,7 +4417,7 @@ pub structure Rack {
         vec![
             (
                 "HexHead".to_string(),
-                [("head_thickness".to_string(), Type::Real)]
+                [("head_thickness".to_string(), Type::dimensionless_scalar())]
                     .into_iter()
                     .collect(),
             ),
@@ -4712,7 +4715,7 @@ pub structure Rack {
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
                 is_aux: false,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: default.clone(),
                 solver_hints: vec![],
                 span: SourceSpan::prelude(),
@@ -4824,7 +4827,7 @@ pub structure Rack {
         let tmpl = sct_template(
             "PointLoad",
             &[
-                ("target", Some(CompiledExpr::literal(Value::Undef, Type::Real))),
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()))),
                 (
                     "magnitude",
                     Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
@@ -5198,7 +5201,7 @@ pub structure Rack {
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
                 is_aux: false,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: default.clone(),
                 solver_hints: vec![],
                 span: SourceSpan::prelude(),
@@ -5255,11 +5258,11 @@ pub structure Rack {
         //   param nominal, param upper_deviation
         //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
         let ref_nominal =
-            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::Real);
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::dimensionless_scalar());
         let ref_upper_dev =
-            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::Real);
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::dimensionless_scalar());
         let upper_limit_expr =
-            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::Real);
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::dimensionless_scalar());
 
         let tmpl = sct_template_with_lets(
             "DimTol",

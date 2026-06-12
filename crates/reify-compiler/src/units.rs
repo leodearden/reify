@@ -487,7 +487,7 @@ pub(crate) fn affine_map_algebra_result_type(
             // Only override when the first arg is an AffineMap; otherwise fall
             // through to the existing matrix-determinant first-arg fallback.
             if matches!(first_arg_type, Some(reify_core::Type::AffineMap(_))) {
-                Some(reify_core::Type::Real)
+                Some(reify_core::Type::dimensionless_scalar())
             } else {
                 None
             }
@@ -722,7 +722,7 @@ pub(crate) fn is_field_op(name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Returns `Some(dimension)` for `Type::Scalar { dimension }` and
-/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::Real | Type::Int`.
+/// `Some(DimensionVector::DIMENSIONLESS)` for `Type::dimensionless_scalar() | Type::Int`.
 /// Returns `None` for all other types.
 ///
 /// Mirrors `reify_expr::calculus::scalar_dimension`.
@@ -730,7 +730,7 @@ fn scalar_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::Di
     use reify_core::{DimensionVector, Type};
     match ty {
         Type::Scalar { dimension } => Some(*dimension),
-        Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+        Type::Int => Some(DimensionVector::DIMENSIONLESS),
         _ => None,
     }
 }
@@ -747,14 +747,14 @@ fn domain_dimension_for_field_op(ty: &reify_core::Type) -> Option<reify_core::Di
     }
 }
 
-/// Returns `Type::Real` if `ty` is a dimensionless `Scalar`, otherwise returns
+/// Returns `Type::dimensionless_scalar()` if `ty` is a dimensionless `Scalar`, otherwise returns
 /// a clone of `ty`.  Shared fallback for all four differential operators.
 ///
 /// Mirrors `reify_expr::calculus::dimensionless_fallback`.
 fn dimensionless_fallback_for_field_op(ty: &reify_core::Type) -> reify_core::Type {
     use reify_core::{DimensionVector, Type};
     match ty {
-        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::Real,
+        Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => Type::dimensionless_scalar(),
         _ => ty.clone(),
     }
 }
@@ -762,7 +762,7 @@ fn dimensionless_fallback_for_field_op(ty: &reify_core::Type) -> reify_core::Typ
 /// Compute the quotient Type for a differential operator result.
 ///
 /// Returns `Scalar { dimension: cd / dd^exponent }` when both dimensions are
-/// non-DIMENSIONLESS; `Type::Real` when the quotient is DIMENSIONLESS; and
+/// non-DIMENSIONLESS; `Type::dimensionless_scalar()` when the quotient is DIMENSIONLESS; and
 /// `fallback` in all other cases.
 ///
 /// Mirrors `reify_expr::calculus::dim_quotient_type`.
@@ -787,7 +787,7 @@ fn dim_quotient_type_for_field_op(
                     dimension: result_dim,
                 }
             } else {
-                Type::Real
+                Type::dimensionless_scalar()
             }
         }
         _ => fallback,
@@ -1066,11 +1066,11 @@ pub(crate) fn field_op_result_type(
 ///   [`geometry_query_arg_aware_result_type`] — task 4315)
 ///
 /// KGQ-ζ Phase 6 addition (task 3615):
-/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::Real)`)
-///   The quantity is `Type::Real` (dimensionless), NOT a `Scalar` dimension,
+/// - `normal(surface, point)` → `Vector3<Dimensionless>` (`Type::vec3(Type::dimensionless_scalar())`)
+///   The quantity is `Type::dimensionless_scalar()` (dimensionless), NOT a `Scalar` dimension,
 ///   matching the `Value::Vector(vec![Value::Real(_); 3])` shape that
 ///   `dispatch_normal_vector3` constructs and that `Value.infer_type()` maps
-///   back to `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+///   back to `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
@@ -1104,9 +1104,9 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         },
         // KGQ-ζ (task 3615, Phase 6): at-point surface normal.
         // Returns a dimensionless unit vector — Value::Vector([Real,Real,Real]).
-        // Type::Real (not a Scalar dimension) is the quantity so that the
+        // Type::dimensionless_scalar() (not a Scalar dimension) is the quantity so that the
         // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
-        "normal" => Type::vec3(Type::Real),
+        "normal" => Type::vec3(Type::dimensionless_scalar()),
         _ => return None,
     })
 }
@@ -2425,19 +2425,19 @@ mod tests {
     }
 
     /// `geometry_query_result_type("normal")` must return
-    /// `Some(Type::vec3(Type::Real))` — a dimensionless 3D vector, i.e.
-    /// `Type::Vector { n: 3, quantity: Box::new(Type::Real) }`.
+    /// `Some(Type::vec3(Type::dimensionless_scalar()))` — a dimensionless 3D vector, i.e.
+    /// `Type::Vector { n: 3, quantity: Box::new(Type::dimensionless_scalar()) }`.
     ///
     /// This is the exact type that `Value::Vector(vec![Value::Real(_); 3]).infer_type()`
     /// produces (verified: value.rs `try_infer_type` for Vector sets quantity =
-    /// first component's `try_infer_type()`, and `Value::Real → Type::Real`).
+    /// first component's `try_infer_type()`, and `Value::Real → Type::dimensionless_scalar()`).
     #[test]
     fn geometry_query_result_type_for_normal_is_vec3_real() {
         use reify_core::Type;
         assert_eq!(
             geometry_query_result_type("normal"),
-            Some(Type::vec3(Type::Real)),
-            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::Real)) \
+            Some(Type::vec3(Type::dimensionless_scalar())),
+            "geometry_query_result_type(\"normal\") must be Some(Type::vec3(Type::dimensionless_scalar())) \
              after KGQ-ζ step-4 registration"
         );
     }
@@ -2903,7 +2903,7 @@ mod tests {
                 "determinant",
                 Some(&reify_core::Type::AffineMap(3))
             ),
-            Some(reify_core::Type::Real)
+            Some(reify_core::Type::dimensionless_scalar())
         );
     }
 
@@ -2916,7 +2916,7 @@ mod tests {
             None
         );
         assert_eq!(
-            affine_map_algebra_result_type("determinant", Some(&reify_core::Type::Real)),
+            affine_map_algebra_result_type("determinant", Some(&reify_core::Type::dimensionless_scalar())),
             None
         );
     }
@@ -3635,13 +3635,13 @@ mod tests {
             field_op_result_type(
                 "fn_field",
                 &[Type::Function {
-                    params: vec![Type::Real],
-                    return_type: Box::new(Type::Real),
+                    params: vec![Type::dimensionless_scalar()],
+                    return_type: Box::new(Type::dimensionless_scalar()),
                 }]
             ),
             Some(Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }),
             "fn_field(Function{{[Real]->Real}}) must produce Field<Real,Real> (PRD §5.1)"
         );
@@ -3658,7 +3658,7 @@ mod tests {
                 &[
                     Type::List(Box::new(p3l.clone())),
                     Type::List(Box::new(s_temp.clone())),
-                    Type::Real, // method arg — ignored for typing
+                    Type::dimensionless_scalar(), // method arg — ignored for typing
                 ]
             ),
             Some(Type::Field {
@@ -3670,8 +3670,8 @@ mod tests {
 
         // restrict(Field<Real,Real>, _) → Field<Real,Real>  (domain/codomain unchanged)
         let field_rr = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(
             field_op_result_type("restrict", &[field_rr.clone(), Type::Geometry]),
@@ -3682,12 +3682,12 @@ mod tests {
         // compose(Field<B=Real, C=Scalar<Temp>>, Field<A=Point3<Length>, B=Real>)
         //   → Field<A=Point3<Length>, C=Scalar<Temp>>
         let field_b_c = Type::Field {
-            domain: Box::new(Type::Real),       // B
+            domain: Box::new(Type::dimensionless_scalar()),       // B
             codomain: Box::new(s_temp.clone()), // C
         };
         let field_a_b = Type::Field {
             domain: Box::new(p3l.clone()), // A
-            codomain: Box::new(Type::Real), // B
+            codomain: Box::new(Type::dimensionless_scalar()), // B
         };
         assert_eq!(
             field_op_result_type("compose", &[field_b_c, field_a_b]),
@@ -3704,13 +3704,13 @@ mod tests {
                 "sample",
                 &[
                     Type::Field {
-                        domain: Box::new(Type::Real),
-                        codomain: Box::new(Type::Real),
+                        domain: Box::new(Type::dimensionless_scalar()),
+                        codomain: Box::new(Type::dimensionless_scalar()),
                     },
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ]
             ),
-            Some(Type::Real),
+            Some(Type::dimensionless_scalar()),
             "sample(Field<Real,Real>, Real) must produce Real (codomain), not Field (PRD §5.1 FIX)"
         );
 
@@ -3818,13 +3818,13 @@ mod tests {
             field_op_result_type(
                 "gradient",
                 &[Type::Field {
-                    domain: Box::new(Type::Real),
-                    codomain: Box::new(Type::Real),
+                    domain: Box::new(Type::dimensionless_scalar()),
+                    codomain: Box::new(Type::dimensionless_scalar()),
                 }]
             ),
             Some(Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }),
             "gradient(Field<Real,Real>) must produce Field<Real,Real> (1D dimensionless case)"
         );
@@ -3877,12 +3877,12 @@ mod tests {
         // Well-shaped args for each name.  One canonical set is enough;
         // exhaustive shape coverage is the job of the table test.
         let field_rr = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         // divergence / curl require Point{n,scalar} domain + Vector{n,scalar} codomain
-        let p3_real = Type::point3(Type::Real);
-        let v3_real = Type::vec3(Type::Real);
+        let p3_real = Type::point3(Type::dimensionless_scalar());
+        let v3_real = Type::vec3(Type::dimensionless_scalar());
         let field_p3_v3 = Type::Field {
             domain: Box::new(p3_real),
             codomain: Box::new(v3_real),
@@ -3891,13 +3891,13 @@ mod tests {
         for name in FIELD_OP_NAMES {
             let args: Vec<Type> = match *name {
                 "fn_field" => vec![Type::Function {
-                    params: vec![Type::Real],
-                    return_type: Box::new(Type::Real),
+                    params: vec![Type::dimensionless_scalar()],
+                    return_type: Box::new(Type::dimensionless_scalar()),
                 }],
                 "from_samples" => vec![
-                    Type::List(Box::new(Type::Real)),
-                    Type::List(Box::new(Type::Real)),
-                    Type::Real,
+                    Type::List(Box::new(Type::dimensionless_scalar())),
+                    Type::List(Box::new(Type::dimensionless_scalar())),
+                    Type::dimensionless_scalar(),
                 ],
                 "compose" => vec![field_rr.clone(), field_rr.clone()],
                 "divergence" | "curl" => vec![field_p3_v3.clone()],
@@ -3925,35 +3925,35 @@ mod tests {
 
         // sample: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("sample", &[Type::Real, Type::Real]),
+            field_op_result_type("sample", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
             None,
             "sample with non-Field arg[0] must return None (falls through to first-arg fallback)"
         );
 
         // gradient: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("gradient", &[Type::Real]),
+            field_op_result_type("gradient", &[Type::dimensionless_scalar()]),
             None,
             "gradient with non-Field arg[0] must return None"
         );
 
         // restrict: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("restrict", &[Type::Real, Type::Real]),
+            field_op_result_type("restrict", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
             None,
             "restrict with non-Field arg[0] must return None"
         );
 
         // compose: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("compose", &[Type::Real, Type::Real]),
+            field_op_result_type("compose", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
             None,
             "compose with non-Field args must return None"
         );
 
         // fn_field: arg[0] must be Function
         assert_eq!(
-            field_op_result_type("fn_field", &[Type::Real]),
+            field_op_result_type("fn_field", &[Type::dimensionless_scalar()]),
             None,
             "fn_field with non-Function arg[0] must return None"
         );
@@ -3961,11 +3961,11 @@ mod tests {
         // curl: n must be exactly 3; a 2-component domain/codomain must return None
         let p2_real = Type::Point {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         let v2_real = Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(
             field_op_result_type(
@@ -3980,7 +3980,7 @@ mod tests {
         );
 
         // divergence: codomain must be a Vector; scalar codomain must return None
-        let p3_real = Type::point3(Type::Real);
+        let p3_real = Type::point3(Type::dimensionless_scalar());
         let s_real = Type::Scalar {
             dimension: reify_core::DimensionVector::LENGTH,
         };

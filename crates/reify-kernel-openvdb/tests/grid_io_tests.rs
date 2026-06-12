@@ -88,7 +88,7 @@ fn vdb_grid_round_trip_preserves_metadata_and_active_count() {
     // Step 5: Read back via read_vdb_file.
     // ---------------------------------------------------------------------------
     let path_str = vdb_path.to_str().expect("temp path must be valid UTF-8");
-    let outcome = read_vdb_file(path_str, "level_set", &Type::Real)
+    let outcome = read_vdb_file(path_str, "level_set", &Type::dimensionless_scalar())
         .expect("read_vdb_file should succeed for a file written by write_vdb_grid");
 
     // ---------------------------------------------------------------------------
@@ -322,7 +322,7 @@ fn vdb_round_trip_data_layout_is_axis0_x_outermost() {
         .expect("write_vdb_grid should succeed for the realized slab");
 
     let path_str = vdb_path.to_str().expect("temp path must be valid UTF-8");
-    let outcome = read_vdb_file(path_str, "slab", &Type::Real)
+    let outcome = read_vdb_file(path_str, "slab", &Type::dimensionless_scalar())
         .expect("read_vdb_file should succeed for the freshly-written slab");
 
     let field = &outcome.field;

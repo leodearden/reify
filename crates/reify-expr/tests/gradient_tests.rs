@@ -53,7 +53,7 @@ fn gradient_field_with_non_scalar_domain_quantity_returns_undef() {
                 codomain: Box::new(codomain_type),
             },
         )],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -235,12 +235,12 @@ fn gradient_wrong_size_tensor_point_returns_undef() {
         reify_ir::BinOp::Add,
         CompiledExpr::binop(
             reify_ir::BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -335,25 +335,25 @@ fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
         // condition: x == 2.0
         CompiledExpr::binop(
             BinOp::Eq,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
             Type::Bool,
         ),
         // then: Undef (perturbation along this axis fails)
-        CompiledExpr::literal(Value::Undef, Type::Real),
+        CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
         // else: x * x (normal evaluation)
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -380,9 +380,9 @@ fn partial_undef_propagation_lambda_returns_undef_on_one_axis() {
             "sample",
             vec![
                 CompiledExpr::literal(field.clone(), field_type.clone()),
-                CompiledExpr::literal(Value::Real(*point_val), Type::Real),
+                CompiledExpr::literal(Value::Real(*point_val), Type::dimensionless_scalar()),
             ],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -403,14 +403,14 @@ fn gradient_1d_linear_field() {
     // Lambda: |x| 3 * x
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(3.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -446,9 +446,9 @@ fn gradient_1d_linear_field() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -483,27 +483,27 @@ fn gradient_3d_scalar_field() {
             // x*x
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
             // 2*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::literal(Value::Real(2.0), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // 3*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -511,8 +511,8 @@ fn gradient_3d_scalar_field() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -532,7 +532,7 @@ fn gradient_3d_scalar_field() {
         vec![CompiledExpr::literal(field, field_type.clone())],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -549,17 +549,17 @@ fn gradient_3d_scalar_field() {
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -579,8 +579,8 @@ fn gradient_3d_scalar_field() {
 /// Gradient cannot evaluate such a field, so it must return Undef.
 #[test]
 fn gradient_field_with_undef_lambda_returns_undef() {
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -598,7 +598,7 @@ fn gradient_field_with_undef_lambda_returns_undef() {
                 codomain: Box::new(codomain_type),
             },
         )],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -620,11 +620,11 @@ fn gradient_field_with_undef_lambda_returns_undef() {
 #[test]
 fn gradient_sampled_field_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -642,7 +642,7 @@ fn gradient_sampled_field_returns_undef() {
                 codomain: Box::new(codomain_type),
             },
         )],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -661,7 +661,7 @@ fn gradient_sampled_field_returns_undef() {
 #[test]
 fn gradient_wrong_arg_count_returns_undef() {
     // 0 args
-    let expr_0 = make_function_call("gradient", vec![], Type::Real);
+    let expr_0 = make_function_call("gradient", vec![], Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result_0 = eval_expr(&expr_0, &EvalContext::simple(&values));
     assert_eq!(
@@ -674,10 +674,10 @@ fn gradient_wrong_arg_count_returns_undef() {
     let expr_2 = make_function_call(
         "gradient",
         vec![
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let result_2 = eval_expr(&expr_2, &EvalContext::simple(&values));
     assert_eq!(
@@ -703,28 +703,28 @@ fn gradient_undef_propagation_during_perturbation() {
         // condition: y < 0
         CompiledExpr::binop(
             BinOp::Lt,
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             Type::Bool,
         ),
         // then: Undef (y is negative → outside domain)
-        CompiledExpr::literal(Value::Undef, Type::Real),
+        CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()),
         // else: x*x (normal evaluation)
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let domain_type = Type::Point {
         n: 2,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -746,7 +746,7 @@ fn gradient_undef_propagation_during_perturbation() {
             domain: Box::new(domain_type),
             codomain: Box::new(Type::Vector {
                 n: 2,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
         },
     );
@@ -765,11 +765,11 @@ fn gradient_undef_propagation_during_perturbation() {
     let grad_field_type = Type::Field {
         domain: Box::new(Type::Point {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         }),
         codomain: Box::new(Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         }),
     };
 
@@ -781,13 +781,13 @@ fn gradient_undef_propagation_during_perturbation() {
                 point,
                 Type::Point {
                     n: 2,
-                    quantity: Box::new(Type::Real),
+                    quantity: Box::new(Type::dimensionless_scalar()),
                 },
             ),
         ],
         Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
     );
 
@@ -814,17 +814,17 @@ fn gradient_1d_real_domain_cubic() {
         BinOp::Mul,
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -859,9 +859,9 @@ fn gradient_1d_real_domain_cubic() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -913,7 +913,7 @@ fn gradient_dimensioned_field() {
                         dimension: dim_kg.div(&dim_m),
                     },
                 ),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
                 scalar_kg.clone(),
             ),
             // 3*y → Scalar[kg]
@@ -928,7 +928,7 @@ fn gradient_dimensioned_field() {
                         dimension: dim_kg.div(&dim_m),
                     },
                 ),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
                 scalar_kg.clone(),
             ),
             scalar_kg.clone(),
@@ -945,7 +945,7 @@ fn gradient_dimensioned_field() {
                     dimension: dim_kg.div(&dim_m),
                 },
             ),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
             scalar_kg.clone(),
         ),
         scalar_kg.clone(),
@@ -1087,27 +1087,27 @@ fn gradient_at_origin() {
             // x*x
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
             // y*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // z*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1115,8 +1115,8 @@ fn gradient_at_origin() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1136,7 +1136,7 @@ fn gradient_at_origin() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -1153,17 +1153,17 @@ fn gradient_at_origin() {
     let point = Value::Point(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(0.0)]);
 
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1463,11 +1463,11 @@ fn gradient_1param_constant_field() {
     let p_id = ValueCellId::new("$lambda0.S", "p");
 
     // Lambda: |p| 5.0 (constant function, ignores the Point parameter)
-    let body = CompiledExpr::literal(Value::Real(5.0), Type::Real);
+    let body = CompiledExpr::literal(Value::Real(5.0), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1487,7 +1487,7 @@ fn gradient_1param_constant_field() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -1504,17 +1504,17 @@ fn gradient_1param_constant_field() {
     let point = Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
 
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1546,14 +1546,14 @@ fn gradient_1param_magnitude_field() {
         "magnitude",
         vec![CompiledExpr::value_ref(
             p_id.clone(),
-            Type::point3(Type::Real),
+            Type::point3(Type::dimensionless_scalar()),
         )],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1573,7 +1573,7 @@ fn gradient_1param_magnitude_field() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -1590,17 +1590,17 @@ fn gradient_1param_magnitude_field() {
     let point = Value::Point(vec![Value::Real(3.0), Value::Real(4.0), Value::Real(0.0)]);
 
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1640,27 +1640,27 @@ fn gradient_of_gradient_field_returns_undef() {
             // x*x
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
             // y*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // z*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1668,8 +1668,8 @@ fn gradient_of_gradient_field_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1689,7 +1689,7 @@ fn gradient_of_gradient_field_returns_undef() {
         vec![CompiledExpr::literal(field, field_type.clone())],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -1705,13 +1705,13 @@ fn gradient_of_gradient_field_returns_undef() {
     // Second gradient (gradient of gradient): should return Undef
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let grad_grad_expr = make_function_call(
         "gradient",
         vec![CompiledExpr::literal(grad_result, grad_field_type)],
-        Type::Real, // result type doesn't matter — we expect Undef
+        Type::dimensionless_scalar(), // result type doesn't matter — we expect Undef
     );
 
     let grad_grad_result = eval_expr(&grad_grad_expr, &EvalContext::simple(&values));
@@ -1743,12 +1743,12 @@ fn gradient_nan_in_point_coord_returns_undef() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1756,8 +1756,8 @@ fn gradient_nan_in_point_coord_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1777,7 +1777,7 @@ fn gradient_nan_in_point_coord_returns_undef() {
         vec![CompiledExpr::literal(field, field_type.clone())],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -1801,9 +1801,9 @@ fn gradient_nan_in_point_coord_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(nan_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1829,14 +1829,14 @@ fn gradient_inf_in_scalar_coord_returns_undef() {
     // Lambda: |x| x * x
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -1871,9 +1871,9 @@ fn gradient_inf_in_scalar_coord_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(f64::INFINITY), Type::Real),
+            CompiledExpr::literal(Value::Real(f64::INFINITY), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1980,11 +1980,11 @@ fn gradient_lambda_produces_nan_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
     // Lambda: |x| NaN (literal NaN, bypasses div-by-zero → Undef path)
-    let body = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let body = CompiledExpr::literal(Value::Real(f64::NAN), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2019,9 +2019,9 @@ fn gradient_lambda_produces_nan_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2048,11 +2048,11 @@ fn gradient_lambda_produces_inf_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
 
     // Lambda: |x| +Inf (literal Inf, bypasses div-by-zero → Undef path)
-    let body = CompiledExpr::literal(Value::Real(f64::INFINITY), Type::Real);
+    let body = CompiledExpr::literal(Value::Real(f64::INFINITY), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2087,9 +2087,9 @@ fn gradient_lambda_produces_inf_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2118,20 +2118,20 @@ fn gradient_deriv_overflow_returns_undef() {
         // condition: x > 0.0
         CompiledExpr::binop(
             BinOp::Gt,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             Type::Bool,
         ),
         // then: f64::MAX
-        CompiledExpr::literal(Value::Real(f64::MAX), Type::Real),
+        CompiledExpr::literal(Value::Real(f64::MAX), Type::dimensionless_scalar()),
         // else: -f64::MAX
-        CompiledExpr::literal(Value::Real(-f64::MAX), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(-f64::MAX), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2167,9 +2167,9 @@ fn gradient_deriv_overflow_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2216,7 +2216,7 @@ fn gradient_3d_codomain_type_is_rq() {
                         dimension: dim_kg.div(&dim_m),
                     },
                 ),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
                 scalar_kg.clone(),
             ),
             CompiledExpr::binop(
@@ -2230,7 +2230,7 @@ fn gradient_3d_codomain_type_is_rq() {
                         dimension: dim_kg.div(&dim_m),
                     },
                 ),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
                 scalar_kg.clone(),
             ),
             scalar_kg.clone(),
@@ -2246,7 +2246,7 @@ fn gradient_3d_codomain_type_is_rq() {
                     dimension: dim_kg.div(&dim_m),
                 },
             ),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
             scalar_kg.clone(),
         ),
         scalar_kg.clone(),
@@ -2390,12 +2390,12 @@ fn gradient_dimensionless_codomain_type_unchanged() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(
@@ -2404,8 +2404,8 @@ fn gradient_dimensionless_codomain_type_unchanged() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2424,7 +2424,7 @@ fn gradient_dimensionless_codomain_type_unchanged() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -2433,7 +2433,7 @@ fn gradient_dimensionless_codomain_type_unchanged() {
 
     let expected_codomain = Type::Vector {
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
 
     match &grad_result {
@@ -2465,12 +2465,12 @@ fn gradient_mixed_dimensionless_codomain_type() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(
@@ -2482,7 +2482,7 @@ fn gradient_mixed_dimensionless_codomain_type() {
     let domain_type = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
     });
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2501,7 +2501,7 @@ fn gradient_mixed_dimensionless_codomain_type() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -2510,7 +2510,7 @@ fn gradient_mixed_dimensionless_codomain_type() {
 
     let expected_codomain = Type::Vector {
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
 
     match &grad_result {
@@ -2528,9 +2528,9 @@ fn gradient_mixed_dimensionless_codomain_type() {
 /// Regression: gradient of Field<Point3<Scalar[m]>, Scalar[DIMENSIONLESS]> must have
 /// codomain_type = Vector { n: 3, quantity: Real }, NOT Vector { n: 3, quantity: Length[DIMENSIONLESS] }.
 ///
-/// The codomain is explicitly typed as `Scalar[DIMENSIONLESS]` (not `Type::Real`), but the
+/// The codomain is explicitly typed as `Scalar[DIMENSIONLESS]` (not `Type::dimensionless_scalar()`), but the
 /// runtime produces `Value::Real` for dimensionless gradient components, so the type-level
-/// code must normalize `Scalar[DIMENSIONLESS]` → `Type::Real` in the fallback arm of
+/// code must normalize `Scalar[DIMENSIONLESS]` → `Type::dimensionless_scalar()` in the fallback arm of
 /// `gradient_quantity`.
 #[test]
 fn gradient_explicit_dimensionless_scalar_codomain() {
@@ -2543,12 +2543,12 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(
@@ -2560,7 +2560,7 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
     let domain_type = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
     });
-    // Explicitly Scalar[DIMENSIONLESS] — NOT Type::Real — to exercise the bug.
+    // Explicitly Scalar[DIMENSIONLESS] — NOT Type::dimensionless_scalar() — to exercise the bug.
     let codomain_type = Type::Scalar {
         dimension: DimensionVector::DIMENSIONLESS,
     };
@@ -2582,7 +2582,7 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -2593,7 +2593,7 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
     // matching what the runtime produces (Value::Real components, not Value::Scalar[DIMENSIONLESS]).
     let expected_codomain = Type::Vector {
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
 
     match &grad_result {
@@ -2618,11 +2618,11 @@ fn gradient_explicit_dimensionless_scalar_codomain() {
 #[test]
 fn gradient_imported_field_returns_undef() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
-    let codomain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2640,7 +2640,7 @@ fn gradient_imported_field_returns_undef() {
                 codomain: Box::new(codomain_type),
             },
         )],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -2668,15 +2668,15 @@ fn gradient_composed_field_returns_field() {
     // Lambda: |x| 2 * x
     let body = CompiledExpr::binop(
         reify_ir::BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
     let field = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Composed,
         lambda: Arc::new(lambda),
     };
@@ -2686,13 +2686,13 @@ fn gradient_composed_field_returns_field() {
         vec![CompiledExpr::literal(
             field,
             Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             },
         )],
         Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         },
     );
 
@@ -2713,16 +2713,16 @@ fn gradient_composed_field_returns_field() {
     // Sample the gradient field at x=1.0.
     // The derivative of 2*x is 2.0 everywhere — this is a real regression guard.
     let grad_field_type = Type::Field {
-        domain: Box::new(Type::Real),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(result, grad_field_type),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
     let val = sample_result
@@ -2742,7 +2742,7 @@ fn gradient_composed_field_returns_field() {
 /// Accepts a `body_builder` closure that receives the lambda parameter's `ValueCellId`
 /// and returns the body `CompiledExpr`. Constructs the full `Value::Field`, wraps it in a
 /// gradient expression, evaluates it, asserts the result is a `Value::Field`, and returns
-/// `(grad_result, domain_type, Type::vec3(Type::Real))`.
+/// `(grad_result, domain_type, Type::vec3(Type::dimensionless_scalar()))`.
 ///
 /// # Parameters
 /// - `body_builder`: closure `FnOnce(ValueCellId) -> CompiledExpr` — builds the lambda body
@@ -2758,8 +2758,8 @@ fn make_gradient_field(
     let body = body_builder(p_id.clone());
     let lambda = make_value_lambda(vec![("p", p_id)], body, ValueMap::new());
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -2778,7 +2778,7 @@ fn make_gradient_field(
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -2791,15 +2791,15 @@ fn make_gradient_field(
         grad_result
     );
 
-    (grad_result, domain_type, Type::vec3(Type::Real))
+    (grad_result, domain_type, Type::vec3(Type::dimensionless_scalar()))
 }
 
 /// Build a gradient field for `|p: Point3<Real>| dot(p, [1,2,3])`.
 ///
 /// Returns `(grad_field, domain_type, grad_codomain_type)` where:
 /// - `grad_field` is the evaluated `Value::Field { source: Gradient, .. }`
-/// - `domain_type` is `Type::point3(Type::Real)`
-/// - `grad_codomain_type` is `Type::vec3(Type::Real)`
+/// - `domain_type` is `Type::point3(Type::dimensionless_scalar())`
+/// - `grad_codomain_type` is `Type::vec3(Type::dimensionless_scalar())`
 ///
 /// Used by four tests that share this setup:
 /// `gradient_3d_field_single_point_param`,
@@ -2814,10 +2814,10 @@ fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
             make_function_call(
                 "dot",
                 vec![
-                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
-                    CompiledExpr::literal(weight_point, Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::dimensionless_scalar())),
+                    CompiledExpr::literal(weight_point, Type::point3(Type::dimensionless_scalar())),
                 ],
-                Type::Real,
+                Type::dimensionless_scalar(),
             )
         },
         "make_3d_dot_product_gradient_field",
@@ -2828,8 +2828,8 @@ fn make_3d_dot_product_gradient_field() -> (Value, Type, Type) {
 ///
 /// Returns `(grad_field, domain_type, grad_codomain_type)` where:
 /// - `grad_field` is the evaluated `Value::Field { source: Gradient, .. }`
-/// - `domain_type` is `Type::point3(Type::Real)`
-/// - `grad_codomain_type` is `Type::vec3(Type::Real)`
+/// - `domain_type` is `Type::point3(Type::dimensionless_scalar())`
+/// - `grad_codomain_type` is `Type::vec3(Type::dimensionless_scalar())`
 ///
 /// The gradient of dot(p,p) is 2p = (2x, 2y, 2z), which depends on the
 /// coordinates. Used by `gradient_single_point_param_quadratic` and
@@ -2841,10 +2841,10 @@ fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
             make_function_call(
                 "dot",
                 vec![
-                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::Real)),
-                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id.clone(), Type::point3(Type::dimensionless_scalar())),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::dimensionless_scalar())),
                 ],
-                Type::Real,
+                Type::dimensionless_scalar(),
             )
         },
         "make_3d_quadratic_gradient_field",
@@ -2854,7 +2854,7 @@ fn make_3d_quadratic_gradient_field() -> (Value, Type, Type) {
 /// Characterization test: `make_gradient_field` returns a triple matching `make_3d_dot_product_gradient_field`.
 ///
 /// Verifies that the shared helper produces a `Value::Field` as the first element,
-/// `Type::point3(Type::Real)` as the domain type, and `Type::vec3(Type::Real)` as
+/// `Type::point3(Type::dimensionless_scalar())` as the domain type, and `Type::vec3(Type::dimensionless_scalar())` as
 /// the gradient codomain type — identical to what the existing dot-product factory returns.
 #[test]
 fn test_make_gradient_field_produces_field() {
@@ -2863,13 +2863,13 @@ fn test_make_gradient_field_produces_field() {
             make_function_call(
                 "dot",
                 vec![
-                    CompiledExpr::value_ref(p_id, Type::point3(Type::Real)),
+                    CompiledExpr::value_ref(p_id, Type::point3(Type::dimensionless_scalar())),
                     CompiledExpr::literal(
                         Value::Point(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]),
-                        Type::point3(Type::Real),
+                        Type::point3(Type::dimensionless_scalar()),
                     ),
                 ],
-                Type::Real,
+                Type::dimensionless_scalar(),
             )
         },
         "test_make_gradient_field_produces_field",
@@ -2882,12 +2882,12 @@ fn test_make_gradient_field_produces_field() {
     );
     assert_eq!(
         domain_type,
-        Type::point3(Type::Real),
+        Type::point3(Type::dimensionless_scalar()),
         "make_gradient_field: domain type should be Point3<Real>"
     );
     assert_eq!(
         grad_codomain_type,
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
         "make_gradient_field: gradient codomain should be Vec3<Real>"
     );
 }
@@ -2914,9 +2914,9 @@ fn gradient_3d_field_single_point_param() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2958,9 +2958,9 @@ fn gradient_single_point_param_quadratic() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2999,9 +2999,9 @@ fn gradient_quadratic_at_origin() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3048,9 +3048,9 @@ fn gradient_single_point_param_irrational_coords() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3105,9 +3105,9 @@ fn gradient_single_point_param_recovery_across_axes() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result.clone(), grad_field_type.clone()),
-            CompiledExpr::literal(point1, Type::point3(Type::Real)),
+            CompiledExpr::literal(point1, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let result1 = eval_expr(&sample_expr1, &EvalContext::simple(&values));
@@ -3127,9 +3127,9 @@ fn gradient_single_point_param_recovery_across_axes() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point2, Type::point3(Type::Real)),
+            CompiledExpr::literal(point2, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let result2 = eval_expr(&sample_expr2, &EvalContext::simple(&values));
@@ -3168,9 +3168,9 @@ fn gradient_sample_with_nan_point_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(nan_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3209,9 +3209,9 @@ fn gradient_sample_with_inf_point_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(inf_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(inf_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3246,12 +3246,12 @@ fn gradient_tensor_point_returns_undef() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -3259,8 +3259,8 @@ fn gradient_tensor_point_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -3280,7 +3280,7 @@ fn gradient_tensor_point_returns_undef() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -3301,16 +3301,16 @@ fn gradient_tensor_point_returns_undef() {
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3348,9 +3348,9 @@ fn gradient_tensor_single_point_param_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(tensor_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(tensor_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3368,8 +3368,8 @@ fn gradient_tensor_single_point_param_returns_undef() {
 ///
 /// Returns:
 /// - `grad_result`: the `Value::Field` returned by `eval_expr(gradient(...))`.
-/// - `domain_type`: `Type::point3(Type::Real)`
-/// - `grad_codomain_type`: `Type::vec3(Type::Real)`
+/// - `domain_type`: `Type::point3(Type::dimensionless_scalar())`
+/// - `grad_codomain_type`: `Type::vec3(Type::dimensionless_scalar())`
 ///
 /// Used by tests that share this decomposed-lambda setup:
 /// `gradient_decomposed_n3_dimensionless`,
@@ -3387,24 +3387,24 @@ fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
         CompiledExpr::binop(
             BinOp::Add,
             // x
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
             // 2*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::literal(Value::Real(2.0), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // 3*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -3412,8 +3412,8 @@ fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -3433,7 +3433,7 @@ fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -3446,7 +3446,7 @@ fn make_decomposed_n3_gradient_field() -> (Value, Type, Type) {
         grad_result
     );
 
-    (grad_result, domain_type, Type::vec3(Type::Real))
+    (grad_result, domain_type, Type::vec3(Type::dimensionless_scalar()))
 }
 
 /// Gradient of a 3D field with decomposed params |x,y,z| x + 2*y + 3*z.
@@ -3473,9 +3473,9 @@ fn gradient_decomposed_n3_dimensionless() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3515,24 +3515,24 @@ fn gradient_decomposed_n3_irrational_coords() {
         CompiledExpr::binop(
             BinOp::Add,
             // x
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
             // 2*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::literal(Value::Real(2.0), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // 3*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -3540,8 +3540,8 @@ fn gradient_decomposed_n3_irrational_coords() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let field = Value::Field {
         domain_type: domain_type.clone(),
@@ -3561,7 +3561,7 @@ fn gradient_decomposed_n3_irrational_coords() {
         vec![CompiledExpr::literal(field, field_type)],
         Type::Field {
             domain: Box::new(domain_type.clone()),
-            codomain: Box::new(Type::vec3(Type::Real)),
+            codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
         },
     );
 
@@ -3582,16 +3582,16 @@ fn gradient_decomposed_n3_irrational_coords() {
 
     let grad_field_type = Type::Field {
         domain: Box::new(domain_type),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
 
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(point, Type::point3(Type::Real)),
+            CompiledExpr::literal(point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3927,7 +3927,7 @@ mod trust_the_declaration_tests {
         // NOT Scalar{MASS} as codomain_type declares.
         let body = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
             CompiledExpr::value_ref(x_id.clone(), Type::length()),
             Type::length(),
         );
@@ -3985,13 +3985,13 @@ mod trust_the_declaration_tests {
 
         let body = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-        let domain_type = Type::Real;
+        let domain_type = Type::dimensionless_scalar();
         let codomain_type = Type::Scalar { dimension: dim_kg };
 
         let field = Value::Field {
@@ -4011,7 +4011,7 @@ mod trust_the_declaration_tests {
                 },
             )],
             Type::Field {
-                domain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
                 codomain: Box::new(codomain_type.clone()),
             },
         );
@@ -4048,14 +4048,14 @@ mod trust_the_declaration_tests {
         // Lambda: |x| 2*x — body returns Value::Real at runtime (NOT Value::Scalar[MASS])
         let body = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::literal(Value::Real(2.0), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
         // Domain: dimensionless Real; codomain: declared as Scalar[MASS] (mismatch!)
-        let domain_type = Type::Real;
+        let domain_type = Type::dimensionless_scalar();
         let codomain_type = Type::Scalar { dimension: dim_kg };
 
         let field = Value::Field {
@@ -4085,7 +4085,7 @@ mod trust_the_declaration_tests {
             "sample",
             vec![
                 CompiledExpr::literal(grad_result, grad_field_type),
-                CompiledExpr::literal(Value::Real(1.0), Type::Real),
+                CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
             ],
             Type::Scalar { dimension: dim_kg },
         );
@@ -4208,9 +4208,9 @@ fn gradient_decomposed_nan_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(nan_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(nan_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -4252,9 +4252,9 @@ fn gradient_decomposed_inf_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(inf_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(inf_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -4299,9 +4299,9 @@ fn gradient_decomposed_neg_inf_returns_undef() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, grad_field_type),
-            CompiledExpr::literal(neg_inf_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(neg_inf_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));

@@ -1080,7 +1080,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str(&id.to_string()),
             },

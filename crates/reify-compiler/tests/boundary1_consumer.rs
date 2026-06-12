@@ -276,13 +276,13 @@ fn handle_parse_errors_gracefully() {
 }
 
 /// Step 21: check_trait_conformance emits a diagnostic for unresolved type names
-/// instead of silently falling back to Type::Real.
+/// instead of silently falling back to Type::dimensionless_scalar().
 ///
 /// Constructs a module with:
 /// - trait T requiring `param x : Real`
 /// - structure S : T with `param x : NonexistentEnumType`
 ///
-/// Before the fix (step 22), check_trait_conformance silently uses Type::Real for
+/// Before the fix (step 22), check_trait_conformance silently uses Type::dimensionless_scalar() for
 /// the unresolved type, so assertion #3 (conformance-path message format) fails.
 /// After the fix, a "unresolved type in conformance check: NonexistentEnumType"
 /// diagnostic is emitted.
@@ -388,7 +388,7 @@ fn reject_unresolved_type_in_trait_conformance() {
 
     // Assertion 3: specifically the conformance-path diagnostic must be present.
     // This assertion fails BEFORE the fix because check_trait_conformance
-    // silently falls back to Type::Real without emitting a diagnostic.
+    // silently falls back to Type::dimensionless_scalar() without emitting a diagnostic.
     let has_conformance_diagnostic = compiled.diagnostics.iter().any(|d| {
         d.message.contains("unresolved type in conformance check")
             && d.message.contains("NonexistentEnumType")

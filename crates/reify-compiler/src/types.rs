@@ -120,7 +120,7 @@ pub struct CompiledAssocFnSig {
     pub has_self: bool,
     /// Resolved types of the non-self parameters, in declaration order.
     pub params: Vec<Type>,
-    /// Resolved return type (defaults to `Type::Real` when unannotated).
+    /// Resolved return type (defaults to `Type::dimensionless_scalar()` when unannotated).
     pub return_type: Type,
 }
 
@@ -1548,7 +1548,7 @@ impl CompiledConstraintDef {
 /// | Velocity (L·T⁻¹) | 0=1, 2=-1       | `false` |
 /// | Angle·T⁻¹        | 2=-1, 7=1       | `false` |
 /// | Dimensionless    | all zero         | `false` |
-/// | `Type::Real`     | not a Scalar     | `false` |
+/// | `Type::dimensionless_scalar()`     | not a Scalar     | `false` |
 pub fn is_geometric_param_type(ty: &Type) -> bool {
     if let Type::Scalar { dimension } = ty {
         // At least one of Length (slot 0) or Angle (slot 7) must be nonzero.
@@ -1735,10 +1735,10 @@ mod reflective_param_type_predicate_tests {
         );
     }
 
-    /// `Type::Real` and a dimensionless `Type::Scalar` must be excluded.
+    /// `Type::dimensionless_scalar()` and a dimensionless `Type::Scalar` must be excluded.
     #[test]
     fn geometric_excludes_dimensionless_and_real() {
-        assert!(!is_geometric_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_geometric_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
             "Dimensionless Scalar must be excluded"
@@ -1786,7 +1786,7 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
             "TraitObject(\"Rigid\") must be excluded"
         );
-        assert!(!is_material_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_material_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_material_param_type(&Type::length()),
             "Length must be excluded"

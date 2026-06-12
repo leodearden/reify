@@ -576,7 +576,7 @@ mod tests {
             CompiledExpr::user_function_call(
                 "RepresentationWithin".to_string(),
                 vec![
-                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::Real),
+                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::dimensionless_scalar()),
                     CompiledExpr::literal(
                         Value::Scalar {
                             si_value: 0.5e-6,
@@ -852,7 +852,7 @@ mod tests {
         // ValueRef with result_type = Real, not StructureRef.
         let subject_arg = CompiledExpr::value_ref(
             ValueCellId::new("subject", "self"),
-            Type::Real, // wrong result_type
+            Type::dimensionless_scalar(), // wrong result_type
         );
         let tol_arg = CompiledExpr::literal(
             Value::Scalar {

@@ -806,14 +806,14 @@ pub(crate) fn compile_entity(
                                             "unknown type name",
                                         )),
                                     );
-                                    Type::Real // fallback
+                                    Type::dimensionless_scalar() // fallback
                                 }
                             }
                         }
                     }
                 } else {
                     // Infer type from default expression if available
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets: register as Type::Geometry,
@@ -859,7 +859,7 @@ pub(crate) fn compile_entity(
                     // We'll register with a placeholder type; the actual type will
                     // be determined when we compile the expression. For now, use Real.
                     // We'll update this after the expression is compiled.
-                    scope.register(&let_decl.name, Type::Real);
+                    scope.register(&let_decl.name, Type::dimensionless_scalar());
                 }
                 outside_decl_spans
                     .entry(let_decl.name.clone())
@@ -1067,10 +1067,10 @@ pub(crate) fn compile_entity(
                                             DiagnosticLabel::new(type_expr.span, "unknown type"),
                                         ),
                                     );
-                                    Type::Real
+                                    Type::dimensionless_scalar()
                                 })
                             } else {
-                                Type::Real
+                                Type::dimensionless_scalar()
                             };
                             let id = ValueCellId::new(entity_name, &composite_name);
                             scope.names.insert(composite_name, (id, ty, None));
@@ -1078,7 +1078,7 @@ pub(crate) fn compile_entity(
                         reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
-                            scope.names.insert(composite_name, (id, Type::Real, None));
+                            scope.names.insert(composite_name, (id, Type::dimensionless_scalar(), None));
                         }
                         _ => {}
                     }
@@ -1305,7 +1305,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::Real
+                            Type::dimensionless_scalar()
                         }
                     })
                     .collect();
@@ -1600,7 +1600,7 @@ pub(crate) fn compile_entity(
                                     "unexpected dimensional expression in type argument",
                                 )),
                             );
-                            Type::Real
+                            Type::dimensionless_scalar()
                         }
                     })
                     .collect();
@@ -3106,7 +3106,7 @@ fn compile_match_arm_decl_group(
                 .collect();
 
             // suggestion 3: use .map() (not .filter_map()) so non-Named type-arg
-            // entries emit a diagnostic and yield Type::Real, preserving positional
+            // entries emit a diagnostic and yield Type::dimensionless_scalar(), preserving positional
             // alignment for subsequent bound checks. `auto:` / `auto(free):` slots
             // mirror the non-arm Sub path (entity.rs): lowered to a synthetic
             // `Type::TypeParam("__auto_<bound>")` placeholder and recorded as an
@@ -3150,7 +3150,7 @@ fn compile_match_arm_decl_group(
                                 "unexpected dimensional expression in type argument",
                             )),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     }
                 })
                 .collect();
@@ -3322,7 +3322,7 @@ fn arm_member_type(
         }
         reify_ast::MemberDecl::Let(l) => {
             // Same pass-1 registration invariant as the Param arm above; the ICE guards
-            // against a future refactor regressing to silent Type::Real. See `emit_ice_unresolved`.
+            // against a future refactor regressing to silent Type::dimensionless_scalar(). See `emit_ice_unresolved`.
             scope
                 .resolve(&l.name)
                 .map(|(_, ty)| ty.clone())
@@ -3332,12 +3332,12 @@ fn arm_member_type(
         }
         _ => {
             // Unhandled MemberDecl variant: emit a diagnostic so the caller gets explicit
-            // feedback rather than a silently-wrong Type::Real.
+            // feedback rather than a silently-wrong Type::dimensionless_scalar().
             diagnostics.push(
                 Diagnostic::error("unsupported member kind in match arm")
                     .with_label(DiagnosticLabel::new(span, "expected param, let, or sub")),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
     }
 }
@@ -4141,7 +4141,7 @@ pub(crate) fn build_structure_def_skeleton(
                         trait_names,
                     )
                 })
-                .unwrap_or(Type::Real);
+                .unwrap_or(Type::dimensionless_scalar());
 
             let default_expr = param.default.as_ref().map(|expr| {
                 let mut compiled =
@@ -4309,7 +4309,7 @@ mod tests {
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
     /// when the declared name is absent from scope.  We assert that:
-    /// 1. `Type::Real` is returned (the ICE fallback value).
+    /// 1. `Type::dimensionless_scalar()` is returned (the ICE fallback value).
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
@@ -4455,8 +4455,8 @@ mod tests {
 
             assert_eq!(
                 ty,
-                Type::Real,
-                "[{label}] fallback type should be Type::Real"
+                Type::dimensionless_scalar(),
+                "[{label}] fallback type should be Type::dimensionless_scalar()"
             );
             assert_eq!(
                 diagnostics.len(),

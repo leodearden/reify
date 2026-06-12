@@ -100,7 +100,7 @@ fn assert_real_default(template: &TopologyTemplate, member: &str, expected: f64)
 
     assert_eq!(
         expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "{}.{} default result_type should be Real, got: {:?}",
         template.name,
         member,
@@ -316,7 +316,7 @@ fn fdm_coupon_override_has_optional_override_fields() {
     let pressure_opt = Type::Option(Box::new(Type::Scalar {
         dimension: DimensionVector::PRESSURE,
     }));
-    let real_opt = Type::Option(Box::new(Type::Real));
+    let real_opt = Type::Option(Box::new(Type::dimensionless_scalar()));
 
     assert_param_type(template, "ex", &pressure_opt);
     assert_param_type(template, "ey", &pressure_opt);

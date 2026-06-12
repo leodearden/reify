@@ -66,12 +66,12 @@ fn optical_module_loads_with_no_errors_and_one_trait() {
 /// reference_thickness), which become optional in task #4241 γ.
 ///
 /// Required:
-///   refractive_index        → Type::Real (genuine-dimensionless)
+///   refractive_index        → Type::dimensionless_scalar() (genuine-dimensionless)
 ///
 /// Optional (DefaultKind::Param in oc.defaults):
 ///   absorption_coefficient  → Type::Scalar { dimension: ABSORPTION_COEFF }
 ///                             (= undef; type tightened by task #3115)
-///   transmittance           → Type::Real (= undef; genuine-dimensionless)
+///   transmittance           → Type::dimensionless_scalar() (= undef; genuine-dimensionless)
 ///   reference_thickness     → Type::Scalar { dimension: LENGTH }
 ///                             (= undef; tightened by task #3113)
 #[test]
@@ -109,8 +109,8 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
     match &req.kind {
         RequirementKind::Param(ty) => assert_eq!(
             ty,
-            &Type::Real,
-            "refractive_index expected Type::Real, got {:?}",
+            &Type::dimensionless_scalar(),
+            "refractive_index expected Type::dimensionless_scalar(), got {:?}",
             ty
         ),
         other => panic!(
@@ -128,7 +128,7 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
                 dimension: DimensionVector::ABSORPTION_COEFF,
             },
         ),
-        ("transmittance", Type::Real),
+        ("transmittance", Type::dimensionless_scalar()),
         (
             "reference_thickness",
             Type::Scalar {

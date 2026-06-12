@@ -35,7 +35,7 @@ fn tensor_element_dimension(codomain: &Type) -> Option<DimensionVector> {
             quantity,
         } => match quantity.as_ref() {
             Type::Scalar { dimension } => Some(*dimension),
-            Type::Real | Type::Int => Some(DimensionVector::DIMENSIONLESS),
+            Type::Int => Some(DimensionVector::DIMENSIONLESS),
             _ => None,
         },
         _ => None,
@@ -113,10 +113,10 @@ fn validate_tensor_field<'a>(
 
 /// Build the scalar result type from an element dimension.
 ///
-/// Returns `Type::Real` for dimensionless, `Type::Scalar { dimension }` otherwise.
+/// Returns `Type::dimensionless_scalar()` for dimensionless, `Type::Scalar { dimension }` otherwise.
 fn scalar_type_for_dim(dim: DimensionVector) -> Type {
     if dim == DimensionVector::DIMENSIONLESS {
-        Type::Real
+        Type::dimensionless_scalar()
     } else {
         Type::Scalar { dimension: dim }
     }
@@ -216,7 +216,7 @@ pub(crate) fn compute_safety_factor(field_val: &Value, yield_val: &Value) -> Val
     }
 
     // Safety factor is dimensionless (yield / von_mises cancels dimensions)
-    let result_codomain = Type::Real;
+    let result_codomain = Type::dimensionless_scalar();
 
     // Store both the original field and yield value in the lambda slot as a List
     let captured = Value::List(vec![field_val.clone(), yield_val.clone()]);

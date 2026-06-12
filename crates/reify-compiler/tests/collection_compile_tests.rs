@@ -406,7 +406,7 @@ fn compile_flat_map_infers_lambda_return_type_real() {
     let expr = get_cell_expr(&compiled, "xs");
     assert_eq!(
         expr.result_type,
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
         "flat_map([Int], |x: Real| [x, x]) should have result_type List<Real>, got {:?}",
         expr.result_type
     );

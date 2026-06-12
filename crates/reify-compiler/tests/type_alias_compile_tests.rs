@@ -933,7 +933,7 @@ fn alias_dependency_map_via_type_args_reverse_order() {
         .expect("identity function not found");
     assert_eq!(
         func.params[0].1,
-        Type::Map(Box::new(Type::Real), Box::new(Type::String)),
+        Type::Map(Box::new(Type::dimensionless_scalar()), Box::new(Type::String)),
         "Outer should resolve to Map<Real, String>"
     );
 }
@@ -1080,7 +1080,7 @@ fn compiled_type_alias_has_no_type_expr_field() {
     // and confirm it compiles without a type_expr field.
     let alias = CompiledTypeAlias {
         name: "TestAlias".to_string(),
-        resolved_type: Some(Type::Real),
+        resolved_type: Some(Type::dimensionless_scalar()),
         type_params: vec![],
         is_pub: false,
         span: SourceSpan::new(0, 0),

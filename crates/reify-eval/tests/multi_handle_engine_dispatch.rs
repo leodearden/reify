@@ -310,7 +310,7 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
         .realization_named("MyDesign", 0, "body", vec![box_op])
         .build()
 }

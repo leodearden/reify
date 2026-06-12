@@ -166,7 +166,7 @@ mod tests {
                 },
                 args: vec![],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: ContentHash::of(b"test"),
         };
         assert_eq!(
@@ -197,7 +197,7 @@ mod tests {
                 im: 4.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             },
-            Type::complex(Type::Real),
+            Type::complex(Type::dimensionless_scalar()),
         );
         assert_eq!(
             ConstraintClassifier::classify(&expr),
@@ -216,7 +216,7 @@ mod tests {
                 im: 4.0,
                 dimension: DimensionVector::DIMENSIONLESS,
             },
-            Type::complex(Type::Real),
+            Type::complex(Type::dimensionless_scalar()),
         );
         let bool_expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
         let expr = CompiledExpr::binop(BinOp::And, complex_expr, bool_expr, Type::Bool);

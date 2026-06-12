@@ -1,7 +1,7 @@
-//! RED behavioural contract for α (task 4373): delete Type::Real, canonicalize
+//! RED behavioural contract for α (task 4373): delete Type::dimensionless_scalar(), canonicalize
 //! type layer to Scalar{DIMENSIONLESS}.
 //!
-//! Every assertion in this file **compiles today** (none references Type::Real
+//! Every assertion in this file **compiles today** (none references Type::dimensionless_scalar()
 //! directly) but the integration tests fail at runtime until step-4 lands the
 //! atomic deletion.  The unit tests in type_compat.rs and reify-eval/src/lib.rs
 //! mod tests are companion contracts for the same migration.
@@ -11,8 +11,8 @@ use reify_test_support::compile_source;
 
 // ── (a) Real + Dimensionless addition must compile clean ─────────────────────
 //
-// Today: `a : Real` has Type::Real; `b : Dimensionless` has Type::Scalar{DL}.
-// The Add/Sub arm `(Type::Int | Type::Real, Type::Scalar { .. })` fires and
+// Today: `a : Real` has Type::dimensionless_scalar(); `b : Dimensionless` has Type::Scalar{DL}.
+// The Add/Sub arm `(Type::Int | Type::dimensionless_scalar(), Type::Scalar { .. })` fires and
 // emits "incompatible types in addition: Real vs Real".
 //
 // After α: both `a` and `b` are Type::Scalar{DL}; the arm doesn't fire.
@@ -42,7 +42,7 @@ occurrence def Widget {
 // ── (b) Dimensionless + Int must compile clean ────────────────────────────────
 //
 // Today: `b : Dimensionless` has Type::Scalar{DL}; `1` has Type::Int.
-// The arm `(Type::Scalar { .. }, Type::Int | Type::Real)` fires and emits
+// The arm `(Type::Scalar { .. }, Type::Int | Type::dimensionless_scalar())` fires and emits
 // "incompatible types in addition: Real vs Int".
 //
 // After α + the !is_dimensionless() guard: the arm is skipped.
@@ -70,8 +70,8 @@ occurrence def Widget {
 
 // ── (c) Real + Int stays clean (regression guard) ────────────────────────────
 //
-// Today: `a : Real` → Type::Real; `1` → Type::Int. Neither Add/Sub arm
-// matches `(Type::Real, Type::Int)`, so no error.
+// Today: `a : Real` → Type::dimensionless_scalar(); `1` → Type::Int. Neither Add/Sub arm
+// matches `(Type::dimensionless_scalar(), Type::Int)`, so no error.
 //
 // After α: `a : Real` → Type::Scalar{DL}. The !is_dimensionless() guard MUST
 // be in place so the arm is still skipped for dimensionless + Int.
@@ -102,7 +102,8 @@ occurrence def Widget {
 // Today (after step-2 Display change): `r : Dimensionless` has Type::Scalar{DL}
 // which now displays as "Real". `L : Length` has Type::Scalar{LENGTH} which
 // displays as "Scalar[m]". The dimension-mismatch diagnostic fires and says
-// "dimension mismatch in addition: Scalar[m] vs Real".
+// something like "dimension mismatch in addition: <LENGTH-side> vs Real"
+// where the LENGTH side prints as "Scalar[m]" via the dimensioned Display.
 //
 // This test checks: (1) error is emitted, (2) message contains "Real" for the DL side.
 // GREEN after step-2 (diagnostic already mentions "Real"); regression guard for step-4.

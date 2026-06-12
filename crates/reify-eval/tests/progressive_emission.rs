@@ -51,14 +51,14 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
+                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
                 .let_binding(
                     e,
                     "b",
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     binop(
                         BinOp::Mul,
-                        value_ref_typed(e, "a", Type::Real),
+                        value_ref_typed(e, "a", Type::dimensionless_scalar()),
                         literal(Value::Real(2.0)),
                     ),
                 )
