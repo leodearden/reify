@@ -229,10 +229,10 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
         return true;
     }
     // Allow Int→dimensionless-scalar widening coercion
-    if let (Type::Scalar { dimension }, Type::Int) = (param_ty, arg_ty) {
-        if dimension.is_dimensionless() {
-            return true;
-        }
+    if let (Type::Scalar { dimension }, Type::Int) = (param_ty, arg_ty)
+        && dimension.is_dimensionless()
+    {
+        return true;
     }
     // PRD §4.4 (task 4117 β): Selector(_) arg coerces ONE-DIRECTIONALLY to a
     // List<Geometry> param. The rule is directional: a selector may be passed
