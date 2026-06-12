@@ -661,6 +661,80 @@ mod tests {
         );
     }
 
+    /// Minimal `GeometryKernel` stub that inherits the default
+    /// `densify_grid_to_sampled` (returns `Err(QueryFailed)`).
+    /// All other required methods are unreachable in the densify test.
+    struct DensifyAlwaysFailKernel;
+    impl reify_ir::GeometryKernel for DensifyAlwaysFailKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unimplemented!()
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unimplemented!()
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unimplemented!()
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            unimplemented!()
+        }
+        // densify_grid_to_sampled: inherits default →
+        // Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))
+    }
+
+    /// δ DEGRADATION (densify Err): kernel registered but `densify_grid_to_sampled`
+    /// returns `Err(QueryFailed)` — arm must produce `None + 1 diag`, not panic.
+    #[test]
+    fn project_voxel_densify_err_returns_none_with_one_diagnostic() {
+        let mut engine = make_engine();
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+
+        // Register a stub under the openvdb name with no densify override; its
+        // default densify_grid_to_sampled always returns Err(QueryFailed).
+        engine.geometry_kernels.insert(
+            openvdb_name.to_string(),
+            Box::new(DensifyAlwaysFailKernel),
+        );
+
+        let r0 = RealizationNodeId::new("densify-err", 0);
+        let h = ContentHash::of_str("densify-err-hash");
+        // A fake handle id so (Some(hid), Some(kernel)) matches and we reach
+        // the densify call; DensifyAlwaysFailKernel doesn't hold any handles,
+        // but its densify returns Err before accessing them.
+        let fake_id = reify_ir::GeometryHandleId(99);
+        let mut graph = EvaluationGraph::default();
+        seed_realization(&mut graph, r0.clone(), h, ReprKind::Voxel);
+        engine.realization_handles.insert(r0.clone(), fake_id);
+
+        let (read_handle, diags) = engine.project_realization_read_handle(&r0, &graph);
+
+        assert!(
+            read_handle.sdf().is_none(),
+            "densify Err arm must return None content; got {:?}",
+            read_handle.content()
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "densify Err arm must emit exactly one diagnostic; got {diags:?}"
+        );
+    }
+
     /// δ DEGRADATION (cfg(not(has_openvdb)) stub build): the Voxel/Sdf arm
     /// must return `None + 1 diag` even when `with_registered_kernels` is used
     /// (openvdb is not registered in stub builds so the kernel lookup fails).

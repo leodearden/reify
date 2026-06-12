@@ -497,7 +497,8 @@ impl GeometryKernel for OpenVdbKernel {
     /// can dispatch through `Box<dyn GeometryKernel>` (realization-read-api.md
     /// §3.3 δ, D4 reuse — verbatim body, no parallel path).
     ///
-    /// `&mut self` — see Sync-audit note in the previous incarnation's doc.
+    /// `&mut self` avoids the `evalActiveVoxelBoundingBox` `&self`-aliasing
+    /// race; see the Sync maintenance contract at the bottom of this file.
     fn densify_grid_to_sampled(
         &mut self,
         handle: GeometryHandleId,
