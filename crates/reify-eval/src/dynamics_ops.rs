@@ -432,6 +432,25 @@ pub fn try_eval_body_mass_props(
 /// carried a geometry handle, or when all geometry-backed bodies failed their
 /// kernel queries — mirroring the `None`-means-skip post-process contract.
 ///
+/// **Idempotency guard:** bodies that already carry a `derived_mass_props`
+/// `MassProperties` from a prior pass are skipped without issuing any kernel
+/// queries. This guard relies on the invariant that **any upstream geometry
+/// change produces a fresh body `Value` without the stale `derived_mass_props`
+/// key** — i.e. the mechanism cell is rebuilt from scratch when its geometry
+/// changes, so a stale derived value cannot silently survive into the new build.
+/// If this invariant ever breaks (e.g. partial incremental eval that mutates
+/// body maps in place rather than rebuilding them), the guard would need to be
+/// strengthened to also record and compare the source handle used at derivation
+/// time.
+///
+/// **Failed bodies are retried on every pass:** a body whose kernel query fails
+/// is left without `derived_mass_props` and is therefore NOT covered by the
+/// idempotency guard. On every subsequent post-process pass (build /
+/// `build_snapshot` / `tessellate_from_values`) that body will be re-queried
+/// and a fresh `Diagnostic::warning` will be emitted. This is intentional: once
+/// the kernel can answer (e.g. after a kernel-side bugfix or a geometry update),
+/// the body self-heals on the next pass without any recovery logic.
+///
 /// On a kernel-query failure for an individual body, a `Diagnostic::warning` is
 /// emitted and that body is left unpatched (skipped), but the pass continues
 /// with the remaining bodies.
@@ -456,6 +475,31 @@ pub fn derive_mechanism_mass_props(
         Some(Value::List(b)) => b,
         _ => return None,
     };
+
+    // Fast path: if no body is both (a) geometry-backed and (b) not already
+    // derived, there is nothing to patch. Return None early to avoid allocating
+    // and deep-cloning the full bodies vector only to discard it when
+    // `any_patched` is false. This matters most for mechanisms with many bodies
+    // but no fresh geometry-handle body (e.g. all already derived, or all with
+    // non-handle solids).
+    let has_patchable = bodies.iter().any(|b| {
+        let bm = match b {
+            Value::Map(m) => m,
+            _ => return false,
+        };
+        // A body is patchable iff its solid is a GeometryHandle AND it does not
+        // already carry a derived_mass_props MassProperties (idempotency guard).
+        matches!(
+            bm.get(&Value::String("solid".to_string())),
+            Some(Value::GeometryHandle { .. })
+        ) && !matches!(
+            bm.get(&Value::String("derived_mass_props".to_string())),
+            Some(Value::StructureInstance(d)) if d.type_name == "MassProperties"
+        )
+    });
+    if !has_patchable {
+        return None;
+    }
 
     let mut patched_bodies: Vec<Value> = Vec::with_capacity(bodies.len());
     let mut any_patched = false;
@@ -1977,7 +2021,7 @@ mod inverse_dynamics_trampoline_tests {
 mod derive_mechanism_mass_props_tests {
     use std::collections::BTreeMap;
 
-    use reify_core::{RealizationNodeId, Severity};
+    use reify_core::{DiagnosticCode, RealizationNodeId, Severity};
     use reify_ir::{GeometryHandleId, PersistentMap, StructureInstanceData, StructureTypeId, Value};
     use reify_test_support::mocks::MockGeometryKernel;
 
@@ -2102,6 +2146,20 @@ mod derive_mechanism_mass_props_tests {
         assert!(
             diags.is_empty(),
             "no diagnostic expected on success; got: {diags:?}"
+        );
+        // The build pass must NOT emit W_DynamicsDefaultDensity even though it uses
+        // the water-default density (1000 kg/m³). Per the design decision, that
+        // warning belongs to the user-facing body_mass_props() call only; the
+        // internal derivation pass is intentionally silent on water-default density.
+        // The diags.is_empty() check above already guards this contract, but this
+        // targeted assertion makes the behavioral invariant explicit so a future
+        // change that accidentally starts emitting it is caught with a clear message.
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code != Some(DiagnosticCode::DynamicsDefaultDensity)),
+            "W_DynamicsDefaultDensity must NOT be emitted by the build pass (water \
+             default is intentionally silent here); got: {diags:?}"
         );
     }
 
@@ -2470,6 +2528,106 @@ mod derive_mechanism_mass_props_tests {
         assert!(
             diags.is_empty(),
             "idempotency guard must not emit any diagnostics; got: {diags:?}"
+        );
+    }
+
+    /// Two-body mixed idempotency test: body[0] already carries a sentinel
+    /// `derived_mass_props` (mass=9999.0, a distinct value distinguishable from
+    /// the freshly-derived mass=6000.0), body[1] is a fresh geometry body
+    /// (HANDLE_ID, replies injected via `mock_kernel()`).
+    ///
+    /// Expected invariants:
+    /// - body[0] idempotency guard fires → no kernel call → `derived_mass_props`
+    ///   remains byte-identical to the input sentinel (mass=9999.0).
+    /// - body[1] is freshly derived → gains `derived_mass_props` (mass=6000.0).
+    /// - No Warning is emitted (guard skipped body[0], body[1] succeeded).
+    ///
+    /// body[0]'s solid is HANDLE_ID2 (43) which has no kernel replies; if the
+    /// guard were absent, querying body[0] would emit a Warning and the
+    /// `diags.is_empty()` assertion below would fail — verifying that the guard
+    /// does not re-query already-derived bodies even in the mixed-body case.
+    #[test]
+    fn derive_mechanism_mass_props_mixed_idempotency_and_fresh_derivation() {
+        // body[0]: already-derived sentinel; solid = HANDLE_ID2 (no replies → fails if queried).
+        let sentinel_mp = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 1,
+            fields: [("mass".to_string(), Value::Real(9999.0))]
+                .into_iter()
+                .collect::<PersistentMap<_, _>>(),
+        }));
+        let handle_no_replies = Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Design", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: HANDLE_ID2, // no replies in mock_kernel() → would warn if queried
+        };
+        let mut body0 = BTreeMap::new();
+        body0.insert(Value::String("id".to_string()), Value::Int(0));
+        body0.insert(Value::String("solid".to_string()), handle_no_replies);
+        body0.insert(
+            Value::String("derived_mass_props".to_string()),
+            sentinel_mp.clone(),
+        );
+
+        // body[1]: fresh geometry body, HANDLE_ID (replies injected by mock_kernel()).
+        let mut body1 = BTreeMap::new();
+        body1.insert(Value::String("id".to_string()), Value::Int(1));
+        body1.insert(Value::String("solid".to_string()), geometry_handle());
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body0), Value::Map(body1)]),
+        );
+        let mech_value = Value::Map(mech);
+
+        // mock_kernel() has replies for HANDLE_ID=42 only; HANDLE_ID2=43 has none.
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        let result = derive_mechanism_mass_props(&mech_value, &kernel, &mut diags);
+        let patched = result.expect("must return Some (body[1] was freshly derived)");
+
+        // body[0]: guard fired → derived_mass_props must be byte-identical to sentinel.
+        let b0 = body_at(&patched, 0);
+        let b0_mp = b0
+            .get(&Value::String("derived_mass_props".to_string()))
+            .expect("body[0] must still carry derived_mass_props after guard");
+        assert_eq!(
+            b0_mp, &sentinel_mp,
+            "body[0] derived_mass_props must be byte-identical to the input sentinel \
+             (guard must not re-derive when derived_mass_props is already present)"
+        );
+
+        // body[1]: freshly derived → must carry derived_mass_props with mass=6000.0.
+        let b1 = body_at(&patched, 1);
+        assert!(
+            b1.contains_key(&Value::String("derived_mass_props".to_string())),
+            "body[1] must carry derived_mass_props after fresh derivation"
+        );
+        let b1_data = match b1.get(&Value::String("derived_mass_props".to_string())).unwrap() {
+            Value::StructureInstance(d) => d,
+            other => panic!("body[1] derived_mass_props must be StructureInstance, got {other:?}"),
+        };
+        let mass_f64 = match b1_data.fields.get("mass").expect("mass field") {
+            Value::Real(r) => *r,
+            Value::Scalar { si_value, .. } => *si_value,
+            other => panic!("mass must be numeric, got {other:?}"),
+        };
+        assert!(
+            (mass_f64 - 6000.0).abs() < 1e-9,
+            "body[1] mass = 1000 × 6 = 6000.0; got {mass_f64}"
+        );
+
+        // No Warning emitted: guard skipped body[0] cleanly, body[1] succeeded.
+        assert!(
+            diags.is_empty(),
+            "no diagnostic expected in mixed idempotency case; got: {diags:?}"
         );
     }
 }
