@@ -412,12 +412,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
 /// exactly the six PRD §4.1 params with the canonical types, in declaration
 /// order:
 ///
-///   - `part                  : String`                  (PLACEHOLDER for the
-///                                                        future `Part`
-///                                                        structure_def from
-///                                                        the v0.3 solver-
-///                                                        elastic PRD — see
-///                                                        plan design-decision-2)
+///   - `part                  : Part`                    (StructureRef — task 4578)
 ///   - `modes                 : List<Mode>`              (computed eigenpairs;
 ///                                                        `Mode` is module-local
 ///                                                        → `Type::StructureRef`)
@@ -1503,8 +1498,7 @@ fn forcing_function_trait_declared() {
 /// forcing sources at the per-Part layer. Must declare exactly 2 params in
 /// declaration order:
 ///
-///   - `part    : String`                      (PLACEHOLDER for future `Part` type;
-///                                              mirrors `ModalResult.part : String`)
+///   - `part    : Part`                        (StructureRef — task 4578)
 ///   - `sources : List<ForcingFunction>`       (List of trait-object conformers;
 ///                                              resolves to
 ///                                              `Type::List(Box::new(Type::TraitObject("ForcingFunction")))`)

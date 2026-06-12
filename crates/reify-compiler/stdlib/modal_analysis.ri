@@ -443,8 +443,7 @@ trait ForcingFunction { }
 //                FIXME(location-id-type): encoded as `String` PLACEHOLDER for
 //                the future `LocationId` topology-selector type (not yet landed
 //                in Reify v0.3). Consistent with `FixedSupport.target : String`
-//                (fea_multi_case.ri:309) and `ModalResult.part : String`
-//                (modal_analysis.ri:241) using `String` as a selector/name
+//                (fea_multi_case.ri:309) using `String` as a selector/name
 //                placeholder. Consumer tasks θ/ι read `.magnitude` and
 //                `.direction`, not `.at` directly, so this placeholder is
 //                non-blocking.

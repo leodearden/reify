@@ -4994,6 +4994,9 @@ mod tests {
     #[test]
     fn echo_part_field_is_part_instance() {
         // placeholder_part() must return a zero-field opaque Part StructureInstance.
+        // The two non-degenerate runtime paths (run_modal_analysis, run_transient_response)
+        // call placeholder_part() directly, so a regression there would also break
+        // this assertion via the shared helper — no separate integration test needed.
         let part_val = placeholder_part();
         match &part_val {
             Value::StructureInstance(si) => {
