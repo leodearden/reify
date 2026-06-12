@@ -284,13 +284,17 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 ///
 /// **Policy: strict equality, not bidirectional `type_compatible`.**
 ///
-/// Call-site overload resolution (`resolve_function_overload`) and
-/// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
-/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::dimensionless_scalar()`.
-/// A default value is conceptually inserted at the padded call site, so the
-/// definition-site check must be at least as strict as the call-site check;
-/// otherwise a default could synthesize an argument that an explicit call would
-/// refuse, creating a type-system inconsistency.
+/// The definition-site default-expression check must be at least as strict as
+/// the call-site check so that a default cannot synthesize an argument that an
+/// explicit call would refuse, creating a type-system inconsistency.  Strict
+/// equality is correct here because a struct-ctor default (e.g. `ElasticOptions()`)
+/// already produces exactly the param's `StructureRef` type — so the check
+/// passes without any relaxation.
+///
+/// Note: `try_default_padding`'s PREFIX check (whether the provided args match
+/// the leading params) uses the same trait/type-param wildcard predicate as
+/// `resolve_function_overload` — it is NOT strict equality.  Only this
+/// definition-site default-expression-vs-param-type check is strict.
 ///
 /// **Anti-cascade guard.** If either type is `Type::Error` (poison sentinel from
 /// a failed `compile_expr`), silently accept — the root-cause diagnostic was
@@ -900,8 +904,31 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///
 /// Searches `named` for the UNIQUE same-name candidate where:
 /// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]`
+///   using the same trait/type-param wildcard predicate as
+///   `resolve_function_overload` (see below), and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// **Prefix predicate (mirrors `resolve_function_overload` lines 662-667):**
+/// For each `(param_ty, arg_ty)` pair in the provided prefix, the pair
+/// *matches* when any of:
+/// - `type_carries_trait_object(param_ty)` — trait-object param is a wildcard;
+///   the concrete arg type's trait conformance is validated downstream by
+///   `phase_fn_arg_conformance`, not here.
+/// - `is_generic && type_carries_type_param(param_ty)` — type-param-carrying
+///   param in a generic candidate is a wildcard (gated on non-empty `type_params`
+///   so concrete candidates are unaffected — INV-6).
+/// - `type_carries_type_param(arg_ty)` — a TypeParam-typed arg (inside a
+///   generic fn body) matches any param type (D4, task-4232 γ).
+/// - `param_ty == arg_ty` — exact equality for concrete params.
+///
+/// This alignment is intentional: a call padded with defaults is compiled as a
+/// normal `UserFunctionCall` whose trait-arg conformance is checked by
+/// `phase_fn_arg_conformance`. Using stricter prefix semantics here than in the
+/// overload resolver created a gap where `options` defaults on solver functions
+/// were unreachable for any call involving trait-typed leading params (e.g. a
+/// `ConstitutiveLaw`/`ElasticMaterial` material arg or a `List<Load>` loads
+/// arg). (task-4544.)
 ///
 /// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
 /// because only its length was used and `arg_types` is always length-aligned
@@ -942,11 +969,19 @@ pub(crate) fn try_default_padding<'a>(
         if cand.param_defaults.len() != cand.params.len() {
             continue;
         }
-        // Provided prefix types must match candidate params exactly.
+        // Provided prefix types must match candidate params using the same
+        // trait/type-param wildcard predicate as `resolve_function_overload`
+        // (lines 662-667). See the function-level doc for the full rationale.
+        let is_generic = !cand.type_params.is_empty();
         let prefix_matches = cand.params[..provided]
             .iter()
             .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+            .all(|((_, param_ty), arg_ty)| {
+                type_carries_trait_object(param_ty)
+                    || (is_generic && type_carries_type_param(param_ty))
+                    || type_carries_type_param(arg_ty)
+                    || param_ty == arg_ty
+            });
         if !prefix_matches {
             continue;
         }
