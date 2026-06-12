@@ -208,11 +208,11 @@ structure def Snapshot {
 // SweepDim — one dimension of a kinematic sweep study (PRD §7.1).
 //
 //   joint  : Real    — TODO(joint-type): the swept joint (DrivingJoint placeholder)
-//   range  : Real    — TODO(range-type): Range<T> not yet a surface type in
+//   range  : Real    — TODO(range-type, #4576): Range<T> not yet a surface type in
 //                      type_resolution.rs — Real placeholder for now
 //   steps  : Int     — number of discrete steps across the range
 structure def SweepDim {
     param joint : Real   // TODO(joint-type): DrivingJoint placeholder
-    param range : Real   // TODO(range-type): Range<T> not yet a surface type
+    param range : Real   // TODO(range-type, #4576): Range<T> not yet a surface type
     param steps : Int
 }
