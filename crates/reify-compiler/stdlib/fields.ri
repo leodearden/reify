@@ -17,20 +17,21 @@
 //   sample(f, point)     — evaluate field f at a domain point; intercepting
 //                          builtin (reify-expr/lib.rs:196); do NOT shadow
 //
-// ── §11 Standard Library Field Functions (documented, not redeclared) ─────────
+// ── §11 Standard Library Field Functions ──────────────────────────────────────
 //
-//   compose              — field source syntax: `source = composed { ... }`;
-//                          not a callable function
+//   compose              — callable generic `.ri` fn declared below (task 4224 ζ).
+//                          compose(f, g)(p) = f(g(p)). The `composed{}` block form
+//                          (task 2343) is retained for back-compat and is untouched.
 //   sample               — intercepting builtin (see above)
-//   restrict             — no implementation; returns Field, which is not
-//                          constructible in a pub fn body
-//   constant_field       — same restriction as restrict
-//   fn_field             — same restriction as restrict
-//   from_samples         — same restriction as restrict
+//   restrict             — intercepting builtin; no `.ri` fn body (codomain unchanged)
+//   constant_field       — intercepting builtin; no `.ri` fn body yet (task 4223 ε)
+//   fn_field             — intercepting builtin; wraps a lambda as Field{Analytical}
+//   from_samples         — intercepting builtin; no `.ri` fn body yet
 //
-//   All six are listed in crates/reify-mcp/src/tools/chunks/fields.md §40-47.
-//   None satisfies (no intercepting builtin) AND (composable Reify body),
-//   so none is declared here.
+//   NOTE (post-4220): a `pub fn` CAN now return a Field via fn_field. The prior
+//   restriction ("Field not constructible in a pub fn body") was lifted when
+//   task 4220 β landed the fn_field intercepting-builtin eval arm. compose is the
+//   first stdlib fn to exploit this — its body is `fn_field(|p| sample(f, sample(g, p)))`.
 //
 // ── Generic exemplar (task 4233 δ — type-level-generics Tier-1 gate) ─────────
 //
@@ -49,6 +50,23 @@
 // constant_field/compose; through<T> is a stable exemplar that remains here.
 
 pub fn through<T>(x: T) -> T { x }
+
+// ── compose<A,B,C> (task 4224 ζ — PRD §1 + §9 ζ) ────────────────────────────
+//
+// compose(f, g)(p) = f(g(p))  — field function composition
+//
+// Type:  compose(Field<B,C>, Field<A,B>) -> Field<A,C>
+//
+// The body desugars to fn_field(|p| sample(f, sample(g, p))), reusing the
+// fn_field intercepting-builtin eval arm (task 4220 β) and the existing
+// sample dispatch + lambda-capture machinery — zero new Rust eval code.
+//
+// The `composed{}` block form (task 2343) is retained for back-compat and is
+// UNTOUCHED by this fn.
+
+pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
+    fn_field(|p| sample(f, sample(g, p)))
+}
 
 // ── Why no Field type alias ───────────────────────────────────────────────────
 //
