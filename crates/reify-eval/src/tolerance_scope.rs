@@ -20,8 +20,8 @@
 
 use crate::graph::ValueCellNode;
 use reify_compiler::CompiledPurpose;
-use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_ir::{CompiledExprKind, PersistentMap, Value};
+use reify_core::ValueCellId;
+use reify_ir::PersistentMap;
 use std::collections::{BTreeSet, HashMap};
 
 /// One extracted tolerance scope root: the entity-ref the purpose was bound
@@ -44,22 +44,18 @@ pub(crate) struct ToleranceBinding {
 ///
 /// # Validation gates
 ///
-/// 1. **Outer shape:** top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
-/// 2. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)` AND whose
-///    `ValueCellId.entity` matches one of `purpose.params[*].name` (the "bare-purpose-param"
-///    contract). A `ValueRef` to a non-param entity is rejected even if it happens to be
-///    typed `StructureRef(_)`, so an unrelated structure reference doesn't silently
-///    bind a tolerance to an entity it has no semantic connection to.
-/// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
-///    where `si_value.is_finite() && si_value >= 0.0`. Non-finite values (NaN, ±Inf) and
-///    negative finite values have no semantics for a tolerance — and worse, both would
-///    propagate into the scope and corrupt downstream consumers. NaN sticks because
-///    `merge_with_min` could never displace it (NaN comparisons evaluate false); a
-///    negative literal would win `merge_with_min` against any positive contributor and
-///    then panic `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
-///    in debug builds (or silently win an `o.min(p)` race in release). The
-///    `>= 0.0` half of the gate restores the symmetry `tolerance_combine.rs`'s
-///    "Recognition-shape twin" docstring claims with `extract_output_tolerance_bound`.
+/// Shape recognition (gates 2-4) is delegated to
+/// `crate::tolerance_combine::match_representation_within_shape`, which matches
+/// both the `UserFunctionCall` and the compiler-resolved `FunctionCall { ResolvedFunction }`
+/// IR variants. Gates specific to this extractor follow:
+///
+/// 1. **Param membership:** `subject_cell_id.entity` must appear in `purpose.params[*].name`
+///    (the "bare-purpose-param" contract). A `ValueRef` to a non-param entity is rejected
+///    even if it passes the shape gates, so an unrelated structure reference doesn't
+///    silently bind a tolerance to an entity it has no semantic connection to.
+/// 2. **Per-param binding:** the subject entity is looked up in `bindings` to resolve the
+///    actual bound entity. If not found, the constraint is skipped (safe no-op — C2 ensures
+///    every declared param has a binding for validly-activated purposes).
 ///
 /// # Per-param binding
 ///
@@ -78,36 +74,22 @@ pub(crate) fn extract_tolerance_bindings(
 ) -> Vec<ToleranceBinding> {
     let mut result = Vec::new();
     for constraint in &purpose.constraints {
-        // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
-        let (function_name, args) = match &constraint.expr.kind {
-            CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } => (function_name, args),
-            _ => continue,
+        // Gates 2-4: shape recognition delegated to the shared helper
+        // (`match_representation_within_shape` in tolerance_combine) — both the
+        // UFC and the compiler-resolved FunctionCall IR variants are handled
+        // there. The scope-specific gates (param membership + binding resolution)
+        // follow below.
+        let Some((subject_cell_id, _struct_name, si_value)) =
+            crate::tolerance_combine::match_representation_within_shape(&constraint.expr)
+        else {
+            continue;
         };
-        if function_name != "RepresentationWithin" {
-            continue;
-        }
-        if args.len() != 2 {
-            continue;
-        }
 
-        // arg0 must be a ValueRef whose result_type is StructureRef(_) AND whose
-        // entity matches one of the purpose's param names. The entity check is
-        // what enforces the "bare-purpose-param subject" contract documented at
-        // the module level — without it, a `RepresentationWithin(<unrelated
-        // StructureRef ValueRef>, tol)` would silently bind a tolerance to an
-        // unrelated entity. Today's compiler emits no such shape, but matching
-        // the documented contract prevents surprises when a real producer comes online.
-        let subject_arg = &args[0];
-        let subject_cell_id = match &subject_arg.kind {
-            CompiledExprKind::ValueRef(id) => id,
-            _ => continue,
-        };
-        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
-            continue;
-        }
+        // Scope-specific gate: subject entity must be one of the purpose's
+        // declared params. Enforces the "bare-purpose-param subject" contract
+        // documented at the module level — without it, a
+        // `RepresentationWithin(<unrelated StructureRef ValueRef>, tol)` would
+        // silently bind a tolerance to an unrelated entity.
         if !purpose
             .params
             .iter()
@@ -116,30 +98,15 @@ pub(crate) fn extract_tolerance_bindings(
             continue;
         }
 
-        // Resolve the param's bound entity from the bindings slice. Each param routes
-        // to its own entity so multi-param purposes produce per-param ToleranceBindings
-        // rather than collapsing all constraints onto a single ref.
+        // Resolve the param's bound entity from the bindings slice. Each param
+        // routes to its own entity so multi-param purposes produce per-param
+        // ToleranceBindings rather than collapsing all constraints onto one ref.
         let subject_entity = match bindings.iter().find(|(p, _)| p == &subject_cell_id.entity) {
             Some((_, entity)) => entity.clone(),
-            // Param not in bindings — skip. Defensively safe; valid activations guarantee
-            // every declared param has a binding (C2).
+            // Param not in bindings — skip. Defensively safe; valid activations
+            // guarantee every declared param has a binding (C2).
             None => continue,
         };
-
-        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
-        // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
-        // function docstring above for the full rationale.
-        let tol_arg = &args[1];
-        let si_value = match &tol_arg.kind {
-            CompiledExprKind::Literal(Value::Scalar {
-                si_value,
-                dimension,
-            }) if *dimension == DimensionVector::LENGTH => *si_value,
-            _ => continue,
-        };
-        if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
-            continue;
-        }
 
         result.push(ToleranceBinding {
             subject_entity,
