@@ -311,6 +311,19 @@ fn fillet_arg_count_diagnostic_has_span_label() {
     );
 }
 
+#[test]
+fn fillet_all_arg_count_diagnostic_has_span_label() {
+    // fillet_all() expects exactly 2 arguments — passing 1 should produce a labeled diagnostic
+    assert_arg_count_label(
+        r#"
+            structure S {
+                let f = fillet_all(box(10mm, 10mm, 10mm))
+            }
+        "#,
+        "fillet_all() expects 2 arguments",
+    );
+}
+
 // ── translate() / rotate() / scale() / rotate_around() ─────────────────
 
 #[test]

@@ -1595,6 +1595,11 @@ mod tests {
     }
 
     #[test]
+    fn compile_geometry_fillet_all_recognized() {
+        assert!(is_geometry_function("fillet_all"));
+    }
+
+    #[test]
     fn compile_geometry_draft_recognized() {
         assert!(is_geometry_function("draft"));
     }
