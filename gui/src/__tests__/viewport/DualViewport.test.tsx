@@ -956,9 +956,14 @@ describe('DualViewport tensegritySurfaces threading (β)', () => {
       x1: 1, y1: 0, z1: 0,
       x2: 0.5, y2: 0.866, z2: 0,
     };
-    const engineStore = makeEngineStore(['mesh/A']);
-    // Inject a surface into the store so the prop threading is observable.
-    (engineStore.state as any).tensegritySurfaces = [fakeSurface];
+    // Build a store that already has the surface so the prop-threading assertion is meaningful.
+    const meshes: Record<string, any> = { 'mesh/A': makeMesh('mesh/A') };
+    const [state] = createStore({
+      meshes,
+      tensegrityWires: [] as any[],
+      tensegritySurfaces: [fakeSurface] as any[],
+    });
+    const engineStore = { state };
     const defPreviewStore = makeDefPreviewStore();
     const viewportStore = makeViewportStore();
 
