@@ -445,7 +445,7 @@ mod tests {
         // "undefined inputs".
         let checker = SimpleConstraintChecker;
         let tensor_cell = vcid("Obj", "tensor_field");
-        let tensor_ref = CompiledExpr::value_ref(tensor_cell.clone(), Type::Real);
+        let tensor_ref = CompiledExpr::value_ref(tensor_cell.clone(), Type::dimensionless_scalar());
         let one_mm = CompiledExpr::literal(mm(1.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Gt, tensor_ref, one_mm, Type::Bool);
 
