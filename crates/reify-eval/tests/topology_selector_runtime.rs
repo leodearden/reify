@@ -571,6 +571,48 @@ fn faces_by_normal_let_constructs_typed_face_by_normal_selector() {
     );
 }
 
+/// Task ε (evaluate-then-accept): the INLINE direction form
+/// `faces_by_normal(body, vec3(0.0, 0.0, 1.0), 5deg)` — with the direction
+/// argument written as an inline `vec3(...)` constructor call (a
+/// `CompiledExprKind::FunctionCall`, NOT a `let`-bound `ValueRef → Value::Vector`)
+/// instead of a `let`-bound cell — must construct the same `ByNormal { dir: +z,
+/// tol: 5° }` leaf. Before ε the inline `vec3(...)` FunctionCall hit
+/// `resolve_vec3_arg`'s `_ => None` arm → the whole selector fell through → the
+/// cell stayed `Value::Undef` → RED. After ε the resolver evaluates the
+/// `vec3(...)` call (via `reify_stdlib::eval_builtin`) to a
+/// `Value::Vector([0,0,1])` → GREEN. Construction is kernel-FREE (UNSTAGED mock
+/// kernel, K2/BT7).
+#[test]
+fn faces_by_normal_inline_vec3_constructs_by_normal_selector() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let fs = faces_by_normal(body, vec3(0.0, 0.0, 1.0), 5deg)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| k);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "fs");
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.fs",
+        SelectorKind::Face,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByNormal { dir, tol_rad } => {
+                assert!((dir[0]).abs() < 1e-9, "dir.x must be 0, got {}", dir[0]);
+                assert!((dir[1]).abs() < 1e-9, "dir.y must be 0, got {}", dir[1]);
+                assert!((dir[2] - 1.0).abs() < 1e-9, "dir.z must be 1, got {}", dir[2]);
+                assert!(
+                    (*tol_rad - 5f64.to_radians()).abs() < 1e-9,
+                    "tol_rad must be 5°, got {tol_rad}"
+                );
+            }
+            other => panic!("faces_by_normal → ByNormal leaf, got {other:?}"),
+        },
+    );
+}
+
 /// `let es = edges_parallel_to(body, axis, tol)` with `let axis = vec3(0.0, 0.0, 1.0)`
 /// and `let tol = 1deg` must construct a typed `Value::Selector(Edge)` whose
 /// leaf is `ByParallel { axis: +z, tol: 1° }` over the parent box handle (task

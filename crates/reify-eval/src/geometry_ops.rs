@@ -7101,6 +7101,142 @@ mod tests {
         }
     }
 
+    /// Task ε (evaluate-then-accept): `resolve_vec3_arg` now EVALUATES the arg
+    /// expr (gaining a `diagnostics` sink + builtin/arg labels). An inline
+    /// `Literal(Value::Vector)` AND an inline `vec3(..)` FunctionCall both
+    /// resolve to `Some([..])` with 0 diagnostics; a defined-but-wrong value
+    /// (non-Vector, wrong length, or a dimensioned-Scalar component) is Rejected
+    /// with exactly one `Severity::Warning` naming the builtin, the arg, and the
+    /// expected `Vec3` type (byte-uniform wording with the density path).
+    ///
+    ///   (a) inline `Literal(Vector([Real,Real,Real]))` → `Some([..])`, 0 diags.
+    ///   (b) inline `vec3(0,0,1)` FunctionCall → `Some([0,0,1])`, 0 diags
+    ///       [RED before ε: the FunctionCall hit `resolve_vec3_arg`'s `_ => None`
+    ///       arm → silent fall-through].
+    ///   (c) inline `Literal(Real)` (non-Vector) → `None` + 1 Warning.
+    ///   (d) inline `Literal(Vector)` of length 2 (wrong length) → `None` + 1 Warning.
+    ///   (e) inline `Literal(Vector)` with a dimensioned-Scalar component → `None`
+    ///       + 1 Warning.
+    ///
+    /// Compile-RED until step-6 adds the `(builtin, arg, &mut diags)` signature.
+    #[test]
+    fn resolve_vec3_arg_eval_and_diagnostics() {
+        // (a) inline Literal(Vector([Real,Real,Real])) → Some([..]), 0 diags.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                vec3_value(0.0, 0.0, 1.0),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
+            assert_eq!(
+                result,
+                Some([0.0, 0.0, 1.0]),
+                "(a) inline vector literal must be Accepted"
+            );
+            assert!(diags.is_empty(), "(a) vector literal must produce no diags, got: {diags:?}");
+        }
+
+        // (b) inline vec3(0,0,1) FunctionCall → Some([0,0,1]), 0 diags.
+        {
+            let arg_x = literal_f64(0.0);
+            let arg_y = literal_f64(0.0);
+            let arg_z = literal_f64(1.0);
+            let mut ch = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(reify_core::ContentHash::of_str("vec3"));
+            ch = ch
+                .combine(arg_x.content_hash)
+                .combine(arg_y.content_hash)
+                .combine(arg_z.content_hash);
+            let expr = reify_ir::CompiledExpr {
+                kind: reify_ir::CompiledExprKind::FunctionCall {
+                    function: reify_ir::ResolvedFunction {
+                        name: "vec3".to_string(),
+                        qualified_name: "vec3".to_string(),
+                    },
+                    args: vec![arg_x, arg_y, arg_z],
+                },
+                result_type: reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+                content_hash: ch,
+            };
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
+            assert_eq!(
+                result,
+                Some([0.0, 0.0, 1.0]),
+                "(b) inline vec3(0,0,1) FunctionCall must evaluate + be Accepted"
+            );
+            assert!(diags.is_empty(), "(b) inline vec3 call must produce no diags, got: {diags:?}");
+        }
+
+        // (c) non-Vector (Value::Real) → None + 1 Warning naming builtin/arg/Vec3.
+        {
+            let expr = literal_f64(1.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
+            assert_eq!(result, None, "(c) non-Vector must return None");
+            assert_eq!(diags.len(), 1, "(c) non-Vector must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("faces_by_normal"), "(c) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("dir"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("vec3"), "(c) names expected Vec3, got: {:?}", diags[0].message);
+            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+        }
+
+        // (d) wrong length (Vector of 2) → None + 1 Warning.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Vector(vec![
+                    reify_ir::Value::Real(0.0),
+                    reify_ir::Value::Real(1.0),
+                ]),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_vec3_arg(&expr, &values, "edges_parallel_to", "axis", &mut diags);
+            assert_eq!(result, None, "(d) wrong-length Vector must return None");
+            assert_eq!(diags.len(), 1, "(d) wrong-length Vector must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("edges_parallel_to"), "(d) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("axis"), "(d) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("vec3"), "(d) names expected Vec3, got: {:?}", diags[0].message);
+        }
+
+        // (e) dimensioned-Scalar component → None + 1 Warning.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Vector(vec![
+                    reify_ir::Value::Scalar {
+                        si_value: 1.0,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    reify_ir::Value::Real(0.0),
+                    reify_ir::Value::Real(0.0),
+                ]),
+                reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_vec3_arg(&expr, &values, "faces_by_normal", "dir", &mut diags);
+            assert_eq!(result, None, "(e) dimensioned component must return None");
+            assert_eq!(diags.len(), 1, "(e) dimensioned component must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("vec3"), "(e) names expected Vec3, got: {:?}", diags[0].message);
+        }
+    }
+
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
     // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
