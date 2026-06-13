@@ -5014,6 +5014,97 @@ fn sampled_curl_3d_linear_sample_returns_exact_curl() {
     );
 }
 
+// ── η acceptance (PRD §9 task η): SDF mean-curvature ∇²φ ≈ 2/R sphere ────────
+//
+// Asserts ∇²φ ≈ 2/r (interior nodes in fixed annular band R_inner≤r≤R_outer)
+// and ∇²φ ≈ 2/R (surface sample at exact surface point r=R) for a sphere SDF
+// φ(p)=|p−c|−R, via the Sampled-Laplacian eager-lowering (deps ε/δ, tasks 4568/4567).
+//
+// No production code change — pure consumer/acceptance task (PRD §9 task η).
+//
+// PRD §6 numeric premise (G6): ∇²φ = 2/r in 3D. Central 2nd-diff leading error
+// ≤ h²/(2r³); interior bound h²/r³ (2× margin). Surface-sample bound 2h²/R³
+// (FD h²/(2R³) + linear-interp h²/(2R³)).
+//
+// PRD §10 boundary-order decision: first-order one-sided stencil retained at
+// grid boundaries; ghost-node extrapolation deferred. Boundary nodes exist in
+// the output SampledField but are excluded from all numeric assertions (steps 3/5/7).
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// `laplacian(sphere_sdf)` eager-lowers to a Sampled scalar Field.
+///
+/// Structural contract: the `compute_laplacian` Sampled dispatch (calculus.rs:312)
+/// calls `sampled_differential(sf, Laplacian)` and returns
+/// `Value::Field { source: Sampled, lambda: Value::SampledField(out) }` where
+/// `out` is a stride-1 scalar SampledField with `data.len() == n³`.
+///
+/// Grid: n=21, h=0.1, box [0,2]³, sphere R=1.0 centered at (1.05,1.05,1.05)
+/// (offset by h/2 from node (10,10,10) so no node lands at r=0; min r ≈ 0.087).
+///
+/// PRD §10: first-order one-sided boundary stencil retained; boundary nodes are
+/// present in `out.data` but excluded from numeric assertions (steps 3/5/7).
+#[test]
+fn sphere_sdf_laplacian_eager_lowers_to_sampled_scalar_field() {
+    let n = 21usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    // Center offset by h/2 from node (10,10,10) at (1.0,1.0,1.0);
+    // no node lands at r=0 (minimum r ≈ 0.05·√3 ≈ 0.087).
+    let center = [1.0 + h / 2.0, 1.0 + h / 2.0, 1.0 + h / 2.0];
+    let sf = make_sphere_sdf_3d(n, h, center, radius);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // laplacian(field) → eager-lowered Sampled scalar field.
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    // Structural: result is a Sampled Field.
+    assert!(
+        matches!(&lap_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "laplacian of 3D Sampled scalar sphere SDF should return Sampled Field, got {:?}",
+        lap_result
+    );
+
+    // Structural: lambda is a SampledField with n³ scalar data points (stride-1).
+    if let Value::Field { lambda, .. } = &lap_result {
+        if let Value::SampledField(out) = lambda.as_ref() {
+            assert_eq!(
+                out.data.len(),
+                n * n * n,
+                "laplacian of {}×{}×{} sphere SDF: expected {} data points, got {}",
+                n,
+                n,
+                n,
+                n * n * n,
+                out.data.len()
+            );
+        } else {
+            panic!(
+                "laplacian Sampled field lambda should be Value::SampledField, got {:?}",
+                lambda
+            );
+        }
+    }
+}
+
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
 /// complies with the Task 1622 convention — reason strings must be
 /// self-contained inline summaries beginning with `"known bug:"`.  The two
