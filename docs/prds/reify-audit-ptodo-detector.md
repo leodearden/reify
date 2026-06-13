@@ -100,7 +100,12 @@ being citable, periodically re-checking triggers, and graduating items. Perf TOD
 write `TODO(#4590): <trigger prose>`; the trigger prose stays human-readable, the
 tracking is machine-checkable. The detector has **zero** perf special-casing.
 (v1 owner 4551 landed done 2026-06-12, commit 263502544d; 4590 is the v2 holding
-anchor. 4590's own brief already defers to this PRD for the durable rule.)
+anchor. 4590's own brief already defers to this PRD for the durable rule.
+**Lifecycle invariant:** 4590 must remain non-terminal — in-progress or deferred —
+for as long as any `#4590` marker exists in the codebase. Closing it (status=done/cancelled)
+immediately re-orphans every surviving `#4590` cite. When 4590 is eventually ready to
+close, a v3 anchor task must absorb the remaining markers and be retargeted before
+4590's status flips to terminal.)
 
 ### 6.2 Policy: softer vocabularies — **core vocabulary now, expansion gated on FP review (task θ)**
 

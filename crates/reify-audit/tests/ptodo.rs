@@ -620,6 +620,18 @@ mod tests {
         write_file(root, "zzz_ptodo_control.rs", "// TODO(#4551): orphan control\n");
         tracked_paths.push("zzz_ptodo_control.rs".to_string());
 
+        // Guard: assert all 6 real swept files are present + the 1 control file.
+        // Renames/moves cause src.exists() to fail → fewer real files → caught here.
+        // Graduations (file deleted when improvement lands) require updating this count
+        // and swept_paths to reflect the remaining markers.
+        assert!(
+            tracked_paths.len() >= 7,
+            "expected 6 real swept files + 1 control in tracked_paths, got {}; \
+             if a swept file was renamed/moved update swept_paths; \
+             if all 6 have graduated, delete this test",
+            tracked_paths.len()
+        );
+
         // Seed fixture DB: 4551=done (terminal), 4590=in-progress (live).
         crate::common::schema::seed_tasks_db_at(
             &root.join(".taskmaster/tasks/tasks.db"),
@@ -648,10 +660,12 @@ mod tests {
         // (a) No real swept perf file may produce an orphaned #4551 finding.
         //     RED: real files cite #4551 (done) → orphaned fires → assertion fails.
         //     GREEN: after retarget to #4590 (in-progress) → no orphaned finding.
+        //     Match "#4551 " (with trailing space) not bare "#4551" to avoid false
+        //     positives from longer ids such as #45510 (summary format: "… #NNN status=…").
         for path in &swept_paths {
             let has_orphaned_4551 = findings.iter().any(|f| {
                 f.summary.starts_with("orphaned:")
-                    && f.summary.contains("#4551")
+                    && f.summary.contains("#4551 ")
                     && f.evidence
                         .iter()
                         .any(|e| matches!(e, EvidenceRef::File { path: p } if p == *path))
@@ -665,9 +679,10 @@ mod tests {
 
         // (b) The synthetic control file MUST produce an orphaned #4551 finding
         //     (proves fixture DB is live and orphaned classification fires).
+        //     Match "#4551 " (trailing space) to pin the exact id token, not a prefix.
         let control_orphaned = findings.iter().any(|f| {
             f.summary.starts_with("orphaned:")
-                && f.summary.contains("#4551")
+                && f.summary.contains("#4551 ")
                 && f.summary.contains("done")
                 && f.evidence.iter().any(|e| {
                     matches!(e, EvidenceRef::File { path: p } if p == "zzz_ptodo_control.rs")
