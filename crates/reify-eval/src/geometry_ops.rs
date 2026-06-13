@@ -2277,18 +2277,23 @@ fn dispatch_scalar_query(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match kernel.query(&query) {
-        Ok(reify_ir::Value::Real(v)) if v.is_finite() && v >= 0.0 => {
+        // Both reply shapes — a bare `Real` and the defensive `Scalar` — carry a
+        // single magnitude that must be finite and non-negative to stand for a
+        // volume / area / deviation. Validate them identically (a NaN / ±Inf /
+        // negative magnitude in EITHER shape is downgraded to Undef + Warning),
+        // then collapse through the `from_real_scalar` chokepoint (dimensionless
+        // → Value::Real, dimensioned → Value::Scalar; Invariant V).
+        Ok(reify_ir::Value::Real(v)) | Ok(reify_ir::Value::Scalar { si_value: v, .. })
+            if v.is_finite() && v >= 0.0 =>
+        {
             Some(reify_ir::Value::from_real_scalar(v, dimension))
         }
-        Ok(reify_ir::Value::Real(v)) => {
+        Ok(reify_ir::Value::Real(v)) | Ok(reify_ir::Value::Scalar { si_value: v, .. }) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{helper_name}(...) kernel returned a non-finite or negative value ({v}); \
                  cell left at Undef",
             )));
             Some(reify_ir::Value::Undef)
-        }
-        Ok(reify_ir::Value::Scalar { si_value, .. }) => {
-            Some(reify_ir::Value::from_real_scalar(si_value, dimension))
         }
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -21661,6 +21666,89 @@ mod tests {
                 dimension: reify_core::DimensionVector::LENGTH,
             }),
             "a dimensioned (LENGTH) query must still yield Value::Scalar{{LENGTH}}"
+        );
+        assert!(diagnostics.is_empty());
+    }
+
+    /// Amendment (task 4374/β, reviewer suggestion 2): the defensive `Scalar`
+    /// reply arm of `dispatch_scalar_query` must validate finiteness /
+    /// non-negativity *identically* to the `Real` arm. A `Scalar` reply carrying
+    /// NaN / ±Inf / a negative magnitude is downgraded to `Some(Value::Undef)` +
+    /// exactly one Warning (never silently wrapped); a finite, non-negative
+    /// `Scalar` reply collapses through `from_real_scalar` like a `Real` reply.
+    #[test]
+    fn dispatch_scalar_query_scalar_reply_validates_finite_non_negative() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(60);
+        let nominal = reify_ir::GeometryHandleId(61);
+        const TOL: f64 = 0.0001;
+
+        // Bad Scalar replies → Undef + exactly one Warning, just like Real.
+        for bad_value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-4_f64] {
+            let kernel = MockGeometryKernel::new().with_max_deviation_result(
+                actual,
+                nominal,
+                TOL,
+                reify_ir::Value::Scalar {
+                    si_value: bad_value,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+            let query = reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            };
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = super::dispatch_scalar_query(
+                &kernel,
+                query,
+                reify_core::DimensionVector::LENGTH,
+                "max_deviation",
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result,
+                Some(reify_ir::Value::Undef),
+                "Scalar reply with bad_value={bad_value:?} must return Some(Undef)"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "Scalar reply with bad_value={bad_value:?} must emit exactly one \
+                 Warning; got: {diagnostics:?}"
+            );
+        }
+
+        // A finite, non-negative Scalar reply collapses through the chokepoint:
+        // a DIMENSIONLESS caller dimension yields Value::Real (Invariant V).
+        let kernel = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            nominal,
+            TOL,
+            reify_ir::Value::Scalar {
+                si_value: 2.5,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+        );
+        let query = reify_ir::GeometryQuery::MaxDeviation {
+            actual,
+            nominal,
+            tolerance: TOL,
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            query,
+            reify_core::DimensionVector::DIMENSIONLESS,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Real(2.5)),
+            "a finite, non-negative Scalar reply with a DIMENSIONLESS caller \
+             dimension must collapse to Value::Real"
         );
         assert!(diagnostics.is_empty());
     }
