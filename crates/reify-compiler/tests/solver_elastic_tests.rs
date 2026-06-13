@@ -857,7 +857,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
-/// exactly eight params with the canonical names and types:
+/// exactly ten params with the canonical names and types:
 ///
 ///   - `displacement  : Field<Point3<Length>, Vector3<Length>>`
 ///     (tightened from Real placeholder in task 3117; resolver arm at
@@ -866,6 +866,10 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///     (tightened from Real placeholder in task 3117; same resolver confirmation)
 ///   - `divergence    : Field<Point3<Length>, Real>`
 ///     (task #4564 α: volumetric strain tr(ε); tet=Sampled, shell=Undef)
+///   - `gradient      : Field<Point3<Length>, Tensor<2,3,Real>>`
+///     (task #4565 β: nodal displacement-gradient ∇u; dimensionless)
+///   - `curl          : Field<Point3<Length>, Vector3<Real>>`
+///     (task #4565 β: antisymmetric part of ∇u; dimensionless)
 ///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
 ///     (per-element local-to-global rotation; tightened in task #3641 using
 ///     the resolver capability confirmed by task 3117)
@@ -875,10 +879,11 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// The four Field-typed slots have been tightened from `Real` placeholders:
+/// The Field-typed slots have been tightened from `Real` placeholders:
 /// `displacement` and `stress` by task #3117, `frame` by task #3641 — both
 /// using the resolver arm at `type_resolution.rs:1313`; `divergence` added
-/// in task #4564 with dimensionless_scalar() codomain (Real = tr(ε)).
+/// in task #4564; `gradient` and `curl` added in task #4565 with
+/// dimensionless_scalar() codomains (∇u = Length/Length).
 ///
 /// `frame` is the per-element local-to-global rotation:
 ///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
@@ -896,9 +901,9 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        8,
-        "ElasticResult should have exactly 8 param cells \
-         (displacement, stress, divergence, frame, shell_channels, max_von_mises, converged, iterations), \
+        10,
+        "ElasticResult should have exactly 10 param cells \
+         (displacement, stress, divergence, gradient, curl, frame, shell_channels, max_von_mises, converged, iterations), \
          got: {:?}",
         names
     );
@@ -939,6 +944,28 @@ fn elastic_result_struct_has_correct_param_shape() {
                     dimension: DimensionVector::LENGTH,
                 })),
                 codomain: Box::new(Type::dimensionless_scalar()),
+            },
+        ),
+        // task #4565 β: `param gradient : Field<Point3<Length>, Tensor<2,3,Real>>` added here.
+        // Codomain is Tensor<2,3,dimensionless_scalar()> (∇u = Length/Length).
+        (
+            "gradient",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(2, 3, Type::dimensionless_scalar())),
+            },
+        ),
+        // task #4565 β: `param curl : Field<Point3<Length>, Vector3<Real>>` added here.
+        // Codomain is vec3(dimensionless_scalar()) (antisymmetric part of ∇u; dimensionless).
+        (
+            "curl",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
             },
         ),
         (

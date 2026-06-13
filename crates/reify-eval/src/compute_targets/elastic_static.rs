@@ -661,7 +661,7 @@ pub fn solve_elastic_static_trampoline(
     let nodal_curl_flat: Vec<f64> = fea
         .nodal_gradient
         .iter()
-        .flat_map(|g| curl_from_gradient(g))
+        .flat_map(curl_from_gradient)
         .collect();
 
     // Single geometry pass: locate the containing tet once per grid point,

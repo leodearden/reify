@@ -1200,11 +1200,11 @@ mod tests {
     fn curl_from_gradient_zero_input_yields_zero_curl() {
         let g = [[0.0_f64; 3]; 3];
         let curl = curl_from_gradient(&g);
-        for i in 0..3 {
+        for (i, &val) in curl.iter().enumerate() {
             assert!(
-                curl[i].abs() < 1e-15,
+                val.abs() < 1e-15,
                 "curl[{i}] = {} for zero gradient, expected 0",
-                curl[i],
+                val,
             );
         }
     }
