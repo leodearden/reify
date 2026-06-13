@@ -143,7 +143,8 @@ pub(crate) fn check_builtin_arg_types(
 mod tests {
     use super::*;
     use crate::units::GEOMETRY_TOPOLOGY_SELECTOR_NAMES;
-    use reify_core::DimensionVector;
+    use reify_core::{identity::ValueCellId, DimensionVector, Severity, SourceSpan, Type};
+    use reify_ir::CompiledExpr;
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
 
@@ -274,5 +275,192 @@ mod tests {
                 name
             );
         }
+    }
+
+    // ── check_builtin_arg_types unit tests (step-3) ──────────────────────────
+
+    fn dummy_cell_id() -> ValueCellId {
+        ValueCellId {
+            entity: "test_entity".to_string(),
+            member: "x".to_string(),
+        }
+    }
+
+    fn dummy_span() -> SourceSpan {
+        SourceSpan::new(0, 10)
+    }
+
+    fn arg_expr(ty: Type) -> CompiledExpr {
+        CompiledExpr::value_ref(dummy_cell_id(), ty)
+    }
+
+    /// (a) DEFINITE mismatch: moment_of_inertia arg1 = Scalar{DIMENSIONLESS}
+    /// → exactly 1 Error diagnostic with code ArgTypeMismatch naming key parts.
+    #[test]
+    fn moment_of_inertia_dimensionless_arg1_gives_error() {
+        let args = vec![
+            arg_expr(Type::Geometry),               // arg0 — unchecked
+            arg_expr(Type::dimensionless_scalar()), // arg1 — bare Real
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            d.message.contains("moment_of_inertia"),
+            "message missing builtin name: {}",
+            d.message
+        );
+        assert!(d.message.contains("density"), "message missing arg name: {}", d.message);
+        assert!(d.message.contains("Density"), "message missing type name: {}", d.message);
+        assert!(d.message.contains("expects"), "message missing 'expects': {}", d.message);
+    }
+
+    /// (b) CORRECT: moment_of_inertia arg1 = Scalar{MASS_DENSITY} → 0 diagnostics.
+    #[test]
+    fn moment_of_inertia_correct_density_gives_no_error() {
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(Type::Scalar { dimension: DimensionVector::MASS_DENSITY }),
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
+    }
+
+    /// (c) GRADUALISM: arg1 = Type::Error → 0 diagnostics (poison sentinel skipped).
+    #[test]
+    fn gradualism_error_type_passes_silently() {
+        let args = vec![arg_expr(Type::Geometry), arg_expr(Type::Error)];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "Type::Error should be silently skipped, got: {:?}",
+            diags
+        );
+    }
+
+    /// (c) GRADUALISM: arg1 = Type::TypeParam("T") → 0 diagnostics (unresolved variable).
+    #[test]
+    fn gradualism_type_param_passes_silently() {
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(Type::TypeParam("T".to_string())),
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "Type::TypeParam should be silently skipped, got: {:?}",
+            diags
+        );
+    }
+
+    /// (d) KIND mismatch: faces_by_normal arg2 = Type::Bool (where ANGLE expected)
+    /// → 1 Error diagnostic naming "Angle".
+    #[test]
+    fn faces_by_normal_bool_arg2_gives_error_naming_angle() {
+        let dir_type = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(dir_type),
+            arg_expr(Type::Bool), // wrong kind — Bool, not a dimensioned scalar
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("faces_by_normal", &args, dummy_span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("Angle"),
+            "message missing 'Angle': {}",
+            diags[0].message
+        );
+    }
+
+    /// (e) WRONG-DIM scalar: faces_by_normal arg2 = Scalar{LENGTH} (not ANGLE) → 1 Error.
+    #[test]
+    fn faces_by_normal_length_tol_gives_error() {
+        let dir_type = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(dir_type),
+            arg_expr(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("faces_by_normal", &args, dummy_span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected 1 diagnostic, got: {:?}", diags);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+    }
+
+    /// (f) CORRECT: faces_by_normal arg2 = Scalar{ANGLE} → 0 diagnostics.
+    #[test]
+    fn faces_by_normal_correct_angle_gives_no_error() {
+        let dir_type = Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(dir_type),
+            arg_expr(Type::Scalar { dimension: DimensionVector::ANGLE }),
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("faces_by_normal", &args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "correct Angle arg should give no diagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    /// (g) SHORT args: edges_at_height with only 1 arg (h correct, tol absent)
+    /// → no panic, checks only the present slot.
+    #[test]
+    fn edges_at_height_short_args_no_panic() {
+        let args = vec![
+            arg_expr(Type::Geometry),
+            arg_expr(Type::length()), // arg1 h — correct LENGTH
+            // arg2 tol absent
+        ];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("edges_at_height", &args, dummy_span(), &mut diags);
+        // h is correct → no diagnostic; tol absent → skipped (no panic)
+        assert!(
+            diags.is_empty(),
+            "correct h + absent tol → no diagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    /// (h) UNCHECKED slot: arg0 (any type, e.g. Scalar{DIMENSIONLESS}) never fires.
+    #[test]
+    fn arg0_never_fires() {
+        // Only arg0 present — the density slot is at index 1 which is absent
+        let args = vec![arg_expr(Type::dimensionless_scalar())];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
+        assert!(diags.is_empty(), "arg0 should never be checked, got: {:?}", diags);
+    }
+
+    /// (i) Unrecognized name (e.g., "volume") → 0 diagnostics.
+    #[test]
+    fn unrecognized_name_gives_no_diagnostics() {
+        let args = vec![arg_expr(Type::Bool)];
+        let mut diags = Vec::new();
+        check_builtin_arg_types("volume", &args, dummy_span(), &mut diags);
+        assert!(
+            diags.is_empty(),
+            "unrecognized name should give no diagnostics, got: {:?}",
+            diags
+        );
     }
 }
