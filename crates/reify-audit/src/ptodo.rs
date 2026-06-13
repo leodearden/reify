@@ -308,7 +308,9 @@ const ALLOWLIST_PREFIXES: &[&str] = &[
 
 /// §6.8 allowlist check: `true` when `path` (root-relative) starts with any
 /// [`ALLOWLIST_PREFIXES`] entry.
-fn is_allowlisted(path: &str) -> bool {
+// G-allow: reused by tests/ptodo_baseline.rs well-formedness test (separate
+// crate — cannot see pub(crate)). Mirrors resolve_liveness/fingerprint pattern.
+pub fn is_allowlisted(path: &str) -> bool {
     ALLOWLIST_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
@@ -316,7 +318,8 @@ fn is_allowlisted(path: &str) -> bool {
 /// `.rs .ri .sh .py .ts .tsx .js`. Non-code/config files (`.md`, `.toml`,
 /// `.yaml`, `.json`, …) carry prose, not tracked-work markers, and are skipped
 /// (PRD §13 Q1 defers `.toml`/`.yml`/`.yaml` to θ).
-fn is_swept_ext(path: &str) -> bool {
+// G-allow: reused by tests/ptodo_baseline.rs well-formedness test.
+pub fn is_swept_ext(path: &str) -> bool {
     let lower = path.to_lowercase();
     lower.ends_with(".rs")
         || lower.ends_with(".ri")
