@@ -4927,7 +4927,8 @@ mod tests {
         //     via body_material_density / cell_f64.
         let body = body_with_material(material.clone());
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let dyn_rho = crate::dynamics_ops::resolve_body_density(&body, None, &mut diags);
+        let dyn_rho = crate::dynamics_ops::resolve_body_density(&body, None, &mut diags)
+            .expect("no-explicit-arg ladder always resolves a density");
 
         // (3) Both paths must return the same value.
         assert!(
@@ -4974,7 +4975,8 @@ mod tests {
         let bare_body = struct_instance("Body", vec![]);
         let mut water_diags: Vec<Diagnostic> = Vec::new();
         let water_rho =
-            crate::dynamics_ops::resolve_body_density(&bare_body, None, &mut water_diags);
+            crate::dynamics_ops::resolve_body_density(&bare_body, None, &mut water_diags)
+                .expect("no-explicit-arg ladder always resolves a density");
         assert!(
             (water_rho - 1000.0).abs() < 1e-9,
             "bare body must fall back to 1000 kg/m³ water; got {water_rho}",

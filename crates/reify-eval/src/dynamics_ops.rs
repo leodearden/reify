@@ -32,6 +32,7 @@ use reify_stdlib::dynamics::mass_props::{DensitySource, resolve_density};
 use reify_stdlib::dynamics::rnea::default_gravity;
 use reify_stdlib::dynamics::trampoline::{InverseDynamicsCacheKey, body_solid_hashes};
 
+use crate::arg_acceptance::{Acceptance, accept_arg, density_spec};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
@@ -82,12 +83,19 @@ fn body_label(body: &Value) -> String {
 
 /// Run the fn-level density priority ladder for `body_mass_props` and emit the
 /// `W_DynamicsDefaultDensity` warning (once) when it falls through to the water
-/// default. Returns the resolved density (kg/m³).
+/// default. Returns `Some(density_kg_per_m3)` on success, or `None` when the
+/// explicit density arg is rejected or undefined (degrade the result to Undef).
 ///
-/// Shared by [`eval_body_mass_props_core`] (concrete-geometry path) and
-/// `try_eval_body_mass_props` (deferred-kernel dispatch path) so the ladder and
-/// the diagnostic are single-sourced regardless of whether the geometric query
-/// is available.
+/// When `density_arg` is `Some(v)`, the value is routed through
+/// [`accept_arg`] against [`density_spec`]:
+/// - [`Acceptance::Accepted`] → `Some(si_value)` (dimension-correct Density scalar).
+/// - [`Acceptance::Undefined`] → `None` (quiet degrade; data-indeterminacy).
+/// - [`Acceptance::Rejected`] → push `Diagnostic::warning(rej.message(...))` → `None`.
+///
+/// When `density_arg` is `None`, the no-explicit-arg path runs the Material →
+/// default-water ladder byte-identically (PRD decision 9 KEPT). This path always
+/// returns `Some`, so `.expect("no-explicit-arg ladder always resolves a density")`
+/// is correct at call sites that only use the `None` path.
 ///
 /// `pub(crate)` so the modal_ops cross-path convergence test (task 4470 step-3)
 /// can feed the same material Value to both the modal and dynamics resolution
@@ -96,10 +104,24 @@ pub(crate) fn resolve_body_density(
     body: &Value,
     density_arg: Option<&Value>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> f64 {
-    let explicit = density_arg.and_then(cell_f64);
+) -> Option<f64> {
+    if let Some(v) = density_arg {
+        // Explicit arg present: dimension-check it via the shared acceptance helper.
+        return match accept_arg(v, &density_spec()) {
+            Acceptance::Accepted(si) => Some(si),
+            Acceptance::Undefined => None, // quiet degrade (data-indeterminacy)
+            Acceptance::Rejected(rej) => {
+                diagnostics.push(Diagnostic::warning(
+                    rej.message("body_mass_props", "density"),
+                ));
+                None
+            }
+        };
+    }
+
+    // No explicit arg: run the Material → default-water ladder (byte-identical).
     let material = body_material_density(body);
-    let (density, source) = resolve_density(explicit, material);
+    let (density, source) = resolve_density(None, material);
     if source == DensitySource::DefaultWater {
         diagnostics.push(
             Diagnostic::warning(format!(
@@ -110,7 +132,7 @@ pub(crate) fn resolve_body_density(
             .with_code(DiagnosticCode::DynamicsDefaultDensity),
         );
     }
-    density
+    Some(density)
 }
 
 /// Mass `Value` for the `MassProperties.mass : Mass` field (dimensioned scalar).
@@ -201,9 +223,15 @@ pub fn eval_body_mass_props_core(
     geom_query: impl Fn(f64) -> (f64, [f64; 3], [[f64; 3]; 3]),
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Value {
-    let density = resolve_body_density(body, density_arg, diagnostics);
-    let (mass, com, inertia) = geom_query(density);
-    assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia))
+    match resolve_body_density(body, density_arg, diagnostics) {
+        Some(density) => {
+            let (mass, com, inertia) = geom_query(density);
+            assemble_mass_properties(mass_value(mass), com_value(com), inertia_value(inertia))
+        }
+        // Rejected or undefined explicit density: degrade to Undef without
+        // invoking the geometry query (mirrors kernel-failure degradation shape).
+        None => assemble_mass_properties(Value::Undef, Value::Undef, Value::Undef),
+    }
 }
 
 /// Resolve a call-argument `CompiledExpr` to the `Value` it denotes: a
@@ -374,13 +402,13 @@ pub fn try_eval_body_mass_props(
                 }
             };
             let mp = eval_body_mass_props_core(body, density_arg, q, diagnostics);
-            debug_assert_eq!(
-                invocation_count.get(),
-                1,
+            debug_assert!(
+                invocation_count.get() <= 1,
                 "eval_body_mass_props_core invoked geom_query {} time(s); expected \
-                 exactly 1 — the RefCell error-capture assumes a single call and \
+                 at most 1 — the RefCell error-capture assumes a single call and \
                  would silently overwrite errors with (0,0,0) sentinels on a \
-                 multi-call core",
+                 multi-call core (0 invocations is legitimate when a rejected or \
+                 undefined explicit density skips the geometry query)",
                 invocation_count.get()
             );
             if let Some(e) = err.borrow().as_ref() {
