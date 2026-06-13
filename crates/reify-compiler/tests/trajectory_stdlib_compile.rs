@@ -2152,7 +2152,7 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 /// end-effector poses across every monitored location:
 ///
 ///   - `mechanism        : Real`                    (TODO(mechanism-type) placeholder)
-///   - `modal_result     : Real`                    (TODO(modal-result-type) placeholder)
+///   - `modal_result     : ModalResult`             (nominal type, tightened by task 4579/M)
 ///   - `t_samples        : List<Time>`              (sampling instants)
 ///   - `nominal_pose     : List<List<Pose3>>`       (outer: time, inner: locations)
 ///   - `vibration_offset : List<List<Vec3>>`        (outer: time, inner: locations)
@@ -2191,7 +2191,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("mechanism", Type::dimensionless_scalar()),
-        ("modal_result", Type::dimensionless_scalar()),
+        ("modal_result", Type::StructureRef("ModalResult".to_string())),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
