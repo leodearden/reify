@@ -595,6 +595,16 @@ mod tests {
         let root = dir.path();
 
         // The 6 SWEPT perf-marker files (workspace-relative paths).
+        // NOTE: two additional files were also retargeted #4590→#4592 as correctness
+        // hygiene (crates/reify-audit/src/p1_producer_orphan.rs:53 and
+        // crates/reify-audit/src/p2_consumer_stub.rs:408) but are intentionally
+        // excluded from this liveness guard.  The PTODO detector allowlists the
+        // entire crates/reify-audit/ subtree (§6.8), so it never emits findings for
+        // those files regardless of which task id they cite.  Including them in
+        // swept_paths would cause the "no orphaned" assertion to pass trivially
+        // (detector skipped them, not that the cite is correct), providing false
+        // confidence.  Regressions in the two audit-crate markers are caught instead
+        // by a live /audit run.
         let swept_paths = [
             "crates/reify-eval/src/engine_purposes.rs",
             "crates/reify-eval/src/dispatcher.rs",
