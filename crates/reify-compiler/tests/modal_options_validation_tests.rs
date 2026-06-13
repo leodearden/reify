@@ -1978,3 +1978,40 @@ structure PartLeniencySmoke {
         d.code,
     );
 }
+
+// ─── task-4584 step-5/step-6: StructureRef param default rejection ────────────
+
+/// RED until step-6 (impl): a structure declaring `param part : Part = "x"`
+/// (StructureRef param with a non-conforming String default) must produce
+/// exactly one Error-severity `TypeNotConformingToStructureRef` diagnostic.
+///
+/// Fails today: param defaults are not checked against their declared cell_type
+/// for structure params (only function params are, via fn_param_default_compatible).
+/// GREEN once step-6 adds check_param_default_conformance and wires it into
+/// phase_fn_arg_conformance.
+#[test]
+fn structureref_param_with_string_default_rejected() {
+    let source = r#"
+structure PartDefaultSmoke {
+    param part : Part = "x"
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+         for `param part : Part = \"x\"`; got {}: {:#?}",
+        errors.len(),
+        errors,
+    );
+    let d = &errors[0];
+    assert_eq!(d.severity, reify_core::Severity::Error);
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        d.code,
+    );
+}
