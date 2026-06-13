@@ -38,10 +38,12 @@
 //      marker declared in this module (task 4578, per PRD §12 OQ3). `Part`
 //      will be grown into a full geometry+material+topology structure in a
 //      later task; the single-module opaque form is non-blocking for task ζ.
-//   3. `Mode.frequency : Real` is a placeholder for `Scalar<Frequency>` —
-//      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
-//      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
-//      : Real` waiting for `Vector3<Force>`.
+//   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
+//      (`Frequency` = s⁻¹, a registered named dimension). Tightened from the
+//      former `Real` placeholder once `Frequency` gained a named scalar alias
+//      (task 4548); the producer (modal_ops.rs) emits a dimensioned
+//      `Value::Scalar { FREQUENCY }`. Contrast `fea_multi_case.ri::Load.force
+//      : Real`, still a placeholder waiting for `Vector3<Force>`.
 //   4. `Mode.shape : List<Vector3<Dimensionless>>` encodes mass-normalized
 //      eigenvectors. Strictly, components of a mass-orthonormal mode shape
 //      carry units of 1/√mass — only the modal-mass scalar
@@ -143,12 +145,13 @@ structure def RayleighDamping : DampingDescriptor {
 // plan design-decision-6.
 //
 // Field semantics (PRD §4.1):
-//   frequency          — natural frequency ω/(2π) in Hz. Encoded as `Real`
-//                        as a PLACEHOLDER for `Scalar<Frequency>` — the
-//                        named-frequency scalar alias has not landed yet.
-//                        Same placeholder convention as `Load.force : Real`
-//                        waiting for `Vector3<Force>` in
-//                        `fea_multi_case.ri:269-296`.
+//   frequency          — natural frequency ω/(2π) in Hz. Encoded as
+//                        `Frequency` (= s⁻¹, bare dimension name per the
+//                        `HarmonicForce.frequency : Frequency` precedent
+//                        below). Tightened from the former `Real` placeholder
+//                        now that `Frequency` is a registered named dimension
+//                        (task 4548); the modal producer (modal_ops.rs) emits
+//                        a dimensioned `Value::Scalar { FREQUENCY }`.
 //   shape              — mass-normalized eigenvector (Φᵀ·M·Φ = I) reshaped
 //                        as per-node displacement-shaped vectors. Encoded
 //                        as `List<Vector3<Dimensionless>>` as the closest
@@ -178,16 +181,16 @@ structure def RayleighDamping : DampingDescriptor {
 //                        dimension of mass (kg under SI), but the
 //                        named-scalar `Scalar<X>` alias has not landed
 //                        anywhere in the stdlib yet. Same placeholder
-//                        convention as `Mode.frequency` waiting for
-//                        `Scalar<Frequency>`, and `Load.force : Real`
-//                        waiting for `Vector3<Force>` in
-//                        `fea_multi_case.ri:269-296`.
+//                        convention as `Load.force : Real` waiting for
+//                        `Vector3<Force>` in `fea_multi_case.ri:269-296`.
+//                        (`Mode.frequency` shared this convention until it was
+//                        tightened to `Frequency` in task 4548.)
 //   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
 //                        (`damping = NoDamping()`) or
 //                        (α + β·ω_i²) / (2·ω_i) for proportional damping
 //                        (`damping = RayleighDamping(α, β)`).
 structure def Mode {
-    param frequency : Real
+    param frequency : Frequency
     param shape : List<Vector3<Dimensionless>>
     param participation_mass : Real
     param damping_ratio : Real
@@ -440,7 +443,7 @@ trait ForcingFunction { }
 //
 // Param semantics (PRD §5.1):
 //   at         — the location on the part where the force is applied.
-//                FIXME(location-id-type): encoded as `String` PLACEHOLDER for
+//                FIXME(location-id-type, #4577): encoded as `String` PLACEHOLDER for
 //                the future `LocationId` topology-selector type (not yet landed
 //                in Reify v0.3). Consistent with `FixedSupport.target : String`
 //                (fea_multi_case.ri:309) using `String` as a selector/name
@@ -507,23 +510,18 @@ structure def StepForce : ForcingFunction {
 // momentum: F(t) = impulse · δ(t − time), where δ is the Dirac delta.
 //
 // Param semantics (PRD §5.1):
-//   at       — the location on the part. FIXME(location-id-type): `String`
+//   at       — the location on the part. FIXME(location-id-type, #4577): `String`
 //              PLACEHOLDER for the future `LocationId` type (same convention
 //              as `StepForce.at` above).
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //              `ModalOptions.reference_direction` precedent. The `direction`
 //              unit-vector carries the sign; `impulse` carries the positive
 //              scalar magnitude.
-//   impulse  — the positive scalar impulse (momentum transfer).
-//              FIXME(impulse-dim): encoded as `Real` PLACEHOLDER for the
-//              unrepresentable `ImpulseDim` = N·s = momentum =
-//              MASS·LENGTH·TIME⁻¹ (not in NAMED_DIMENSIONS —
-//              reify-types/src/dimension.rs:444-505 scanned). Same
-//              placeholder convention as `Mode.frequency : Real` (modal_
-//              analysis.ri:188) waiting for `Scalar<Frequency>`. The
-//              constraint `impulse > 0` (bare `0`, not `0unit`, because
-//              `impulse : Real`) works per the `n_modes > 0` precedent on
-//              `Int`-typed `n_modes`.
+//   impulse  — the positive scalar impulse (momentum transfer). Typed as
+//              `Impulse` = N·s = momentum = kg·m·s⁻¹, registered in
+//              NAMED_DIMENSIONS (crates/reify-core/src/dimension.rs, task 4548).
+//              The `direction` unit-vector carries the sign; `impulse` carries
+//              the positive scalar magnitude.
 //   time     — the time of the delta-function impulse application. Any real
 //              time is valid; negative values support pre-loaded-history
 //              simulations.
@@ -532,17 +530,17 @@ structure def StepForce : ForcingFunction {
 structure def ImpulseForce : ForcingFunction {
     param at : String
     param direction : Vector3<Dimensionless>
-    param impulse : Real
+    param impulse : Impulse
     param time : Time
 
-    // `impulse : Real` (PLACEHOLDER for ImpulseDim = N·s) uses bare `0`
-    // because the field is Real-typed — same shape as `n_modes > 0` on
-    // Int-typed `n_modes` (modal_analysis.ri:365). By convention, `direction`
-    // carries the sign (unit vector); `impulse` carries the positive scalar
-    // magnitude. Declaring the lower bound at the structure-def level follows
-    // the task-2544 explicit-contract convention (same rationale as
-    // `StepForce.magnitude > 0N` above).
-    constraint impulse > 0
+    // `impulse : Impulse` uses the dimensioned-zero form `0 * 1N * 1s`
+    // (N·s = kg·m·s⁻¹ = Impulse) because polymorphic-zero has not landed —
+    // same convention as `frequency > 0Hz` on the Frequency-typed
+    // HarmonicForce.frequency and `StepForce.magnitude > 0N` above. By
+    // convention, `direction` carries the sign (unit vector); `impulse` carries
+    // the positive scalar magnitude. Declaring the lower bound at the
+    // structure-def level follows the task-2544 explicit-contract convention.
+    constraint impulse > 0 * 1N * 1s
 
     // NOTE — explicitly NOT constrained:
     //   at        : String — no scalar invariant expressible on a String placeholder
@@ -559,7 +557,7 @@ structure def ImpulseForce : ForcingFunction {
 //     F(t) = amplitude · sin(2π · frequency · t + phase)
 //
 // Param semantics (PRD §5.1):
-//   at        — the application location. FIXME(location-id-type): `String`
+//   at        — the application location. FIXME(location-id-type, #4577): `String`
 //               PLACEHOLDER per the StepForce/ImpulseForce precedent.
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //               `ModalOptions.reference_direction` precedent. Direction carries
@@ -624,7 +622,7 @@ structure def HarmonicForce : ForcingFunction {
 // timestep.
 //
 // Param semantics (PRD §5.1 / §5.3):
-//   at           — application location. FIXME(location-id-type): `String`
+//   at           — application location. FIXME(location-id-type, #4577): `String`
 //                  PLACEHOLDER per the StepForce precedent.
 //   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
 //                  `ModalOptions.reference_direction` precedent. Direction

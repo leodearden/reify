@@ -82,7 +82,7 @@ pub type JointValue = Real
 // propagates the type tightening to every consumer without touching any
 // structure_def body.
 //
-// TODO(pose3-type): retarget to the geometry/pose PRD's `Pose3` type when
+// TODO(pose3-type, #4577): retarget to the geometry/pose PRD's `Pose3` type when
 // that PRD lands.
 pub type Pose3 = Real
 
@@ -91,7 +91,7 @@ pub type Pose3 = Real
 // type) has not landed yet. Same placeholder convention as `pub type
 // JointValue = Real` above.
 //
-// TODO(vec3-type): retarget to the geometry/pose PRD's `Vec3` type when
+// TODO(vec3-type, #4575): retarget to the geometry/pose PRD's `Vec3` type when
 // that PRD lands.
 pub type Vec3 = Real
 
@@ -101,7 +101,7 @@ pub type Vec3 = Real
 // proper LocationId type) has not landed yet. Same placeholder convention
 // as `pub type JointValue = Real` above.
 //
-// TODO(location-id-type): retarget to the geometry/pose PRD's `LocationId`
+// TODO(location-id-type, #4577): retarget to the geometry/pose PRD's `LocationId`
 // type when that PRD lands.
 pub type LocationId = Real
 

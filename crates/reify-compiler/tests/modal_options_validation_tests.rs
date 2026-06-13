@@ -313,8 +313,8 @@ fn rayleigh_damping_param_shape() {
 /// Mode; see plan.json design-decision-6) must declare exactly the four
 /// PRD §4.1 params with the canonical types:
 ///
-///   - `frequency          : Real`                 (placeholder for Scalar<Frequency>;
-///                                                  encoded as Real per plan design-decision-3)
+///   - `frequency          : Frequency`            (natural frequency, = s⁻¹;
+///                                                  tightened from the Real placeholder in task 4548)
 ///   - `shape              : List<Vector3<Dimensionless>>`  (mass-normalized eigenvector;
 ///                                                  dimensionless under Φᵀ·M·Φ = I — NOT a placeholder)
 ///   - `participation_mass : Real`                 (effective modal mass along reference direction)
@@ -340,11 +340,21 @@ fn mode_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("frequency", Type::dimensionless_scalar()),
+        // `Mode.frequency` tightened from the `Real` PLACEHOLDER to the
+        // registered `Frequency` named dimension (= s⁻¹) — task 4548.
+        (
+            "frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
         (
             "shape",
             Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
         ),
+        // participation_mass / damping_ratio remain dimensionless-scalar
+        // placeholders (out of scope for task 4548's Mode.frequency tightening;
+        // adopt main's Type::Real → dimensionless_scalar() sweep).
         ("participation_mass", Type::dimensionless_scalar()),
         ("damping_ratio", Type::dimensionless_scalar()),
     ];
@@ -943,13 +953,14 @@ fn step_force_struct_has_correct_param_shape() {
 ///
 ///   - `at        : String`                   (PLACEHOLDER for LocationId)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
-///   - `impulse   : Real`                     (PLACEHOLDER for ImpulseDim = N·s)
+///   - `impulse   : Impulse`                  (N·s = momentum = kg·m·s⁻¹)
 ///   - `time      : Time`                     (delta-application time)
 ///
 /// Must refine `ForcingFunction` via `trait_bounds`. No defaults.
-/// `impulse : Real` is a PLACEHOLDER for the unrepresentable `ImpulseDim`
-/// (= N·s = momentum = MASS·LENGTH·TIME⁻¹; not in NAMED_DIMENSIONS).
-/// Constraint lands in step-10.
+/// `impulse` is now tightened from the `Real` PLACEHOLDER to the registered
+/// `Impulse` named dimension (= N·s = momentum = MASS·LENGTH·TIME⁻¹; task 4548
+/// added it to NAMED_DIMENSIONS). The positivity constraint is verified
+/// separately.
 #[test]
 fn impulse_force_struct_has_correct_param_shape() {
     let template = find_structure("ImpulseForce");
@@ -969,7 +980,14 @@ fn impulse_force_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("at", Type::String),
         ("direction", Type::vec3(Type::dimensionless_scalar())),
-        ("impulse", Type::dimensionless_scalar()), // PLACEHOLDER for ImpulseDim (design-decision-3)
+        (
+            "impulse",
+            // Tightened from the `Real` PLACEHOLDER to the registered Impulse
+            // dimension (N·s = momentum = kg·m·s⁻¹) — task 4548.
+            Type::Scalar {
+                dimension: DimensionVector::IMPULSE,
+            },
+        ),
         (
             "time",
             Type::Scalar {
@@ -1340,10 +1358,12 @@ fn harmonic_force_constrains_amplitude_and_frequency_positive() {
 
 // ─── step-9 (η): ImpulseForce impulse positivity constraint ──────────────────
 
-/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0`.
+/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0 * 1N * 1s`.
 ///
-/// `impulse : Real` (PLACEHOLDER for ImpulseDim) uses bare `0` (not `0unit`)
-/// because the field is Real-typed — same shape as `n_modes > 0` on Int.
+/// `impulse : Impulse` (tightened from the `Real` PLACEHOLDER by task 4548) uses
+/// the dimensioned-zero form `0 * 1N * 1s` (N·s = kg·m·s⁻¹ = Impulse), since
+/// polymorphic-zero has not landed — same convention as `frequency > 0Hz` on the
+/// `Frequency`-typed HarmonicForce.frequency and `magnitude > 0N` on StepForce.
 /// Direction carries the sign; impulse is the positive scalar size.
 /// Mirrors `step_force_constrains_magnitude_positive` discipline (tight count==1).
 #[test]
@@ -1353,7 +1373,7 @@ fn impulse_force_constrains_impulse_positive() {
     assert_eq!(
         template.constraints.len(),
         1,
-        "ImpulseForce should declare exactly 1 constraint (impulse > 0); \
+        "ImpulseForce should declare exactly 1 constraint (impulse > 0 * 1N * 1s); \
          got {} constraints: {:?}",
         template.constraints.len(),
         template
@@ -1363,25 +1383,54 @@ fn impulse_force_constrains_impulse_positive() {
             .collect::<Vec<_>>()
     );
 
+    // `0 * 1N * 1s` does NOT constant-fold to a single Scalar literal. Unlike
+    // the single-token unit literal `0N` (which lowers to one
+    // `Literal(Scalar { si_value: 0.0, FORCE })`), the dimensioned-zero
+    // *product* `0 * 1N * 1s` lowers to a left-nested `Mul`-chain
+    // `(0 * 1N) * 1s` whose overall `result_type` is `Scalar<Impulse>`
+    // (N·s = kg·m·s⁻¹). The matcher therefore accepts EITHER the unfolded
+    // zero-valued Impulse-dimensioned product OR a future folded single
+    // `Literal(Scalar { 0.0, IMPULSE })` (forward-compatible if a constant-fold
+    // pass lands later).
+    fn is_zero_valued(expr: &CompiledExpr) -> bool {
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Int(0)) => true,
+            CompiledExprKind::Literal(Value::Real(v)) => *v == 0.0,
+            CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value == 0.0,
+            // `0 * x` (or `x * 0`) is zero — recurse through the Mul-chain.
+            CompiledExprKind::BinOp {
+                op: BinOp::Mul,
+                left,
+                right,
+            } => is_zero_valued(left) || is_zero_valued(right),
+            _ => false,
+        }
+    }
+
+    let impulse_dim_ty = Type::Scalar {
+        dimension: DimensionVector::IMPULSE,
+    };
     let matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "impulse") {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "impulse")
+                {
                     return false;
                 }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+                // RHS must be a zero-valued expression of dimension Impulse:
+                // the `0 * 1N * 1s` dimensioned-zero positivity bound.
+                right.result_type == impulse_dim_ty && is_zero_valued(right)
             }
             _ => false,
         }
     });
     assert!(
         matched,
-        "ImpulseForce should declare `constraint impulse > 0`; \
-         got constraints: {:?}",
+        "ImpulseForce should declare `constraint impulse > 0 * 1N * 1s` \
+         (dimensioned-zero of dimension Impulse); got constraints: {:?}",
         template
             .constraints
             .iter()

@@ -898,7 +898,7 @@ pub(crate) struct ModalTrampolineRun {
 /// design_decision #1), realizes the Dirichlet BCs from the `boundary_conditions`
 /// faces, runs [`solve_modal_core`], and shapes a `ModalResult`
 /// `Value::StructureInstance` (6 fields, α struct-def; `StructureTypeId(u32::MAX)`
-/// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Real(Hz),
+/// sentinel). Each mode is a `Mode` StructureInstance `{ frequency: Scalar<Frequency>(Hz),
 /// shape: List<Vector3<Dimensionless>>, participation_mass: Real, damping_ratio: Real }`,
 /// where `damping_ratio` is the Rayleigh ratio `ζ_i = (α + β·ω_i²)/(2·ω_i)` (0
 /// for `NoDamping`). `Mode.shape` is the mass-normalized eigenvector reshaped
@@ -1052,7 +1052,15 @@ pub(crate) fn run_modal_analysis(
             let damping_ratio = rayleigh_damping_ratio(alpha, beta, omega);
             let participation_mass = core.participation_mass.get(i).copied().unwrap_or(0.0);
             let fields: PersistentMap<String, Value> = [
-                ("frequency".to_string(), Value::Real(f)),
+                // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) —
+                // emit a dimensioned Scalar, not a bare Real placeholder.
+                (
+                    "frequency".to_string(),
+                    Value::Scalar {
+                        si_value: f,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
                 (
                     "shape".to_string(),
                     core.phi_full
@@ -3582,9 +3590,19 @@ mod tests {
             };
             assert_eq!(m.type_name, "Mode");
 
+            // `Mode.frequency : Frequency` (modal_analysis.ri, task 4548) — the
+            // producer emits a dimensioned `Value::Scalar { FREQUENCY }`, not a
+            // bare `Value::Real`. Match the variant explicitly and assert the
+            // dimension is FREQUENCY (Hz = s⁻¹) before extracting si_value.
             let f = match m.fields.get("frequency") {
-                Some(Value::Real(f)) => *f,
-                other => panic!("mode {i} frequency must be Real; got {other:?}"),
+                Some(Value::Scalar { si_value, dimension })
+                    if *dimension == DimensionVector::FREQUENCY =>
+                {
+                    *si_value
+                }
+                other => {
+                    panic!("mode {i} frequency must be Scalar<Frequency>; got {other:?}")
+                }
             };
             assert!(
                 f.is_finite() && f > 0.0,
@@ -3993,7 +4011,15 @@ mod tests {
         struct_instance(
             "Mode",
             vec![
-                ("frequency".to_string(), Value::Real(frequency_hz)),
+                // Faithful to the producer: `Mode.frequency : Frequency`
+                // emits a dimensioned Scalar (task 4548), not a bare Real.
+                (
+                    "frequency".to_string(),
+                    Value::Scalar {
+                        si_value: frequency_hz,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
                 ("shape".to_string(), mode_shape_value(phi_full)),
                 ("participation_mass".to_string(), Value::Real(0.0)),
                 ("damping_ratio".to_string(), Value::Real(damping_ratio)),

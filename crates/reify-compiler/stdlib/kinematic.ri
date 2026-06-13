@@ -96,7 +96,7 @@ trait DrivingJoint : Joint { }
 //                          range midpoint). Cannot be a literal default because the
 //                          KCC-ζ Prismatic has no `range` field.
 structure def Prismatic : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // TODO(vec3-type, #4575): proper 3-vector; Vec3 = Real alias for now
     param spring_rate : Option<TranslationalStiffness> = none // N/m; None = rigid
     param damping     : Option<TranslationalDamping>   = none // N·s/m; None = rigid
     param neutral     : Option<Length>                 = none // m; None → task ι default
@@ -110,7 +110,7 @@ structure def Prismatic : DrivingJoint {
 //   damping     : N·m·s/rad  — rotational damping coefficient; None = rigid (no damper).
 //   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
 structure def Revolute : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // TODO(vec3-type, #4575): proper 3-vector; Vec3 = Real alias for now
     param spring_rate : Option<RotationalStiffness> = none // N·m/rad; None = rigid
     param damping     : Option<RotationalDamping>   = none // N·m·s/rad; None = rigid
     param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
@@ -119,15 +119,15 @@ structure def Revolute : DrivingJoint {
 // Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
 // Both DOF share the same `axis` direction in the parent body frame.
 structure def Cylindrical : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // TODO(vec3-type, #4575): proper 3-vector; Vec3 = Real alias for now
 }
 
 // Planar — joint constrained to a plane (3 DOF: 2 translational + 1 rotational).
 // `axis_x` and `axis_y` span the plane in the parent body frame; the normal is
 // their cross-product.
 structure def Planar : DrivingJoint {
-    param axis_x : Vec3 // TODO(vec3-type): first spanning axis of the constraint plane
-    param axis_y : Vec3 // TODO(vec3-type): second spanning axis of the constraint plane
+    param axis_x : Vec3 // TODO(vec3-type, #4575): first spanning axis of the constraint plane
+    param axis_y : Vec3 // TODO(vec3-type, #4575): second spanning axis of the constraint plane
 }
 
 // Spherical — ball-and-socket joint (3 rotational DOF).
