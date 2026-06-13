@@ -1045,7 +1045,41 @@ impl Engine {
                 template_by_name.insert(t.name.as_str(), t);
             }
 
-            let ctx = EvalContext::new(values, &self.functions);
+            // Augment the eval value map with live realization handles before
+            // evaluating the captured arg-bindings. A fresh `eval()` does NOT
+            // invoke the kernel, so geometry `let`/`param` cells are `Value::Undef`
+            // (not live `Value::GeometryHandle`) in `values` — the same gap
+            // `measure_dfm_rules` works around at :842-854 (which injects into a
+            // `PersistentMap` of fields by `realization.name`). Here we inject into
+            // a cloned `ValueMap` keyed by `ValueCellId(entity, realization.name)`
+            // so that `eval_expr` resolves an INLINE tolerance constructor
+            // (`Flatness(feature: part, …)`) and a bare `actual` `ValueRef` to the
+            // live post-build handle. `ValueMap` is a structural-sharing
+            // `PersistentMap`, so the clone is O(1) and only the injected cells are
+            // new. No realization handles populated → augmented == values (a fresh
+            // eval / unit-test path stays byte-identical).
+            let mut augmented = values.clone();
+            for template in &module.templates {
+                for realization in &template.realizations {
+                    let Some(ref name) = realization.name else {
+                        continue;
+                    };
+                    if let Some(&kernel_handle) =
+                        self.realization_handles.get(&realization.id)
+                    {
+                        augmented.insert(
+                            ValueCellId::new(realization.id.entity.clone(), name.clone()),
+                            Value::GeometryHandle {
+                                realization_ref: realization.id.clone(),
+                                upstream_values_hash: [0u8; 32],
+                                kernel_handle,
+                            },
+                        );
+                    }
+                }
+            }
+
+            let ctx = EvalContext::new(&augmented, &self.functions);
             let realization_handles = &self.realization_handles;
             // Resolve a `Value::GeometryHandle` to a live kernel handle: prefer the
             // post-build realization bridge (the authoritative live handle, exactly
