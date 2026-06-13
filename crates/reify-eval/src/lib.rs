@@ -95,6 +95,7 @@ pub use selector_vocabulary_v2::{
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
     owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
+pub mod feature_datum;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
