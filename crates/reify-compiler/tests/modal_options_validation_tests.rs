@@ -871,13 +871,16 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
 /// `StepForce` (PRD §5.1) applies a unit-step force at a location. Must
 /// declare exactly 4 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `magnitude : Force`                    (positive scalar size)
 ///   - `start_time : Time`                    (step onset time)
 ///
 /// Must refine `ForcingFunction` via `trait_bounds`. No defaults on any
 /// param (all caller-supplied). Constraint lands in step-6.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn step_force_struct_has_correct_param_shape() {
     let template = find_structure("StepForce");
@@ -895,7 +898,7 @@ fn step_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "magnitude",
@@ -951,7 +954,7 @@ fn step_force_struct_has_correct_param_shape() {
 /// `ImpulseForce` (PRD §5.1) applies a Dirac-delta impulse at a location.
 /// Must declare exactly 4 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `impulse   : Impulse`                  (N·s = momentum = kg·m·s⁻¹)
 ///   - `time      : Time`                     (delta-application time)
@@ -961,6 +964,9 @@ fn step_force_struct_has_correct_param_shape() {
 /// `Impulse` named dimension (= N·s = momentum = MASS·LENGTH·TIME⁻¹; task 4548
 /// added it to NAMED_DIMENSIONS). The positivity constraint is verified
 /// separately.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn impulse_force_struct_has_correct_param_shape() {
     let template = find_structure("ImpulseForce");
@@ -978,7 +984,7 @@ fn impulse_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "impulse",
@@ -1036,7 +1042,7 @@ fn impulse_force_struct_has_correct_param_shape() {
 /// `HarmonicForce` (PRD §5.1) applies F(t) = amplitude·sin(2π·frequency·t + phase).
 /// Must declare exactly 5 params in declaration order:
 ///
-///   - `at        : String`                   (PLACEHOLDER for LocationId)
+///   - `at        : Selector`                 (topology selector for force location; task 4577)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
 ///   - `amplitude : Force`                    (positive peak force)
 ///   - `frequency : Frequency`                (positive cycles/second)
@@ -1045,6 +1051,9 @@ fn impulse_force_struct_has_correct_param_shape() {
 /// Must refine `ForcingFunction`. The `phase` param carries a default of
 /// `0deg` (zero Angle literal) per PRD §5.1 default spec; the other four
 /// are caller-supplied (no defaults). Constraints land in step-14.
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn harmonic_force_struct_has_correct_param_shape() {
     let template = find_structure("HarmonicForce");
@@ -1062,7 +1071,7 @@ fn harmonic_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "amplitude",
@@ -1142,7 +1151,7 @@ fn harmonic_force_struct_has_correct_param_shape() {
 /// `SampledForce` (PRD §5.1 / §5.3) applies a non-uniform-sample force table
 /// (Duhamel/Newmark-β fallback). Must declare exactly 4 params in order:
 ///
-///   - `at           : String`         (PLACEHOLDER for LocationId)
+///   - `at           : Selector`       (topology selector for force location; task 4577)
 ///   - `direction    : Vector3<Dimensionless>` (unit excitation vector)
 ///   - `time_samples : List<Time>`     (non-uniform time stamps)
 ///   - `force_samples: List<Force>`    (force magnitudes at each sample)
@@ -1150,6 +1159,9 @@ fn harmonic_force_struct_has_correct_param_shape() {
 /// Must refine `ForcingFunction`. No defaults. Constraints land in step-18.
 /// The cross-list invariant `time_samples.count == force_samples.count` is NOT
 /// expressible in Reify constraint grammar (deferred to trampoline task θ).
+///
+/// `at` param type RED until step-6 changes `param at : String` to `param at : Selector`
+/// in modal_analysis.ri (task 4577).
 #[test]
 fn sampled_force_struct_has_correct_param_shape() {
     let template = find_structure("SampledForce");
@@ -1167,7 +1179,7 @@ fn sampled_force_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("at", Type::String),
+        ("at", Type::AnySelector), // RED until step-6 changes at:String->at:Selector
         ("direction", Type::vec3(Type::dimensionless_scalar())),
         (
             "time_samples",
@@ -2076,5 +2088,77 @@ structure ScalarParamDefaults {
          Got {}: {:#?}",
         errors.len(),
         errors
+    );
+}
+
+// ─── task 4577: StepForce.at = Selector compile gates ────────────────────────
+
+/// POSITIVE compile gate: a `StepForce` with `at` supplied as a kernel-free
+/// FaceSelector (via `faces_by_normal`) must compile with zero Error-severity
+/// diagnostics once `param at : String` is changed to `param at : Selector`
+/// in modal_analysis.ri.
+///
+/// Uses the bt7 kernel-free idiom: `faces_by_normal(b, dir, tol)` with
+/// let-bound arguments so the selector stays kernel-free (never realized
+/// against a mesh). The force-location value is type-only at compile time;
+/// runtime Selector→mesh-node resolution is task 4122.
+///
+/// RED until step-6 changes `param at : String` to `param at : Selector`
+/// (currently a FaceSelector arg at a String param produces a type error).
+#[test]
+fn step_force_at_selector_compiles_with_zero_errors() {
+    let source = r#"
+structure StepForceSelectorSmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
+    let step = StepForce(
+        at: face_sel,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        errs.is_empty(),
+        "StepForce(at: <FaceSelector>, ...) should produce zero Error diagnostics \
+         (AnySelector accepts FaceSelector); \
+         RED until step-6 changes param at : String -> param at : Selector. \
+         Got {}: {:#?}",
+        errs.len(),
+        errs
+    );
+}
+
+/// NEGATIVE compile gate: a `StepForce` with `at: 0.0` (a Real literal) must
+/// produce at least one Error-severity diagnostic once `param at : Selector`
+/// lands — AnySelector rejects Real (type_compat.rs:1718).
+///
+/// RED until step-6 changes `param at : String` to `param at : Selector`
+/// (currently `at: 0.0` at a String param may be silently accepted).
+#[test]
+fn step_force_at_real_yields_type_error() {
+    let source = r#"
+structure StepForceRealAtSmoke {
+    let step = StepForce(
+        at: 0.0,
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errs = errors_only(&module);
+    assert!(
+        !errs.is_empty(),
+        "StepForce(at: 0.0, ...) should produce at least one Error diagnostic \
+         (AnySelector rejects Real per type_compat:1718); \
+         RED until step-6 changes param at : String -> param at : Selector. \
+         Got 0 errors.",
     );
 }
