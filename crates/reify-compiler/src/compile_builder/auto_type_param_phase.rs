@@ -26,18 +26,21 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ContentHash, Diagnostic, Type};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
 
 use crate::CompiledModule;
-use crate::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
+use crate::auto_type_param::{
+    AutoTypeParam, CtorSynthesisResult, check_candidate_constructible,
+    resolve_auto_type_params_with_backtracking,
+};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
 use crate::type_resolution::{substitute_expr_result_types, substitute_type_params};
 use crate::types::{
-    AutoTypeSubstitution, EntityKind, TopologyTemplate, mangle_monomorph_name,
+    AutoTypeSubstitution, EntityKind, TopologyTemplate, ValueCellKind, mangle_monomorph_name,
     monomorph_name_would_collide,
 };
 
@@ -302,6 +305,84 @@ pub(crate) fn phase_auto_type_param_resolution(
                     for sub in &mut mono.sub_components {
                         for arg in &mut sub.type_args {
                             *arg = substitute_type_params(arg, &sigma);
+                        }
+                    }
+                    // δ synthesis: for each top-level Param cell whose ORIGINAL type
+                    // (pre-substitution, from `target.value_cells`) is
+                    // `Type::TypeParam(name)` with `name ∈ sigma` and no
+                    // `default_expr`, synthesize a zero-arg StructureInstanceCtor
+                    // default_expr from the resolved candidate's own param defaults.
+                    //
+                    // Reading the original type from `target.value_cells`
+                    // (PRE-substitution) is precise: only auto-resolved type-param
+                    // cells are filled, never a concretely-typed `param x : GasketSeal`
+                    // that legitimately has no default (design decision 1).
+                    //
+                    // The synthesized ctor flows through unfold.rs's existing
+                    // default branch (line 338) → `eval_structure_instance_ctor` →
+                    // `Value::StructureInstance`.
+                    for (idx, orig_cell) in target.value_cells.iter().enumerate() {
+                        if orig_cell.kind != ValueCellKind::Param
+                            || orig_cell.default_expr.is_some()
+                        {
+                            continue;
+                        }
+                        // Only fill cells whose original type is a TypeParam that was
+                        // resolved in sigma (i.e., an auto-resolved type parameter).
+                        // Keep `tp_name` in scope so the NotConstructible arm can look
+                        // up the use-site span from `params`.
+                        let tp_name =
+                            if let Type::TypeParam(n) = &orig_cell.cell_type { n } else { continue };
+                        let candidate_name = match sigma.get(tp_name.as_str()) {
+                            Some(Type::StructureRef(cname)) => cname.clone(),
+                            _ => continue,
+                        };
+                        let candidate =
+                            match template_registry.get(candidate_name.as_str()) {
+                                Some(c) => *c,
+                                None => continue,
+                            };
+                        // Constructible → set synthesized default on the monomorph cell.
+                        // NotConstructible → emit E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE
+                        //   and leave default_expr = None (no partial-Undef instance).
+                        match check_candidate_constructible(candidate) {
+                            CtorSynthesisResult::Ctor(ctor) => {
+                                // mono is a clone of target; value_cells[idx] is the same
+                                // cell with the substituted type — set its default.
+                                mono.value_cells[idx].default_expr = Some(ctor);
+                            }
+                            CtorSynthesisResult::NotConstructible(required_param) => {
+                                // Use-site span: find the AutoTypeParam for this type
+                                // parameter, falling back to the prelude sentinel if
+                                // the parameter is not in the auto-clause list.
+                                let span = params
+                                    .iter()
+                                    .find(|p| p.name.as_str() == tp_name.as_str())
+                                    .map_or(SourceSpan::prelude(), |p| p.use_site_span);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "auto type parameter resolved candidate '{}' is not \
+                                         constructible: required parameter '{}' has no default; \
+                                         cannot synthesize a zero-arg instance for \
+                                         'param {} : {}'",
+                                        candidate_name,
+                                        required_param,
+                                        orig_cell.id.member,
+                                        candidate_name,
+                                    ))
+                                    .with_code(
+                                        DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+                                    )
+                                    .with_label(DiagnosticLabel::new(
+                                        span,
+                                        format!(
+                                            "resolved to '{}', which has required param '{}'",
+                                            candidate_name, required_param
+                                        ),
+                                    )),
+                                );
+                                // Leave default_expr = None — no partial-Undef instance.
+                            }
                         }
                     }
                     // α partial-coverage: the following collections are NOT

@@ -7,7 +7,7 @@
 //! expressions, strips its `type_params`, and rewrites the originating
 //! `SubComponentDecl.structure_name` to the monomorph name.
 
-use reify_core::{Severity, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::compile_source_with_stdlib;
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
@@ -608,6 +608,156 @@ fn no_auto_module_produces_zero_monomorphs() {
     assert!(
         monomorphs.is_empty(),
         "no-auto: module must produce zero monomorph templates (none with '$' in name), got: {:?}",
+        monomorphs
+    );
+}
+
+/// Non-constructible candidate: a resolved candidate with a required (non-defaulted)
+/// param emits `E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE` and does NOT
+/// synthesize a default for the type-param cell (leaves `default_expr = None`).
+///
+/// Fixture: `RequiredSeal : Seal { param thickness : Length }` — NO default on
+/// `thickness`.  A single `RequiredSeal` candidate guarantees deterministic
+/// resolution (1 feasible → Selected) under the stub checker.
+///
+/// RED until step-6 wires the constructibility guard into the monomorph-build
+/// pass and emits the diagnostic.  After step-4 (constructible path only), the
+/// NOT_CONSTRUCTIBLE case is silently skipped — no diagnostic is emitted, so
+/// this test fails on the diagnostic-count assertion.
+#[test]
+fn non_constructible_candidate_emits_diagnostic_and_leaves_no_default() {
+    let source = r#"
+        trait Seal {}
+
+        // Single candidate with a REQUIRED (no-default) param — non-constructible.
+        structure def RequiredSeal : Seal {
+            param thickness : Length
+        }
+
+        structure def Bearing<T: Seal> {
+            param seal : T
+        }
+
+        structure def Asm {
+            sub b = Bearing<auto(free): Seal>()
+        }
+    "#;
+
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    // ── Assertion 1: exactly ONE Error diagnostic, code = AutoTypeParamCandidateNotConstructible ──
+    let not_constructible_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamCandidateNotConstructible)
+        })
+        .collect();
+    assert_eq!(
+        not_constructible_errors.len(),
+        1,
+        "expected exactly 1 AutoTypeParamCandidateNotConstructible error, got {} diagnostics \
+         with that code.  Full diagnostics: {:#?}",
+        not_constructible_errors.len(),
+        compiled.diagnostics
+    );
+
+    // The diagnostic message should name the missing param `thickness`.
+    let diag = &not_constructible_errors[0];
+    assert!(
+        diag.message.contains("thickness"),
+        "diagnostic message must name the missing param 'thickness', got: {:?}",
+        diag.message
+    );
+
+    // ── Assertion 2: the monomorph's `seal` cell has default_expr = None ──
+    //
+    // No partial-Undef StructureInstance should be synthesized for a non-constructible
+    // candidate (design decision 2 in the plan).
+    let monomorph = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Bearing$RequiredSeal")
+        .expect(
+            "monomorph 'Bearing$RequiredSeal' must still be created even when non-constructible \
+             (the synthesis guard fires after the clone is built)",
+        );
+    let seal_cell = monomorph
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "seal")
+        .expect("expected 'seal' value cell in 'Bearing$RequiredSeal'");
+    assert!(
+        seal_cell.default_expr.is_none(),
+        "non-constructible candidate: 'seal' cell must have default_expr = None \
+         (no partial-Undef StructureInstance synthesized), got: {:?}",
+        seal_cell.default_expr
+    );
+}
+
+/// Once-per-monomorph diagnostic emission: two use-sites resolving to the SAME
+/// non-constructible candidate must produce EXACTLY ONE diagnostic, not two.
+///
+/// The δ synthesis loop runs inside `if created_monomorphs.insert(mono_name)`,
+/// so it fires only on the FIRST use-site for each (generic, candidates) pair.
+/// The second use-site reuses the already-built monomorph and skips synthesis.
+/// This test pins that contract so a future refactor cannot accidentally move
+/// synthesis outside the dedup branch and start emitting N duplicate diagnostics.
+#[test]
+fn non_constructible_two_use_sites_emits_one_diagnostic() {
+    // Two sub-components resolving to the same non-constructible candidate.
+    // Both `b1` and `b2` are `Bearing<auto(free): Seal>()` → Bearing$RequiredSeal.
+    // The monomorph is deduplicated (created_monomorphs.insert returns false on the
+    // second insertion), so the NotConstructible diagnostic fires exactly once.
+    let source = r#"
+        trait Seal {}
+
+        structure def RequiredSeal : Seal {
+            param thickness : Length
+        }
+
+        structure def Bearing<T: Seal> {
+            param seal : T
+        }
+
+        structure def Asm {
+            sub b1 = Bearing<auto(free): Seal>()
+            sub b2 = Bearing<auto(free): Seal>()
+        }
+    "#;
+
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    // Both use-sites resolve to Bearing$RequiredSeal — ONE monomorph, ONE diagnostic.
+    let not_constructible_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::AutoTypeParamCandidateNotConstructible)
+        })
+        .collect();
+    assert_eq!(
+        not_constructible_errors.len(),
+        1,
+        "two use-sites resolving to the same non-constructible candidate must emit \
+         EXACTLY 1 AutoTypeParamCandidateNotConstructible diagnostic (once per \
+         monomorph, not once per use-site).  Full diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+
+    // There must be exactly ONE Bearing$RequiredSeal template (dedup held).
+    let monomorphs: Vec<&str> = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name == "Bearing$RequiredSeal")
+        .map(|t| t.name.as_str())
+        .collect();
+    assert_eq!(
+        monomorphs.len(),
+        1,
+        "expected exactly one 'Bearing$RequiredSeal' monomorph template, got: {:?}",
         monomorphs
     );
 }

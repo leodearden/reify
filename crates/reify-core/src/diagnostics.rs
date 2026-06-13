@@ -818,6 +818,28 @@ pub enum DiagnosticCode {
     /// `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §6.2).
     AutoTypeParamBoundedInfeasible,
+    /// Origin: `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`
+    /// (monomorph-build pass, per-cell synthesis guard — task 4435 δ).
+    ///
+    /// Canonical message form:
+    /// `"auto type parameter resolved candidate '<Candidate>' is not constructible: \
+    ///   required parameter '<param>' has no default; cannot synthesize a zero-arg \
+    ///   instance for 'param <member> : <T>'"`.
+    ///
+    /// Emitted as `Severity::Error` when the monomorph-build pass finds that a
+    /// resolved candidate has ≥1 required (non-defaulted) `Param` cell.
+    /// A zero-arg StructureInstanceCtor synthesized over such a candidate would
+    /// produce a `Value::StructureInstance` silently missing the required field —
+    /// a fake-completion trap.  The Error names the first missing param so the
+    /// user can provide an explicit default or a zero-arg-constructible candidate.
+    ///
+    /// The cell's `default_expr` is left `None` (no synthesized ctor), preserving
+    /// the existing `Value::Undef` fallthrough at `unfold.rs` for that cell.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §δ).
+    AutoTypeParamCandidateNotConstructible,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
@@ -2949,6 +2971,44 @@ mod tests {
             back,
             DiagnosticCode::AutoTypeParamBoundedInfeasible,
             "deserialize must round-trip back to AutoTypeParamBoundedInfeasible"
+        );
+    }
+
+    // --- AutoTypeParamCandidateNotConstructible tests (task 4435 — E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE) ---
+    // Pairs with the synthesis guard in
+    // `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs`
+    // alongside the other AutoTypeParam* siblings per the task 4435 DIAGNOSTIC
+    // HOME CORRECTION.  Variant-agnostic derives are covered by
+    // `diagnostic_code_derives`; only the variant-specific serde wire-form
+    // round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamCandidateNotConstructible` round-trips
+    /// through serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamCandidateNotConstructible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the δ constructibility guard.
+    ///
+    /// Emitted (as `Severity::Error`) by the monomorph-build pass when a
+    /// resolved candidate has ≥1 required (non-defaulted) Param cell, making
+    /// it impossible to synthesize a zero-arg StructureInstanceCtor default
+    /// (mnemonic E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_candidate_not_constructible_round_trips_via_serde() {
+        let s = serde_json::to_string(
+            &DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+        )
+        .unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamCandidateNotConstructible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+            "deserialize must round-trip back to AutoTypeParamCandidateNotConstructible"
         );
     }
 
