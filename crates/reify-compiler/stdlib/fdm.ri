@@ -102,7 +102,7 @@ structure def FDMProcess {
     // component). The meaningful quantity is the *direction* (dimensionless
     // ratio), but the type captures the physical coordinate system.
     //
-    // TODO(β-phase): β-phase property-correlation consumers must normalize
+    // TODO(β-phase): β-phase property-correlation consumers must normalize // ptodo:allow type-placeholder awaiting future type-system PRD
     // build_direction before computing direction cosines (e.g. call
     // `normalize(build_direction)` or extract the unit-vector ratio) to
     // guard against callers who pass a non-unit vector. A future slice

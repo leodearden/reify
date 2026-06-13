@@ -36,7 +36,7 @@
 //      typed `List<Real>`. Fixed-array syntax `[Real;N]` is not supported in
 //      the grammar. Per PRD §4.2, arity is shape-validated by the η dispatcher.
 //   3. `origin` (Frame3), `mechanism` (Mechanism), and `joint_id` (BodyId) use
-//      `Real` placeholders with TODO(…-type) comments pointing at the owning
+//      `Real` placeholders with TODO(…-type) comments pointing at the owning // ptodo:allow type-placeholder awaiting future type-system PRD
 //      PRD — same convention as trajectory.ri `mechanism : Real`, `Pose3 = Real`,
 //      and JointLimit.joint : Real. Retargeting each alias line propagates the
 //      type tightening to every consumer without touching structure_def bodies.
@@ -59,7 +59,7 @@
 //                                    (dynamics_psd.rs); non-PSD inertia replaces
 //                                    the instance with Value::Undef and emits
 //                                    E_DynamicsInertiaNotPSD.
-//   origin  : Real                  — TODO(frame3-type): body-frame origin; Frame3
+//   origin  : Real                  — TODO(frame3-type): body-frame origin; Frame3 // ptodo:allow type-placeholder awaiting future type-system PRD
 //                                    has no surface type yet (`Frame` is absent from
 //                                    type_resolution.rs — Type::Frame is internal-only).
 //                                    Real placeholder mirrors trajectory.ri `mechanism : Real`.
@@ -155,7 +155,7 @@ structure def ZeroForce : JointForceValue { }
 // JointForce — a force/torque applied to a specific joint in a mechanism
 // (PRD §4.1):
 //
-//   joint_id : Real              — TODO(body-id-type): BodyId placeholder;
+//   joint_id : Real              — TODO(body-id-type): BodyId placeholder; // ptodo:allow type-placeholder awaiting future type-system PRD
 //                                  cf. JointLimit.joint : Real in trajectory.ri.
 //                                  Retarget when the kinematic-constraints PRD
 //                                  introduces a proper BodyId / JointId type.
@@ -163,7 +163,7 @@ structure def ZeroForce : JointForceValue { }
 //                                  ScalarTorque / CylForce / PlanarForce /
 //                                  SphereForce / ZeroForce.
 structure def JointForce {
-    param joint_id : Real // TODO(body-id-type): BodyId placeholder, cf. JointLimit.joint
+    param joint_id : Real // TODO(body-id-type): BodyId placeholder, cf. JointLimit.joint // ptodo:allow type-placeholder awaiting future type-system PRD
     param value : JointForceValue
 }
 
@@ -181,7 +181,7 @@ structure def JointForce {
 // (values.count == vels.count == accels.count == num_joints) are owned by
 // the β/η evaluator once it sees all samples together.
 //
-// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic-
+// TODO(joint-value-type): `List<JointValue>` retargets to the kinematic- // ptodo:allow type-placeholder awaiting future type-system PRD
 // completion PRD's proper `JointValue` type when that PRD lands (see the
 // type alias note at the top of this file).
 structure def TrajectorySample {
@@ -196,7 +196,7 @@ structure def TrajectorySample {
 // MotionTrajectory — a complete joint-space trajectory for a mechanism
 // (PRD §3.2):
 //
-//   mechanism : Real                    — TODO(mechanism-type): Mechanism
+//   mechanism : Real                    — TODO(mechanism-type): Mechanism // ptodo:allow type-placeholder awaiting future type-system PRD
 //                                         placeholder; cf. trajectory.ri
 //                                         `PiecewisePolynomialProfile.mechanism`.
 //                                         Retarget when the kinematic-constraints
@@ -206,7 +206,7 @@ structure def TrajectorySample {
 // No structure-level constraint: cross-sample invariants (monotone t, non-empty
 // list) are owned by the β/η evaluator once it sees all samples together.
 structure def MotionTrajectory {
-    param mechanism : Real // TODO(mechanism-type): Mechanism placeholder, cf. trajectory.ri
+    param mechanism : Real // TODO(mechanism-type): Mechanism placeholder, cf. trajectory.ri // ptodo:allow type-placeholder awaiting future type-system PRD
     param samples : List<TrajectorySample>
 }
 

@@ -91,7 +91,7 @@ pub unit USD : Money
 /// use-site (resolution checks builtins before the alias registry). This alias
 /// is now effectively dead — kept only as a harmless back-compat alias for any
 /// external code that may reference it. Removing it is safe; deferred to a
-/// dedicated cleanup pass. TODO(cleanup): remove this alias once the stdlib
+/// dedicated cleanup pass. TODO(cleanup): remove this alias once the stdlib // ptodo:allow type-placeholder awaiting future type-system PRD
 /// alias surface is audited for external dependents.
 pub type Velocity = Length / Time
 
