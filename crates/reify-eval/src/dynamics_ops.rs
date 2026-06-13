@@ -1393,6 +1393,116 @@ mod tests {
             "malformed CenterOfMass JSON must emit at least one Warning, got: {diags:?}"
         );
     }
+
+    // ── step-1 RED: Pressure-as-density must be rejected (task 4491) ─────────
+    //
+    // HOLE 1: Today cell_f64 strips 2.0e11 from a Pressure scalar and feeds it
+    // to geom_query, silently using Pressure-magnitude as if it were kg/m³.
+    // After step-2, accept_arg rejects it, geom_query is never called, all three
+    // fields degrade to Value::Undef, and a "expects Density, got Pressure"
+    // Warning is emitted.
+
+    /// 1a — Core layer: eval_body_mass_props_core with an explicit Pressure arg.
+    ///
+    /// RED today: cell_f64 extracts si_value 2.0e11 and calls geom_query,
+    /// producing non-Undef mass/com/inertia and no "expects Density" diagnostic.
+    /// GREEN after step-2: accept_arg rejects the Pressure scalar, geom_query is
+    /// never invoked, all three fields are Undef, one Warning carries both
+    /// "expects Density" and "Pressure".
+    #[test]
+    fn eval_body_mass_props_core_rejects_pressure_scalar_as_density() {
+        let b = body(Some(2700.0));
+        let geom_called = std::cell::Cell::new(false);
+        let geom = |d: f64| {
+            geom_called.set(true);
+            uniform_box_inertia(DIMS, d)
+        };
+        let mut diags = Vec::new();
+        let pressure_arg = Value::Scalar {
+            si_value: 2.0e11,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let result = eval_body_mass_props_core(&b, Some(&pressure_arg), geom, &mut diags);
+
+        // geom_query must NOT be called (Pressure arg aborts before kernel).
+        assert!(
+            !geom_called.get(),
+            "geom_query must not be called when explicit density arg is a Pressure scalar"
+        );
+
+        // All three geometric fields must be Undef.
+        let data = match &result {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        for f in ["mass", "com", "inertia"] {
+            assert_eq!(
+                data.fields.get(f),
+                Some(&Value::Undef),
+                "geometric field `{f}` must be Undef when the density arg is rejected"
+            );
+        }
+
+        // At least one Warning with "expects Density" AND "Pressure".
+        let rejection_diag = diags.iter().find(|d| {
+            d.message.contains("expects Density") && d.message.contains("Pressure")
+        });
+        assert!(
+            rejection_diag.is_some(),
+            "Pressure-as-density must emit a Warning containing 'expects Density' and \
+             'Pressure'; got: {diags:?}"
+        );
+    }
+
+    /// 1b — Dispatch end-to-end: try_eval_body_mass_props with a Pressure rho cell.
+    ///
+    /// RED today: resolve_arg_value returns the Pressure scalar; cell_f64 strips
+    /// it to 2.0e11 and the kernel Volume query produces non-Undef mass; no
+    /// "expects Density" diagnostic is emitted. GREEN after step-2: the dispatch
+    /// routes the Pressure scalar through accept_arg (Rejected), emits a Warning,
+    /// and returns Some(MassProperties{Undef,Undef,Undef}).
+    #[test]
+    fn dispatch_pressure_scalar_as_density_is_rejected_and_degrades_to_undef() {
+        use reify_core::RealizationNodeId;
+        use reify_ir::GeometryHandleId;
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("Design", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: GeometryHandleId(99),
+            },
+        );
+        // Wrong dimension: Pressure, not Density.
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2.0e11,
+            dimension: DimensionVector::PRESSURE,
+        });
+
+        // Kernel has a volume result so that if the Pressure scalar were wrongly
+        // accepted the mass field would be 2.0e11 × 3.0 = 6.0e11 — not Undef.
+        let kernel = MockGeometryKernel::new()
+            .with_volume_result(GeometryHandleId(99), Value::Real(3.0));
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let mut diags = Vec::new();
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("Pressure-as-density must still return Some(MassProperties) degraded to Undef");
+
+        // All three geometric fields must be Undef (rejected density → degrade).
+        assert_deferred_mass_props(&result);
+
+        // Must emit at least one Warning containing "expects Density".
+        let rejection_diag = diags.iter().find(|d| d.message.contains("expects Density"));
+        assert!(
+            rejection_diag.is_some(),
+            "Pressure-as-density must emit a Warning containing 'expects Density'; got: {diags:?}"
+        );
+    }
 }
 
 // ── inverse_dynamics ComputeNode trampoline (task RBD-ι) ─────────────────────
