@@ -17,8 +17,32 @@ pub(crate) fn eval_tolerancing(name: &str, args: &[Value]) -> Option<Value> {
     Some(match name {
         "effective_tolerance_zone" => effective_tolerance_zone(args),
         "iso_it_tolerance" => iso_it_tolerance(args),
+        "nominal" => nominal_marker(args),
         _ => return None,
     })
+}
+
+/// Inert geometry marker returned by the zero-arg `nominal()` builtin (η/4480).
+///
+/// `nominal()` is the *default* for `Conforms.actual` (`param actual : Geometry
+/// = nominal()`). Param defaults compile in a neutral scope, so a
+/// `= tolerance.feature` default can't evaluate — an inert marker is the only
+/// way to keep the param `Geometry`-typed while the constraint body ignores it.
+/// The marker flows nowhere: the Conforms predicate never reads `actual`, and
+/// the η `measure_gdt_conformance` pass keys on an *explicit* `actual` binding,
+/// never this default — so the INVALID-handle sentinel never reaches a kernel.
+///
+/// Returns an INVALID-handle [`Value::GeometryHandle`] (deterministic,
+/// `Geometry`-typed). Strictly zero-arity: any argument yields `Value::Undef`.
+fn nominal_marker(args: &[Value]) -> Value {
+    if !args.is_empty() {
+        return Value::Undef;
+    }
+    Value::GeometryHandle {
+        realization_ref: reify_core::identity::RealizationNodeId::new("__nominal_marker__", 0),
+        upstream_values_hash: [0u8; 32],
+        kernel_handle: reify_ir::GeometryHandleId::INVALID,
+    }
 }
 
 // ─── iso_it_tolerance helpers ────────────────────────────────────────────────
