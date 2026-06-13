@@ -2712,6 +2712,52 @@ mod tests {
         );
     }
 
+    // ── Datum-receiver type names (task 4382 / β; see esc-4382-157) ───────────
+    //
+    // β owns `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+    // vocabulary so default-less params (`param a : Axis`) type-check without a
+    // value constructor. RED until step-6 adds the arms (all return None today).
+
+    /// `resolve_type_name("Direction")` must return `Type::Direction`.
+    #[test]
+    fn resolve_type_name_recognises_direction() {
+        assert_eq!(
+            resolve_type_name("Direction"),
+            Some(Type::Direction),
+            "\"Direction\" should resolve to Type::Direction"
+        );
+    }
+
+    /// `resolve_type_name("Axis")` must return `Type::Axis`.
+    #[test]
+    fn resolve_type_name_recognises_axis() {
+        assert_eq!(
+            resolve_type_name("Axis"),
+            Some(Type::Axis),
+            "\"Axis\" should resolve to Type::Axis"
+        );
+    }
+
+    /// `resolve_type_name("Plane")` must return `Type::Plane`.
+    #[test]
+    fn resolve_type_name_recognises_plane() {
+        assert_eq!(
+            resolve_type_name("Plane"),
+            Some(Type::Plane),
+            "\"Plane\" should resolve to Type::Plane"
+        );
+    }
+
+    /// `resolve_type_name("Frame")` must return `Type::Frame(3)`.
+    #[test]
+    fn resolve_type_name_recognises_frame() {
+        assert_eq!(
+            resolve_type_name("Frame"),
+            Some(Type::Frame(3)),
+            "\"Frame\" should resolve to Type::Frame(3)"
+        );
+    }
+
     /// `resolve_type_with_aliases` must inherit the builtin selector arms so that
     /// param-annotation resolution (which calls this function) resolves selector
     /// type names without an alias entry.
