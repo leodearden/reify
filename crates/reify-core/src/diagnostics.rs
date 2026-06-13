@@ -2224,6 +2224,24 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 β).
     DatumProjectionAmbiguous,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
+    /// arg/default mismatch — task 4584).
+    ///
+    /// Emitted as `Severity::Error` in three sub-cases, differentiated by message text:
+    /// 1. A constructor arg passed to a `Type::StructureRef` param has the wrong nominal
+    ///    type (e.g. `ForcingTimeHistory(part: "beam", ...)` where `part : Part`).
+    /// 2. A structure `param`'s default expression has the wrong nominal type for a
+    ///    `Type::StructureRef`-typed cell (e.g. `param part : Part = "x"`).
+    /// 3. A structure `param`'s default expression is not a geometry-producing expression
+    ///    for a `Type::Geometry`-typed cell (e.g. `param g : Solid = 42`).
+    ///
+    /// Canonical message forms:
+    /// - `"argument '<arg>' has type '<T>' but param '<p>' requires structure type '<S>'"` (sub-case 1/2)
+    /// - `"param '<p>' has type 'Geometry' but its default expression has non-geometry type '<T>'"` (sub-case 3)
+    ///
+    /// One `DiagnosticCode` spans all three sub-cases per the established
+    /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
+    TypeNotConformingToStructureRef,
 }
 
 /// A diagnostic message with location and optional labels.
