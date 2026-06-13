@@ -826,7 +826,10 @@ mod tests {
             uniform_box_inertia(DIMS, density)
         };
         let mut diags = Vec::new();
-        let explicit = Value::Real(5000.0);
+        let explicit = Value::Scalar {
+            si_value: 5000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
         let result = eval_body_mass_props_core(&b, Some(&explicit), geom, &mut diags);
 
         assert_eq!(
@@ -952,7 +955,10 @@ mod tests {
         let rho_cell = ValueCellId::new("Design", "rho");
         let mut values = ValueMap::new();
         values.insert(body_cell.clone(), body(None)); // no Material density…
-        values.insert(rho_cell.clone(), Value::Real(5000.0)); // …but explicit arg present
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 5000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        }); // …but explicit arg present
         let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
         let kernel = MockGeometryKernel::new();
         let mut diags = Vec::new();
@@ -1092,7 +1098,10 @@ mod tests {
         );
         // Explicit density suppresses W_DynamicsDefaultDensity so the only
         // warning we see (after step-4) is the kernel-failure downgrade warning.
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        });
 
         // No injected results → every query returns Err.
         let kernel = MockGeometryKernel::new();
@@ -1137,7 +1146,10 @@ mod tests {
                 kernel_handle: GeometryHandleId(7),
             },
         );
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        });
 
         // Injected inertia: distinct diagonal so all three diagonal entries differ.
         let injected_inertia = Value::List(vec![
@@ -1206,7 +1218,10 @@ mod tests {
                 kernel_handle: GeometryHandleId(11),
             },
         );
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        });
 
         // Volume injected and succeeds; CenterOfMass is NOT injected → Err on
         // the second query, exercising the partial-failure path.
@@ -1249,7 +1264,10 @@ mod tests {
                 kernel_handle: GeometryHandleId(13),
             },
         );
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        });
 
         // Volume reply is non-numeric: cell_f64 returns None → ok_or_else →
         // QueryError → defensive Undef + Warning.
@@ -1345,7 +1363,10 @@ mod tests {
                 kernel_handle: GeometryHandleId(15),
             },
         );
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(rho_cell.clone(), Value::Scalar {
+            si_value: 2000.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        });
 
         // Volume is valid; CenterOfMass reply is malformed JSON → parse_xyz_value
         // fails → QueryError → defensive Undef + Warning.

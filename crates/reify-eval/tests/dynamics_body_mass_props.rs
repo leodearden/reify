@@ -114,7 +114,8 @@ fn body_mass_props_without_material_density_warns_and_assembles_mass_properties(
 fn body_mass_props_box_evals_to_computed_mass_properties() {
     let source = "structure def MassPropsBox {\n    \
         let b = box(50mm, 30mm, 10mm)\n    \
-        let mp = body_mass_props(b, 7850.0)\n}";
+        let rho = 7850kg/m^3\n    \
+        let mp = body_mass_props(b, rho)\n}";
 
     // Validate compilation unconditionally — a grammar/signature regression
     // must fail on every runner, not just those with OCCT.
