@@ -30,6 +30,7 @@ mod guards;
 mod ice;
 mod list_helpers;
 mod joint_signatures;
+mod builtin_signatures;
 mod math_signatures;
 mod signatures_common;
 pub mod module_dag;

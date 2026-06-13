@@ -484,6 +484,39 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
     /// (see `docs/prds/topology-selector-value-type.md` §11.2).
     SelectorKindMismatch,
+    /// Origin: `crates/reify-compiler/src/builtin_signatures.rs` (task 4493,
+    /// type-hygiene ζ).
+    /// Emitted as `Severity::Error` when a call site passes a statically-known
+    /// argument whose type is a DEFINITE mismatch with the builtin's expected
+    /// dimensioned-scalar arg type.
+    ///
+    /// Canonical message form:
+    /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}"`
+    ///
+    /// where:
+    /// - `{builtin}` — the builtin function name (e.g., `"moment_of_inertia"`).
+    /// - `{arg_name}` — the parameter name (e.g., `"density"`, `"tol"`, `"h"`).
+    /// - `{type_name}` — the expected physical quantity name (e.g., `"Density"`,
+    ///   `"Angle"`, `"Length"`), mirroring the γ runtime `ArgRejection::message`
+    ///   wording so compile-time and runtime diagnostics read consistently.
+    /// - `{actual}` — the actual resolved argument type (`Type::Display`), e.g.,
+    ///   `"Real"` for a bare `7850.0`, `"Bool"` for a boolean, `"Scalar[m]"` for
+    ///   a length scalar.
+    ///
+    /// Distinct from [`DimensionMismatch`] (which has Add/Sub-specific semantics)
+    /// and [`SelectorKindMismatch`] (selector-composition invariant): minted as a
+    /// dedicated code because the builtin-arg mismatch can be a *kind* mismatch
+    /// (e.g., `Bool` where `Density` is expected), not only a dimension mismatch,
+    /// and because it names the builtin's parameter contract rather than an
+    /// operator-level invariant — following the `SelectorKindMismatch` minting
+    /// precedent (diagnostics.rs §"minting rationale").
+    ///
+    /// Gradualism (PRD decision 6): `Type::Error` (poison) and `Type::TypeParam`
+    /// (unresolved generic) are silently skipped; only concrete types fire.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
+    /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
+    ArgTypeMismatch,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
