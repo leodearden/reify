@@ -315,21 +315,57 @@ pub(crate) fn check_param_default_conformance(
         let Some(default) = &vc.default_expr else {
             continue;
         };
-        if !matches!(&vc.cell_type, Type::StructureRef(_)) {
-            continue;
+        match &vc.cell_type {
+            Type::StructureRef(_) => {
+                // Anti-cascade: skip when the default expression itself had a compile error.
+                if matches!(default.result_type, Type::Error) {
+                    continue;
+                }
+                let mut ctx = WalkCtx {
+                    arg_name: vc.id.member.as_str(),
+                    span: vc.span,
+                    templates: template_registry,
+                    traits: trait_registry,
+                    diagnostics,
+                };
+                walk_param_against_arg(&vc.cell_type, default, &mut ctx);
+            }
+            Type::Geometry => {
+                // Anti-cascade: skip when the default expression itself had an error or
+                // is an unresolved type param — both are unverifiable.
+                if matches!(default.result_type, Type::Error | Type::TypeParam(_)) {
+                    continue;
+                }
+                // Geometry constructors (box/cylinder/...) compile to a
+                // `Type::dimensionless_scalar()` PLACEHOLDER (GHR-γ), so
+                // `type_compatible(Geometry, default.result_type)` would FALSELY reject
+                // every legitimate geometry default.  Instead we detect geometry by:
+                //   1. result_type is already Type::Geometry (a let-bound geometry ref), or
+                //   2. the callee is a known geometry function (box/cylinder/sphere/...).
+                // This is the same signal `check_leaf_trait_conformance` uses for args.
+                let is_geometry_default = matches!(default.result_type, Type::Geometry)
+                    || extract_function_call_name(default)
+                        .map(is_geometry_function)
+                        .unwrap_or(false);
+                if !is_geometry_default {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "geometry param '{}' has a non-geometry default of type '{}'",
+                            vc.id.member, default.result_type
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+                        .with_label(DiagnosticLabel::new(
+                            vc.span,
+                            format!(
+                                "expected a geometry expression, got '{}'",
+                                default.result_type
+                            ),
+                        )),
+                    );
+                }
+            }
+            _ => continue,
         }
-        // Anti-cascade: skip when the default expression itself had a compile error.
-        if matches!(default.result_type, Type::Error) {
-            continue;
-        }
-        let mut ctx = WalkCtx {
-            arg_name: vc.id.member.as_str(),
-            span: vc.span,
-            templates: template_registry,
-            traits: trait_registry,
-            diagnostics,
-        };
-        walk_param_against_arg(&vc.cell_type, default, &mut ctx);
     }
 }
 
