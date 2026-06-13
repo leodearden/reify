@@ -2175,6 +2175,49 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_GdtRemoved2018`
     /// (severity convention: `W_*` → Warning; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
     GdtRemoved2018,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `MemberAccess`
+    /// datum-projection branch, geometric-relations β).
+    ///
+    /// Canonical message form:
+    /// `"<type> has no projection '.<member>'"` (e.g. `"Point3<Length> has no
+    /// projection '.dir'"`, or `"Plane has no projection '.dir'; use .normal"`).
+    ///
+    /// Emitted as a `Severity::Error` when a datum-projection member access
+    /// (`.dir`/`.normal`/`.origin`/`.x`/`.y`/`.z`/`.xy_plane`) targets a receiver
+    /// that has no such projection — e.g. `point.dir` (a `Point3` has no
+    /// direction), or `plane.dir` (a `Plane` exposes `.normal`, not `.dir`). The
+    /// access lowers to a poison literal (anti-cascade), so no further diagnostics
+    /// fan out from the rejected member.
+    ///
+    /// Distinct from [`DatumProjectionAmbiguous`]: *unavailable* means the member
+    /// does not exist on the receiver at all, whereas *ambiguous* means it could
+    /// name several members and the author must pick one.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DATUM_PROJECTION_UNAVAILABLE`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 β).
+    DatumProjectionUnavailable,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `MemberAccess`
+    /// datum-projection branch, geometric-relations β).
+    ///
+    /// Canonical message form:
+    /// `"<type> projection '.<member>' is ambiguous; write .x/.y/.z"` (e.g.
+    /// `"Frame projection '.dir' is ambiguous; write frame.z"`).
+    ///
+    /// Emitted as a `Severity::Error` when a *bare* datum projection could resolve
+    /// to more than one member of the receiver — e.g. `frame.dir`/`frame.normal`
+    /// on a `Frame(3)`, whose three basis directions `.x`/`.y`/`.z` are all
+    /// candidates. The diagnostic names the disambiguating members; the access
+    /// lowers to a poison literal (anti-cascade).
+    ///
+    /// Distinct from [`DatumProjectionUnavailable`]: *ambiguous* means the
+    /// projection exists but is non-unique, whereas *unavailable* means it does
+    /// not exist on the receiver at all.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DATUM_PROJECTION_AMBIGUOUS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 β).
+    DatumProjectionAmbiguous,
 }
 
 /// A diagnostic message with location and optional labels.

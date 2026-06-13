@@ -14,6 +14,7 @@ mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
