@@ -83,3 +83,141 @@ pub(crate) fn check_builtin_arg_types(
 ) {
     // Stub: no-op. Implemented in step-4.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::units::GEOMETRY_TOPOLOGY_SELECTOR_NAMES;
+    use reify_core::DimensionVector;
+
+    // ── builtin_arg_slots table contract (step-1) ────────────────────────────
+
+    fn mass_density_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+                type_name: "Density",
+            },
+        }
+    }
+
+    fn angle_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::ANGLE,
+                type_name: "Angle",
+            },
+        }
+    }
+
+    fn length_slot(index: usize, name: &'static str) -> CheckableArg {
+        CheckableArg {
+            index,
+            name,
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::LENGTH,
+                type_name: "Length",
+            },
+        }
+    }
+
+    /// moment_of_inertia → arg1 density (MASS_DENSITY).
+    #[test]
+    fn moment_of_inertia_has_density_slot() {
+        let slots = builtin_arg_slots("moment_of_inertia");
+        assert_eq!(slots.len(), 1, "moment_of_inertia should have 1 slot, got: {:?}", slots);
+        assert_eq!(slots[0], mass_density_slot(1, "density"));
+    }
+
+    /// center_of_mass → arg1 density (MASS_DENSITY).
+    #[test]
+    fn center_of_mass_has_density_slot() {
+        let slots = builtin_arg_slots("center_of_mass");
+        assert_eq!(slots.len(), 1, "center_of_mass should have 1 slot, got: {:?}", slots);
+        assert_eq!(slots[0], mass_density_slot(1, "density"));
+    }
+
+    /// faces_by_normal → arg2 tol (ANGLE).
+    #[test]
+    fn faces_by_normal_has_angle_slot() {
+        let slots = builtin_arg_slots("faces_by_normal");
+        assert_eq!(slots.len(), 1, "faces_by_normal should have 1 slot, got: {:?}", slots);
+        assert_eq!(slots[0], angle_slot(2, "tol"));
+    }
+
+    /// edges_parallel_to → arg2 tol (ANGLE).
+    #[test]
+    fn edges_parallel_to_has_angle_slot() {
+        let slots = builtin_arg_slots("edges_parallel_to");
+        assert_eq!(slots.len(), 1, "edges_parallel_to should have 1 slot, got: {:?}", slots);
+        assert_eq!(slots[0], angle_slot(2, "tol"));
+    }
+
+    /// edges_at_height → arg1 h (LENGTH) AND arg2 tol (LENGTH).
+    #[test]
+    fn edges_at_height_has_h_and_tol_slots() {
+        let slots = builtin_arg_slots("edges_at_height");
+        assert_eq!(slots.len(), 2, "edges_at_height should have 2 slots, got: {:?}", slots);
+        assert_eq!(slots[0], length_slot(1, "h"));
+        assert_eq!(slots[1], length_slot(2, "tol"));
+    }
+
+    /// Names with no dimensioned-scalar arg or unrecognized names return empty.
+    #[test]
+    fn empty_for_unchecked_names() {
+        let unchecked = [
+            "edges",
+            "faces",
+            "adjacent_faces",
+            "shared_edges",
+            "split",
+            "face",
+            "edge",
+            "solid_body",
+            "volume",
+            "box",
+            "",
+            "closest_point",
+            "is_on",
+            "angle_between_surfaces",
+            "edges_by_length",
+            "faces_by_area",
+        ];
+        for name in unchecked {
+            let slots = builtin_arg_slots(name);
+            assert!(
+                slots.is_empty(),
+                "builtin_arg_slots({:?}) should be empty, got {:?}",
+                name,
+                slots
+            );
+        }
+    }
+
+    /// Coverage invariant: every key in the table's domain is a member of
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — catching typos and keeping the
+    /// arg-slot table consistent with the recognized family even as new
+    /// selector names land.
+    #[test]
+    fn arg_slot_keys_are_subset_of_topology_selector_names() {
+        let checked_names = [
+            "center_of_mass",
+            "moment_of_inertia",
+            "faces_by_normal",
+            "edges_parallel_to",
+            "edges_at_height",
+        ];
+        for name in &checked_names {
+            assert!(
+                GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "arg-slot key {:?} is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
+                 either fix the name or add it to the selector slice",
+                name
+            );
+        }
+    }
+}
