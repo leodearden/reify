@@ -2952,6 +2952,44 @@ mod tests {
         );
     }
 
+    // --- AutoTypeParamCandidateNotConstructible tests (task 4435 — E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE) ---
+    // Pairs with the synthesis guard in
+    // `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs`
+    // alongside the other AutoTypeParam* siblings per the task 4435 DIAGNOSTIC
+    // HOME CORRECTION.  Variant-agnostic derives are covered by
+    // `diagnostic_code_derives`; only the variant-specific serde wire-form
+    // round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamCandidateNotConstructible` round-trips
+    /// through serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamCandidateNotConstructible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the δ constructibility guard.
+    ///
+    /// Emitted (as `Severity::Error`) by the monomorph-build pass when a
+    /// resolved candidate has ≥1 required (non-defaulted) Param cell, making
+    /// it impossible to synthesize a zero-arg StructureInstanceCtor default
+    /// (mnemonic E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_candidate_not_constructible_round_trips_via_serde() {
+        let s = serde_json::to_string(
+            &DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+        )
+        .unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamCandidateNotConstructible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+            "deserialize must round-trip back to AutoTypeParamCandidateNotConstructible"
+        );
+    }
+
     // --- Multi-kernel dispatch failure variant tests (task 3434) ---
     //
     // Pairs with the five builders in
