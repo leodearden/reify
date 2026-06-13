@@ -239,6 +239,16 @@ pub fn eval_body_mass_props_core(
 /// value. Any other expr shape (or a `ValueRef` to an absent cell) yields
 /// `None` — mirroring the "unsupported arg shape → fall through" contract of
 /// `geometry_ops::resolve_density_arg` / `resolve_int_value_ref`.
+///
+/// **Cross-link:** this function intentionally collapses both a missing-cell
+/// `ValueRef` and an unsupported expr shape into a single `None`, losing the
+/// distinction between the two. The density-arg resolution in
+/// [`try_eval_body_mass_props`] uses an inline `match` over the same
+/// `ValueRef` / `Literal` / other classification but needs a three-way
+/// outcome (present value / missing cell / unsupported shape) so it can route
+/// *missing cell* to a quiet data-indeterminacy degrade and *unsupported shape*
+/// to a loud `Warning` degrade. If either classification is extended, keep the
+/// two in sync.
 fn resolve_arg_value<'a>(
     expr: &'a reify_ir::CompiledExpr,
     values: &'a reify_ir::ValueMap,
@@ -381,6 +391,12 @@ pub fn try_eval_body_mass_props(
     //
     // The early-return path runs BEFORE the kernel-handle/no-handle match so a
     // doomed density never enters the kernel closure.
+    //
+    // Cross-link: the body arg (args[0]) uses resolve_arg_value(), which
+    // applies the same ValueRef / Literal / other shape classification but
+    // collapses missing-cell and unsupported-shape into a single None. The
+    // density arg needs the richer three-way outcome above, so it uses this
+    // inline match. If the shape classification changes, keep both in sync.
     let density_arg: Option<&Value> = match args.get(1) {
         None => None, // 1-arg form: run the Material/water ladder
         Some(e) => match &e.kind {
@@ -1623,6 +1639,80 @@ mod tests {
             !non_default_warnings.is_empty(),
             "unsupported density arg shape must emit a Warning that is NOT \
              DynamicsDefaultDensity; got: {diags:?}"
+        );
+    }
+
+    // ── Amendment: silent-degrade paths must emit zero diagnostics ───────────
+    //
+    // Both the Acceptance::Undefined path in eval_body_mass_props_core and the
+    // missing-cell ValueRef path in try_eval_body_mass_props are specified as
+    // "quiet degrades" (data-indeterminacy — no Warning emitted). These tests
+    // pin that contract so an accidental diagnostic push on either path is
+    // caught immediately.
+
+    /// Feeding `Value::Undef` as the explicit density arg degrades all geometric
+    /// fields to Undef silently — geom_query is never called, zero diagnostics.
+    ///
+    /// Exercises the `Acceptance::Undefined → None` (quiet-degrade) branch in
+    /// `resolve_body_density`.
+    #[test]
+    fn eval_body_mass_props_core_undef_density_arg_degrades_silently() {
+        let b = body(Some(2700.0));
+        let geom_called = std::cell::Cell::new(false);
+        let geom = |d: f64| {
+            geom_called.set(true);
+            uniform_box_inertia(DIMS, d)
+        };
+        let mut diags = Vec::new();
+        let result = eval_body_mass_props_core(&b, Some(&Value::Undef), geom, &mut diags);
+
+        // geom_query must NOT be called (Undef density skips the geometry query).
+        assert!(
+            !geom_called.get(),
+            "geom_query must not be called when explicit density arg is Value::Undef"
+        );
+
+        // All three geometric fields must be the deferred Undef sentinel.
+        assert_deferred_mass_props(&result);
+
+        // No diagnostic must be emitted (data-indeterminacy → quiet degrade).
+        assert!(
+            diags.is_empty(),
+            "Undef explicit density must emit zero diagnostics (quiet degrade); got: {diags:?}"
+        );
+    }
+
+    /// A `ValueRef` in `args[1]` pointing to a missing cell degrades all
+    /// geometric fields to Undef silently — zero diagnostics (no Warning, no
+    /// `DynamicsDefaultDensity`).
+    ///
+    /// Exercises the missing-cell quiet-degrade branch in the inline density-arg
+    /// `match` inside `try_eval_body_mass_props` (hole-2 resolution, step-4).
+    #[test]
+    fn dispatch_missing_density_cell_degrades_to_undef_silently() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let rho_cell = ValueCellId::new("Design", "rho"); // deliberately NOT inserted
+        let mut values = ValueMap::new();
+        // Body has a material density so if the missing-cell were silently treated
+        // as "no explicit arg" the ladder would use 2700.0 (non-Undef fields) — a
+        // regression that these asserts would catch.
+        values.insert(body_cell.clone(), body(Some(2700.0)));
+        // rho_cell is intentionally absent from `values`.
+
+        let expr = call_expr("body_mass_props", &[body_cell, rho_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("missing density cell must still return Some(MassProperties) degraded to Undef");
+
+        // All three geometric fields must be the deferred Undef sentinel.
+        assert_deferred_mass_props(&result);
+
+        // No diagnostic must be emitted (data-indeterminacy → quiet degrade).
+        assert!(
+            diags.is_empty(),
+            "missing-cell density arg must emit zero diagnostics (quiet degrade); got: {diags:?}"
         );
     }
 
