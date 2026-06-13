@@ -3860,4 +3860,130 @@ mod tests {
             cz
         );
     }
+
+    // ── snapshot::diagnose — fallback Warning hook unit tests (task 4471 step-5)
+    //
+    // RED until step-6 adds the `diagnose` function.
+
+    /// Mixed snapshot (one resolved body, one unresolved) must emit exactly
+    /// one Warning with code `SnapshotCenterOfMassDensityFallback` naming
+    /// the first unresolved body id ("1").
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at x=0 (resolved),
+    ///        body 1 = plain String solid at x=4 (unresolved).
+    /// The legacy center_of_mass returns the midpoint (2,0,0) — a valid Point.
+    /// The diagnose hook must fire even on the success path.
+    #[test]
+    fn snapshot_diagnose_mixed_emits_density_fallback_warning() {
+        use reify_core::diagnostics::{DiagnosticCode, Severity};
+
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let mixed_snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        // Legacy center_of_mass returns the midpoint (both bodies fall back).
+        let result = eval_builtin("center_of_mass", &[mixed_snap.clone()]);
+        assert!(
+            !result.is_undef(),
+            "mixed snapshot center_of_mass must return a valid Point, got {:?}",
+            result
+        );
+
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&mixed_snap), &result);
+        assert_eq!(
+            diags.len(),
+            1,
+            "mixed snapshot must emit exactly one diagnostic, got {:?}",
+            diags
+        );
+        let diag = &diags[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback),
+            "diagnostic code must be SnapshotCenterOfMassDensityFallback, got {:?}",
+            diag.code
+        );
+        assert!(
+            diag.message.contains('1'),
+            "diagnostic message must name the first unresolved body id '1', got: {:?}",
+            diag.message
+        );
+    }
+
+    /// Snapshot with no explicit-mass bodies (all plain solids) must produce
+    /// an empty diagnostic vec — pure-legacy snapshots stay silent.
+    #[test]
+    fn snapshot_diagnose_pure_legacy_silent() {
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+        let snap = make_two_body_explicit_mass_snapshot(solid_a, 0.0, solid_b, 4.0);
+        let result = eval_builtin("center_of_mass", &[snap.clone()]);
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "pure-legacy snapshot must emit no diagnostics, got {:?}",
+            diags
+        );
+    }
+
+    /// Snapshot where ALL bodies carry explicit mass must produce no
+    /// diagnostic — the explicit rung succeeded, no fallback occurred.
+    #[test]
+    fn snapshot_diagnose_all_resolved_silent() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_3 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 3.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, pm_3, 4.0);
+        let result = eval_builtin("center_of_mass", &[snap.clone()]);
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "all-resolved snapshot must emit no diagnostics, got {:?}",
+            diags
+        );
+    }
+
+    /// A non-`center_of_mass` name must always produce an empty vec —
+    /// the hook is scoped to `center_of_mass` only.
+    #[test]
+    fn snapshot_diagnose_non_center_of_mass_silent() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        let result = eval_builtin("bounding_box", &[snap.clone()]);
+        let diags = super::diagnose("bounding_box", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "bounding_box must emit no snapshot diagnostics, got {:?}",
+            diags
+        );
+    }
 }
