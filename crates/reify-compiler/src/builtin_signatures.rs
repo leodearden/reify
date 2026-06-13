@@ -129,14 +129,84 @@ pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
 /// signatures, pushing [`DiagnosticCode::ArgTypeMismatch`] errors for
 /// DEFINITE static mismatches only.
 ///
-/// No-op stub until step-4 implements the logic.
+/// # Gradualism (PRD decision 6)
+///
+/// The check fires only when a definite concrete type is available:
+/// - `Type::Error` — poison sentinel; silently skipped (avoids cascading
+///   diagnostics off an unrelated root-cause error).
+/// - `Type::TypeParam(_)` — unresolved type variable; silently skipped
+///   (constraint-aware / auto-type-param resolution is out of scope for ζ).
+/// - Any other variant — a concrete known type; compared against the slot's
+///   expected dimension.
+///
+/// # Anti-cascade
+///
+/// This function is a pure side-effect on `diagnostics`: it does NOT change
+/// `result_type` inference or the emitted `FunctionCall` IR node.  Wiring it
+/// immediately after `coerce_list_helper_args` (before the result-type ladder)
+/// keeps type-inference side-effect-free.
+///
+/// # Message format
+///
+/// Mirrors γ's runtime `ArgRejection::message` wording so compile-time (ζ) and
+/// runtime (γ) diagnostics read consistently per PRD §7.3:
+/// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}"`
 pub(crate) fn check_builtin_arg_types(
-    _name: &str,
-    _compiled_args: &[CompiledExpr],
-    _call_span: SourceSpan,
-    _diagnostics: &mut Vec<Diagnostic>,
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // Stub: no-op. Implemented in step-4.
+    let slots = builtin_arg_slots(name);
+    for slot in &slots {
+        let Some(arg) = compiled_args.get(slot.index) else {
+            // Arg absent (call is short) — skip. Arity errors are handled
+            // elsewhere; a short-arg call is not a type-mismatch.
+            continue;
+        };
+        let ExpectedArg::Scalar {
+            dimension: expected_dim,
+            type_name,
+        } = &slot.expected;
+
+        match &arg.result_type {
+            // Gradualism: poison + unresolved pass silently.
+            Type::Error | Type::TypeParam(_) => continue,
+
+            // Dimensioned scalar: mismatch only when the dimension differs.
+            Type::Scalar { dimension } => {
+                if dimension == expected_dim {
+                    continue; // correct — no diagnostic
+                }
+                let actual = &arg.result_type;
+                emit_mismatch(name, slot.name, type_name, actual, call_span, diagnostics);
+            }
+
+            // Any other concrete type (Bool, Geometry, Vector, …): definite
+            // kind mismatch where a dimensioned scalar is required.
+            other => {
+                emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+            }
+        }
+    }
+}
+
+/// Emit a single `ArgTypeMismatch` error diagnostic.
+fn emit_mismatch(
+    builtin: &str,
+    arg_name: &str,
+    type_name: &str,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!("{builtin}: {arg_name} argument expects {type_name}, got {actual}");
+    let label_msg = format!("expected {type_name}, got {actual}");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(call_span, label_msg)),
+    );
 }
 
 #[cfg(test)]
