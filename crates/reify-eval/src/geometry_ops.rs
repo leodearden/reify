@@ -3345,7 +3345,8 @@ pub(crate) fn try_eval_topology_selector(
     match helper {
         TopologySelectorHelper::ClosestPoint | TopologySelectorHelper::IsOn => {
             // args[0]: point ValueRef → values map → Value::Point of three Length scalars.
-            let point = resolve_point3_length_arg(&args[0], values)?;
+            let point =
+                resolve_point3_length_arg(&args[0], values, &function.name, "point", diagnostics)?;
             // args[1]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[1], named_steps)?;
 
@@ -3427,7 +3428,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[1]: point ValueRef → values map → Value::Point of three Length scalars.
             // Arg order is solid-then-point (mirror of is_on: point-then-geometry).
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let point = resolve_point3_length_arg(&args[1], values)?;
+            let point =
+                resolve_point3_length_arg(&args[1], values, &function.name, "point", diagnostics)?;
             // Use `reify_ir::DEFAULT_CONTAINS_TOLERANCE_M` (= OCCT's
             // `Precision::Confusion()`, ~1e-7) as the default tolerance for the
             // v0.1 2-arg `contains(solid, point)` form, matching the is_on
@@ -3519,7 +3521,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[0]: surface geometry ValueRef → named_steps → GeometryHandleId.
             // args[1]: point ValueRef → values → Value::Point of three Length scalars → [f64;3] SI metres.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let point = resolve_point3_length_arg(&args[1], values)?;
+            let point =
+                resolve_point3_length_arg(&args[1], values, &function.name, "point", diagnostics)?;
             let query = reify_ir::GeometryQuery::FaceNormalAt {
                 handle,
                 px: point[0],
@@ -3534,7 +3537,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[0]: geometry ValueRef → named_steps → GeometryHandleId.
             // args[1]: point ValueRef → values → [f64;3] SI metres (px, py, pz).
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let point = resolve_point3_length_arg(&args[1], values)?;
+            let point =
+                resolve_point3_length_arg(&args[1], values, &function.name, "point", diagnostics)?;
             dispatch_curvature(kernel, handle, point, &function.name, diagnostics)
         }
         TopologySelectorHelper::Length => {
@@ -3591,14 +3595,22 @@ pub(crate) fn try_eval_topology_selector(
             };
 
             let arg0_shape = resolve_geometry_handle_arg(&args[0], named_steps);
+            // The point resolver is the SECOND probe (shape first, else point):
+            // when it is reached the arg is already known not to be a resolvable
+            // shape, so a defined-but-wrong value is genuinely neither shape nor
+            // point — per PRD §7.3 "never silent" it emits one Warning naming
+            // `distance` / the positional arg / Point<Length>. A shape arg never
+            // reaches the point probe (arg0_shape is Some → probe skipped), so
+            // the common Shape×Shape / Shape×Point forms stay diagnostic-free; an
+            // Undef arg still degrades quietly.
             let arg0_point = if arg0_shape.is_none() {
-                resolve_point3_length_arg(&args[0], values)
+                resolve_point3_length_arg(&args[0], values, &function.name, "a", diagnostics)
             } else {
                 None
             };
             let arg1_shape = resolve_geometry_handle_arg(&args[1], named_steps);
             let arg1_point = if arg1_shape.is_none() {
-                resolve_point3_length_arg(&args[1], values)
+                resolve_point3_length_arg(&args[1], values, &function.name, "b", diagnostics)
             } else {
                 None
             };
@@ -4609,58 +4621,118 @@ fn dispatch_extract_subshapes(
     }
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` arg to a `Value::Point` of three
-/// Length-dimensioned scalars and return their SI-metres components.
-/// Returns `None` for any non-`ValueRef` shape, missing cell, non-Point
-/// payload, wrong length, or non-scalar component — caller maps to the
-/// "unsupported arg shape → fall through" behaviour.
+/// Short label for a `Value` that failed `Point<Length>` classification, used
+/// as the `got` field of the rejection diagnostic (task ε). A `Value::Point` is
+/// distinguished by wrong arity vs. carrying a wrong-dimension / non-Scalar
+/// component, so the Warning names what actually went wrong; any other value is
+/// labelled by its kind.
+fn point3_got_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Point(items) if items.len() != 3 => {
+            format!("Point of {} components", items.len())
+        }
+        reify_ir::Value::Point(_) => {
+            "Point with a non-Length or non-Scalar component".to_string()
+        }
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::Int(_) => "Int".to_string(),
+        reify_ir::Value::Vector(_) => "Vector".to_string(),
+        _ => "non-Point value".to_string(),
+    }
+}
+
+/// Resolve a 3-component point arg to its `[f64; 3]` SI-metre components,
+/// emitting a `Severity::Warning` when the caller passes a defined-but-wrong
+/// value.
+///
+/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
+/// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
+/// Value::Point` cell (the common let-bound `let p = point3(x, y, z)` form)
+/// reads the cell — byte-identical to the prior `values.get(id)` path — while
+/// an inline point expression now EVALUATES rather than falling through to a
+/// silent `None`. The value must be a `Value::Point` of exactly three
+/// LENGTH-dimensioned `Value::Scalar` components: the cell type is fixed at
+/// `Type::Point<Length>` by the compile-time wiring in `expr.rs`, so a
+/// well-formed Scalar component MUST carry `DimensionVector::LENGTH` — a
+/// wrong-dimensioned Scalar slipping through would be silently reinterpreted as
+/// metres at the kernel boundary, so a `debug_assert` surfaces the violation in
+/// tests; in release we fall through to the rejection path rather than feed the
+/// kernel garbage.
+///
+/// | evaluated arg value                                   | return       | diagnostic?     |
+/// |-------------------------------------------------------|--------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg)      | `None`       | no — quiet      |
+/// | `Value::Point` of 3 LENGTH `Scalar`s                  | `Some([..])` | no              |
+/// | non-Point, wrong arity, or non-LENGTH/non-Scalar comp | `None`       | yes — 1 Warning |
 fn resolve_point3_length_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<[f64; 3]> {
-    let id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => return None,
-    };
-    let value = values.get(id)?;
-    let components = match value {
-        reify_ir::Value::Point(items) => items,
-        _ => return None,
-    };
-    if components.len() != 3 {
+    use crate::arg_acceptance::ArgRejection;
+
+    let value = eval_arg_value(expr, values);
+
+    // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
+    // local ctx can't evaluate) returns None with no diagnostic — byte-identical
+    // to the prior `values.get(id)?` fall-through for a missing cell.
+    if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
-    let mut out = [0.0_f64; 3];
-    for (i, comp) in components.iter().enumerate() {
-        match comp {
-            // The cell type is fixed at `Type::Point<Length>` by the
-            // compile-time wiring in `expr.rs`, so a well-formed
-            // `Value::Scalar` component MUST carry `DimensionVector::LENGTH`.
-            // A wrong-dimensioned Scalar slipping through here would silently
-            // be reinterpreted as metres at the kernel boundary — debug-assert
-            // to surface the violation in tests; in release we still fall
-            // through to `None` rather than feeding the kernel garbage.
-            reify_ir::Value::Scalar {
-                si_value,
-                dimension,
-            } => {
-                debug_assert!(
-                    *dimension == reify_core::DimensionVector::LENGTH,
-                    "resolve_point3_length_arg: expected LENGTH-dimensioned Scalar, \
-                     got dimension {:?} (si_value={}); cell type is Point<Length> per \
-                     compile-time wiring in expr.rs",
-                    dimension,
-                    si_value
-                );
-                if *dimension != reify_core::DimensionVector::LENGTH {
-                    return None;
-                }
-                out[i] = *si_value;
-            }
+
+    // A Value::Point of exactly three LENGTH-dimensioned Scalars resolves to its
+    // SI-metre components (the `debug_assert` + LENGTH check is preserved from
+    // the prior ValueRef path).
+    let as_point3 = |v: &reify_ir::Value| -> Option<[f64; 3]> {
+        let components = match v {
+            reify_ir::Value::Point(items) if items.len() == 3 => items,
             _ => return None,
+        };
+        let mut out = [0.0_f64; 3];
+        for (i, comp) in components.iter().enumerate() {
+            match comp {
+                reify_ir::Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
+                    debug_assert!(
+                        *dimension == reify_core::DimensionVector::LENGTH,
+                        "resolve_point3_length_arg: expected LENGTH-dimensioned Scalar, \
+                         got dimension {:?} (si_value={}); cell type is Point<Length> per \
+                         compile-time wiring in expr.rs",
+                        dimension,
+                        si_value
+                    );
+                    if *dimension != reify_core::DimensionVector::LENGTH {
+                        return None;
+                    }
+                    out[i] = *si_value;
+                }
+                _ => return None,
+            }
         }
+        Some(out)
+    };
+    if let Some(components) = as_point3(&value) {
+        return Some(components);
     }
-    Some(out)
+
+    // Defined-but-wrong (non-Point, wrong arity, or non-LENGTH/non-Scalar
+    // component): emit exactly one Warning naming builtin/arg/Point<Length>/got
+    // (byte-uniform wording with the density / vec3 / range paths).
+    diagnostics.push(Diagnostic::warning(
+        ArgRejection {
+            got: point3_got_label(&value),
+            expected: "Point<Length>",
+            migration_hint: None,
+        }
+        .message(builtin, arg_name),
+    ));
+    None
 }
 
 /// Evaluate an argument `CompiledExpr` against the `ValueMap` with a LOCAL
@@ -14512,8 +14584,11 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_distance_literal_args_falls_through_to_none() {
         use reify_test_support::mocks::CountingMockKernel;
-        // distance(<literal>, <literal>) — non-ValueRef args, both resolvers
-        // return None, dispatcher must return None without consulting the kernel.
+        // distance(Real(1.0), Real(2.0)) — each arg is a defined-but-unusable
+        // value (not a shape, not a Point<Length>). The dispatcher returns None
+        // without consulting the kernel, but under task ε (evaluate-then-accept)
+        // it is no longer SILENT: the point probe emits one Severity::Warning per
+        // arg naming `distance` (FLIP from the prior silent fall-through).
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
 
@@ -14541,6 +14616,23 @@ mod tests {
             0,
             "kernel must NOT be consulted for non-ValueRef args"
         );
+        // FLIP (task ε): one Warning per defined-but-unusable arg, naming the
+        // `distance` builtin. The result still degrades to None.
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "distance(<literal>, <literal>) must emit one Warning per arg \
+             (FLIP from silent), got: {:?}",
+            diagnostics
+        );
+        for d in &diagnostics {
+            assert_eq!(d.severity, reify_core::Severity::Warning);
+            assert!(
+                d.message.to_lowercase().contains("distance"),
+                "warning must name the distance builtin, got: {:?}",
+                d.message
+            );
+        }
     }
 
     // Step-5 RED tests: remaining arg combinations (Shape×Shape, Point×Point).
@@ -16001,7 +16093,9 @@ mod tests {
     /// Complements `try_eval_topology_selector_normal_literal_args_falls_through_to_none`
     /// (which tests BOTH args failing at the arg-shape level) by exercising the
     /// case where the SURFACE resolves but the POINT fails its unit-qualification
-    /// check.  Locks the split-arg fall-through path.
+    /// check.  Locks the split-arg fall-through path: the result still degrades
+    /// to None, but under task ε the point failure now emits exactly one
+    /// Severity::Warning (no longer silent).
     #[test]
     fn try_eval_topology_selector_normal_dimensionless_point_falls_through_to_none() {
         use reify_test_support::mocks::{CountingMockKernel, MockGeometryKernel};
@@ -16018,8 +16112,12 @@ mod tests {
 
         let mut values = reify_ir::ValueMap::new();
         // args[1] = point → bare Value::Real components, NOT Value::Scalar with
-        // DimensionVector::LENGTH.  resolve_point3_length_arg must return None for
-        // this shape (the `_ => return None` arm on the component match).
+        // DimensionVector::LENGTH.  resolve_point3_length_arg returns None for
+        // this shape (the `_ => return None` arm on the component match) AND, under
+        // task ε (evaluate-then-accept), pushes exactly one Severity::Warning
+        // naming the builtin / arg / expected Point<Length> — the surface resolves,
+        // so the point probe IS reached and the defined-but-wrong value is no
+        // longer silent.
         values.insert(
             reify_core::ValueCellId::new("NormalSmoke", "pt"),
             reify_ir::Value::Point(vec![
@@ -16052,7 +16150,7 @@ mod tests {
 
         assert!(
             result.is_none(),
-            "normal(surface, dimensionless_point) must return None (silent fall-through); \
+            "normal(surface, dimensionless_point) must return None (fall-through); \
              got {:?}",
             result
         );
@@ -16063,11 +16161,28 @@ mod tests {
              got {} query calls",
             kernel.total_query_count()
         );
-        assert!(
-            diagnostics.is_empty(),
-            "dimensionless-point fall-through must emit zero diagnostics; \
-             got: {:?}",
+        // FLIP (task ε): the defined-but-wrong point (bare-Real components) is no
+        // longer a silent fall-through — the point probe pushes exactly one
+        // Severity::Warning naming the `normal` builtin and the expected
+        // Point<Length>. The result still degrades to None with no kernel call.
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "dimensionless-point fall-through must emit exactly 1 Warning (FLIP \
+             from silent); got: {:?}",
             diagnostics
+        );
+        assert_eq!(diagnostics[0].severity, reify_core::Severity::Warning);
+        let msg = diagnostics[0].message.to_lowercase();
+        assert!(
+            msg.contains("normal"),
+            "warning must name the normal builtin; got: {:?}",
+            diagnostics[0].message
+        );
+        assert!(
+            msg.contains("point<length>"),
+            "warning must name expected Point<Length>; got: {:?}",
+            diagnostics[0].message
         );
     }
 
