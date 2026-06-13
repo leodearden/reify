@@ -358,6 +358,28 @@ structure def ElasticResult {
     // remain accepted for this Field-typed param on shell results (same
     // Undef-for-absent-field convention as `frame` above).
     param divergence : Field<Point3<Length>, Real>
+    // `gradient` — displacement-gradient tensor ∇u (stride-9 row-major),
+    //   layout: (∇u)[r][c] = ∂u_r/∂x_c (row = displacement component,
+    //   col = derivative axis). The symmetric part is the strain tensor ε;
+    //   the antisymmetric part is the infinitesimal rotation ω = ½(∇u − ∇uᵀ).
+    //   Dimensionless (Length / Length) via dim_quotient_type (PRD task β D6).
+    //
+    //   Tet/solid population (PRD task β): Sampled Field on the same Regular3D
+    //   grid as displacement/stress/divergence, shared BVH pass, bit-identical
+    //   grid metadata. Shell population: Value::Undef (PRD §7, honest-absence).
+    //   Note for future runtime-type-checking implementors: Value::Undef must
+    //   remain accepted for this Field-typed param on shell results.
+    param gradient : Field<Point3<Length>, Tensor<2, 3, Real>>
+    // `curl` — ∇×u = antisymmetric part of ∇u (twice the infinitesimal rotation
+    //   vector ω, stride-3). Components: [∂u_z/∂y−∂u_y/∂z, ∂u_x/∂z−∂u_z/∂x,
+    //   ∂u_y/∂x−∂u_x/∂y]. Dimensionless (Length / Length, PRD task β D6).
+    //
+    //   Tet/solid population (PRD task β): Sampled Field on the same Regular3D
+    //   grid as displacement/stress/divergence/gradient. Shell population:
+    //   Value::Undef (PRD §7, honest-absence).
+    //   Note for future runtime-type-checking implementors: Value::Undef must
+    //   remain accepted for this Field-typed param on shell results.
+    param curl : Field<Point3<Length>, Vector3<Dimensionless>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure
