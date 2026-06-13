@@ -3167,6 +3167,22 @@ impl OcctKernel {
                 let row1 = Value::List(vec![Value::Real(0.0), Value::Real(c.kappa_min)]);
                 Ok(Value::List(vec![row0, row1]))
             }
+            // ζ / C4: PROMOTE measure_mesh_deviation into a repr-gated query.
+            // Composes the two existing primitives without touching ffi.rs:
+            //   1. tessellate `actual` at the variant's deflection tolerance
+            //   2. measure_mesh_deviation(nominal, &actual_mesh)
+            // Both methods are &self; the composition is clean and promotion-only.
+            GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance,
+            } => {
+                let actual_mesh = self
+                    .tessellate(*actual, *tolerance)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                let dev = self.measure_mesh_deviation(*nominal, &actual_mesh)?;
+                Ok(Value::Real(dev))
+            }
         }
     }
 

@@ -1336,6 +1336,46 @@ pub enum GeometryQuery {
         u: f64,
         v: f64,
     },
+    /// Compute the maximum deviation between an `actual` mesh (produced by
+    /// tessellating `actual` at `tolerance` deflection) and the exact B-rep
+    /// `nominal` shape.
+    ///
+    /// # Semantics
+    /// Promotes `OcctKernel::measure_mesh_deviation` (built tess-QA-only by
+    /// task 4198) into a repr-gated geometry query. The kernel arm:
+    /// 1. Tessellates `actual` at the given `tolerance` (metres) via
+    ///    `OcctKernel::tessellate(actual, tolerance)`.
+    /// 2. Calls `OcctKernel::measure_mesh_deviation(nominal, &actual_mesh)` —
+    ///    samples 4 interior points per triangle, projects onto the exact
+    ///    nominal B-rep, returns the global maximum deviation in metres.
+    ///
+    /// # Wire format
+    /// `Value::Real(dev_m)` where `dev_m ≥ 0` is in SI metres.
+    /// The eval dispatcher wraps this into
+    /// `Value::Scalar { dimension: LENGTH, si_value: dev_m }`.
+    ///
+    /// # Honest floor (G6)
+    /// For a unit box offset by 0.5 mm the true maximum deviation is exactly
+    /// 0.5 mm (= 5e-4 m). The f32-quantization error on planar faces is
+    /// ≤ 1e-5 m (mesh_deviation.rs B1 bound, validated by done 4198) — ~2
+    /// orders below the 0.5 mm signal. Tests assert an inequality, not
+    /// exactness.
+    ///
+    /// # Capability
+    /// `BRepOnly` — both operands require OCCT: `actual` must be tessellated
+    /// by OCCT, and `nominal` projected onto its exact B-rep.
+    ///
+    /// ζ / PRD contract C4 (`docs/prds/v0_6/gdt-geometric-zones-and-containment.md`).
+    MaxDeviation {
+        /// Handle to the actual (as-built / measured) geometry.
+        actual: GeometryHandleId,
+        /// Handle to the nominal (design-intent) geometry.
+        nominal: GeometryHandleId,
+        /// Tessellation deflection for `actual` (metres). The eval
+        /// dispatcher fills this from `MAX_DEVIATION_TESSELLATION_TOLERANCE_M`
+        /// (= 0.0001 m, mirroring `Engine::DEFAULT_TESSELLATION_TOLERANCE`).
+        tolerance: f64,
+    },
 }
 
 impl GeometryQuery {
@@ -1377,6 +1417,7 @@ impl GeometryQuery {
             GeometryQuery::FaceNormalAt { .. } => "FaceNormalAt",
             GeometryQuery::CurveCurvatureAt { .. } => "CurveCurvatureAt",
             GeometryQuery::SurfaceCurvatureAt { .. } => "SurfaceCurvatureAt",
+            GeometryQuery::MaxDeviation { .. } => "MaxDeviation",
         }
     }
 }
@@ -1439,6 +1480,9 @@ impl GeometryQuery {
             // property evaluation — not available on Mesh representations.
             GeometryQuery::CurveCurvatureAt { .. } => QueryCapability::BRepOnly,
             GeometryQuery::SurfaceCurvatureAt { .. } => QueryCapability::BRepOnly,
+            // ζ / C4: both operands require OCCT (actual tessellated by OCCT,
+            // nominal projected onto exact B-rep) — so MaxDeviation is BRepOnly.
+            GeometryQuery::MaxDeviation { .. } => QueryCapability::BRepOnly,
 
             // All other extant variants default to BRepAndMesh.
             GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
@@ -7594,5 +7638,28 @@ mod tests {
             }
             _ => panic!("expected GeometryOp::Fillet"),
         }
+    }
+
+    /// ζ / contract C4: `MaxDeviation` is repr-gate-classified `BRepOnly` and
+    /// has the canonical kind label "MaxDeviation".
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn max_deviation_query_has_brep_only_capability_and_kind_name() {
+        let q = GeometryQuery::MaxDeviation {
+            actual: GeometryHandleId(1),
+            nominal: GeometryHandleId(2),
+            tolerance: 1e-4,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "MaxDeviation must be BRepOnly: both operands require an exact B-rep (OCCT)"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "MaxDeviation",
+            "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
+        );
     }
 }
