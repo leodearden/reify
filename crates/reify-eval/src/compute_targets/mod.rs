@@ -102,6 +102,39 @@ pub(crate) fn sampled_divergence_field(sf: SampledField) -> Value {
     }
 }
 
+/// Wrap a [`SampledField`] as a displacement-gradient `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Tensor<2,3,Real>` (dimensionless,
+/// stride 9) — matches `solver_elastic.ri`
+/// `gradient : Field<Point3<Length>, Tensor<2, 3, Real>>`.
+/// Layout per node: `(∇u)[r][c] = ∂u_r/∂x_c`, row-major (r*3+c).
+/// Dimensionless via dim_quotient_type (Length/Length), PRD task β D6.
+pub(crate) fn sampled_gradient_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::tensor(2, 3, reify_core::Type::dimensionless_scalar()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Wrap a [`SampledField`] as a curl `Value::Field`.
+///
+/// domain: `Point3<Length>`, codomain: `Vector3<Real>` (dimensionless,
+/// stride 3) — matches `solver_elastic.ri`
+/// `curl : Field<Point3<Length>, Vector3<Real>>`.
+/// Components: `∇×u = [∂u_z/∂y−∂u_y/∂z, ∂u_x/∂z−∂u_z/∂x, ∂u_y/∂x−∂u_x/∂y]`
+/// (twice the infinitesimal rotation vector, PRD task β).
+/// Dimensionless via dim_quotient_type (Length/Length), PRD task β D6.
+pub(crate) fn sampled_curl_field(sf: SampledField) -> Value {
+    Value::Field {
+        domain_type: reify_core::Type::point3(reify_core::Type::length()),
+        codomain_type: reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
 // ── Scalar / point / list builders (form-find result encoding) ──────────────
 //
 // The form-find trampoline emits its result as plain dimensioned `Value::Scalar`

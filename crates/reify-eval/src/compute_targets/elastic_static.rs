@@ -186,7 +186,7 @@ use reify_solver_elastic::{
     ConstantField, DirichletBc, ElementOrder, FaceOrder, GradientElement, GridSpec,
     IsotropicElastic, OrthotropicMaterial, StressElement, TransverseIsotropicMaterial,
     apply_body_force, apply_dirichlet_row_elimination, apply_point_load, apply_traction_load,
-    assemble_global_stiffness, element_gradient_p1, element_stiffness,
+    assemble_global_stiffness, curl_from_gradient, element_gradient_p1, element_stiffness,
     element_stiffness_p1_with_field, element_stress_p1, recover_nodal_gradient_p1,
     recover_nodal_stress_p1, resample_multi_nodal_to_grid, resolve_execution_modes,
     solve_cg_with_warm_state, solve_cg_with_warm_state_progress, tet_volume_p1,
@@ -502,6 +502,9 @@ pub fn solve_elastic_static_trampoline(
             // for the shell path (PRD §7). Undef = honest-absence sentinel,
             // consistent with the tet convention for frame/shell_channels.
             ("divergence".to_string(), Value::Undef),
+            // task 4565/β: gradient and curl are tet-only derivative channels.
+            ("gradient".to_string(), Value::Undef),
+            ("curl".to_string(), Value::Undef),
             (
                 "max_von_mises".to_string(),
                 Value::Scalar {
@@ -650,9 +653,21 @@ pub fn solve_elastic_static_trampoline(
         .map(|g| g[0][0] + g[1][1] + g[2][2])
         .collect();
 
+    // task 4565/β: stride-9 gradient = row-major flatten of ∇u (same operation
+    // as stress flatten — reuse flatten_nodal_stress which is a pure 3×3 flatten).
+    let nodal_gradient_flat = super::flatten_nodal_stress(&fea.nodal_gradient);
+
+    // task 4565/β: stride-3 curl = antisymmetric part of ∇u per node.
+    let nodal_curl_flat: Vec<f64> = fea
+        .nodal_gradient
+        .iter()
+        .flat_map(|g| curl_from_gradient(g))
+        .collect();
+
     // Single geometry pass: locate the containing tet once per grid point,
-    // then interpolate displacement (stride 3), stress (stride 9), and
-    // divergence (stride 1). One BVH query per grid node covers all three fields.
+    // then interpolate displacement (stride 3), stress (stride 9), divergence
+    // (stride 1), gradient (stride 9), and curl (stride 3).
+    // One BVH query per grid node covers all five fields.
     let mut sampled = resample_multi_nodal_to_grid(
         &fea.coords,
         &fea.tet_connectivity,
@@ -660,22 +675,28 @@ pub fn solve_elastic_static_trampoline(
             (&fea.u, 3, "displacement"), // Arc<Vec<f64>> → &[f64] via Deref
             (&nodal_stress_flat, 9, "stress"),
             (&nodal_divergence, 1, "divergence"),
+            (&nodal_gradient_flat, 9, "gradient"),
+            (&nodal_curl_flat, 3, "curl"),
         ],
         &grid,
         1e-9,
     );
     debug_assert_eq!(
         sampled.len(),
-        3,
-        "expected 3 sampled fields (displacement + stress + divergence)"
+        5,
+        "expected 5 sampled fields (displacement + stress + divergence + gradient + curl)"
     );
-    let div_sf = sampled.pop().unwrap(); // index 2
-    let stress_sf = sampled.pop().unwrap(); // index 1
-    let disp_sf = sampled.pop().unwrap(); // index 0
+    let curl_sf = sampled.pop().unwrap();     // index 4
+    let grad_sf = sampled.pop().unwrap();     // index 3
+    let div_sf = sampled.pop().unwrap();      // index 2
+    let stress_sf = sampled.pop().unwrap();   // index 1
+    let disp_sf = sampled.pop().unwrap();     // index 0
 
     let disp_field = super::sampled_disp_field(disp_sf);
     let stress_field = super::sampled_stress_field(stress_sf);
     let div_field = super::sampled_divergence_field(div_sf);
+    let grad_field = super::sampled_gradient_field(grad_sf);
+    let curl_field = super::sampled_curl_field(curl_sf);
 
     let fields: PersistentMap<String, Value> = [
         ("displacement".to_string(), disp_field),
@@ -689,6 +710,10 @@ pub fn solve_elastic_static_trampoline(
         // task 4564/α: divergence = tr(ε) = volumetric strain, Sampled Field.
         // Shell path emits Undef (PRD §7: derivative channels out of scope for shells).
         ("divergence".to_string(), div_field),
+        // task 4565/β: displacement-gradient ∇u and curl ∇×u, both dimensionless.
+        // Shell path emits Undef (PRD §7).
+        ("gradient".to_string(), grad_field),
+        ("curl".to_string(), curl_field),
         (
             "max_von_mises".to_string(),
             Value::Scalar {
