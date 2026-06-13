@@ -2450,3 +2450,133 @@ structure def GeomProbe {
         errors
     );
 }
+
+// ─── η/4480 step-07: Conforms.actual param + explicit-binding capture (prelude) ──
+//
+// step-08 adds `param actual : Geometry = nominal()` to the shipped `Conforms`
+// constraint def (the predicate body is UNCHANGED — it never references `actual`).
+// This test pins the prelude-level contract the η GD&T conformance pass relies on:
+//
+//   (1) the modified prelude compiles, and a `Conforms(tolerance: t, actual: g)`
+//       instantiation type-checks — `actual` is a recognised Geometry param;
+//   (2) an explicit `actual` binding survives to `arg_bindings` (the η detection
+//       signal), while an instance that omits `actual` records no `actual`;
+//   (3) B4: binding `actual` does NOT change the compiled scalar predicate — the
+//       two instances' predicate exprs are byte-identical and retain the shipped
+//       `effective_tolerance_zone(...) >= measured_deviation` (top-level Ge) shape.
+//       Geometry stays OUT of the constraint body (PRD §4) — η measures it in the
+//       check-time pass, keyed on the captured `actual` binding, not the body.
+//
+// RED before step-08: `actual` is not a param of `Conforms`, so `actual: g` is an
+// "unknown argument" error and the fixture fails to compile (assertion (1) fails).
+
+/// Names of the explicit call-site argument bindings captured on a compiled
+/// constraint (the `(param_name, _)` keys of `arg_bindings`).
+fn binding_names(cc: &CompiledConstraint) -> Vec<&str> {
+    cc.arg_bindings.iter().map(|(name, _)| name.as_str()).collect()
+}
+
+#[test]
+fn conforms_actual_param_captures_explicit_binding_via_prelude() {
+    // Two Conforms instantiations in ONE structure, both binding `tolerance: self.t`
+    // (and defaulting measured_deviation/feature_departure), so their compiled
+    // predicates are byte-identical; the ONLY difference is whether the geometric
+    // `actual` arg is explicitly bound.
+    let source = r#"
+structure def TestTol : GeometricTolerance {
+    param tolerance_value : Length = 0.1mm
+    param feature : Geometry = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+structure def Probe {
+    sub t = TestTol()
+    param g : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: self.t, actual: g)
+    constraint Conforms(tolerance: self.t)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    // (1) The modified prelude + the `actual`-bound instantiation compile cleanly.
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "Conforms with `param actual : Geometry = nominal()` and an explicit \
+         `actual: g` binding must compile cleanly via the prelude, got: {:?}",
+        errors
+    );
+
+    let probe = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "Probe")
+        .expect("expected 'Probe' template");
+
+    // Both Conforms instances bind `tolerance` explicitly; select them by that.
+    let conforms: Vec<&CompiledConstraint> = probe
+        .constraints
+        .iter()
+        .filter(|c| binding_names(c).contains(&"tolerance"))
+        .collect();
+    assert_eq!(
+        conforms.len(),
+        2,
+        "expected exactly 2 Conforms instances in Probe, got labels: {:?}",
+        probe
+            .constraints
+            .iter()
+            .map(|c| c.label.as_deref())
+            .collect::<Vec<_>>()
+    );
+
+    let explicit = conforms
+        .iter()
+        .find(|c| binding_names(c).contains(&"actual"))
+        .expect("one Conforms instance explicitly binds `actual`");
+    let unbound = conforms
+        .iter()
+        .find(|c| !binding_names(c).contains(&"actual"))
+        .expect("one Conforms instance omits `actual` (falls to its nominal() default)");
+
+    // (2) Explicit `actual` survives to arg_bindings; the unbound instance records none.
+    assert!(
+        binding_names(explicit).contains(&"actual"),
+        "explicit `actual: g` binding must be captured in arg_bindings (the η detection \
+         signal), got {:?}",
+        binding_names(explicit)
+    );
+    assert!(
+        !binding_names(unbound).contains(&"actual"),
+        "an omitted `actual` (defaulted to nominal()) must NOT appear in arg_bindings, got {:?}",
+        binding_names(unbound)
+    );
+
+    // (3a) B4: binding the (predicate-unused) `actual` param must NOT perturb the
+    // compiled scalar predicate — both instances live in entity "Probe" and bind the
+    // same `tolerance`, so the predicate expr is byte-identical.
+    assert_eq!(
+        format!("{:?}", explicit.expr.kind),
+        format!("{:?}", unbound.expr.kind),
+        "binding the unused `actual` param must NOT change the compiled predicate (B4)"
+    );
+
+    // (3b) The predicate retains the shipped scalar shape: a top-level `>=`
+    // (`effective_tolerance_zone(...) >= measured_deviation`). The body never
+    // references `actual` — geometry stays out of the constraint body (PRD §4).
+    assert!(
+        matches!(
+            &unbound.expr.kind,
+            reify_ir::CompiledExprKind::BinOp {
+                op: reify_ir::BinOp::Ge,
+                ..
+            }
+        ),
+        "Conforms predicate must remain the shipped `... >= measured_deviation` (Ge) shape, \
+         got {:?}",
+        unbound.expr.kind
+    );
+}
