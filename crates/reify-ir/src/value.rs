@@ -8295,6 +8295,118 @@ mod tests {
         assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    // ── Value::Direction tests (step-3) ───────────────────────────────────────
+    //
+    // Value::Direction { x, y, z } is a dimensionless 3D unit vector (inline
+    // floats, mirroring Value::Orientation's layout). These tests pin the
+    // construction/round-trip, type inference, dimensionlessness, Display, and —
+    // critically — the same-type `eq` and `cmp` arms. The `eq` impl ends in
+    // `_ => false` and the same-type `cmp` match ends in
+    // `_ => unreachable!("same type tag but different variants")`, so a missing
+    // Direction arm would silently break equality / PANIC on ordering. (e)/(f)
+    // therefore fail at runtime until step-4 adds those explicit arms (and the
+    // whole block fails to compile until the variant exists).
+
+    fn make_direction(x: f64, y: f64, z: f64) -> Value {
+        Value::Direction { x, y, z }
+    }
+
+    #[test]
+    fn value_direction_construction() {
+        // (a) construction + field round-trip
+        let d = make_direction(1.0, 0.0, 0.0);
+        match d {
+            Value::Direction { x, y, z } => {
+                assert_eq!(x, 1.0);
+                assert_eq!(y, 0.0);
+                assert_eq!(z, 0.0);
+            }
+            other => panic!("expected Value::Direction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_direction_infer_type() {
+        // (b) try_infer_type() returns Some(Type::Direction)
+        let d = make_direction(0.0, 0.0, 1.0);
+        assert_eq!(d.try_infer_type(), Some(reify_core::ty::Type::Direction));
+    }
+
+    #[test]
+    fn value_direction_dimension_dimensionless() {
+        // (c) a Direction is dimensionless (dimensionless unit vector)
+        let d = make_direction(0.0, 1.0, 0.0);
+        assert_eq!(d.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_direction_display() {
+        // (d) Display is stable and contains the components
+        let d = make_direction(1.0, 0.0, 0.0);
+        let s = format!("{}", d);
+        assert!(
+            s.starts_with("direction("),
+            "display should start with 'direction(', got: {}",
+            s
+        );
+        assert!(
+            s.contains('1'),
+            "display should contain the x component, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn value_direction_partial_eq_same() {
+        // (e) equal-for-equal — pins the `eq` arm (the impl ends in `_ => false`,
+        // so a missing Direction arm makes equal Directions compare UNEQUAL).
+        assert_eq!(make_direction(1.0, 0.0, 0.0), make_direction(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn value_direction_partial_eq_different() {
+        // (e) two distinct Directions compare unequal
+        assert_ne!(make_direction(1.0, 0.0, 0.0), make_direction(0.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn value_direction_partial_eq_not_axis() {
+        // (e) Direction is a distinct variant from Axis (cross-variant => not equal)
+        let dir = make_direction(0.0, 0.0, 1.0);
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert_ne!(dir, axis);
+    }
+
+    #[test]
+    fn value_direction_ord_within_type() {
+        // (f) comparing/sorting two DISTINCT Directions is consistent and does NOT
+        // panic. PINS the same-type `cmp` arm: the same-type match ends in
+        // `_ => unreachable!("same type tag but different variants")`, so a missing
+        // Direction arm would PANIC on any two distinct Directions. Lexicographic
+        // x→y→z: (0,0,0) < (1,0,0) because x differs first.
+        let a = make_direction(0.0, 0.0, 0.0);
+        let b = make_direction(1.0, 0.0, 0.0);
+        assert!(a < b);
+        // Sorting must not panic and must be deterministic.
+        let mut v = vec![b.clone(), a.clone()];
+        v.sort();
+        assert_eq!(v, vec![a, b]);
+    }
+
+    #[test]
+    fn value_direction_ord_cross_type() {
+        // (g) cross-type discriminant — a Direction orders distinctly (tag-based,
+        // no overlap) from Plane/Axis/Orientation. Direction's tag is the current
+        // max, so it sorts after all three.
+        let dir = make_direction(1.0, 0.0, 0.0);
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let orientation = orient(1.0, 0.0, 0.0, 0.0);
+        assert!(dir > plane);
+        assert!(dir > axis);
+        assert!(dir > orientation);
+    }
+
     // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
 
     fn make_bbox(min: Value, max: Value) -> Value {
