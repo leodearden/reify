@@ -577,6 +577,15 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // exact-kind checking.  resolve_type_with_aliases inherits this arm
         // automatically since it delegates to resolve_type_name for builtin names.
         "Selector" => Some(Type::AnySelector),
+        // Datum-receiver type names (task 4382 / β; see esc-4382-157). β owns
+        // `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+        // vocabulary (adjacent to the geometry-transforms PRD) so default-less
+        // params like `param a : Axis` type-check without a value constructor.
+        // `Frame` resolves to the 3D frame `Type::Frame(3)`.
+        "Direction" => Some(Type::Direction),
+        "Axis" => Some(Type::Axis),
+        "Plane" => Some(Type::Plane),
+        "Frame" => Some(Type::Frame(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
