@@ -504,6 +504,82 @@ fn edges_by_length_let_constructs_typed_edge_by_length_selector() {
     );
 }
 
+/// Task ε (evaluate-then-accept): the INLINE range form
+/// `edges_by_length(body, 0mm..50mm)` — with the `Range<Length>` written
+/// directly as the argument (a `CompiledExprKind::RangeConstructor`, NOT a
+/// `let`-bound `ValueRef → Value::Range`) — must construct the same
+/// `ByLength { 0..0.05 m }` leaf. After ε `resolve_range_dim_arg` EVALUATES the
+/// whole arg expr: `eval_expr` lowers the inline `RangeConstructor` to a
+/// `Value::Range { Scalar{LENGTH}, Scalar{LENGTH} }`, so the three
+/// Literal/ValueRef/RangeConstructor arms collapse into one `Value::Range`
+/// classification. Construction is kernel-FREE (UNSTAGED mock kernel, K2/BT7).
+#[test]
+fn edges_by_length_inline_range_constructs_by_length_selector() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges_by_length(body, 0mm..50mm)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| k);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByLength { min_m, max_m } => {
+                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
+                assert!((*max_m - 0.05).abs() < 1e-9, "max_m must be 0.05m, got {max_m}");
+            }
+            other => panic!("edges_by_length → ByLength leaf, got {other:?}"),
+        },
+    );
+}
+
+/// Task ε (evaluate-then-accept): the INLINE range form with a COMPUTED bound
+/// `edges_by_length(body, 0mm..(20mm + 30mm))` — whose upper bound is a
+/// `CompiledExprKind::BinOp`, NOT a `Literal`/`ValueRef` — must construct the
+/// same `ByLength { 0..0.05 m }` leaf. Before ε this fell through silently: the
+/// `RangeConstructor` arm resolved each bound via `resolve_scalar_bound_expr`,
+/// which only matched `Literal`/`ValueRef` and returned `None` for the BinOp →
+/// the whole `resolve_range_dim_arg` returned `None` → the selector fell through
+/// → the cell stayed `Value::Undef` → RED. After ε `resolve_range_dim_arg`
+/// EVALUATES the whole arg expr: `eval_expr` evaluates the inner `20mm + 30mm`
+/// BinOp and lowers the `RangeConstructor` to a `Value::Range { Scalar{LENGTH},
+/// Scalar{LENGTH} }` → GREEN. Construction is kernel-FREE (UNSTAGED mock kernel,
+/// K2/BT7).
+#[test]
+fn edges_by_length_inline_computed_range_constructs_by_length_selector() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges_by_length(body, 0mm..(20mm + 30mm))\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| k);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByLength { min_m, max_m } => {
+                assert!((*min_m - 0.0).abs() < 1e-12, "min_m must be 0m, got {min_m}");
+                assert!(
+                    (*max_m - 0.05).abs() < 1e-9,
+                    "max_m must be 0.05m (20mm+30mm), got {max_m}"
+                );
+            }
+            other => panic!("edges_by_length → ByLength leaf, got {other:?}"),
+        },
+    );
+}
+
 /// `let fs = faces_by_area(body, r)` with `let r = 0mm*0mm..1m*1m` must
 /// construct a typed `Value::Selector(Face)` whose leaf is `ByArea { 0..1 m² }`
 /// over the parent box handle (task 4118 γ) — NOT an eagerly-filtered

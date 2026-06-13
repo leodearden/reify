@@ -7292,6 +7292,182 @@ mod tests {
         }
     }
 
+    /// Helper: build an inline `CompiledExpr` literal carrying a `Value::Range`
+    /// with the given optional `(lower, upper)` SI bounds, each a
+    /// `Value::Scalar` of `dim`. `None` bounds model a half-open range. The
+    /// `Type` is irrelevant to `eval_expr` (which clones the `Value`), so a
+    /// `dimensionless_scalar` placeholder suffices.
+    fn literal_range(
+        lower: Option<f64>,
+        upper: Option<f64>,
+        dim: reify_core::DimensionVector,
+    ) -> reify_ir::CompiledExpr {
+        let mk = |si: f64| -> Box<reify_ir::Value> {
+            Box::new(reify_ir::Value::Scalar {
+                si_value: si,
+                dimension: dim,
+            })
+        };
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Range {
+                lower: lower.map(mk),
+                upper: upper.map(mk),
+                lower_inclusive: true,
+                upper_inclusive: true,
+            },
+            reify_core::Type::dimensionless_scalar(),
+        )
+    }
+
+    /// Task ε (evaluate-then-accept): `resolve_range_dim_arg` now EVALUATES the
+    /// arg expr (gaining a `diagnostics` sink + builtin/arg labels). An inline
+    /// `Range<dim>` with both bounds present and dimensioned `expected_dim`
+    /// resolves to `Some((lo, hi))` with 0 diagnostics; a defined-but-wrong
+    /// value — non-Range, half-open (one bound `None`), or bounds of the wrong
+    /// dimension — is Rejected with exactly one `Severity::Warning` naming the
+    /// builtin, the arg, and the expected `Range<dim>` type (byte-uniform
+    /// wording with the density / vec3 paths). A `Value::Undef` (missing cell)
+    /// degrades quietly.
+    ///
+    ///   (a) inline `Literal(Range{Some(LENGTH 0), Some(LENGTH 0.05)})`
+    ///       → `Some((0.0, 0.05))`, 0 diags.
+    ///   (b) inline `Literal(Real)` (non-Range) → `None` + 1 Warning.
+    ///   (c) inline half-open `Range{Some, None}` → `None` + 1 Warning.
+    ///   (d) inline wrong-dimension `Range{ANGLE, ANGLE}` where LENGTH expected
+    ///       → `None` + 1 Warning.
+    ///   (e) missing-cell `ValueRef` → `Value::Undef` → `None`, 0 diags (quiet).
+    ///   (f) inline `Range<AREA>` (faces_by_area path) → `Some(..)`, 0 diags.
+    ///
+    /// Compile-RED until step-8 adds the
+    /// `(expected_dim, builtin, arg, &mut diags)` signature.
+    #[test]
+    fn resolve_range_dim_arg_eval_and_diagnostics() {
+        use reify_core::DimensionVector;
+
+        // (a) inline Range<LENGTH> with both bounds → Some((0.0, 0.05)), 0 diags.
+        {
+            let expr = literal_range(Some(0.0), Some(0.05), DimensionVector::LENGTH);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::LENGTH,
+                "edges_by_length",
+                "length_range",
+                &mut diags,
+            );
+            assert_eq!(
+                result,
+                Some((0.0, 0.05)),
+                "(a) inline closed Range<Length> must be Accepted"
+            );
+            assert!(diags.is_empty(), "(a) closed Range must produce no diags, got: {diags:?}");
+        }
+
+        // (b) non-Range (Value::Real) → None + 1 Warning naming builtin/arg/Range.
+        {
+            let expr = literal_f64(1.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::LENGTH,
+                "edges_by_length",
+                "length_range",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(b) non-Range must return None");
+            assert_eq!(diags.len(), 1, "(b) non-Range must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("edges_by_length"), "(b) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("length_range"), "(b) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("range"), "(b) names expected Range, got: {:?}", diags[0].message);
+            assert!(msg.contains("got"), "(b) names what it got, got: {:?}", diags[0].message);
+        }
+
+        // (c) half-open Range (upper: None) → None + 1 Warning.
+        {
+            let expr = literal_range(Some(0.0), None, DimensionVector::LENGTH);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::LENGTH,
+                "edges_by_length",
+                "length_range",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(c) half-open Range must return None");
+            assert_eq!(diags.len(), 1, "(c) half-open Range must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("range"), "(c) names expected Range, got: {:?}", diags[0].message);
+        }
+
+        // (d) wrong-dimension bounds (ANGLE where LENGTH expected) → None + 1 Warning.
+        {
+            let expr = literal_range(Some(0.0), Some(0.25), DimensionVector::ANGLE);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::LENGTH,
+                "edges_by_length",
+                "length_range",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(d) wrong-dimension bounds must return None");
+            assert_eq!(diags.len(), 1, "(d) wrong-dimension bounds must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("range"), "(d) names expected Range, got: {:?}", diags[0].message);
+        }
+
+        // (e) missing-cell ValueRef → Undef → None, 0 diags (quiet).
+        {
+            let cell = reify_core::ValueCellId::new("Bracket", "missing_range");
+            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar());
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::LENGTH,
+                "edges_by_length",
+                "length_range",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(e) missing cell must return None");
+            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+        }
+
+        // (f) inline Range<AREA> (faces_by_area path) → Some((0.0, 1.0)), 0 diags.
+        {
+            let expr = literal_range(Some(0.0), Some(1.0), DimensionVector::AREA);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_range_dim_arg(
+                &expr,
+                &values,
+                DimensionVector::AREA,
+                "faces_by_area",
+                "area_range",
+                &mut diags,
+            );
+            assert_eq!(
+                result,
+                Some((0.0, 1.0)),
+                "(f) inline closed Range<Area> must be Accepted"
+            );
+            assert!(diags.is_empty(), "(f) closed Range<Area> must produce no diags, got: {diags:?}");
+        }
+    }
+
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
     // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
