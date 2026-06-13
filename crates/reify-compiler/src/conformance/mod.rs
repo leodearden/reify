@@ -5652,4 +5652,172 @@ mod tests {
             "unknown constructor must return None (not a recognized joint builtin)"
         );
     }
+
+    // ── task-4584 step-1: walk_param_against_arg_type StructureRef leaf arm ──
+
+    /// RED until step-2 (impl): `walk_param_against_arg_type` currently falls
+    /// through the `_` arm silently for `Type::StructureRef` params, so no
+    /// diagnostic is emitted even for clear mismatches like String-arg vs Part-param.
+    ///
+    /// (a) String-typed arg against StructureRef("Part") param → exactly one
+    ///     `TypeNotConformingToStructureRef`.
+    #[test]
+    fn structureref_param_rejects_string_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::String,
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef diagnostic for String arg \
+             against Part param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (b) Matching `StructureRef("Part")` arg against `StructureRef("Part")`
+    ///     param → ZERO diagnostics (identity passes).
+    #[test]
+    fn structureref_param_accepts_same_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Part".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "expected ZERO diagnostics for Part arg vs Part param (identity), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// (c) Different `StructureRef("Other")` arg against `StructureRef("Part")`
+    ///     param → exactly one `TypeNotConformingToStructureRef` (nominal mismatch).
+    #[test]
+    fn structureref_param_rejects_different_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Other".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef for Other vs Part, \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (d) `Type::TypeParam` and `Type::Error` args against a `StructureRef`
+    ///     param → ZERO diagnostics (anti-cascade / unverifiable skip).
+    #[test]
+    fn structureref_param_skips_typeparam_and_error_args() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+
+        // Type::TypeParam — unresolved generic, skip.
+        let typeparam_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::TypeParam("T".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &typeparam_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "TypeParam arg must emit ZERO diagnostics (unverifiable), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+
+        // Type::Error — anti-cascade, check_fn_arg_conformance returns early.
+        let error_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "y"),
+            Type::Error,
+        );
+        let mut diagnostics2: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &error_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics2,
+        );
+        assert_eq!(
+            diagnostics2.len(),
+            0,
+            "Type::Error arg must emit ZERO diagnostics (anti-cascade early return), \
+             got {}: {:?}",
+            diagnostics2.len(),
+            diagnostics2,
+        );
+    }
 }
