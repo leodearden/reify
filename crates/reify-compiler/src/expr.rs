@@ -155,33 +155,33 @@ fn coerce_zero_operand(
     }
 
     // Left operand is a syntactic zero, right is Scalar<D non-dimensionless>.
-    if type_compat::is_syntactic_zero_literal(left_ast) && is_dimensionless(&left.result_type) {
-        if let Type::Scalar { dimension } = right.result_type {
-            if !dimension.is_dimensionless() {
-                return (
-                    CompiledExpr::literal(
-                        Value::Scalar { si_value: 0.0, dimension },
-                        Type::Scalar { dimension },
-                    ),
-                    right,
-                );
-            }
-        }
+    if type_compat::is_syntactic_zero_literal(left_ast)
+        && is_dimensionless(&left.result_type)
+        && let Type::Scalar { dimension } = right.result_type
+        && !dimension.is_dimensionless()
+    {
+        return (
+            CompiledExpr::literal(
+                Value::Scalar { si_value: 0.0, dimension },
+                Type::Scalar { dimension },
+            ),
+            right,
+        );
     }
 
     // Right operand is a syntactic zero, left is Scalar<D non-dimensionless>.
-    if type_compat::is_syntactic_zero_literal(right_ast) && is_dimensionless(&right.result_type) {
-        if let Type::Scalar { dimension } = left.result_type {
-            if !dimension.is_dimensionless() {
-                return (
-                    left,
-                    CompiledExpr::literal(
-                        Value::Scalar { si_value: 0.0, dimension },
-                        Type::Scalar { dimension },
-                    ),
-                );
-            }
-        }
+    if type_compat::is_syntactic_zero_literal(right_ast)
+        && is_dimensionless(&right.result_type)
+        && let Type::Scalar { dimension } = left.result_type
+        && !dimension.is_dimensionless()
+    {
+        return (
+            left,
+            CompiledExpr::literal(
+                Value::Scalar { si_value: 0.0, dimension },
+                Type::Scalar { dimension },
+            ),
+        );
     }
 
     (left, right)

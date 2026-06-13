@@ -212,34 +212,6 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
     pairs
 }
 
-/// Returns `true` iff `expr` has the structural shape of a dimensioned-zero
-/// BinOp chain: `0 * <anything>` (optionally followed by `/` or `*` factors).
-///
-/// **Shape-only:** the right operand is NOT inspected — `0 * 5` (dimensionless)
-/// also returns `true`. Callers MUST pair this with an independent `result_type`
-/// check to confirm the actual dimension; see each call site below.
-///
-/// Examples that match (shape only — `result_type` supplies the dimension):
-///   `0 * 1N`            → BinOp(Mul, Int(0), Scalar{..})                  ✓
-///   `0 * 1m / 1s`       → BinOp(Div, BinOp(Mul, Int(0), ..), ..)          ✓
-///   `0 * 1m / (1s*1s)`  → BinOp(Div, BinOp(Mul, Int(0), ..), BinOp(..))   ✓
-///
-/// Used to distinguish the dimensioned-zero RHS of `velocity_limit > 0 * 1m/1s`
-/// (required for Scalar<Velocity> — esc-3115 rule) from the plain
-/// `Literal(Int(0))` RHS of dimensionless constraints like `vibration_tolerance > 0`.
-fn is_dimensioned_zero_binop(expr: &reify_ir::CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::BinOp { op: BinOp::Mul, left, .. } => {
-            matches!(&left.kind, CompiledExprKind::Literal(Value::Int(0)))
-                || matches!(&left.kind, CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0)
-        }
-        CompiledExprKind::BinOp { op: BinOp::Div, left, .. } => {
-            is_dimensioned_zero_binop(left)
-        }
-        _ => false,
-    }
-}
-
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
 
 /// The std/trajectory module must load through the production stdlib path
