@@ -267,6 +267,7 @@ fn value_type_kind_matches(
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
         Value::Axis { .. } => matches!(ty, Type::Axis),
+        Value::Direction { .. } => matches!(ty, Type::Direction),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
         // SampledField is a runtime payload stored under Value::Field.lambda;

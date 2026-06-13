@@ -119,6 +119,7 @@ fn value_kind_label(v: &Value) -> String {
         Value::Transform { .. } => "Transform".to_string(),
         Value::Plane { .. } => "Plane".to_string(),
         Value::Axis { .. } => "Axis".to_string(),
+        Value::Direction { .. } => "Direction".to_string(),
         Value::BoundingBox { .. } => "BoundingBox".to_string(),
         Value::Range { .. } => "Range".to_string(),
         Value::Field { .. } => "Field".to_string(),

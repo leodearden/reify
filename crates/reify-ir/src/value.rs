@@ -930,6 +930,12 @@ pub enum Value {
         origin: Box<Value>,
         direction: Box<Value>,
     },
+    /// Dimensionless 3D unit vector; distinct from Vector3<Length> and Orientation.
+    ///
+    /// Stores three inline dimensionless components (assumed unit-normalized),
+    /// mirroring [`Value::Orientation`]'s inline-float layout. Produced by datum
+    /// projections (`axis.dir`, `plane.normal`, `frame.x/.y/.z`).
+    Direction { x: f64, y: f64, z: f64 },
     /// 3D axis-aligned bounding box: min and max corner Point3 values.
     BoundingBox {
         min: Box<Value>,
@@ -1162,6 +1168,8 @@ impl Value {
                 .map(|v| v.dimension())
                 .unwrap_or(DimensionVector::DIMENSIONLESS),
             Value::Frame { .. } => DimensionVector::DIMENSIONLESS,
+            // Direction is a dimensionless unit vector.
+            Value::Direction { .. } => DimensionVector::DIMENSIONLESS,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -1402,6 +1410,24 @@ impl Value {
                 ContentHash::of(&[23])
                     .combine(origin.content_hash())
                     .combine(direction.content_hash())
+            }
+            Value::Direction { x, y, z } => {
+                // tag=30; NaN canonicalization for all 3 components (mirrors
+                // Orientation) → collapses NaN payload differences (see method doc
+                // invariant exception).
+                let canon = |v: &f64| -> u64 {
+                    if v.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        v.to_bits()
+                    }
+                };
+                let mut buf = [0u8; 25];
+                buf[0] = 30;
+                buf[1..9].copy_from_slice(&canon(x).to_le_bytes());
+                buf[9..17].copy_from_slice(&canon(y).to_le_bytes());
+                buf[17..25].copy_from_slice(&canon(z).to_le_bytes());
+                ContentHash::of(&buf)
             }
             Value::BoundingBox { min, max } => {
                 // tag=24; combine min and max content hashes
@@ -1745,6 +1771,7 @@ impl Value {
             Value::Transform { .. } => None,
             Value::Plane { .. } => Some(Type::Plane),
             Value::Axis { .. } => Some(Type::Axis),
+            Value::Direction { .. } => Some(Type::Direction),
             Value::BoundingBox { .. } => Some(Type::BoundingBox),
             Value::Range { lower, upper, .. } => {
                 let bound = lower.as_ref().or(upper.as_ref())?;
@@ -1893,6 +1920,9 @@ impl Value {
                     origin.format_hover(),
                     direction.format_hover()
                 )
+            }
+            Value::Direction { x, y, z } => {
+                format!("Direction(x={x}, y={y}, z={z})")
             }
             Value::BoundingBox { min, max } => {
                 format!(
@@ -2058,6 +2088,9 @@ impl Value {
                     origin.format_display(),
                     direction.format_display()
                 )
+            }
+            Value::Direction { x, y, z } => {
+                format!("direction({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 format!("bbox({}, {})", min.format_display(), max.format_display())
@@ -2463,6 +2496,26 @@ impl PartialEq for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash() == b.content_hash() // task 4116 / α
             }
+            (
+                Value::Direction {
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Direction {
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
+            ) => {
+                // Bit-identity equality (mirrors Orientation): +0.0 != -0.0,
+                // NaN == NaN for identical bit patterns. Agrees with the cmp arm's
+                // total_cmp ordering. MANDATORY: without this arm equal Directions
+                // fall to `_ => false` below and compare UNEQUAL.
+                ax.to_bits() == bx.to_bits()
+                    && ay.to_bits() == by.to_bits()
+                    && az.to_bits() == bz.to_bits()
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -2525,6 +2578,7 @@ impl Ord for Value {
                 Value::GeometryHandle { .. } => 27,
                 Value::AffineMap { .. } => 28,
                 Value::Selector(_) => 29, // task 4116 / α
+                Value::Direction { .. } => 30, // β / task 4382
             }
         }
 
@@ -2786,6 +2840,25 @@ impl Ord for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash().0.cmp(&b.content_hash().0) // task 4116 / α
             }
+            (
+                Value::Direction {
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Direction {
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
+            ) => {
+                // Lexicographic: x → y → z (IEEE 754 total_cmp per component).
+                // Agrees with bit-identity PartialEq. MANDATORY: without this arm
+                // two distinct Directions fall to `_ => unreachable!` below and PANIC.
+                ax.total_cmp(bx)
+                    .then_with(|| ay.total_cmp(by))
+                    .then_with(|| az.total_cmp(bz))
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2945,6 +3018,17 @@ impl std::fmt::Display for Value {
             }
             Value::Axis { origin, direction } => {
                 write!(f, "axis({}, {})", origin, direction)
+            }
+            Value::Direction { x, y, z } => {
+                // Same whole-number convention as Real/Orientation (no trailing ".0").
+                let fmt_f64 = |v: f64| -> String {
+                    if v == v.trunc() && v.is_finite() {
+                        format!("{:.0}", v)
+                    } else {
+                        format!("{}", v)
+                    }
+                };
+                write!(f, "direction({}, {}, {})", fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
             }
             Value::BoundingBox { min, max } => {
                 write!(f, "bbox({}, {})", min, max)

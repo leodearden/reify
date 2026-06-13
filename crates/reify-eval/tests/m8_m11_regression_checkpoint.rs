@@ -449,6 +449,8 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
         Value::Orientation { .. } | Value::Frame { .. } | Value::Transform { .. } => true,
         // 3D geometric primitives
         Value::Plane { .. } | Value::Axis { .. } | Value::BoundingBox { .. } => true,
+        // Dimensionless 3D unit vector (task 4382 / β)
+        Value::Direction { .. } => true,
         // Range
         Value::Range { .. } => true,
         // Matrix
@@ -637,7 +639,7 @@ fn checkpoint_value_variant_coverage() {
         z: 0.0,
     };
 
-    // Build one instance of each of the 25 Value variants.
+    // Build one instance of each of the 26 Value variants.
     let all_values: Vec<Value> = vec![
         // Primitive scalars (4)
         Value::Bool(true),
@@ -700,7 +702,7 @@ fn checkpoint_value_variant_coverage() {
             rotation: Box::new(identity_orient.clone()),
             translation: Box::new(make_len_vec3()),
         },
-        // 3D geometric primitives (3)
+        // 3D geometric primitives (4)
         Value::Plane {
             origin: Box::new(make_point3()),
             normal: Box::new(make_unit_vec3()),
@@ -718,6 +720,12 @@ fn checkpoint_value_variant_coverage() {
                 };
                 3
             ])),
+        },
+        // Dimensionless 3D unit vector (task 4382 / β)
+        Value::Direction {
+            x: 1.0,
+            y: 0.0,
+            z: 0.0,
         },
         // Range (1)
         Value::Range {
@@ -737,8 +745,8 @@ fn checkpoint_value_variant_coverage() {
 
     assert_eq!(
         all_values.len(),
-        25,
-        "expected exactly 25 Value variants; update this test if the enum changes"
+        26,
+        "expected exactly 26 Value variants; update this test if the enum changes"
     );
 
     // For each variant: drive the exhaustiveness guard and exercise the four
