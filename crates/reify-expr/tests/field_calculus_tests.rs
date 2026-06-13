@@ -5063,6 +5063,90 @@ fn sphere_lap_exact(r: f64) -> f64 {
     2.0 / r
 }
 
+/// Evaluate `laplacian(sphere_sdf)` for a 3D scalar sphere SDF and return the
+/// lowered `Value::Field { source: Sampled, lambda: Value::SampledField(_) }`.
+///
+/// Convenience wrapper used by the η acceptance tests (steps 3/5) to avoid
+/// repeating the field construction and eval_expr boilerplate.
+/// Calls the landed `compute_laplacian` Sampled dispatch (calculus.rs:312) —
+/// no production code change in task η.
+fn build_sphere_lap_field(n: usize, h: f64, center: [f64; 3], radius: f64) -> Value {
+    let sf = make_sphere_sdf_3d(n, h, center, radius);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type,
+    );
+    let values = ValueMap::new();
+    eval_expr(&lap_expr, &EvalContext::simple(&values))
+}
+
+/// Compute `max |∇²_h φ(node) − sphere_lap_exact(r)| / 1` over interior nodes
+/// of `lap_field` (a Sampled scalar `Value::Field`) that lie in the annular band
+/// `r_inner ≤ r ≤ r_outer` (r = distance from `center`).
+///
+/// Interior = node index strictly between 0 and n−1 on every axis.
+/// Returns `(max_err, band_count)`; callers assert `band_count > 0` to guard
+/// against a silent empty-band pass.
+///
+/// Data layout: x-major, so `data[i·ny·nz + j·nz + k]` for node (i,j,k).
+fn band_max_error(
+    lap_field: &Value,
+    center: [f64; 3],
+    r_inner: f64,
+    r_outer: f64,
+) -> (f64, usize) {
+    let sf = match lap_field {
+        Value::Field { lambda, .. } => match lambda.as_ref() {
+            Value::SampledField(sf) => sf,
+            other => panic!("band_max_error: expected SampledField lambda, got {:?}", other),
+        },
+        other => panic!("band_max_error: expected Value::Field, got {:?}", other),
+    };
+    let nx = sf.axis_grids[0].len();
+    let ny = sf.axis_grids[1].len();
+    let nz = sf.axis_grids[2].len();
+    let mut max_err = 0.0_f64;
+    let mut count = 0usize;
+    for i in 1..nx - 1 {
+        for j in 1..ny - 1 {
+            for k in 1..nz - 1 {
+                let x = sf.axis_grids[0][i];
+                let y = sf.axis_grids[1][j];
+                let z = sf.axis_grids[2][k];
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dz = z - center[2];
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                if r < r_inner || r > r_outer {
+                    continue;
+                }
+                let g = i * ny * nz + j * nz + k;
+                let fd_val = sf.data[g];
+                let exact = sphere_lap_exact(r);
+                let err = (fd_val - exact).abs();
+                if err > max_err {
+                    max_err = err;
+                }
+                count += 1;
+            }
+        }
+    }
+    (max_err, count)
+}
+
 // ── η acceptance (PRD §9 task η): SDF mean-curvature ∇²φ ≈ 2/R sphere ────────
 //
 // Asserts ∇²φ ≈ 2/r (interior nodes in fixed annular band R_inner≤r≤R_outer)
@@ -5209,6 +5293,132 @@ fn sphere_sdf_laplacian_matches_2_over_r_interior_band() {
         r_inner / radius,
         r_outer / radius,
         count
+    );
+}
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// O(h²) convergence: refining h → h/2 reduces the interior-band Laplacian error by ≥3×.
+///
+/// Method: build `laplacian(sphere_sdf)` on coarse (n=21, h=0.1) and fine (n=41, h=0.05)
+/// grids over the same physical box [0,2]³ and same sphere (R=1.0, center=(1.025,1.025,1.025)).
+/// Compute max |∇²_h φ − 2/r| over the fixed annular band 0.5R ≤ r ≤ 1.5R (interior nodes
+/// only, boundary band excluded per PRD §10). Assert fine_err ≤ coarse_err/3.
+/// Theoretical O(h²) ratio ≈ 4 (halving h squares the error); threshold 3 leaves margin.
+///
+/// Center=(1.025,1.025,1.025): 1.025/h_coarse=10.25 and 1.025/h_fine=20.5 — not integers —
+/// so no node in either grid lands at r=0 (singularity-safe, PRD §6 G6).
+///
+/// Mirrors sampled_fd::gradient_sin_convergence_rate (same ratio-test structure, PRD §6).
+/// PRD §10: first-order one-sided stencil retained; boundary nodes excluded from band.
+#[test]
+fn sphere_sdf_laplacian_o_h2_convergence_under_refinement() {
+    let radius = 1.0_f64;
+    let r_inner = 0.5 * radius;
+    let r_outer = 1.5 * radius;
+    // Center: 1.025/h_coarse=10.25 and 1.025/h_fine=20.5 — not on any grid node.
+    let center = [1.025_f64, 1.025, 1.025];
+
+    // Coarse: n=21, h=0.1, box [0, 2.0]³.
+    let h_coarse = 0.1_f64;
+    let n_coarse = 21_usize;
+    let coarse_lap = build_sphere_lap_field(n_coarse, h_coarse, center, radius);
+    let (coarse_err, coarse_count) = band_max_error(&coarse_lap, center, r_inner, r_outer);
+
+    // Fine: n=41, h=0.05, same physical box [0, 2.0]³ (n = 2*(n_coarse−1)+1).
+    let h_fine = h_coarse / 2.0;
+    let n_fine = 2 * (n_coarse - 1) + 1; // 41
+    let fine_lap = build_sphere_lap_field(n_fine, h_fine, center, radius);
+    let (fine_err, fine_count) = band_max_error(&fine_lap, center, r_inner, r_outer);
+
+    assert!(
+        coarse_count > 0,
+        "Coarse grid: expected interior band nodes, got 0 \
+         (n={n_coarse}, h={h_coarse}, R={radius}, band [{r_inner:.2},{r_outer:.2}])"
+    );
+    assert!(
+        fine_count > 0,
+        "Fine grid: expected interior band nodes, got 0 \
+         (n={n_fine}, h={h_fine}, R={radius}, band [{r_inner:.2},{r_outer:.2}])"
+    );
+
+    // PRD §6: leading error ≤ h²/(2r³); halving h reduces by ≈4×.
+    // Threshold 3 (< theoretical 4) leaves margin for O(h⁴) remainder.
+    assert!(
+        fine_err <= coarse_err / 3.0,
+        "O(h²) convergence violated: coarse_err={coarse_err:.6e} fine_err={fine_err:.6e} \
+         ratio={:.2} (expected ≥3, theoretical ≈4; \
+         coarse n={n_coarse} h={h_coarse}, fine n={n_fine} h={h_fine})",
+        coarse_err / fine_err
+    );
+}
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// `sample(laplacian(sphere_sdf), surface_point)` approximates 2/R within 2h²/R³.
+///
+/// A Point3 at (center_x + R, center_y, center_z) lies exactly on the sphere (r = R)
+/// and strictly interior to the grid (no boundary node touched by linear interpolation).
+/// The sampled Laplacian approximates ∇²φ = 2/R (mean curvature signal, PRD §6 G6)
+/// with combined O(h²) FD + linear-interp error:
+///   FD ≤ h²/(2R³), linear-interp ≤ h²/(2R³) → sum h²/R³.
+/// Asserted bound: 2h²/R³ (2× margin).
+///
+/// Grid: n=31, h=0.1, box [0,3]³, R=1.0, center=(1.525,1.5,1.5).
+/// center_x=1.525=15.25h — not on any grid node → no node lands at r=0.
+/// Surface point: (2.525,1.5,1.5) — x=25.25h between interior nodes 25 and 26.
+///
+/// PRD §10: first-order one-sided stencil retained; surface point chosen strictly
+/// interior so the sample touches only central-difference nodes.
+#[test]
+fn sphere_sdf_laplacian_sample_at_surface_point_approx_2_over_r() {
+    let n = 31_usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    // center_x = 1.525: 1.525/h = 15.25 — not an integer, so no grid node has r=0.
+    let center = [1.525_f64, 1.5, 1.5];
+
+    let lap_result = build_sphere_lap_field(n, h, center, radius);
+
+    // Surface point at center + (R,0,0): x=2.525=25.25h, between interior nodes 25 and 26.
+    let surface_point = Value::Point(vec![
+        Value::Real(center[0] + radius),
+        Value::Real(center[1]),
+        Value::Real(center[2]),
+    ]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(surface_point, domain_type),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let lap_val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(laplacian(sphere_sdf), surface_point) expected numeric scalar, got {:?}",
+            sample_result
+        )
+    });
+
+    // PRD §6: |∇²_h φ(surface_point) − 2/R| ≤ 2h²/R³ = 2·0.01/1.0 = 0.02.
+    let exact = 2.0 / radius;
+    let bound = 2.0 * h * h / (radius * radius * radius);
+    assert!(
+        (lap_val - exact).abs() <= bound,
+        "surface-sample Laplacian {lap_val:.6e} deviates from 2/R={exact:.6e} \
+         by {:.6e} > 2h²/R³={bound:.6e} \
+         (n={n}, h={h}, R={radius}, surface_point=({:.3},{:.3},{:.3}))",
+        (lap_val - exact).abs(),
+        center[0] + radius, center[1], center[2]
     );
 }
 
