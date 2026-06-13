@@ -7530,6 +7530,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn eval_pow_zero_exponent_collapses_to_real() {
+        // L^0 = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        // (0.005^0 = 1.0 exactly; the VARIANT check is the load-bearing point.)
+        match eval_pow(&mm_val(5.0), &Value::Int(0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_pow_nonzero_exponent_stays_scalar() {
+        // L^2 = AREA: a dimensioned power must stay Value::Scalar.
+        match eval_pow(&mm_val(5.0), &Value::Int(2)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L^2 should be AREA");
+                // 0.005^2 = 2.5e-5.
+                assert!(
+                    (si_value - 2.5e-5).abs() < 1e-12,
+                    "expected ~2.5e-5, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
