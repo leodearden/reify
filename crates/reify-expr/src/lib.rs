@@ -3914,14 +3914,14 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Dimensioned Scalar vs non-Scalar: not equal
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Bool(false)
-        }
+        // Scalar vs non-Scalar: not equal. Post-Invariant V (task 4374/β) every
+        // Value::Scalar reaching here is dimensioned — no arithmetic op produces
+        // a Scalar{DIMENSIONLESS} — so the old `!dimension.is_dimensionless()`
+        // guard was always-true and is dropped. (Scalar-vs-Scalar is handled by
+        // the earlier arm.)
+        (Value::Scalar { .. }, _) | (_, Value::Scalar { .. }) => Value::Bool(false),
         _ => {
-            // For numeric comparisons (Int/Real/dimensionless Scalar), compare as f64
+            // Int/Real numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -3958,13 +3958,13 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Dimensioned Scalar vs non-Scalar: incomparable
-        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
-            if !dimension.is_dimensionless() =>
-        {
-            Value::Undef
-        }
-        // Fallback: Int/Real/dimensionless Scalar via as_f64
+        // Scalar vs non-Scalar: incomparable. Post-Invariant V (task 4374/β)
+        // every Value::Scalar reaching here is dimensioned — no arithmetic op
+        // produces a Scalar{DIMENSIONLESS} — so the old
+        // `!dimension.is_dimensionless()` guard was always-true and is dropped.
+        // (Scalar-vs-Scalar is handled by the earlier arm.)
+        (Value::Scalar { .. }, _) | (_, Value::Scalar { .. }) => Value::Undef,
+        // Fallback: Int/Real numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
             _ => Value::Undef,
