@@ -3212,6 +3212,108 @@ pub(crate) fn try_eval_resolve_selector(
     }
 }
 
+/// Feature → datum projection member names (geometric-relations ε): the four
+/// projections a realized feature's trait bundle carries. LOCKSTEP with the
+/// compiler typing table (`datum_projection.rs` `Type::Geometry`/`Selector` arm)
+/// — these are exactly the members `datum_projection_result_type` resolves for a
+/// feature receiver. Used to gate [`try_eval_feature_datum_projection`] so it
+/// only intercepts feature→datum projection `MethodCall`s, leaving β's pure
+/// datum→datum projections (and any other method call) to the pure eval path.
+const FEATURE_DATUM_PROJECTION_MEMBERS: [&str; 4] = ["axis", "plane", "point", "dir"];
+
+/// Kernel-backed evaluation of a feature → datum projection (`feature.axis` /
+/// `.plane` / `.point` / `.dir`), geometric-relations ε (design §7.2). The
+/// compiler lowers such a projection to a `MethodCall { object: <feature>,
+/// method: <proj>, args: [] }` whose object is a realized `Value::GeometryHandle`
+/// cell; the pure `eval_datum_projection` cannot evaluate it (it reaches the
+/// kernel, the construction history, and the dedup primitive), so it is resolved
+/// HERE, mirroring the `ResolveSelector` coercion in
+/// [`try_eval_resolve_selector`].
+///
+/// Resolves the receiver to its feature handle, builds the deduplicated
+/// [`feature_datum_bundle`](crate::feature_datum::feature_datum_bundle) from the
+/// analytic ∪ construction-history union (the recovered [`SweptKind`] history is
+/// looked up in `swept_kinds` by the feature handle), and refines it to the
+/// requested projection via
+/// [`feature_datum_projection`](crate::feature_datum::feature_datum_projection):
+/// a unique datum is returned as its `Value`, a zero/many group emits a
+/// select-a-subfeature [`DiagnosticCode::FeatureDatumAmbiguous`] error and yields
+/// `Value::Undef`.
+///
+/// Returns `None` (skip — leave the cell for the pure eval path) when the expr is
+/// not a feature→datum projection `MethodCall`, or when its receiver is a β
+/// *datum* receiver (e.g. `axis.dir`, owned by `eval_datum_projection`) that does
+/// not resolve to a realized `Value::GeometryHandle`.
+///
+/// A receiver that statically types as a topology *selector*
+/// (`Type::Selector(_)` / `Type::AnySelector`) is accepted at compile time
+/// (design §2.2 types a selection's feature→datum projection) but its
+/// selector→sub-handle resolution is not yet wired on the eval side; rather than
+/// leaving the cell a silent `Value::Undef`, it emits a select-a-subfeature
+/// [`DiagnosticCode::FeatureDatumAmbiguous`] error and yields `Value::Undef`.
+pub(crate) fn try_eval_feature_datum_projection(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let (object, member) = match &expr.kind {
+        reify_ir::CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } if args.is_empty()
+            && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) =>
+        {
+            (object.as_ref(), method.as_str())
+        }
+        _ => return None,
+    };
+
+    // Resolve the receiver to a realized feature handle. Only a feature receiver
+    // backed by a realized `Value::GeometryHandle` cell is wired end-to-end; a β
+    // datum receiver (`Axis`/…) does not resolve here, so we return None and the
+    // pure `eval_datum_projection` path handles it.
+    let handle = match resolve_selector_target(object, values) {
+        Some(target) => target.kernel_handle,
+        None => {
+            // The receiver did not resolve to a realized geometry handle. If it
+            // STATICALLY types as a topology selection (`Type::Selector(_)` /
+            // `Type::AnySelector`), the compiler accepted the projection but the
+            // selector→sub-handle resolution is not yet wired here: emit an
+            // explicit select-a-subfeature diagnostic instead of leaving the cell a
+            // silent `Value::Undef` (the clean-compile-then-silent-Undef failure
+            // mode). Any OTHER unresolved receiver — a β datum such as `axis.dir`,
+            // or a not-yet-hydrated cell — is not ours, so return None and let the
+            // pure `eval_datum_projection` path own it.
+            if matches!(
+                object.result_type,
+                reify_core::ty::Type::Selector(_) | reify_core::ty::Type::AnySelector
+            ) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "feature→datum projection '.{member}' over a topology selector is \
+                         not yet supported; select a single sub-feature (e.g. `single(...)`) \
+                         or project from the realized feature instead"
+                    ))
+                    .with_code(reify_core::DiagnosticCode::FeatureDatumAmbiguous),
+                );
+                return Some(reify_ir::Value::Undef);
+            }
+            return None;
+        }
+    };
+
+    let history = swept_kinds.lookup(handle);
+    let bundle = crate::feature_datum::feature_datum_bundle(handle, kernel, history);
+    Some(crate::feature_datum::feature_datum_projection(
+        &bundle,
+        member,
+        diagnostics,
+    ))
+}
+
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
 ///
 /// PREFERRED path: inline reconstruction from a nested selector FunctionCall
@@ -19811,6 +19913,110 @@ mod tests {
             reify_core::Severity::Warning,
             "diagnostic severity must be Warning; got {:?}",
             diagnostics[0].severity
+        );
+    }
+
+    // ── feature→datum projection over a SELECTOR receiver (review amend) ────
+    //
+    // The compiler types a selection's feature→datum projection (`s.axis` where
+    // `s : FaceSelector` → Axis, design §2.2) but the selector→sub-handle
+    // resolution is not yet wired on the eval side. These pin that the eval emits
+    // an honest diagnostic instead of a silent `Value::Undef`, and that the β
+    // datum→datum path is NOT captured by the new branch.
+
+    /// A feature→datum projection whose receiver STATICALLY types as a topology
+    /// selector (`Type::Selector(_)`) but does not resolve to a realized
+    /// `Value::GeometryHandle` must emit exactly one select-a-subfeature
+    /// `FeatureDatumAmbiguous` error and evaluate to `Value::Undef` — NOT leave the
+    /// cell a silent `Value::Undef` with no diagnostic (the
+    /// clean-compile-then-silent-runtime failure mode).
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_emits_diagnostic_not_silent_undef() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // `s.axis` where `s : FaceSelector`. The receiver cell is unhydrated (and a
+        // Selector value would not resolve to a GeometryHandle anyway), so
+        // resolve_selector_target → None and the Selector static type drives the
+        // not-yet-supported diagnostic.
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let values = reify_ir::ValueMap::new();
+        let mut kernel = MockGeometryKernel::new();
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "a selector-receiver feature→datum projection must yield Some(Value::Undef); \
+             got {result:?}"
+        );
+        let errs: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a selector-receiver projection must emit exactly one FeatureDatumAmbiguous \
+             (not-yet-supported / select-a-subfeature) error rather than a silent Undef; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// A β *datum* receiver (`axis.dir` — receiver statically types as `Axis`, not a
+    /// feature/selector) must make the kernel-backed feature-datum path DECLINE
+    /// (`None`, no diagnostic) so the pure `eval_datum_projection` owns it. Guards
+    /// that the selector not-yet-supported branch does not capture β's datum→datum
+    /// projections.
+    #[test]
+    fn feature_datum_projection_over_datum_receiver_declines_to_pure_path() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let object = reify_ir::CompiledExpr::value_ref(ValueCellId::new("S", "a"), Type::Axis);
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "dir".to_string(), vec![], Type::Direction);
+
+        let values = reify_ir::ValueMap::new();
+        let mut kernel = MockGeometryKernel::new();
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "a β datum receiver (`axis.dir`) must decline (None) to the pure projection \
+             path; got {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "declining to the pure path must emit no diagnostic; got {diagnostics:?}"
         );
     }
 

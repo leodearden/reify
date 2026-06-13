@@ -83,6 +83,10 @@ struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
+/// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
+/// defined by the cxx bridge (ffi.rs). Forward-declared here for the signatures below.
+struct AnalyticSurfaceDatum;
+struct AnalyticCurveDatum;
 
 // --- Foundation constants ---
 
@@ -1169,6 +1173,32 @@ rust::String face_surface_kind(const OcctShape& shape);
 ///
 /// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE`.
 rust::String edge_curve_kind(const OcctShape& shape);
+
+/// Project a face's underlying analytic surface to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Surface::GetType()` switch: Cylinder → `Cylinder().Axis()`
+/// location/direction + `.Radius()`; Cone → `Cone().Axis()` + `.SemiAngle()`;
+/// Sphere → `Sphere().Location()` + `.Radius()`; Plane → `Plane().Axis()`
+/// location/direction. The `kind` byte records the GeomAbs classification so
+/// the Rust dispatch composes the correct projected `Value`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_FACE` or the
+/// surface is non-analytic.
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape);
+
+/// Project an edge's underlying analytic curve to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Curve::GetType()` switch: Line → `Line().Position()`/`.Direction()`;
+/// Circle → `Circle().Axis()` + `.Location()` + `.Radius()`; Ellipse →
+/// `Ellipse().Axis()` + `.Location()` + `.MajorRadius()`/`.MinorRadius()`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE` or the curve
+/// is non-analytic.
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape);
+
+/// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+/// (geometric-relations ε). Returns the tolerance in kernel-native units (metres).
+double shape_local_tolerance(const OcctShape& shape);
 
 /// Unit outward normal at the parametric point `(u, v)` on `face`.
 ///

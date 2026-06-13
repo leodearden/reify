@@ -3040,10 +3040,43 @@ pub(crate) fn compile_expr_guarded(
             // becomes a `MethodCall` (method = projection name, no args); eval
             // dispatches the datum-projection method names on datum Values
             // (the projection member names are disjoint from count/sum/keys/values).
-            if matches!(
+            //
+            // ── geometric-relations ε: feature→datum projections ───────────
+            //
+            // The same projection block also handles *feature* receivers —
+            // `Type::Geometry` (a realized solid) and `Type::Selector(_)` /
+            // `Type::AnySelector` (a topology selection) — projecting them to the
+            // datum their trait bundle carries (`feature.axis : Axis`,
+            // `.plane : Plane`, `.point : Point3<Length>`, `.dir : Direction`;
+            // design §2.2). Whereas a β *datum* receiver only enters here for a
+            // recognized projection member (`DATUM_PROJECTION_MEMBERS`), a feature
+            // receiver enters for *any* non-aggregation member: a geometry/selector
+            // has no other member-access semantics, so every such `.member` is a
+            // feature→datum projection attempt and an unrecognized one
+            // (`feature.foo`) is a typed rejection (`Unavailable` →
+            // `DatumProjectionUnavailable`), not a generic "unsupported" fallthrough.
+            // Collection-aggregation members (`count`/`sum`/`keys`/`values`) are
+            // excluded so a selector's aggregation still routes to the arm below.
+            //
+            // Lowering is a `MethodCall` (method = projection name, no args), the
+            // same NODE shape β uses — but the *eval* is kernel-backed: a feature
+            // receiver evaluates to a `Value::GeometryHandle`/`Value::Selector`, for
+            // which the pure `eval_datum_projection` returns `None` (→ `Undef`), and
+            // the `reify-eval` geometry_ops post-process patches the cell with the
+            // resolved feature-datum bundle projection. This is distinct from β's
+            // pure datum→datum `eval_datum_projection` (which fires only for an
+            // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
+            let receiver_is_datum = matches!(
                 &compiled_obj.result_type,
                 Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
-            ) && DATUM_PROJECTION_MEMBERS.contains(&member.as_str())
+            );
+            let receiver_is_feature = matches!(
+                &compiled_obj.result_type,
+                Type::Geometry | Type::Selector(_) | Type::AnySelector
+            );
+            if (receiver_is_datum && DATUM_PROJECTION_MEMBERS.contains(&member.as_str()))
+                || (receiver_is_feature
+                    && !COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()))
             {
                 match datum_projection_result_type(&compiled_obj.result_type, member) {
                     DatumProjectionResolution::Resolved(result_type) => {

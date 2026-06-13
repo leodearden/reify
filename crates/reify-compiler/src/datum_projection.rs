@@ -38,8 +38,19 @@ pub(crate) enum DatumProjectionResolution {
 /// receiver — a member in this set on a datum receiver is resolved by the table
 /// (possibly to `Unavailable`/`Ambiguous`); a member outside this set is not a
 /// datum projection at all.
+///
+/// The trailing `axis`/`plane`/`point` members are the geometric-relations ε
+/// *feature→datum* projections (`feature.axis : Axis`, `feature.plane : Plane`,
+/// `feature.point : Point3<Length>`; `dir` — already present for β — doubles as
+/// the feature `→Direction` projection). They only resolve on the ε *feature*
+/// receivers (`Type::Geometry`/`Type::Selector(_)`); on a β datum receiver they
+/// resolve to `Unavailable` (a datum is not a feature, so it has no `.axis`).
+/// Note the `expr.rs` gate admits *any* non-aggregation member on a feature
+/// receiver, so this set is consulted only for the β datum-receiver branch — but
+/// keeping the ε members here preserves the const's "union of every recognized
+/// member" contract.
 pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
-    &["dir", "normal", "origin", "x", "y", "z", "xy_plane"];
+    &["dir", "normal", "origin", "x", "y", "z", "xy_plane", "axis", "plane", "point"];
 
 /// Resolve the result type of a datum-projection member access `receiver.member`.
 ///
@@ -54,6 +65,21 @@ pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
 ///   three basis directions could be meant — suggest `.x`/`.y`/`.z`)
 /// - `Direction` → `.x`/`.y`/`.z`: `Real` (dimensionless components)
 ///
+/// The geometric-relations ε *feature→datum* projections extend the table
+/// **downward to feature receivers** — a realized feature (`Type::Geometry`) or
+/// a topology selection (`Type::Selector(_)`/`Type::AnySelector`) projects to
+/// the datum its analytic/construction-history trait bundle carries
+/// (design §2.2):
+///
+/// - `Geometry`/`Selector` → `.axis`: [`Type::Axis`], `.plane`: [`Type::Plane`],
+///   `.point`: `Point3<Length>`, `.dir`: [`Type::Direction`]
+///
+/// These type *statically* as the datum codomain (the unambiguous arm of the
+/// `Axis | Axis?` refinement); the resolve-time ambiguity (`plate.axis` → several
+/// non-coaxial candidates) is a runtime select-a-subfeature diagnostic, not a
+/// static type. The eval is **kernel-backed** (`reify-eval` geometry_ops),
+/// distinct from β's pure `eval_datum_projection` — see `expr.rs`.
+///
 /// Any other receiver (including `Point { .. }`) or any unrecognized member on a
 /// datum receiver resolves to [`DatumProjectionResolution::Unavailable`] — the
 /// locked nonsense-filter (covers `point.dir`). γ/η extend this table here.
@@ -63,6 +89,17 @@ pub(crate) fn datum_projection_result_type(
 ) -> DatumProjectionResolution {
     use DatumProjectionResolution::*;
     match receiver {
+        // ── geometric-relations ε: feature→datum projections ──────────────
+        // A realized feature (Geometry) or a topology selection (Selector)
+        // projects to the datum its trait bundle carries. Unknown members are a
+        // typed rejection (`feature.foo` → Unavailable → DatumProjectionUnavailable).
+        Type::Geometry | Type::Selector(_) | Type::AnySelector => match member {
+            "axis" => Resolved(Type::Axis),
+            "plane" => Resolved(Type::Plane),
+            "point" => Resolved(Type::point3(Type::length())),
+            "dir" => Resolved(Type::Direction),
+            _ => Unavailable,
+        },
         Type::Axis => match member {
             "dir" => Resolved(Type::Direction),
             "origin" => Resolved(Type::point3(Type::length())),

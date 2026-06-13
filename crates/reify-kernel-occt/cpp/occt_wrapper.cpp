@@ -94,6 +94,13 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pln.hxx>
+// Analytic surface/curve geometry accessors (geometric-relations ε)
+#include <gp_Cylinder.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Lin.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 
 // OCCT properties + surface adaptor
@@ -3056,6 +3063,163 @@ rust::String edge_curve_kind(const OcctShape& shape) {
             case GeomAbs_BSplineCurve: return rust::String("BSplineCurve");
             case GeomAbs_OffsetCurve:  return rust::String("OffsetCurve");
             default:                   return rust::String("Other");
+        }
+    });
+}
+
+// --- Analytic-datum projection (geometric-relations ε) ---
+//
+// Project a face's / edge's underlying analytic surface / curve to a datum.
+// The `kind` byte in the returned struct selects the projected `Value` variant
+// on the Rust side (`analytic_surface_datum_to_value` / `_curve_` in lib.rs);
+// the two encodings MUST agree. Surface kinds:
+//   0 = Plane    → Value::Plane (origin on plane + unit normal)
+//   1 = Cylinder → Value::Axis  (point on axis + unit dir; scalar1 = radius)
+//   2 = Cone     → Value::Axis  (point on axis + unit dir; scalar1 = semi-angle,
+//                                scalar2 = apex distance from the axis location)
+//   3 = Sphere   → Value::Point (centre; scalar1 = radius)
+// A non-analytic surface (e.g. GeomAbs_SurfaceOfRevolution, B-spline) throws —
+// the construction-history trait path (ε step-12) covers that tail.
+
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("face_analytic_datum", [&]() -> AnalyticSurfaceDatum {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("face_analytic_datum: shape is not a face");
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("face_analytic_datum: face is null");
+        }
+        BRepAdaptor_Surface adaptor(face);
+        switch (adaptor.GetType()) {
+            case GeomAbs_Plane: {
+                gp_Pln pln = adaptor.Plane();
+                gp_Ax1 ax = pln.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    0.0, 0.0, /*kind=*/0,
+                };
+            }
+            case GeomAbs_Cylinder: {
+                gp_Cylinder cyl = adaptor.Cylinder();
+                gp_Ax1 ax = cyl.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    cyl.Radius(), 0.0, /*kind=*/1,
+                };
+            }
+            case GeomAbs_Cone: {
+                gp_Cone cone = adaptor.Cone();
+                gp_Ax1 ax = cone.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    cone.SemiAngle(), loc.Distance(cone.Apex()), /*kind=*/2,
+                };
+            }
+            case GeomAbs_Sphere: {
+                gp_Sphere sph = adaptor.Sphere();
+                gp_Pnt c = sph.Location();
+                return AnalyticSurfaceDatum{
+                    Point3{ c.X(), c.Y(), c.Z() },
+                    Point3{ 0.0, 0.0, 0.0 },
+                    sph.Radius(), 0.0, /*kind=*/3,
+                };
+            }
+            default:
+                throw std::runtime_error(
+                    "face_analytic_datum: non-analytic surface "
+                    "(not Plane/Cylinder/Cone/Sphere)"
+                );
+        }
+    });
+}
+
+// Curve-datum `kind` byte (consumed by `analytic_curve_datum_to_value` in
+// lib.rs). All three analytic curve kinds project to an Axis datum:
+//   0 = Line    → Value::Axis (point on line + unit direction)
+//   1 = Circle  → Value::Axis (centre + circle axis; scalar1 = radius)
+//   2 = Ellipse → Value::Axis (centre + ellipse axis; scalar1 = major radius,
+//                              scalar2 = minor radius)
+// A non-analytic curve (B-spline, etc.) throws.
+
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("edge_analytic_datum", [&]() -> AnalyticCurveDatum {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error("edge_analytic_datum: shape is not an edge");
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("edge_analytic_datum: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        switch (curve.GetType()) {
+            case GeomAbs_Line: {
+                gp_Lin lin = curve.Line();
+                gp_Pnt loc = lin.Location();
+                gp_Dir dir = lin.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    0.0, 0.0, /*kind=*/0,
+                };
+            }
+            case GeomAbs_Circle: {
+                gp_Circ circ = curve.Circle();
+                gp_Ax1 ax = circ.Axis();
+                gp_Pnt loc = circ.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    circ.Radius(), 0.0, /*kind=*/1,
+                };
+            }
+            case GeomAbs_Ellipse: {
+                gp_Elips elips = curve.Ellipse();
+                gp_Ax1 ax = elips.Axis();
+                gp_Pnt loc = elips.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    elips.MajorRadius(), elips.MinorRadius(), /*kind=*/2,
+                };
+            }
+            default:
+                throw std::runtime_error(
+                    "edge_analytic_datum: non-analytic curve "
+                    "(not Line/Circle/Ellipse)"
+                );
+        }
+    });
+}
+
+double shape_local_tolerance(const OcctShape& shape) {
+    return wrap_occt_call("shape_local_tolerance", [&]() -> double {
+        // BRep_Tool::Tolerance is overloaded per sub-shape kind, so dispatch on
+        // the topological type. Faces / edges / vertices each carry their own
+        // modelling tolerance; higher-level shapes (solids, shells, wires) have
+        // no single intrinsic tolerance, so reject them rather than guess.
+        switch (shape.shape.ShapeType()) {
+            case TopAbs_FACE:
+                return BRep_Tool::Tolerance(TopoDS::Face(shape.shape));
+            case TopAbs_EDGE:
+                return BRep_Tool::Tolerance(TopoDS::Edge(shape.shape));
+            case TopAbs_VERTEX:
+                return BRep_Tool::Tolerance(TopoDS::Vertex(shape.shape));
+            default:
+                throw std::runtime_error(
+                    "shape_local_tolerance: shape is not a face, edge, or vertex"
+                );
         }
     });
 }

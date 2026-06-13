@@ -3183,6 +3183,33 @@ impl OcctKernel {
                 let dev = self.measure_mesh_deviation(*nominal, &actual_mesh)?;
                 Ok(Value::Real(dev))
             }
+            // ε: analytic-datum projection. get_shape → ffi → compose the
+            // projected datum Value per the GeomAbs `kind` byte. Edge +
+            // tolerance dispatch land in steps 4 and 10.
+            GeometryQuery::FaceAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::face_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_surface_datum_to_value(&d)
+            }
+            GeometryQuery::EdgeAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::edge_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_curve_datum_to_value(&d)
+            }
+            GeometryQuery::ShapeLocalTolerance(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let tol = ffi::ffi::shape_local_tolerance(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::length(tol))
+            }
         }
     }
 
@@ -3308,6 +3335,80 @@ impl OcctKernel {
 
         ffi::ffi::measure_mesh_deviation(shape, &tess_result)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticSurfaceDatum` FFI
+/// record (geometric-relations ε `FaceAnalyticDatum` dispatch).
+///
+/// The `kind` byte — set in `occt_wrapper.cpp::face_analytic_datum` — selects
+/// the Value variant: `0` Plane → [`Value::Plane`], `1` Cylinder / `2` Cone →
+/// [`Value::Axis`], `3` Sphere → centre [`Value::Point`]. Origin components are
+/// SI-metre lengths ([`Value::length`]); the direction / normal is a
+/// dimensionless unit [`Value::Direction`]. The two encodings MUST agree — see
+/// the kind-byte table in the C++ source.
+#[cfg(has_occt)]
+fn analytic_surface_datum_to_value(
+    d: &ffi::ffi::AnalyticSurfaceDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        0 => Ok(Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(dir),
+        }),
+        1 | 2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        3 => Ok(origin),
+        other => Err(QueryError::QueryFailed(format!(
+            "face_analytic_datum: unknown surface-datum kind byte {other}"
+        ))),
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticCurveDatum` FFI
+/// record (geometric-relations ε `EdgeAnalyticDatum` dispatch).
+///
+/// All three analytic curve kinds — `0` Line, `1` Circle, `2` Ellipse (set in
+/// `occt_wrapper.cpp::edge_analytic_datum`) — project to a [`Value::Axis`]: the
+/// infinite line for a line, the centre + circle/ellipse axis for an arc.
+/// Origin components are SI-metre lengths; the direction is a dimensionless
+/// unit [`Value::Direction`]. Radius / major+minor ride in the FFI scalars and
+/// are not part of the projected Axis.
+#[cfg(has_occt)]
+fn analytic_curve_datum_to_value(
+    d: &ffi::ffi::AnalyticCurveDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
+        0..=2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        other => Err(QueryError::QueryFailed(format!(
+            "edge_analytic_datum: unknown curve-datum kind byte {other}"
+        ))),
     }
 }
 

@@ -1,0 +1,336 @@
+//! Integration tests for the analytic-datum kernel queries
+//! (`GeometryQuery::FaceAnalyticDatum` / `EdgeAnalyticDatum` /
+//! `ShapeLocalTolerance`) — geometric-relations ε.
+//!
+//! The analytic-datum queries project a face's / edge's underlying analytic
+//! surface / curve (`BRepAdaptor_*` → `GeomAbs_*`) to a datum `Value`:
+//!   * `GeomAbs_Cylinder` / `GeomAbs_Cone` face → `Value::Axis` (the surface
+//!     axis: a point on the axis + the unit axis direction),
+//!   * `GeomAbs_Plane` face → `Value::Plane` (a point on the plane + the unit
+//!     normal),
+//!   * `GeomAbs_Sphere` face → `Value::Point` (the sphere centre),
+//!   * `GeomAbs_Line` edge → `Value::Axis`, `GeomAbs_Circle`/`Ellipse` edge →
+//!     `Value::Axis` (centre + axis direction).
+//!
+//! Step-1 (this file's first two tests) is RED until the C++ FFI body
+//! (`face_analytic_datum`) + the `FaceAnalyticDatum` dispatch in `lib.rs` land
+//! in step-2: the pre-1 scaffolding stub returns
+//! `Err(QueryError::QueryFailed("FaceAnalyticDatum: unimplemented"))`, so the
+//! `.expect(...)` on the query panics.
+
+#![cfg(has_occt)]
+
+use reify_core::dimension::DimensionVector;
+use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_kernel_occt::OcctKernel;
+
+/// Linear tolerance for on-axis / on-plane point comparisons (metres). OCCT's
+/// analytic accessors are exact to machine precision for primitives; 1e-9 is a
+/// generous margin well below the kernel confusion floor (~1e-7).
+const LIN_TOL: f64 = 1e-9;
+/// Direction tolerance for unit-vector component comparisons.
+const DIR_TOL: f64 = 1e-9;
+
+// ── Shape builders ───────────────────────────────────────────────────────────
+
+/// Build a kernel with a cylinder (radius, height) along the +Z axis through
+/// the origin — `BRepPrimAPI_MakeCylinder`'s default placement. Returns the
+/// kernel and the cylinder body handle.
+fn cylinder_kernel(radius: f64, height: f64) -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let h = kernel
+        .execute(&GeometryOp::Cylinder {
+            radius: Value::Real(radius),
+            height: Value::Real(height),
+        })
+        .expect("cylinder creation should succeed");
+    (kernel, h.id)
+}
+
+/// Build a kernel with a box (cube of `side` metres) centred at the origin.
+/// Returns the kernel and the box body handle.
+fn box_kernel(side: f64) -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let h = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(side),
+            height: Value::Real(side),
+            depth: Value::Real(side),
+        })
+        .expect("box creation should succeed");
+    (kernel, h.id)
+}
+
+// ── Value decomposition helpers ──────────────────────────────────────────────
+
+/// Decompose a `Value::Point` (3 numeric components) into `[x, y, z]`.
+fn point_xyz(v: &Value) -> [f64; 3] {
+    match v {
+        Value::Point(comps) if comps.len() == 3 => [
+            comps[0].as_f64().expect("point component 0 numeric"),
+            comps[1].as_f64().expect("point component 1 numeric"),
+            comps[2].as_f64().expect("point component 2 numeric"),
+        ],
+        other => panic!("expected a 3-component Value::Point, got {other:?}"),
+    }
+}
+
+/// Decompose a direction-bearing `Value` (`Direction` or dimensionless 3-vector)
+/// into `[x, y, z]`.
+fn dir_xyz(v: &Value) -> [f64; 3] {
+    match v {
+        Value::Direction { x, y, z } => [*x, *y, *z],
+        Value::Vector(comps) if comps.len() == 3 => [
+            comps[0].as_f64().expect("dir component 0 numeric"),
+            comps[1].as_f64().expect("dir component 1 numeric"),
+            comps[2].as_f64().expect("dir component 2 numeric"),
+        ],
+        other => panic!("expected Value::Direction or 3-component Vector, got {other:?}"),
+    }
+}
+
+/// Decompose a `Value::Axis` into `(origin, direction)`.
+fn axis_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    match v {
+        Value::Axis { origin, direction } => (point_xyz(origin), dir_xyz(direction)),
+        other => panic!("expected Value::Axis, got {other:?}"),
+    }
+}
+
+/// Decompose a `Value::Plane` into `(origin, normal)`.
+fn plane_parts(v: &Value) -> ([f64; 3], [f64; 3]) {
+    match v {
+        Value::Plane { origin, normal } => (point_xyz(origin), dir_xyz(normal)),
+        other => panic!("expected Value::Plane, got {other:?}"),
+    }
+}
+
+/// Find the unique face of `body` whose `FaceSurfaceKind` equals `kind`.
+fn find_face_of_kind(kernel: &mut OcctKernel, body: GeometryHandleId, kind: &str) -> GeometryHandleId {
+    let faces = kernel
+        .extract_faces(body)
+        .expect("extract_faces should succeed");
+    faces
+        .iter()
+        .copied()
+        .find(|id| {
+            matches!(
+                kernel.query(&GeometryQuery::FaceSurfaceKind(*id)),
+                Ok(Value::String(ref s)) if s == kind
+            )
+        })
+        .unwrap_or_else(|| panic!("no face of surface-kind {kind:?} found on body {body:?}"))
+}
+
+/// Find an edge of `body` whose `EdgeCurveKind` equals `kind`.
+fn find_edge_of_kind(kernel: &mut OcctKernel, body: GeometryHandleId, kind: &str) -> GeometryHandleId {
+    let edges = kernel
+        .extract_edges(body)
+        .expect("extract_edges should succeed");
+    edges
+        .iter()
+        .copied()
+        .find(|id| {
+            matches!(
+                kernel.query(&GeometryQuery::EdgeCurveKind(*id)),
+                Ok(Value::String(ref s)) if s == kind
+            )
+        })
+        .unwrap_or_else(|| panic!("no edge of curve-kind {kind:?} found on body {body:?}"))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+/// A cylinder's lateral (`GeomAbs_Cylinder`) face projects to a `Value::Axis`
+/// whose origin lies on the cylinder's central axis (the +Z line through the
+/// origin) and whose direction is parallel to that axis (±Z).
+#[test]
+fn cylinder_side_face_projects_to_axis_along_cylinder_axis() {
+    let (mut kernel, cyl) = cylinder_kernel(0.003, 0.010);
+    let side = find_face_of_kind(&mut kernel, cyl, "Cylinder");
+
+    let datum = kernel
+        .query(&GeometryQuery::FaceAnalyticDatum(side))
+        .expect("FaceAnalyticDatum on a cylindrical face should succeed");
+
+    let (origin, direction) = axis_parts(&datum);
+
+    // The cylinder axis is the +Z line through the origin: any point ON that
+    // axis has x = y = 0 (z is free).
+    assert!(
+        origin[0].abs() < LIN_TOL && origin[1].abs() < LIN_TOL,
+        "cylinder-axis datum origin must lie on the Z axis (x=y=0), got {origin:?}"
+    );
+
+    // Direction parallel to the cylinder axis (±Z): |z| ≈ 1, x ≈ y ≈ 0.
+    assert!(
+        direction[0].abs() < DIR_TOL
+            && direction[1].abs() < DIR_TOL
+            && (direction[2].abs() - 1.0).abs() < DIR_TOL,
+        "cylinder-axis datum direction must be parallel to Z (±(0,0,1)), got {direction:?}"
+    );
+}
+
+/// A box's planar (`GeomAbs_Plane`) top face projects to a `Value::Plane` whose
+/// normal is parallel to Z (±(0,0,1)) and whose origin point lies on the plane
+/// `z = +side/2`.
+#[test]
+fn box_planar_top_face_projects_to_plane() {
+    let side = 0.010;
+    let half = side / 2.0;
+    let (mut kernel, body) = box_kernel(side);
+
+    // All six faces of an axis-aligned box are planar; pick the +Z (top) face
+    // by its centroid z ≈ +half.
+    let faces = kernel
+        .extract_faces(body)
+        .expect("extract_faces should succeed");
+    let top = faces
+        .iter()
+        .copied()
+        .find(|id| {
+            let c = kernel
+                .query(&GeometryQuery::Centroid(*id))
+                .expect("Centroid query should succeed");
+            // Centroid is a JSON-encoded {"x":..,"y":..,"z":..} string.
+            if let Value::String(s) = c {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&s).expect("centroid JSON parses");
+                (parsed["z"].as_f64().expect("centroid z") - half).abs() < 1e-6
+            } else {
+                false
+            }
+        })
+        .expect("box must have a +Z top face at z = +side/2");
+
+    let datum = kernel
+        .query(&GeometryQuery::FaceAnalyticDatum(top))
+        .expect("FaceAnalyticDatum on a planar face should succeed");
+
+    let (origin, normal) = plane_parts(&datum);
+
+    // Normal parallel to Z (±(0,0,1)).
+    assert!(
+        normal[0].abs() < DIR_TOL
+            && normal[1].abs() < DIR_TOL
+            && (normal[2].abs() - 1.0).abs() < DIR_TOL,
+        "top-face plane normal must be parallel to Z (±(0,0,1)), got {normal:?}"
+    );
+
+    // The plane datum's origin is a point ON the plane z = +half.
+    assert!(
+        (origin[2] - half).abs() < LIN_TOL,
+        "top-face plane datum origin must lie on z = +{half} (got z = {})",
+        origin[2]
+    );
+}
+
+/// A straight (`GeomAbs_Line`) edge projects to a `Value::Axis` whose origin
+/// lies on the line and whose direction is parallel to the line. The test
+/// fixture edge runs (0,0,0)→(10mm,0,0), i.e. the X axis through the origin.
+#[test]
+fn straight_edge_projects_to_axis_along_line() {
+    let mut kernel = OcctKernel::new();
+    let edge = kernel.store_edge_for_test();
+
+    let datum = kernel
+        .query(&GeometryQuery::EdgeAnalyticDatum(edge))
+        .expect("EdgeAnalyticDatum on a straight edge should succeed");
+
+    let (origin, direction) = axis_parts(&datum);
+
+    // The line is the X axis through the origin: a point ON it has y = z = 0.
+    assert!(
+        origin[1].abs() < LIN_TOL && origin[2].abs() < LIN_TOL,
+        "line-edge datum origin must lie on the X axis (y=z=0), got {origin:?}"
+    );
+
+    // Direction parallel to the line (±X): |x| ≈ 1, y ≈ z ≈ 0.
+    assert!(
+        (direction[0].abs() - 1.0).abs() < DIR_TOL
+            && direction[1].abs() < DIR_TOL
+            && direction[2].abs() < DIR_TOL,
+        "line-edge datum direction must be parallel to X (±(1,0,0)), got {direction:?}"
+    );
+}
+
+/// A circular (`GeomAbs_Circle`) edge projects to a `Value::Axis` whose origin
+/// is the circle centre (on the cylinder's Z axis) and whose direction is the
+/// circle axis (±Z). The circle's radius is captured in the FFI payload but is
+/// not part of the projected `Value::Axis`.
+#[test]
+fn circular_edge_projects_to_axis_through_centre() {
+    let (mut kernel, cyl) = cylinder_kernel(0.003, 0.010);
+    let circle = find_edge_of_kind(&mut kernel, cyl, "Circle");
+
+    let datum = kernel
+        .query(&GeometryQuery::EdgeAnalyticDatum(circle))
+        .expect("EdgeAnalyticDatum on a circular edge should succeed");
+
+    let (origin, direction) = axis_parts(&datum);
+
+    // The rim circle is centred on the cylinder's Z axis: centre x = y = 0.
+    assert!(
+        origin[0].abs() < LIN_TOL && origin[1].abs() < LIN_TOL,
+        "circle-edge datum centre must lie on the Z axis (x=y=0), got {origin:?}"
+    );
+
+    // Circle axis parallel to the cylinder axis (±Z).
+    assert!(
+        direction[0].abs() < DIR_TOL
+            && direction[1].abs() < DIR_TOL
+            && (direction[2].abs() - 1.0).abs() < DIR_TOL,
+        "circle-edge datum direction must be parallel to Z (±(0,0,1)), got {direction:?}"
+    );
+}
+
+// ── ShapeLocalTolerance ──────────────────────────────────────────────────────
+
+/// Assert a `Value` is a small, strictly-positive LENGTH-dimensioned scalar —
+/// the shape of a clean sub-shape's `BRep_Tool::Tolerance` (a positive modelling
+/// tolerance at/near OCCT's `Precision::Confusion()` ~1e-7 m, far below 1 mm).
+/// This feeds the feature-datum dedup tolerance `max(floor, localTol(A), localTol(B))`.
+fn assert_length_small_positive(v: &Value) {
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "local tolerance must be a LENGTH-dimensioned scalar, got dimension {dimension:?}"
+            );
+            assert!(
+                *si_value > 0.0 && *si_value < 1e-3,
+                "clean-primitive local tolerance must be small + positive (0 < t < 1 mm), got {si_value}"
+            );
+        }
+        other => panic!("expected a LENGTH Value::Scalar local tolerance, got {other:?}"),
+    }
+}
+
+/// A clean cylinder side face's local modelling tolerance
+/// (`GeometryQuery::ShapeLocalTolerance`) is a small positive `Value` Length.
+#[test]
+fn cylinder_side_face_local_tolerance_is_small_positive_length() {
+    let (mut kernel, cyl) = cylinder_kernel(0.003, 0.010);
+    let side = find_face_of_kind(&mut kernel, cyl, "Cylinder");
+
+    let tol = kernel
+        .query(&GeometryQuery::ShapeLocalTolerance(side))
+        .expect("ShapeLocalTolerance on a clean cylindrical face should succeed");
+
+    assert_length_small_positive(&tol);
+}
+
+/// A clean straight edge's local modelling tolerance is a small positive
+/// `Value` Length too (the query covers faces *and* edges).
+#[test]
+fn straight_edge_local_tolerance_is_small_positive_length() {
+    let mut kernel = OcctKernel::new();
+    let edge = kernel.store_edge_for_test();
+
+    let tol = kernel
+        .query(&GeometryQuery::ShapeLocalTolerance(edge))
+        .expect("ShapeLocalTolerance on a clean straight edge should succeed");
+
+    assert_length_small_positive(&tol);
+}
