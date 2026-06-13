@@ -352,14 +352,26 @@ fn spherical_has_no_params() {
     );
 }
 
-/// `Mechanism` carries three params: `bodies` (still a placeholder),
-/// `joint_parents` (tightened to Map<BodyId,JointParent> by task 4579/M),
-/// and `loop_closures` (tightened to List<LoopClosure> by task 4579/M).
+/// `Mechanism` carries three params: `bodies` (still a `List<Real>` placeholder),
+/// `joint_parents` (tightened to `Map<BodyId,JointParent>` by task 4579/M),
+/// and `loop_closures` (tightened to `List<LoopClosure>` by task 4579/M).
 ///
 /// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED —
 /// owned by the kinematic-completion/BodyId promotion line.
+///
+/// Resolution guards at the top verify that `BodyId` and `JointParent` are
+/// actually declared structures — a string-equality StructureRef assertion
+/// alone would pass even if the referenced name did not exist.
 #[test]
-fn mechanism_has_three_placeholder_params() {
+fn mechanism_has_three_params_with_tightened_collection_types() {
+    // Resolution guards: panic early (with a clear message) if the StructureRef
+    // target names are not actually declared in std/kinematic.
+    // - BodyId: Map key; no standalone find_structure test elsewhere in this file.
+    // - JointParent: Map value; also covered by joint_parent_struct_has_correct_param_shape,
+    //   but co-locating the guard makes the dependency explicit.
+    find_structure("BodyId");
+    find_structure("JointParent");
+
     let template = find_structure("Mechanism");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
