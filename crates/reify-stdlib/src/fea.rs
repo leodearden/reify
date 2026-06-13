@@ -4561,7 +4561,7 @@ mod tests {
         let grid_count: usize = div_sf_rt.axis_grids.iter().map(|g| g.len()).product();
         assert_eq!(
             div_sf_rt.data.len(),
-            grid_count * 1,
+            grid_count,
             "divergence data.len() must equal grid_count*1"
         );
         assert_eq!(
