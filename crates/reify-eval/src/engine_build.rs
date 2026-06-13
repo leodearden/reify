@@ -5813,7 +5813,7 @@ impl Engine {
             .value_cells
             .iter()
             .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
-            .filter(|cell| values.get(&cell.id).map_or(true, |v| v.is_undef()))
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
             .filter_map(|cell| {
                 cell.default_expr
                     .as_ref()
