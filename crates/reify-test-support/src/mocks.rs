@@ -1359,6 +1359,58 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `FaceAnalyticDatum` query result for a specific face handle
+    /// (geometric-relations ε).
+    ///
+    /// The `value` should be the projected datum the OCCT kernel composes from
+    /// the face's `BRepAdaptor_Surface` classification: a `Value::Plane` for a
+    /// planar face, a `Value::Axis` for a cylinder / cone, or a `Value::Point`
+    /// for a sphere centre. Staged on the **typed** channel so it does not
+    /// collide with a `ShapeLocalTolerance` (a `Value::length`) staged for the
+    /// same handle — both ε queries key the single sub-shape handle.
+    pub fn with_face_analytic_datum_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::FaceAnalyticDatum(handle), value);
+        self
+    }
+
+    /// Configure an `EdgeAnalyticDatum` query result for a specific edge handle
+    /// (geometric-relations ε).
+    ///
+    /// The `value` should be the projected datum the OCCT kernel composes from
+    /// the edge's `BRepAdaptor_Curve` classification: a `Value::Axis` for a
+    /// line / circle / ellipse edge. Staged on the **typed** channel (see
+    /// [`Self::with_face_analytic_datum_result`]).
+    pub fn with_edge_analytic_datum_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeAnalyticDatum(handle), value);
+        self
+    }
+
+    /// Configure a `ShapeLocalTolerance` query result for a specific sub-shape
+    /// handle (geometric-relations ε).
+    ///
+    /// The `value` should be a `Value::length` mirroring `BRep_Tool::Tolerance`
+    /// on the sub-shape. Staged on the **typed** channel so it coexists with a
+    /// `FaceAnalyticDatum` / `EdgeAnalyticDatum` staged for the same handle.
+    pub fn with_shape_local_tolerance_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::ShapeLocalTolerance(handle), value);
+        self
+    }
+
     /// Configure an `AdjacentFaces` query result for a specific (parent
     /// shape, 0-based face index) pair.
     ///
