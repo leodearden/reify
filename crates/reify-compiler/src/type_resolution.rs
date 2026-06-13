@@ -1615,6 +1615,48 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
     }
 }
 
+/// Outcome of classifying a dimension-slot type argument (task ε).
+///
+/// Used by [`classify_dim_slot`] to decide whether a `Scalar<_>`/`Vector3<_>`/
+/// `Point3<_>` dimension argument is a dimension-kinded param, a kind-misuse
+/// (non-dimension param in a dimension slot), or a concrete expression.
+enum DimSlotClass<'a> {
+    /// The arg is a bare `Named` type whose name is in `dim_param_names`.
+    /// Value: the param name; the arm returns `ScalarParam(name)` (wrapped).
+    DimParam(&'a str),
+    /// The arg is a bare `Named` type whose name is in `type_param_names` but
+    /// NOT in `dim_param_names`.  The arm should push `DimParamKind` + return
+    /// `Some(Type::Error)` (anti-cascade poison).
+    KindMisuse(&'a str),
+    /// Not a bare Named dim/type-param — fall through to the concrete dimension
+    /// path (`resolve_type_alias_expr_to_dimension`).
+    Concrete,
+}
+
+/// Shared classifier for Scalar/Vector3/Point3 dimension-slot detection (task ε).
+///
+/// Factored so all three quantity-slot arms stay in lock-step: any future
+/// change to the classification logic needs only one edit here.
+fn classify_dim_slot<'a>(
+    type_arg: &'a reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
+) -> DimSlotClass<'a> {
+    let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind else {
+        return DimSlotClass::Concrete;
+    };
+    if !inner.is_empty() {
+        return DimSlotClass::Concrete;
+    }
+    if dim_param_names.contains(n.as_str()) {
+        DimSlotClass::DimParam(n.as_str())
+    } else if type_param_names.contains(n.as_str()) {
+        DimSlotClass::KindMisuse(n.as_str())
+    } else {
+        DimSlotClass::Concrete
+    }
+}
+
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
 /// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
 ///
@@ -1660,49 +1702,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
 /// diagnostic first.
-
-/// Outcome of classifying a dimension-slot type argument (task ε).
-///
-/// Used by [`classify_dim_slot`] to decide whether a `Scalar<_>`/`Vector3<_>`/
-/// `Point3<_>` dimension argument is a dimension-kinded param, a kind-misuse
-/// (non-dimension param in a dimension slot), or a concrete expression.
-enum DimSlotClass<'a> {
-    /// The arg is a bare `Named` type whose name is in `dim_param_names`.
-    /// Value: the param name; the arm returns `ScalarParam(name)` (wrapped).
-    DimParam(&'a str),
-    /// The arg is a bare `Named` type whose name is in `type_param_names` but
-    /// NOT in `dim_param_names`.  The arm should push `DimParamKind` + return
-    /// `Some(Type::Error)` (anti-cascade poison).
-    KindMisuse(&'a str),
-    /// Not a bare Named dim/type-param — fall through to the concrete dimension
-    /// path (`resolve_type_alias_expr_to_dimension`).
-    Concrete,
-}
-
-/// Shared classifier for Scalar/Vector3/Point3 dimension-slot detection (task ε).
-///
-/// Factored so all three quantity-slot arms stay in lock-step: any future
-/// change to the classification logic needs only one edit here.
-fn classify_dim_slot<'a>(
-    type_arg: &'a reify_ast::TypeExpr,
-    type_param_names: &HashSet<String>,
-    dim_param_names: &HashSet<String>,
-) -> DimSlotClass<'a> {
-    let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind else {
-        return DimSlotClass::Concrete;
-    };
-    if !inner.is_empty() {
-        return DimSlotClass::Concrete;
-    }
-    if dim_param_names.contains(n.as_str()) {
-        DimSlotClass::DimParam(n.as_str())
-    } else if type_param_names.contains(n.as_str()) {
-        DimSlotClass::KindMisuse(n.as_str())
-    } else {
-        DimSlotClass::Concrete
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
