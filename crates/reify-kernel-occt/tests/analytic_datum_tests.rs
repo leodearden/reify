@@ -121,6 +121,23 @@ fn find_face_of_kind(kernel: &mut OcctKernel, body: GeometryHandleId, kind: &str
         .unwrap_or_else(|| panic!("no face of surface-kind {kind:?} found on body {body:?}"))
 }
 
+/// Find an edge of `body` whose `EdgeCurveKind` equals `kind`.
+fn find_edge_of_kind(kernel: &mut OcctKernel, body: GeometryHandleId, kind: &str) -> GeometryHandleId {
+    let edges = kernel
+        .extract_edges(body)
+        .expect("extract_edges should succeed");
+    edges
+        .iter()
+        .copied()
+        .find(|id| {
+            matches!(
+                kernel.query(&GeometryQuery::EdgeCurveKind(*id)),
+                Ok(Value::String(ref s)) if s == kind
+            )
+        })
+        .unwrap_or_else(|| panic!("no edge of curve-kind {kind:?} found on body {body:?}"))
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 /// A cylinder's lateral (`GeomAbs_Cylinder`) face projects to a `Value::Axis`
@@ -204,5 +221,64 @@ fn box_planar_top_face_projects_to_plane() {
         (origin[2] - half).abs() < LIN_TOL,
         "top-face plane datum origin must lie on z = +{half} (got z = {})",
         origin[2]
+    );
+}
+
+/// A straight (`GeomAbs_Line`) edge projects to a `Value::Axis` whose origin
+/// lies on the line and whose direction is parallel to the line. The test
+/// fixture edge runs (0,0,0)→(10mm,0,0), i.e. the X axis through the origin.
+#[test]
+fn straight_edge_projects_to_axis_along_line() {
+    let mut kernel = OcctKernel::new();
+    let edge = kernel.store_edge_for_test();
+
+    let datum = kernel
+        .query(&GeometryQuery::EdgeAnalyticDatum(edge))
+        .expect("EdgeAnalyticDatum on a straight edge should succeed");
+
+    let (origin, direction) = axis_parts(&datum);
+
+    // The line is the X axis through the origin: a point ON it has y = z = 0.
+    assert!(
+        origin[1].abs() < LIN_TOL && origin[2].abs() < LIN_TOL,
+        "line-edge datum origin must lie on the X axis (y=z=0), got {origin:?}"
+    );
+
+    // Direction parallel to the line (±X): |x| ≈ 1, y ≈ z ≈ 0.
+    assert!(
+        (direction[0].abs() - 1.0).abs() < DIR_TOL
+            && direction[1].abs() < DIR_TOL
+            && direction[2].abs() < DIR_TOL,
+        "line-edge datum direction must be parallel to X (±(1,0,0)), got {direction:?}"
+    );
+}
+
+/// A circular (`GeomAbs_Circle`) edge projects to a `Value::Axis` whose origin
+/// is the circle centre (on the cylinder's Z axis) and whose direction is the
+/// circle axis (±Z). The circle's radius is captured in the FFI payload but is
+/// not part of the projected `Value::Axis`.
+#[test]
+fn circular_edge_projects_to_axis_through_centre() {
+    let (mut kernel, cyl) = cylinder_kernel(0.003, 0.010);
+    let circle = find_edge_of_kind(&mut kernel, cyl, "Circle");
+
+    let datum = kernel
+        .query(&GeometryQuery::EdgeAnalyticDatum(circle))
+        .expect("EdgeAnalyticDatum on a circular edge should succeed");
+
+    let (origin, direction) = axis_parts(&datum);
+
+    // The rim circle is centred on the cylinder's Z axis: centre x = y = 0.
+    assert!(
+        origin[0].abs() < LIN_TOL && origin[1].abs() < LIN_TOL,
+        "circle-edge datum centre must lie on the Z axis (x=y=0), got {origin:?}"
+    );
+
+    // Circle axis parallel to the cylinder axis (±Z).
+    assert!(
+        direction[0].abs() < DIR_TOL
+            && direction[1].abs() < DIR_TOL
+            && (direction[2].abs() - 1.0).abs() < DIR_TOL,
+        "circle-edge datum direction must be parallel to Z (±(0,0,1)), got {direction:?}"
     );
 }
