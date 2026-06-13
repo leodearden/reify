@@ -473,6 +473,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // usage error. Extracted into `emit_dfm_diagnostics` for the same
                     // stack-shrinking rationale as `emit_flexure_diagnostics`.
                     emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // Snapshot center_of_mass fallback Warning (task 4471): fires on
+                    // BOTH paths like the flexure/DFM hooks — the fallback Warning is
+                    // emitted even when center_of_mass returns a valid Point (success
+                    // path), so the Undef-only `emit_undef_builtin_diagnostics` gate
+                    // cannot surface it. A no-op for every non-snapshot name.
+                    emit_snapshot_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -1596,6 +1602,29 @@ fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalCo
         return;
     };
     for diag in reify_stdlib::dfm_diagnose(name, args, result) {
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Emit snapshot `center_of_mass` fallback diagnostics for a builtin call into
+/// the runtime sink (task 4471).
+///
+/// Mirrors [`emit_dfm_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::snapshot_diagnose`]
+/// into the sink. Like the flexure/DFM hooks — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics`
+/// — `snapshot_diagnose` fires on BOTH paths: the `center_of_mass` fallback
+/// Warning is emitted when the result is a valid `Point` (success path, the
+/// legacy density-weighted centroid). `snapshot_diagnose` returns an empty
+/// `Vec` for every non-`center_of_mass` name, so this is a cheap no-op for
+/// other builtins. Extracted `#[inline(never)]` for the same stack-shrinking
+/// reason as `emit_flexure_diagnostics` and `emit_dfm_diagnostics`.
+#[inline(never)]
+fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::snapshot_diagnose(name, args, result) {
         sink.borrow_mut().push(diag);
     }
 }
