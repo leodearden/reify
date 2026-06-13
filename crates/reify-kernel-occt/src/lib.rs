@@ -3202,9 +3202,14 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_curve_datum_to_value(&d)
             }
-            GeometryQuery::ShapeLocalTolerance(_) => Err(QueryError::QueryFailed(
-                "ShapeLocalTolerance: unimplemented (ε step-10)".to_string(),
-            )),
+            GeometryQuery::ShapeLocalTolerance(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let tol = ffi::ffi::shape_local_tolerance(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::length(tol))
+            }
         }
     }
 

@@ -46,6 +46,14 @@
 /// rejects datums meeting at a point but oriented differently.
 const ANGULAR_REFERENCE_LENGTH_M: f64 = 1.0;
 
+/// Lower bound the feature-datum dedup tolerance can never fall below: OCCT's
+/// `Precision::Confusion()` (~0.1 µm), reused via the kernel-pinned
+/// [`reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`] constant (itself asserted
+/// equal to OCCT `Precision::Confusion()` by a reify-kernel-occt test) rather
+/// than minting a fresh magic number — so ε and the kernel share one confusion
+/// floor (design §2.3 coherence law).
+const CONFUSION_FLOOR_M: f64 = reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
+
 /// Pure geometric core of an axis datum (an infinite line): a reference point
 /// and a direction, both in SI-metre kernel coordinates. The direction is a
 /// *line orientation* — compared up to sign — not an oriented ray.
@@ -273,6 +281,19 @@ pub(crate) fn dedup_datums(datums: Vec<Datum>, lin_tol: f64) -> Vec<Datum> {
         }
     }
     canonical
+}
+
+/// Linear dedup tolerance for comparing two datums whose source sub-shapes carry
+/// local modelling tolerances `local_a` / `local_b` (from the
+/// `ShapeLocalTolerance` / `BRep_Tool::Tolerance` query): the three-way maximum
+/// `max(confusion_floor, local_a, local_b)` (design §2.3 coherence law).
+///
+/// A clean model — both sub-shapes at/under the [`CONFUSION_FLOOR_M`] floor —
+/// collapses to the floor, so machine-precision agreement still merges. A coarse
+/// or imprecise sub-shape (large local tolerance) widens the comparison so its
+/// own modelling drift does not spuriously split an otherwise-coincident datum.
+pub(crate) fn dedup_tolerance(local_a: f64, local_b: f64) -> f64 {
+    CONFUSION_FLOOR_M.max(local_a).max(local_b)
 }
 
 #[cfg(test)]

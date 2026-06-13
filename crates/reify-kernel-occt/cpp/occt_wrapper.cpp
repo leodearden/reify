@@ -3205,8 +3205,22 @@ AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape) {
 
 double shape_local_tolerance(const OcctShape& shape) {
     return wrap_occt_call("shape_local_tolerance", [&]() -> double {
-        (void)shape;
-        throw std::runtime_error("shape_local_tolerance: unimplemented");
+        // BRep_Tool::Tolerance is overloaded per sub-shape kind, so dispatch on
+        // the topological type. Faces / edges / vertices each carry their own
+        // modelling tolerance; higher-level shapes (solids, shells, wires) have
+        // no single intrinsic tolerance, so reject them rather than guess.
+        switch (shape.shape.ShapeType()) {
+            case TopAbs_FACE:
+                return BRep_Tool::Tolerance(TopoDS::Face(shape.shape));
+            case TopAbs_EDGE:
+                return BRep_Tool::Tolerance(TopoDS::Edge(shape.shape));
+            case TopAbs_VERTEX:
+                return BRep_Tool::Tolerance(TopoDS::Vertex(shape.shape));
+            default:
+                throw std::runtime_error(
+                    "shape_local_tolerance: shape is not a face, edge, or vertex"
+                );
+        }
     });
 }
 
