@@ -219,13 +219,19 @@ structure def LoopClosure {
 
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
-//   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
-//   joint_parents : Map<String, Real>     — TODO: Map<BodyId, JointParent> placeholder
-//   loop_closures : List<Real>            — TODO(loop-closure-record-type) placeholder
+//   bodies        : List<Real>             — TODO(body-type): List<BodyId> placeholder
+//                                           (DO NOT TOUCH — owned by kinematic-
+//                                            completion/BodyId promotion line)
+//   joint_parents : Map<BodyId, JointParent> — spanning-tree parent edges, keyed
+//                                           by child BodyId; tightened from
+//                                           Map<String,Real> by task 4579 (M)
+//   loop_closures : List<LoopClosure>      — closed-chain edges excluded from the
+//                                           spanning tree; tightened from
+//                                           List<Real> by task 4579 (M)
 structure def Mechanism {
-    param bodies : List<Real>          // TODO(body-type): List<BodyId> placeholder
-    param joint_parents : Map<String, Real>  // TODO: Map<BodyId,JointParent> placeholder
-    param loop_closures : List<Real>   // TODO(loop-closure-record-type) placeholder
+    param bodies        : List<Real>               // TODO(body-type): List<BodyId> placeholder
+    param joint_parents : Map<BodyId, JointParent> // tightened by task 4579 (M)
+    param loop_closures : List<LoopClosure>         // tightened by task 4579 (M)
 }
 
 // Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).
