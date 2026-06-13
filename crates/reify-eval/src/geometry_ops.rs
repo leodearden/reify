@@ -3460,7 +3460,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[2]: tolerance ValueRef → values → Value::length(m) → SI metres.
             let left = resolve_geometry_handle_arg(&args[0], named_steps)?;
             let right = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            let tolerance = resolve_length_scalar_arg(&args[2], values)?;
+            let tolerance =
+                resolve_length_scalar_arg(&args[2], values, &function.name, "tolerance", diagnostics)?;
             let query = reify_ir::GeometryQuery::GeoEquiv {
                 left,
                 right,
@@ -3855,7 +3856,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
             let dir = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
-            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
@@ -3871,7 +3873,8 @@ pub(crate) fn try_eval_topology_selector(
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
             let axis = resolve_vec3_arg(&args[1], values)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
-            let tol_rad = resolve_angle_scalar_arg(&args[2], values)?;
+            let tol_rad =
+                resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
@@ -3885,9 +3888,10 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::EdgesAtHeight => {
             let target = resolve_selector_target(&args[0], values)?;
             // args[1]: z plane ValueRef → values map → LENGTH Scalar (SI metres).
-            let z_m = resolve_length_scalar_arg(&args[1], values)?;
+            let z_m = resolve_length_scalar_arg(&args[1], values, &function.name, "z", diagnostics)?;
             // args[2]: tolerance ValueRef → values map → LENGTH Scalar (SI metres).
-            let tol_m = resolve_length_scalar_arg(&args[2], values)?;
+            let tol_m =
+                resolve_length_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
@@ -4750,32 +4754,89 @@ fn resolve_vec3_arg(
     }
 }
 
+/// Shared evaluate-then-accept core for the SCALAR-dimension owned args
+/// (task ε): EVALUATE `expr` against `values` (via [`eval_arg_value`]) and
+/// classify the resulting `Value` against an inline
+/// [`crate::arg_acceptance::ArgSpec`] of `expected_dim`. `Value::Undef`
+/// degrades quietly to `None`; a defined-but-wrong value pushes exactly one
+/// `Severity::Warning` (built from the rejection + `builtin`/`arg_name` labels,
+/// byte-uniform with the density path) and returns `None`.
+fn resolve_scalar_dim_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    expected_dim: reify_core::DimensionVector,
+    type_name: &'static str,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    use crate::arg_acceptance::{accept_arg, Acceptance, ArgSpec};
+
+    let value = eval_arg_value(expr, values);
+    let spec = ArgSpec {
+        type_name,
+        dimension: expected_dim,
+        migration_hint: None,
+    };
+    match accept_arg(&value, &spec) {
+        Acceptance::Accepted(si) => Some(si),
+        Acceptance::Undefined => None,
+        Acceptance::Rejected(rej) => {
+            diagnostics.push(Diagnostic::warning(rej.message(builtin, arg_name)));
+            None
+        }
+    }
+}
+
 /// Resolve an ANGLE-dimensioned scalar arg to its SI value (radians).
-/// Accepts `Literal(Value::Scalar { dimension: ANGLE, .. })` or the common
-/// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`). Returns `None`
-/// for any other shape (wrong dimension, non-Scalar) — caller maps to the
-/// "unsupported arg shape → fall through" behaviour. Mirrors
-/// `resolve_scalar_bound_expr` but pins the ANGLE dimension for the angular-
-/// tolerance args of `faces_by_normal` / `edges_parallel_to`.
+/// EVALUATES the arg expr (task ε): an inline dimensioned-angle literal, a
+/// `ValueRef → ANGLE Scalar` (let-bound `let tol = 1deg`), or an angle-typed
+/// arithmetic expression all WORK. A `Value::Undef` (missing cell, etc.)
+/// degrades quietly; a defined-but-wrong value (wrong dimension, non-Scalar)
+/// pushes exactly one `Severity::Warning` naming `builtin`/`arg_name`. Pins the
+/// ANGLE dimension for the angular-tolerance args of `faces_by_normal` /
+/// `edges_parallel_to`.
 fn resolve_angle_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    resolve_scalar_bound_expr(expr, values, reify_core::DimensionVector::ANGLE)
+    resolve_scalar_dim_arg(
+        expr,
+        values,
+        reify_core::DimensionVector::ANGLE,
+        "Angle",
+        builtin,
+        arg_name,
+        diagnostics,
+    )
 }
 
 /// Resolve a LENGTH-dimensioned scalar arg to its SI value (metres).
-/// Accepts `Literal(Value::Scalar { dimension: LENGTH, .. })` or the common
-/// `ValueRef → LENGTH Scalar` (let-bound `let z = 0mm`). Returns `None` for
-/// any other shape (wrong dimension, non-Scalar) — caller maps to the
-/// "unsupported arg shape → fall through" behaviour. Mirrors
-/// `resolve_angle_scalar_arg` but pins the LENGTH dimension for the
-/// z-plane / tolerance args of `edges_at_height`.
+/// EVALUATES the arg expr (task ε): an inline dimensioned-length literal, a
+/// `ValueRef → LENGTH Scalar` (let-bound `let z = 0mm`), or a length-typed
+/// arithmetic expression all WORK. A `Value::Undef` degrades quietly; a
+/// defined-but-wrong value pushes exactly one `Severity::Warning` naming
+/// `builtin`/`arg_name`. Pins the LENGTH dimension for the z-plane / tolerance
+/// args of `edges_at_height` and the tolerance arg of `geo_equiv`.
 fn resolve_length_scalar_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    resolve_scalar_bound_expr(expr, values, reify_core::DimensionVector::LENGTH)
+    resolve_scalar_dim_arg(
+        expr,
+        values,
+        reify_core::DimensionVector::LENGTH,
+        "Length",
+        builtin,
+        arg_name,
+        diagnostics,
+    )
 }
 
 /// Read a `Value::Scalar` whose `dimension` is `expected_dim` and return its
