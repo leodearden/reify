@@ -1498,3 +1498,293 @@ mod tests {
         assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
     }
 }
+
+// ── η/4480 step-9: measure_gdt_conformance core logic (MockGeometryKernel) ─────
+//
+// Unit tests for `Engine::measure_gdt_conformance` — the check-time GD&T
+// conformance measurement pass (PRD v0_6 task η, C3/C5).  Driven by a
+// `MockGeometryKernel` (`with_max_deviation_result`) so the Satisfied / Violated
+// / Indeterminate / weave logic is exercised deterministically without OCCT.
+//
+// Cases:
+//   (a) explicit `actual` + kernel deviation 0.5mm vs 0.1mm zone → Violated,
+//       diagnostic carries the measured magnitude + the zone width.
+//   (b) deviation 0mm vs 0.1mm zone → Satisfied.
+//   (c) explicit `actual` + NO kernel → Indeterminate + missing-kernel
+//       diagnostic, never a (false) Violated (C1 invariant).
+//   (d) Conforms with NO explicit `actual` → the scalar ConstraintCheckEntry is
+//       left untouched (no override, no geometric diagnostic) (B4).
+//
+// Results are woven back by matching `ConstraintNodeId` in caller order: the
+// pass OVERRIDES the existing entry for the geometric Conforms only.
+#[cfg(test)]
+mod gdt_conformance_tests {
+    use reify_compiler::{CompiledConstraint, CompiledModule};
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::DimensionVector;
+    use reify_core::identity::{RealizationNodeId, ValueCellId};
+    use reify_ir::{
+        CompiledExprKind, GeometryHandleId, PersistentMap, Satisfaction, StructureInstanceData,
+        StructureTypeId, Value, ValueMap,
+    };
+    use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
+
+    use crate::{ConstraintCheckEntry, Engine};
+
+    /// A geometric Conforms: `actual` is explicitly bound (the η detection
+    /// signal). Both `tolerance` and `actual` are bare param refs, so they
+    /// compile to `ValueRef` arg-bindings the test can resolve by cell id.
+    const GEOMETRIC_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+
+    /// A scalar Conforms: `actual` is omitted (falls to its `nominal()` default),
+    /// so the pass must leave its scalar verdict untouched (B4).
+    const SCALAR_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+}
+"#;
+
+    /// Find the single Conforms instance in `Probe` (recognised by binding
+    /// `tolerance`). There is exactly one per fixture.
+    fn find_conforms(module: &CompiledModule) -> &CompiledConstraint {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template")
+            .constraints
+            .iter()
+            .find(|c| c.arg_bindings.iter().any(|(n, _)| n == "tolerance"))
+            .expect("Conforms instance binding `tolerance`")
+    }
+
+    /// Extract the `ValueCellId` that the named arg-binding references
+    /// (the call-site arg compiles to a `ValueRef` for a bare param ref).
+    fn ref_cell(cc: &CompiledConstraint, name: &str) -> ValueCellId {
+        let (_, expr) = cc
+            .arg_bindings
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("arg-binding `{name}` not captured"));
+        match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.clone(),
+            other => panic!("expected ValueRef for arg `{name}`, got {other:?}"),
+        }
+    }
+
+    /// A `Value::GeometryHandle` carrying a *valid* kernel handle (so the pass
+    /// resolves it directly — the realization-bridge path is covered by the
+    /// OCCT CLI test).
+    fn handle_value(kernel: GeometryHandleId) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Probe", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: kernel,
+        }
+    }
+
+    /// A Flatness (GeometricTolerance-conforming) StructureInstance with the
+    /// given tolerance zone (metres), RFS material condition, and feature handle.
+    fn flatness_value(tolerance_value_m: f64, feature: GeometryHandleId) -> Value {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+        fields.insert(
+            "tolerance_value".to_string(),
+            Value::Scalar { si_value: tolerance_value_m, dimension: DimensionVector::LENGTH },
+        );
+        fields.insert(
+            "material_condition".to_string(),
+            Value::Enum {
+                type_name: "MaterialCondition".to_string(),
+                variant: "RFS".to_string(),
+            },
+        );
+        fields.insert("feature".to_string(), handle_value(feature));
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Flatness".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build the value map binding the geometric Conforms's `tolerance` cell to a
+    /// Flatness (0.1mm zone, RFS, `feature`) and its `actual` cell to `actual`.
+    fn geometric_values(
+        conforms: &CompiledConstraint,
+        actual: GeometryHandleId,
+        feature: GeometryHandleId,
+    ) -> ValueMap {
+        let mut values = ValueMap::new();
+        values.insert(ref_cell(conforms, "tolerance"), flatness_value(1e-4, feature));
+        values.insert(ref_cell(conforms, "actual"), handle_value(actual));
+        values
+    }
+
+    /// (a) Explicit actual, measured 0.5mm > 0.1mm zone → Violated + diagnostic
+    /// carrying the measured magnitude (0.5mm) and the zone width (0.1mm).
+    #[test]
+    fn explicit_actual_deviation_exceeds_zone_is_violated() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+        let label = conforms.label.clone();
+
+        let actual = GeometryHandleId(202);
+        let feature = GeometryHandleId(101);
+        let values = geometric_values(conforms, actual, feature);
+
+        // Kernel measures a 0.5mm (5e-4 m) deviation between actual and feature.
+        let mock = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            feature,
+            0.0001,
+            Value::Real(5e-4),
+        );
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        // Scalar path's pre-existing (default-Satisfied) entry, to be OVERRIDDEN.
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id.clone(),
+            label,
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "weave must override in place, not append");
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Violated,
+            "measured 0.5mm exceeds the 0.1mm zone → Violated"
+        );
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .find(|m| m.contains("VIOLATED"))
+            .unwrap_or_else(|| panic!("expected a VIOLATED diagnostic, got: {diags:#?}"));
+        assert!(
+            msg.contains("0.5000"),
+            "diagnostic must carry the measured magnitude (0.5mm): {msg}"
+        );
+        assert!(
+            msg.contains("0.1000"),
+            "diagnostic must carry the zone width (0.1mm): {msg}"
+        );
+    }
+
+    /// (b) Explicit actual, measured 0mm ≤ 0.1mm zone → Satisfied.
+    #[test]
+    fn explicit_actual_within_zone_is_satisfied() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+
+        let actual = GeometryHandleId(202);
+        let feature = GeometryHandleId(101);
+        let values = geometric_values(conforms, actual, feature);
+
+        let mock = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            feature,
+            0.0001,
+            Value::Real(0.0),
+        );
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: None,
+            satisfaction: Satisfaction::Indeterminate,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "measured 0mm within the 0.1mm zone → Satisfied"
+        );
+        assert!(
+            !diags.iter().any(|d| d.message.contains("VIOLATED")),
+            "a Satisfied geometric Conforms must not emit a VIOLATED diagnostic"
+        );
+    }
+
+    /// (c) Explicit actual but NO kernel → Indeterminate + missing-kernel
+    /// diagnostic, never a (false) Violated (C1 invariant).
+    #[test]
+    fn explicit_actual_no_kernel_is_indeterminate_not_violated() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+
+        let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
+
+        // No geometry kernel.
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: None,
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Indeterminate,
+            "no kernel → Indeterminate (never a false Violated)"
+        );
+        assert_ne!(results[0].satisfaction, Satisfaction::Violated);
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .find(|m| m.contains("INDETERMINATE"))
+            .unwrap_or_else(|| panic!("expected an INDETERMINATE diagnostic, got: {diags:#?}"));
+        assert!(
+            msg.to_lowercase().contains("kernel"),
+            "Indeterminate diagnostic must name the missing kernel: {msg}"
+        );
+    }
+
+    /// (d) A Conforms with NO explicit actual: the pass must leave its scalar
+    /// ConstraintCheckEntry untouched (no override, no geometric diagnostic).
+    #[test]
+    fn scalar_conforms_without_actual_is_untouched() {
+        let module = parse_and_compile_with_stdlib(SCALAR_SOURCE);
+        let conforms = find_conforms(&module);
+        assert!(
+            !conforms.arg_bindings.iter().any(|(n, _)| n == "actual"),
+            "fixture precondition: the scalar Conforms binds no `actual`"
+        );
+        let node_id = conforms.id.clone();
+
+        // A kernel IS present — but with no explicit actual the pass must not run.
+        let mock = MockGeometryKernel::new();
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: Some("Conforms".to_string()),
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &ValueMap::new(), &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "no override, no append");
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "scalar Conforms (no actual) must keep its scalar verdict (B4)"
+        );
+        assert!(diags.is_empty(), "no geometric diagnostic for a scalar Conforms");
+    }
+}
