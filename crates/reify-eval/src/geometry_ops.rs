@@ -7037,6 +7037,128 @@ mod tests {
         }
     }
 
+    /// Task ε (evaluate-then-accept): `resolve_int_value_ref` (the kinematic
+    /// body-id resolver for `interferes_with` / `min_clearance`) now EVALUATES
+    /// the arg expr (gaining a `diagnostics` sink + builtin/arg labels) instead
+    /// of shape-matching `CompiledExprKind::ValueRef`. A `Value::Int` — whether
+    /// an inline `Literal` or a `ValueRef → Int` cell — resolves to its `i64`
+    /// with 0 diagnostics; a defined-but-wrong value (non-Int) is Rejected with
+    /// exactly one `Severity::Warning` naming the kinematic builtin, the arg,
+    /// and the expected `Int` type (byte-uniform wording with the density /
+    /// point / vec3 / range paths). A `Value::Undef` (missing cell) degrades
+    /// quietly — byte-identical to the prior `values.get(id)` fall-through.
+    ///
+    ///   (a) inline `Literal(Int)` → `Some(n)`, 0 diags.
+    ///   (b) `ValueRef → Int` cell → `Some(n)`, 0 diags.
+    ///   (c) non-Int (`Value::Real`) → `None` + 1 Warning naming builtin/arg/Int/got.
+    ///   (d) non-Int (`Value::Scalar`) → `None` + 1 Warning.
+    ///   (e) missing-cell `ValueRef` → `Undef` → `None`, 0 diags (quiet).
+    ///
+    /// Compile-RED until step-12 adds the `(builtin, arg, &mut diags)` signature
+    /// (today `resolve_int_value_ref` is `(expr, values) -> Option<i64>` and
+    /// silently returns `None` on a non-Int, with no diagnostic).
+    #[test]
+    fn resolve_int_value_ref_eval_and_diagnostics() {
+        // (a) inline Literal(Int) → Some(n), 0 diags.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Int(7),
+                reify_core::Type::Int,
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_int_value_ref(
+                &expr,
+                &values,
+                "interferes_with",
+                "body_a",
+                &mut diags,
+            );
+            assert_eq!(result, Some(7), "(a) inline Int literal must be Accepted");
+            assert!(diags.is_empty(), "(a) Int literal must produce no diags, got: {diags:?}");
+        }
+
+        // (b) ValueRef → Int cell → Some(n), 0 diags.
+        {
+            let cell = reify_core::ValueCellId::new("Mech", "id_a");
+            let expr = reify_ir::CompiledExpr::value_ref(cell.clone(), reify_core::Type::Int);
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Int(2));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_int_value_ref(
+                &expr,
+                &values,
+                "min_clearance",
+                "body_b",
+                &mut diags,
+            );
+            assert_eq!(result, Some(2), "(b) ValueRef Int must be Accepted");
+            assert!(diags.is_empty(), "(b) ValueRef Int must produce no diags, got: {diags:?}");
+        }
+
+        // (c) non-Int (Value::Real) → None + 1 Warning naming builtin/arg/Int/got.
+        {
+            let expr = literal_f64(1.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_int_value_ref(
+                &expr,
+                &values,
+                "interferes_with",
+                "body_a",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(c) non-Int must return None");
+            assert_eq!(diags.len(), 1, "(c) non-Int must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("interferes_with"),
+                "(c) names builtin, got: {:?}",
+                diags[0].message
+            );
+            assert!(msg.contains("body_a"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("int"), "(c) names expected Int, got: {:?}", diags[0].message);
+            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+        }
+
+        // (d) non-Int (Value::Scalar) → None + 1 Warning.
+        {
+            let expr = literal_length(0.05);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_int_value_ref(
+                &expr,
+                &values,
+                "min_clearance",
+                "body_b",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(d) Scalar must return None");
+            assert_eq!(diags.len(), 1, "(d) Scalar must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("int"), "(d) names expected Int, got: {:?}", diags[0].message);
+        }
+
+        // (e) missing-cell ValueRef → Undef → None, 0 diags (quiet).
+        {
+            let cell = reify_core::ValueCellId::new("Mech", "missing_id");
+            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::Int);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_int_value_ref(
+                &expr,
+                &values,
+                "interferes_with",
+                "body_a",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(e) missing cell must return None");
+            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+        }
+    }
+
     /// Tests for `resolve_density_arg`: diagnostic behavior for the NEW
     /// Density-only contract (γ, task 4486).
     ///
