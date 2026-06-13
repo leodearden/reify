@@ -405,7 +405,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let resolved_commit: Option<&str> = provenance_commit
             .filter(|c| ctx.git.is_ancestor(c, "main"));
 
-        // TODO(perf): coalesce paths per task into a single
+        // TODO(#4551): coalesce paths per task into a single
         //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
         //   Reference: docs/architecture-audit/f-infra-design.md §5 P2.
         for path in &meta.files {

@@ -261,6 +261,11 @@ impl Engine {
             test_registry_override: None,
             // GHR-δ §5: empty until the first build() populates it.
             realization_handles: HashMap::new(),
+            // β (task 4508): empty projection store; populated by
+            // project_realization_read_handle when γ/δ add per-repr kernel
+            // resolution.  Modelled on realization_cache (next to it below).
+            realization_projection_store:
+                crate::realization_content::RealizationProjectionStore::new(),
             geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
@@ -2382,7 +2387,7 @@ mod tests {
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         reify_test_support::builders::literal(Value::Real(1.0)),
                     )
                     .build(),
@@ -2440,17 +2445,17 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(
                 TopologyTemplateBuilder::new("T")
-                    .let_binding("T", "a", Type::Real, literal(Value::Real(1.0)))
+                    .let_binding("T", "a", Type::dimensionless_scalar(), literal(Value::Real(1.0)))
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "a"), literal(Value::Real(1.0))),
                     )
                     .let_binding(
                         "T",
                         "c",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "b"), literal(Value::Real(1.0))),
                     )
                     .build(),

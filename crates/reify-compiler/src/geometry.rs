@@ -105,57 +105,59 @@ use super::*;
 /// Called by `is_geometry_let` to detect when `union`/`difference` operands
 /// are selector-valued and thus MUST NOT route to the CSG path.
 ///
-/// # Known limitation — Ident operands are not recognised
+/// # Ident operands and the `known_selector_lets` accumulator
 ///
-/// This detector is **purely syntactic**: it only returns `true` for
-/// `ExprKind::FunctionCall` nodes.  For any other expr kind — including
-/// `ExprKind::Ident` — it returns `false`.
+/// `known_selector_lets` is the incremental set of let names whose values have
+/// already been classified as selector expressions in the current pre-pass walk.
+/// An `ExprKind::Ident(name)` arm returns `true` iff `name` is present in that
+/// set, enabling all-ident compositions like `let u = union(top, big)` (where
+/// `top`/`big` are themselves selector-typed lets) to be correctly identified.
 ///
-/// Consequence: a composition whose operands are all selector-typed *identifiers*
-/// (e.g. `let u = union(top, big)` where `top` and `big` are let-bound selector
-/// names) is NOT detected as a selector composition.  `is_geometry_let` therefore
-/// still returns `true` for it, and the call is misrouted to the CSG
-/// `compile_boolean_op` path, giving the user a confusing geometry-type error.
+/// The flip is **gated on membership**: a genuinely-unknown ident (not in
+/// `known_selector_lets`) returns `false`, preserving the CSG default for
+/// idents that have not been classified as selector lets.
 ///
-/// Fixing this would require threading a `known_selector_lets` accumulator
-/// through `entity.rs`'s multi-pass let registration — a change broader than
-/// this task's scope.  All task-4119-δ signals (BT1/BT2/BT3/BT8) work because
-/// at least one operand is a *direct* selector `FunctionCall`; only the
-/// all-ident-operand case is affected (task 4119 δ design decision "KNOWN
-/// LIMITATION", deferred follow-up).
-///
-/// The test `is_geometry_let_all_ident_operands_still_treated_as_csg` documents
-/// and pins this behaviour so any future fix is a visible, deliberate change.
-fn is_selector_expr(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
-    let (name, args) = match &expr.kind {
-        reify_ast::ExprKind::FunctionCall {
-            name,
-            args,
-            ..
-        } => (name.as_str(), args.as_slice()),
-        _ => return false,
-    };
+/// Promoted to `pub(crate)` so `entity.rs` and `guards.rs` can reuse this
+/// function as the selector-let classifier when populating `known_selector_lets`
+/// (avoids a duplicate detector that could drift from the composition-check
+/// logic). (task 4527)
+pub(crate) fn is_selector_expr(
+    expr: &reify_ast::Expr,
+    functions: &[CompiledFunction],
+    known_selector_lets: &HashSet<&str>,
+) -> bool {
+    match &expr.kind {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => {
+            let name = name.as_str();
+            let args = args.as_slice();
 
-    // User-defined functions shadow any builtin: if a function with this name
-    // is in scope, the call is not guaranteed to produce a Selector.
-    if functions.iter().any(|f| f.name == name) {
-        return false;
-    }
+            // User-defined functions shadow any builtin: if a function with this name
+            // is in scope, the call is not guaranteed to produce a Selector.
+            if functions.iter().any(|f| f.name == name) {
+                return false;
+            }
 
-    match name {
-        // ── 7 predicate/all selector constructors (task 4118 γ) ─────────────
-        "faces" | "edges" | "faces_by_normal" | "faces_by_area" | "edges_by_length"
-        | "edges_at_height" | "edges_parallel_to" => true,
-        // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
-        "face" | "edge" | "solid_body" => true,
-        // ── Selector composition (recursive) ────────────────────────────────
-        // "union" and "difference" are also CSG names, so we recurse to check
-        // that at least one operand is itself a selector expr before committing.
-        // "intersect" is not a geometry function (never reached CSG path), but
-        // we still validate that its operands look like selectors for clarity.
-        "union" | "intersect" | "difference" => {
-            args.iter().any(|arg| is_selector_expr(arg, functions))
+            match name {
+                // ── 7 predicate/all selector constructors (task 4118 γ) ─────────────
+                "faces" | "edges" | "faces_by_normal" | "faces_by_area" | "edges_by_length"
+                | "edges_at_height" | "edges_parallel_to" => true,
+                // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
+                "face" | "edge" | "solid_body" => true,
+                // ── Selector composition (recursive) ────────────────────────────────
+                // "union" and "difference" are also CSG names, so we recurse to check
+                // that at least one operand is itself a selector expr before committing.
+                // "intersect" is not a geometry function (never reached CSG path), but
+                // we still validate that its operands look like selectors for clarity.
+                "union" | "intersect" | "difference" => {
+                    args.iter().any(|arg| is_selector_expr(arg, functions, known_selector_lets))
+                }
+                _ => false,
+            }
         }
+        // Ident operands bound to already-classified selector lets (task 4527).
+        // Only names present in `known_selector_lets` return true — genuinely-unknown
+        // idents default to false (preserving CSG routing for unknown idents).
+        reify_ast::ExprKind::Ident(name) => known_selector_lets.contains(name.as_str()),
         _ => false,
     }
 }
@@ -164,6 +166,7 @@ pub(crate) fn is_geometry_let(
     expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
     known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
         reify_ast::ExprKind::FunctionCall { name, args, .. } => {
@@ -193,7 +196,7 @@ pub(crate) fn is_geometry_let(
             // a silent Undef via the selector path.
             let is_selector_composition =
                 matches!(name.as_str(), "union" | "intersect" | "difference")
-                    && args.iter().any(|a| is_selector_expr(a, functions));
+                    && args.iter().any(|a| is_selector_expr(a, functions, known_selector_lets));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 && !is_kinematic_sweep
@@ -210,13 +213,13 @@ pub(crate) fn is_geometry_let(
             else_branch,
             ..
         } => {
-            is_geometry_let(then_branch, functions, known_geometry_lets)
-                || is_geometry_let(else_branch, functions, known_geometry_lets)
+            is_geometry_let(then_branch, functions, known_geometry_lets, known_selector_lets)
+                || is_geometry_let(else_branch, functions, known_geometry_lets, known_selector_lets)
         }
         // Match — see rustdoc above for rationale (task 3418).
         reify_ast::ExprKind::Match { arms, .. } => arms
             .iter()
-            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
+            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets, known_selector_lets)),
         // Future branching/wrapping ExprKinds (e.g. pipe expressions,
         // try/else-style fallbacks) extend here with the same
         // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
@@ -234,7 +237,8 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
-        | "revolve_full" | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
+        | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
+        | "fillet" | "fillet_all" | "zone_slab" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1100,10 +1104,10 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
-                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::Real),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::Real);
+            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -1533,7 +1537,7 @@ pub(crate) fn compile_geometry_call(
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
             let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::Real);
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::dimensionless_scalar());
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -1688,9 +1692,10 @@ pub(crate) fn compile_geometry_call(
             sub_ops,
         ),
         // --- Modify extensions ---
-        // All five modifiers take a geometry target as their first argument (correctly
+        // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all"
+        | "zone_slab" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1834,9 +1839,12 @@ mod tests {
         "revolve_full",
         "shell",
         "thicken",
+        "offset_solid",
         "draft",
         "chamfer",
         "fillet",
+        "fillet_all",
+        "zone_slab",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1887,11 +1895,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    19
+    /// GEOM_ARG_FUNCTIONS    21  (added fillet_all)
     /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 44
+    /// Total                 46
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1903,7 +1911,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 44;
+    const EXPECTED_DISPATCH_COUNT: usize = 47;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -2483,7 +2491,7 @@ mod tests {
     fn resolve_loft_like_args_debug_asserts_guide_suffix_requires_two_args() {
         let compiled_args = vec![CompiledExpr::literal(
             Value::Real(0.0),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         )];
         let geom_refs: HashMap<usize, GeomRef> = HashMap::new();
         // guide_suffix=true with only 1 arg must panic via debug_assert!
@@ -2510,7 +2518,7 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::Real))
+                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::dimensionless_scalar()))
                 .collect()
         }
 
@@ -2851,13 +2859,13 @@ mod tests {
 
         let csg_2 = make_call_with_arity("sweep", 2);
         assert!(
-            is_geometry_let(&csg_2, &functions, &known),
+            is_geometry_let(&csg_2, &functions, &known, &HashSet::new()),
             "2-arg sweep (CSG profile/path) must classify as a geometry let"
         );
 
         let kinematic_4 = make_call_with_arity("sweep", 4);
         assert!(
-            !is_geometry_let(&kinematic_4, &functions, &known),
+            !is_geometry_let(&kinematic_4, &functions, &known, &HashSet::new()),
             "4-arg sweep (kinematic mechanism/joint/range/steps) must NOT \
              classify as a geometry let — it routes via eval-time dispatch"
         );
@@ -2867,7 +2875,7 @@ mod tests {
         for n in [0, 1, 3, 5] {
             let other = make_call_with_arity("sweep", n);
             assert!(
-                is_geometry_let(&other, &functions, &known),
+                is_geometry_let(&other, &functions, &known, &HashSet::new()),
                 "{n}-arg sweep must still classify as a geometry let so the \
                  CSG arity diagnostic fires; only the 4-arg kinematic form \
                  falls through"
@@ -2909,7 +2917,7 @@ mod tests {
             }
         };
         assert!(
-            !is_geometry_let(&union_sel, &functions, &known),
+            !is_geometry_let(&union_sel, &functions, &known, &HashSet::new()),
             "union(faces(b), edges(b)) must NOT be a geometry let — \
              selector operands divert to the value-typing path"
         );
@@ -2928,7 +2936,7 @@ mod tests {
             }
         };
         assert!(
-            !is_geometry_let(&diff_sel, &functions, &known),
+            !is_geometry_let(&diff_sel, &functions, &known, &HashSet::new()),
             "difference(faces(b), faces_by_normal(b,...)) must NOT be a geometry let — \
              selector operands divert to the value-typing path"
         );
@@ -2949,7 +2957,7 @@ mod tests {
             }
         };
         assert!(
-            is_geometry_let(&union_csg, &functions, &known),
+            is_geometry_let(&union_csg, &functions, &known, &HashSet::new()),
             "union(box(…), box(…)) must STILL be a geometry let — CSG path preserved"
         );
 
@@ -2967,58 +2975,97 @@ mod tests {
             }
         };
         assert!(
-            is_geometry_let(&diff_csg, &functions, &known),
+            is_geometry_let(&diff_csg, &functions, &known, &HashSet::new()),
             "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
         );
     }
 
-    // --- step-1 (task 4119 δ): Ident operand known-limitation pin ---
+    // --- task 4527: Ident operand routing — new behaviour with known_selector_lets ---
 
-    /// Documents the known limitation that `is_selector_expr` is purely
-    /// syntactic and does NOT recognise `Ident` operands.  When BOTH operands
-    /// of a `union`/`difference` are Ident expressions (e.g. `union(top, big)`
-    /// where `top` and `big` are selector-typed let bindings), `is_selector_expr`
-    /// returns `false` for each and `is_geometry_let` returns `true` — the call
-    /// is mis-routed to the CSG `compile_boolean_op` path.
+    /// Characterises the new `known_selector_lets` accumulator behaviour (task 4527):
     ///
-    /// This test ASSERTS the current (limited) behaviour so that any future fix
-    /// — threading `known_selector_lets` through entity.rs — is a visible,
-    /// deliberate change rather than an accidental regression of the CSG path.
+    /// - With `known_selector_lets = {"top", "big"}`:
+    ///   `union(top, big)` and `difference(top, big)` → `is_geometry_let` == **false**
+    ///   (selector path: is_selector_expr returns true for each Ident in the set).
+    ///
+    /// - With EMPTY `known_selector_lets`:
+    ///   `union(top, big)` → **true** (unknown idents → CSG default, safety property).
+    ///
+    /// - With `top`/`big` in `known_GEOMETRY_lets` (NOT in known_selector_lets):
+    ///   `union(top, big)` → **true** (CSG preserved for geometry idents).
     #[test]
-    fn is_geometry_let_all_ident_operands_still_treated_as_csg() {
+    fn is_geometry_let_all_ident_selector_operands_route_to_selector() {
         let functions: Vec<CompiledFunction> = vec![];
-        // `known_geometry_lets` does NOT contain "top" or "big" (they are not
-        // geometry lets), so the Ident arms return false for them.  The selector
-        // let names ("top", "big") are not in this set.
-        let known: HashSet<&str> = HashSet::new();
 
-        // Build: union(top, big) where both operands are Idents.
-        let top = reify_ast::Expr {
-            kind: reify_ast::ExprKind::Ident("top".to_string()),
-            span: reify_core::SourceSpan::new(0, 3),
+        // Helper to build an Ident expression.
+        let make_ident = |name: &str| reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(name.to_string()),
+            span: reify_core::SourceSpan::new(0, name.len() as u32),
         };
-        let big = reify_ast::Expr {
-            kind: reify_ast::ExprKind::Ident("big".to_string()),
-            span: reify_core::SourceSpan::new(4, 7),
-        };
+
+        // union(top, big) where both operands are Idents.
         let union_ident = reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "union".to_string(),
                 arg_names: vec![None, None],
-                args: vec![top, big],
+                args: vec![make_ident("top"), make_ident("big")],
             },
             span: reify_core::SourceSpan::new(0, 12),
         };
+        // difference(top, big) — same operand structure.
+        let diff_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "difference".to_string(),
+                arg_names: vec![None, None],
+                args: vec![make_ident("top"), make_ident("big")],
+            },
+            span: reify_core::SourceSpan::new(0, 18),
+        };
 
-        // KNOWN LIMITATION (task 4119 δ): both operands are Idents → is_selector_expr
-        // returns false for each → is_selector_composition is false → union(top, big)
-        // is still treated as a CSG geometry let.  A future fix that threads
-        // known_selector_lets would change this assertion to `false`.
+        // Case 1 — selector idents in known_selector_lets → selector path (false).
+        let geom_empty: HashSet<&str> = HashSet::new();
+        let mut sel_known: HashSet<&str> = HashSet::new();
+        sel_known.insert("top");
+        sel_known.insert("big");
         assert!(
-            is_geometry_let(&union_ident, &functions, &known),
-            "KNOWN LIMITATION: union(top, big) with Ident operands is mis-classified \
-             as a geometry let (CSG path) because is_selector_expr only inspects \
-             FunctionCall nodes, not Ident nodes — see is_selector_expr rustdoc"
+            !is_geometry_let(&union_ident, &functions, &geom_empty, &sel_known),
+            "union(top, big) with top/big in known_selector_lets must route to \
+             selector path (is_geometry_let == false)"
+        );
+        assert!(
+            !is_geometry_let(&diff_ident, &functions, &geom_empty, &sel_known),
+            "difference(top, big) with top/big in known_selector_lets must route \
+             to selector path (is_geometry_let == false)"
+        );
+
+        // Case 2 — empty known_selector_lets → unknown idents default to CSG (true).
+        // Safety property: genuinely-unknown idents must not flip to selector path.
+        let sel_empty: HashSet<&str> = HashSet::new();
+        assert!(
+            is_geometry_let(&union_ident, &functions, &geom_empty, &sel_empty),
+            "union(top, big) with EMPTY known_selector_lets must still be treated \
+             as a geometry let (CSG default) — unknown idents must not flip routing"
+        );
+
+        // Case 3 — same name in BOTH known_geometry_lets AND known_selector_lets:
+        // is_selector_composition is driven by is_selector_expr (which consults
+        // known_selector_lets via the Ident arm), so when top/big are in both sets
+        // is_selector_composition = true → is_geometry_let = false (selector path).
+        // Documents the actual tie-breaking rule: known_selector_lets membership in
+        // the operand controls the union/difference routing, not known_geometry_lets.
+        // In practice a name is never in both sets (they are populated in the else-branch
+        // of each other), but this pins the exact behavior if that invariant were broken.
+        let mut geom_both: HashSet<&str> = HashSet::new();
+        let mut sel_both: HashSet<&str> = HashSet::new();
+        geom_both.insert("top");
+        geom_both.insert("big");
+        sel_both.insert("top");
+        sel_both.insert("big");
+        assert!(
+            !is_geometry_let(&union_ident, &functions, &geom_both, &sel_both),
+            "union(top, big) with top/big in BOTH sets: known_selector_lets membership \
+             drives is_selector_composition → is_geometry_let must be false (selector \
+             path), even when the operand names are also in known_geometry_lets"
         );
     }
 
@@ -3144,14 +3191,14 @@ mod tests {
             make_call_with_arity("box", 3),
         );
         assert!(
-            is_geometry_let(&box_box, &functions, &known),
+            is_geometry_let(&box_box, &functions, &known, &HashSet::new()),
             "Conditional with two geometry branches must classify as a geometry let"
         );
 
         // (b) Neither branch geometry → false
         let num_num = make_conditional(bool_cond.clone(), num_literal.clone(), num_literal.clone());
         assert!(
-            !is_geometry_let(&num_num, &functions, &known),
+            !is_geometry_let(&num_num, &functions, &known, &HashSet::new()),
             "Conditional with no geometry branches must NOT classify as a geometry let"
         );
 
@@ -3162,7 +3209,7 @@ mod tests {
             num_literal.clone(),
         );
         assert!(
-            is_geometry_let(&box_num, &functions, &known),
+            is_geometry_let(&box_num, &functions, &known, &HashSet::new()),
             "Conditional with one geometry branch must classify as a geometry let"
         );
 
@@ -3178,7 +3225,7 @@ mod tests {
             ),
         );
         assert!(
-            is_geometry_let(&nested, &functions, &known),
+            is_geometry_let(&nested, &functions, &known, &HashSet::new()),
             "Nested Conditional whose inner branch is geometry must classify as a geometry let"
         );
 
@@ -3191,7 +3238,7 @@ mod tests {
         };
         let cond_ident = make_conditional(bool_cond.clone(), ident_g, num_literal.clone());
         assert!(
-            is_geometry_let(&cond_ident, &functions, &known_with_g),
+            is_geometry_let(&cond_ident, &functions, &known_with_g, &HashSet::new()),
             "Conditional with an Ident then-branch referencing a known geometry let must classify as a geometry let"
         );
     }
@@ -3333,7 +3380,7 @@ mod tests {
             ],
         );
         assert!(
-            is_geometry_let(&all_geom, &functions, &known),
+            is_geometry_let(&all_geom, &functions, &known, &HashSet::new()),
             "Match with all geometry arms must classify as a geometry let"
         );
 
@@ -3347,7 +3394,7 @@ mod tests {
             ],
         );
         assert!(
-            !is_geometry_let(&no_geom, &functions, &known),
+            !is_geometry_let(&no_geom, &functions, &known, &HashSet::new()),
             "Match with no geometry arms must NOT classify as a geometry let"
         );
 
@@ -3361,7 +3408,7 @@ mod tests {
             ],
         );
         assert!(
-            is_geometry_let(&one_geom, &functions, &known),
+            is_geometry_let(&one_geom, &functions, &known, &HashSet::new()),
             "Match with one geometry arm must classify as a geometry let"
         );
 
@@ -3372,7 +3419,7 @@ mod tests {
         );
         let outer_match = make_match(discriminant.clone(), vec![num_literal.clone(), inner_match]);
         assert!(
-            is_geometry_let(&outer_match, &functions, &known),
+            is_geometry_let(&outer_match, &functions, &known, &HashSet::new()),
             "Nested Match whose inner arm is geometry must classify as a geometry let"
         );
 
@@ -3385,7 +3432,7 @@ mod tests {
         };
         let match_ident = make_match(discriminant.clone(), vec![ident_g, num_literal.clone()]);
         assert!(
-            is_geometry_let(&match_ident, &functions, &known_with_g),
+            is_geometry_let(&match_ident, &functions, &known_with_g, &HashSet::new()),
             "Match with an Ident arm referencing a known geometry let must classify as a geometry let"
         );
     }
@@ -3784,9 +3831,9 @@ mod tests {
     fn try_hoist_geometry_conditional_returns_none_when_box_is_user_shadowed() {
         // Simulate `fn box(w, h, d) { … }` in user code.
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3794,12 +3841,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_hoist_stub"),
                 },
             },
@@ -3838,9 +3885,9 @@ mod tests {
     #[test]
     fn merge_branches_returns_scalar_conditional_when_box_is_user_shadowed() {
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3848,12 +3895,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_merge_stub"),
                 },
             },

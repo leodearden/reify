@@ -192,7 +192,7 @@ fn elastic_material_trait_has_four_dimensioned_members() {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("poisson_ratio", Type::Real),
+        ("poisson_ratio", Type::dimensionless_scalar()),
         (
             "density",
             Type::Scalar {
@@ -407,7 +407,6 @@ fn assert_property_si_value(
                 template.name, member, other
             ),
         },
-        Type::Real => DimensionVector::DIMENSIONLESS,
         other => panic!(
             "{}.{} default_expr result_type is not Scalar/Option<Scalar>/Real: {:?}",
             template.name, member, other
@@ -522,7 +521,7 @@ fn assert_fea_material_template_shape(name: &str) {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("poisson_ratio", Type::Real),
+        ("poisson_ratio", Type::dimensionless_scalar()),
         (
             "density",
             Type::Scalar {

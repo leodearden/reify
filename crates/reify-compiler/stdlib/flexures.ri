@@ -116,16 +116,26 @@ pub type RotationalStiffness = Real
 //                           `Option<Length>` because the metric vanishes
 //                           rather than going to zero for single-blade
 //                           cases.
-//   prb_validity_range    — angular range where the PRB approximation is
-//                           accurate (~5% per PRD §5.1's
-//                           `theta_prb_limit = 5deg`). Encoded as `Real`
-//                           placeholder for `Range<Angle>` because the
-//                           `Range<Angle>` parameterized type has no arm in
-//                           `type_resolution.rs::resolve_parameterized_
-//                           builtin_type` today (a similar placeholder in
-//                           `fea_multi_case.ri` was since tightened to
-//                           `List<Load>` — task ζ/4444). See
-//                           TODO(range-angle-type, #4576) below.
+//   prb_validity_range    — range where the PRB approximation is accurate
+//                           (~5% per PRD §5.1's `theta_prb_limit = 5deg`).
+//                           Family-polymorphic at runtime: Range<Angle> for
+//                           revolute/cantilever families, Range<Length> for
+//                           prismatic/displacement families (task 4587).
+//                           The declared type `Range<Angle>` is a nominal
+//                           placeholder (paralleling `effective_stiffness`,
+//                           which is declared `RotationalStiffness` but stores
+//                           translational stiffness for prismatic families);
+//                           records are built Rust-side with a placeholder
+//                           type_id, so the declared type is not enforced on
+//                           runtime values. Sentinel-zero default `0deg..0deg`
+//                           matches the runtime `symmetric_angle_range(0.0)`
+//                           posture. This type/value divergence is intentional
+//                           tracked debt: a follow-up task should make the
+//                           declared type family-polymorphic (or split the
+//                           field) so the declared type matches the runtime
+//                           value and future consumers (unit-aware
+//                           introspection, serialisation, tightened ctor
+//                           checks) cannot mis-handle prismatic records.
 //   at_yield              — true iff `max_stress >= material.yield_stress`.
 //                           PRB ctors emit `W_FlexureYielding` (PRD §5.3)
 //                           when this flips true; the field stays on the
@@ -142,16 +152,18 @@ pub type RotationalStiffness = Real
 // `solver_elastic.ri::ElasticOptions` (every default-bearing field
 // overridable at call time).
 //
-// TODO(range-angle-type, #4576): tighten `prb_validity_range : Real` to
-// `Range<Angle>` when `type_resolution.rs::resolve_parameterized_builtin_
-// type` grows a Range arm (out of scope for β per the task description).
+// Task 4576: `prb_validity_range` tightened to `Range<Angle> = 0deg..0deg`
+// (sentinel default); Range<Angle> resolver arm added to type_resolution.rs.
+// Task 4587: prismatic/displacement families now emit Range<Length> at
+// runtime; the declared `Range<Angle>` type is retained as a nominal
+// placeholder (records are built Rust-side, bypassing the ctor type check).
 structure def FlexureCompliance {
     param effective_stiffness : RotationalStiffness = 0.0
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0
     param parasitic_error : Option<Length> = none
-    param prb_validity_range : Real = 0.0
+    param prb_validity_range : Range<Angle> = 0deg..0deg
     param at_yield : Bool = false
 
     // Defense-in-depth: `yield_margin = (yield - max_stress) / yield` is

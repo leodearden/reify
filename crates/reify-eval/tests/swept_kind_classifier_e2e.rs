@@ -262,7 +262,7 @@ fn engine_swept_kind_table_resets_between_builds() {
 /// `GeometryOp::Revolve { profile, axis_origin, axis_dir, angle_rad }`. That arm
 /// reads **seven named f64 args**: `ox`, `oy`, `oz` (axis origin), `ax`, `ay`,
 /// `az` (axis direction), and `angle` (angle in radians). All seven are
-/// `Type::Real` — they are dimensionless ratios/radians, not length-typed.
+/// `Type::dimensionless_scalar()` — they are dimensionless ratios/radians, not length-typed.
 ///
 /// # Non-degenerate parameters chosen
 ///
@@ -286,7 +286,7 @@ fn engine_swept_kind_table_resets_between_builds() {
 fn engine_swept_kind_table_records_revolve_realization() {
     let e = "TestSweptRevolve";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::Real);
+    let real_literal = |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     // Op 0: Sphere — stand-in profile to produce a handle at step index 0.
     // The classifier only inspects the *last* op, so any handle-producing op works.
@@ -296,7 +296,7 @@ fn engine_swept_kind_table_records_revolve_realization() {
     };
 
     // Op 1: Revolve(Step(0), axis=+Z, angle=π/2). The seven f64 args are
-    // Type::Real (not length-typed) because they are dimensionless ratios /
+    // Type::dimensionless_scalar() (not length-typed) because they are dimensionless ratios /
     // radians — matches the precedent in stress_sweep_degenerate.rs:108.
     let revolve_op = CompiledGeometryOp::Sweep {
         kind: SweepKind::Revolve,

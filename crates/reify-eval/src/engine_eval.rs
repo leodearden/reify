@@ -83,7 +83,6 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // rather than silently inheriting `true`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1241,7 +1240,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
-    // TODO(task-4551-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // TODO(#4551): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
@@ -4025,12 +4024,19 @@ impl Engine {
                                 }
                                 let cancel = crate::graph::CancellationHandle::new();
 
+                                let (realization_inputs, realization_read_handles, proj_diags) =
+                                    self.build_compute_realization_inputs(
+                                        &arg_values,
+                                        &snapshot.graph,
+                                    );
+                                diagnostics.extend(proj_diags);
+
                                 snapshot.graph.insert_compute_node(
                                     crate::graph::ComputeNodeData {
                                         computation_id: c_id.clone(),
                                         target: target.clone(),
                                         value_inputs,
-                                        realization_inputs: vec![],
+                                        realization_inputs,
                                         options_hash: reify_core::ContentHash(0),
                                         cache_key: reify_core::ContentHash(0),
                                         cached_result: None,
@@ -4046,7 +4052,7 @@ impl Engine {
                                     std::slice::from_ref(&cell_id),
                                     &target,
                                     &arg_values,
-                                    &[],
+                                    &realization_read_handles,
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
@@ -4571,13 +4577,17 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
+                        let (realization_inputs, realization_read_handles, proj_diags) =
+                            self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
+                        diagnostics.extend(proj_diags);
+
                         snapshot
                             .graph
                             .insert_compute_node(crate::graph::ComputeNodeData {
                                 computation_id: c_id.clone(),
                                 target: target.clone(),
                                 value_inputs,
-                                realization_inputs: vec![],
+                                realization_inputs,
                                 options_hash: reify_core::ContentHash(0),
                                 cache_key: reify_core::ContentHash(0),
                                 cached_result: None,
@@ -4605,7 +4615,7 @@ impl Engine {
                             std::slice::from_ref(cell_id),
                             &target,
                             &arg_values,
-                            &[],
+                            &realization_read_handles,
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
@@ -4999,7 +5009,7 @@ mod invariant_tests {
         let mut graph = EvaluationGraph::default();
         for (entity, member, ty) in [
             ("E", "a", Type::Int),
-            ("E", "b", Type::Real),
+            ("E", "b", Type::dimensionless_scalar()),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
             // StructureRef is permitted (task 1876): struct-typed params like

@@ -55,11 +55,11 @@
 //! bit-identical to the deterministic reference.
 
 use reify_solver_elastic::{
-    AssemblyElement, ElementOrder, ElementStiffness,
+    AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
     assemble_global_stiffness, apply_dirichlet_row_elimination,
     DirichletBc, IsotropicElastic,
     StressElement, element_stress_p1, recover_nodal_stress_p1, tet_volume_p1,
-    solve_cg, CgSolverOptions, CgResult,
+    solve_cg, CgSolverOptions, CgResult, SolverMode,
     resolve_execution_modes,
 };
 
@@ -671,5 +671,159 @@ fn deterministic_stress_field_and_von_mises_bit_stable_across_thread_counts() {
             vm_ref.to_bits(), vm.to_bits(),
             "max_von_mises differs between t=1 ({vm_ref}) and t={t} ({vm})",
         );
+    }
+}
+
+// ─── fast end-to-end byte-identity guard (task 4573 step-3) ──────────────────
+
+/// Fast (sub-second) end-to-end byte-identity guard for the deterministic
+/// assemble → apply-BCs → CG-solve pipeline on a shared-DOF cantilever.
+///
+/// # Why this test exists
+///
+/// The representative 135-second harness
+/// (`deterministic_displacement_bit_stable_across_repeats_and_thread_counts`)
+/// only flakes under heavy system load, making it a poor reintroduction guard
+/// for the assembly-determinism fix (task 4573). This fast guard uses a
+/// scaled-down mesh that still exercises the BTreeMap duplicate-summation path
+/// (interior nodes shared by up to 6 elements → abundant duplicate (row,col)
+/// contributions) but solves in well under a second, so it runs every CI
+/// invocation.
+///
+/// # Mesh
+///
+/// `8×6×5` hex cells → `9×7×6 = 378` nodes → `1 134` DOFs. Interior nodes
+/// are shared by many elements; the 6 × 8 × 6 × 5 × 144 = 207 360 raw
+/// triplets from `emit_element_triplets` collapse to ≪ 207 360 unique
+/// `(row, col)` keys via the BTreeMap pre-aggregation.
+///
+/// # Assertions (16 repeats)
+///
+/// For each repeat after the first, all of the following must be byte-identical
+/// to the reference (repeat 0):
+///
+/// - Assembled K stored values (before BC application).
+/// - Post-BC RHS f.
+/// - CG iteration count.
+/// - Displacement u.
+///
+/// A non-trivial-solve sanity check (`u ≠ 0`, `iterations > 0`) ensures a
+/// zeroed load cannot make the test pass spuriously.
+#[test]
+fn deterministic_fast_shared_dof_cantilever_full_pipeline_bit_stable() {
+    const REPEATS: usize = 16;
+    // 8×6×5 hex cells → 9×7×6 = 378 nodes → 1 134 DOFs.
+    const NX: usize = 8;
+    const NY: usize = 6;
+    const NZ: usize = 5;
+    const L: f64 = 2.0;
+    const H: f64 = 1.0;
+    const B: f64 = 1.0;
+
+    let (nodes, conns) = box_p1_mesh(L, H, B, NX, NY, NZ);
+    let n_nodes = nodes.len();
+    let ndof = 3 * n_nodes;
+
+    // BCs: clamp x=0 face; load: unit shear on x=L face.
+    let tol_x = 0.5 * L / NX as f64;
+    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    dedup_bcs(&mut bcs);
+    let end = end_face_nodes(&nodes, L, tol_x);
+    let loads = distributed_tip_load(&end, 1.0);
+
+    // Per-element stiffness (computed once — K_e depends only on geometry/material).
+    let ke_list: Vec<ElementStiffness> = conns
+        .iter()
+        .map(|conn| {
+            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
+            reify_solver_elastic::element_stiffness(ElementOrder::P1, &elem_nodes, &MAT)
+        })
+        .collect();
+    let elements: Vec<AssemblyElement<'_>> = conns
+        .iter()
+        .zip(ke_list.iter())
+        .enumerate()
+        .map(|(i, (conn, ke))| AssemblyElement {
+            id: i,
+            connectivity: conn.as_slice(),
+            k_e: ke,
+        })
+        .collect();
+
+    // One-shot helper: assemble K, apply BCs, solve CG; return
+    // (K_vals_before_bc, f_after_bc, iterations, u) all as bit-patterns.
+    let run_once = || {
+        let k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+        // Save K stored values BEFORE BC application (assembly determinism guard).
+        let k_bits: Vec<u64> = k.parts().1.iter().map(|v| v.to_bits()).collect();
+
+        let mut f = vec![0.0_f64; ndof];
+        for &(dof, val) in &loads {
+            f[dof] += val;
+        }
+        let mut k_bc = k;
+        apply_dirichlet_row_elimination(&mut k_bc, &mut f, &bcs);
+        // Save post-BC f.
+        let f_bits: Vec<u64> = f.iter().map(|v| v.to_bits()).collect();
+
+        let opts = CgSolverOptions { tolerance: CG_TOL, max_iter: 5000 };
+        let result = solve_cg(&k_bc, &f, opts, SolverMode::Deterministic);
+        let u_bits: Vec<u64> = result.u().iter().map(|v| v.to_bits()).collect();
+
+        (k_bits, f_bits, result.iterations, result.converged, u_bits)
+    };
+
+    // Reference run.
+    let (ref_k, ref_f, ref_iters, ref_conv, ref_u) = run_once();
+
+    // Sanity: non-trivial solve.
+    assert!(ref_conv, "reference run did not converge (iter={ref_iters})");
+    assert!(
+        ref_u.iter().any(|&b| b != 0.0f64.to_bits()),
+        "reference displacement is all zero — tip load may be missing",
+    );
+    assert!(ref_iters > 0, "reference CG returned 0 iterations — RHS may be zero");
+
+    // 15 further repeats must be byte-identical to the reference.
+    for repeat in 1..REPEATS {
+        let (k_bits, f_bits, iters, conv, u_bits) = run_once();
+
+        assert!(conv, "repeat {repeat}: CG did not converge (iter={iters})");
+
+        // K stored values.
+        assert_eq!(ref_k.len(), k_bits.len(), "repeat {repeat}: K nnz differs");
+        for (j, (&a, &b)) in k_bits.iter().zip(ref_k.iter()).enumerate() {
+            assert_eq!(
+                a, b,
+                "repeat {repeat}: K.values[{j}] = {} differs from reference {}",
+                f64::from_bits(a), f64::from_bits(b),
+            );
+        }
+
+        // Post-BC f.
+        assert_eq!(ref_f.len(), f_bits.len(), "repeat {repeat}: f length differs");
+        for (j, (&a, &b)) in f_bits.iter().zip(ref_f.iter()).enumerate() {
+            assert_eq!(
+                a, b,
+                "repeat {repeat}: f[{j}] = {} differs from reference {}",
+                f64::from_bits(a), f64::from_bits(b),
+            );
+        }
+
+        // CG iteration count.
+        assert_eq!(
+            ref_iters, iters,
+            "repeat {repeat}: iterations {iters} ≠ reference {ref_iters}",
+        );
+
+        // Displacement.
+        assert_eq!(ref_u.len(), u_bits.len(), "repeat {repeat}: u length differs");
+        for (j, (&a, &b)) in u_bits.iter().zip(ref_u.iter()).enumerate() {
+            assert_eq!(
+                a, b,
+                "repeat {repeat}: u[{j}] = {} differs from reference {}",
+                f64::from_bits(a), f64::from_bits(b),
+            );
+        }
     }
 }

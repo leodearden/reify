@@ -1377,8 +1377,8 @@ mod tests {
         let expr = super::get_let_expr_in(&module, "Beta", "w");
         assert_eq!(
             expr.result_type,
-            reify_core::Type::Real,
-            "expected result_type == Type::Real for Beta.w, got {:?}",
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
             expr.result_type
         );
     }
@@ -1415,7 +1415,7 @@ mod tests {
     fn test_get_let_expr_in_panics_on_missing_default_expr() {
         use reify_core::{ModulePath, Type};
         let template = crate::builders::TopologyTemplateBuilder::new("S")
-            .auto_param("S", "x", Type::Real)
+            .auto_param("S", "x", Type::dimensionless_scalar())
             .build();
         // Precondition: auto_param must produce default_expr = None; if that ever
         // changes this guard fires before get_let_expr_in, surfacing the broken
@@ -1448,7 +1448,7 @@ mod tests {
         let module = super::compile_source(source);
         // Alpha is first — cell `a` should be found.
         let expr = super::get_let_expr(&module, "a");
-        assert_eq!(expr.result_type, reify_core::Type::Real);
+        assert_eq!(expr.result_type, reify_core::Type::dimensionless_scalar());
     }
 
     /// get_let_expr with a cell name that only exists in the SECOND template
@@ -1792,7 +1792,7 @@ mod tests {
         use reify_core::Type;
         use reify_ir::CompiledExpr;
 
-        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::dimensionless_scalar());
         let result = super::collect_value_ref_members(&expr);
         assert!(
             result.iter().any(|m| m == "a"),
@@ -1807,9 +1807,9 @@ mod tests {
         use reify_core::Type;
         use reify_ir::{BinOp, CompiledExpr};
 
-        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
-        let b = CompiledExpr::value_ref(crate::vcid("E", "b"), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::dimensionless_scalar());
+        let b = CompiledExpr::value_ref(crate::vcid("E", "b"), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::dimensionless_scalar());
         let result = super::collect_value_ref_members(&expr);
         assert!(
             result.iter().any(|m| m == "a"),
@@ -1829,8 +1829,8 @@ mod tests {
         use reify_core::Type;
         use reify_ir::{CompiledExpr, UnOp};
 
-        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
-        let expr = CompiledExpr::unop(UnOp::Neg, a, Type::Real);
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::dimensionless_scalar());
+        let expr = CompiledExpr::unop(UnOp::Neg, a, Type::dimensionless_scalar());
         let result = super::collect_value_ref_members(&expr);
         assert!(
             result.iter().any(|m| m == "a"),
@@ -1847,8 +1847,8 @@ mod tests {
         use reify_core::Type;
         use reify_ir::CompiledExpr;
 
-        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
-        let expr = CompiledExpr::option_some(a, Type::Real);
+        let a = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::dimensionless_scalar());
+        let expr = CompiledExpr::option_some(a, Type::dimensionless_scalar());
         let result = super::collect_value_ref_members(&expr);
         assert!(
             result.iter().any(|m| m == "a"),
@@ -1866,7 +1866,7 @@ mod tests {
         use reify_core::Type;
         use reify_ir::CompiledExpr;
 
-        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::Real);
+        let expr = CompiledExpr::value_ref(crate::vcid("E", "a"), Type::dimensionless_scalar());
         let result = super::collect_value_ref_members(&expr);
         assert!(
             !result.iter().any(|m| m == "b"),
@@ -1892,7 +1892,7 @@ mod tests {
         );
 
         // OptionNone likewise carries no ValueRef.
-        let none = CompiledExpr::option_none(Type::Real);
+        let none = CompiledExpr::option_none(Type::dimensionless_scalar());
         let result_none = super::collect_value_ref_members(&none);
         assert!(
             result_none.is_empty(),

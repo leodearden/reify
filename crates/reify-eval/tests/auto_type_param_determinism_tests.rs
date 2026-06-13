@@ -97,6 +97,30 @@ const SKIP_SET: &[(&str, &str)] = &[
          Per-candidate ValueMap setup is delivered by task 4433 β \
          (seed_candidate_value_map); loop wiring by γ.",
     ),
+    (
+        "auto/bounded_fallback_unsound.ri",
+        "7 strict `auto: Layer` params (> max_depth=6 → depth-bound BFS fallback) with a \
+         joint constraint coupling all param member fields. Under the compile-time stub \
+         checker the TypeParam member reads emit code:None \"member access not yet supported\" \
+         Errors at structure-compile time — check_source_with_stdlib panics on compile \
+         errors (Panics docs). The joint-infeasibility hard error \
+         (E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) is a REAL-checker behaviour exercised by \
+         task ζ's reify-eval e2e. Mirrored from examples_smoke.rs::SKIP_SET (task 4434 γ).",
+    ),
+    (
+        "conditional_compilation/main.ri",
+        "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
+         through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
+         reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
+         check_source_with_stdlib path cannot follow gated imports, so `Platform` is an \
+         unresolved-type Error — check_source_with_stdlib panics on compile errors. \
+         The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \
+         exit 0, each resolving the platform-correct Platform variant) is exercised \
+         end-to-end by crates/reify-cli/tests/cli_check_cfg_example.rs. \
+         The siblings (platform_linux.ri, platform_wasm.ri) compile clean single-file \
+         and are intentionally NOT skipped. \
+         Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

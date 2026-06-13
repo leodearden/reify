@@ -340,6 +340,24 @@ structure def ElasticOptions {
 structure def ElasticResult {
     param displacement : Field<Point3<Length>, Vector3<Length>>
     param stress : Field<Point3<Length>, Tensor<2, 3, Pressure>>
+    // `divergence` — volumetric strain tr(ε) = ∂uₓ/∂x + ∂u_y/∂y + ∂u_z/∂z
+    // (dilatation / first strain invariant). Derived from the displacement-
+    // gradient tensor recovered during stress computation; no additional FE
+    // solve is required.
+    //
+    // Tet/solid population (PRD differential-field-operators.md task α):
+    // a real Sampled Field on the same Regular3D grid as `displacement` and
+    // `stress` (stride 1, codomain Real = dimensionless scalar). Useful for
+    // volumetric-change queries, compressibility checks, and as the spine
+    // for PRD task β gradient/curl channels.
+    //
+    // Shell population: Value::Undef — derivative field channels are out of
+    // scope for the shell solver (PRD §7). Undef is the honest-absence signal,
+    // matching the `frame` / `shell_channels` tet convention.
+    // Note for future runtime-type-checking implementors: Value::Undef must
+    // remain accepted for this Field-typed param on shell results (same
+    // Undef-for-absent-field convention as `frame` above).
+    param divergence : Field<Point3<Length>, Real>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure
@@ -481,15 +499,16 @@ pub structure def FEAMaterialInput {
 //     `LoadCase.loads : List<Load>` and `LoadCase.supports : List<Support>` were
 //     tightened from `List<Real>` placeholders in task ζ/4444 (resolved).
 //
-//   `options : ElasticOptions` (no default):
-//     `phase_functions` runs before `phase_entities` in the Reify compiler, so
-//     a same-module structure constructor `ElasticOptions()` cannot be used as
-//     a fn param default (esc-3851-32, functions.rs:157 comment). The `none`
-//     sentinel is typed `Option<Real>`, not `Option<ElasticOptions>`, so it also
-//     fails the `fn_param_default_compatible` strict-equality check (type_compat.rs:269).
-//     Callers must pass `ElasticOptions()` explicitly (or a custom instance).
-//     TODO(phase-order): add `= ElasticOptions()` default once the
-//     phase-functions-before-phase-entities ordering is resolved.
+//   `options : ElasticOptions = ElasticOptions()`:
+//     The same-module ctor default `ElasticOptions()` now works because
+//     task-3895's same-module skeleton pre-pass (`phase_functions` in
+//     functions_phase.rs) builds `build_structure_def_skeleton` templates for
+//     all module `structure_refs` and threads them into the `neutral_scope`
+//     used to compile param defaults (functions.rs:107-110).  The esc-3851-32
+//     phase-functions-before-phase-entities ordering blocker is therefore
+//     resolved at the def-site level.
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `ElasticOptions(...)` to override specific fields.
 @optimized("solver::elastic_static")
 pub fn solve_elastic_static(
     material  : ConstitutiveLaw,
@@ -498,7 +517,7 @@ pub fn solve_elastic_static(
     height    : Length,
     loads     : List<Load>,
     supports  : List<Support>,
-    options   : ElasticOptions
+    options   : ElasticOptions = ElasticOptions()
 ) -> ElasticResult {
     ElasticResult()
 }

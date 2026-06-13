@@ -2,7 +2,7 @@
 //!
 //! These tests verify that once a sub-expression is inferred as `Type::Error`
 //! (the poison-value sentinel), consumer sites propagate `Type::Error` rather
-//! than falling back to `Type::Real`. The "member access not yet supported"
+//! than falling back to `Type::dimensionless_scalar()`. The "member access not yet supported"
 //! stub at `expr.rs:997` is the designated `Type::Error` producer that these
 //! tests exercise (see step-12).
 
@@ -109,7 +109,7 @@ fn member_aggregation_on_error_typed_object_yields_type_error() {
     // supported" stub (see expr.rs:997), which must emit Type::Error post-step-12.
     // The outer `.sum` then hits the aggregation arm (expr.rs:973-990) and,
     // with the step-6 guard, must propagate Type::Error rather than fall
-    // through to Type::Real.
+    // through to Type::dimensionless_scalar().
     let source = r#"
 structure S {
     let broken = self.unsupported.sum
@@ -141,7 +141,7 @@ fn index_access_on_error_typed_object_yields_type_error() {
     // `self.unsupported` triggers the stub producer (Type::Error post-step-12),
     // then `[0]` indexing hits the IndexAccess arm (expr.rs:1109-1134). With
     // the step-8 guard, the result_type must be Type::Error rather than the
-    // `_ => Type::Real` fall-through at line 1132.
+    // `_ => Type::dimensionless_scalar()` fall-through at line 1132.
     let source = r#"
 structure S {
     let broken = self.unsupported[0]
@@ -164,7 +164,7 @@ fn quantifier_over_error_typed_collection_yields_type_error_element() {
     // `self.unsupported` triggers the stub producer (Type::Error post-step-12),
     // and is used as the quantifier's collection. With the step-10 guard in
     // place, the quantifier's inferred elem_type must be Type::Error rather
-    // than the `_ => Type::Real` fallback at expr.rs:1445-1448.
+    // than the `_ => Type::dimensionless_scalar()` fallback at expr.rs:1445-1448.
     //
     // The Quantifier expression's own result_type is always Bool, so we cannot
     // observe elem_type directly from the top-level node. Instead we inspect
@@ -291,7 +291,7 @@ fn stub_error_plus_arithmetic_does_not_cascade_type_mismatch() {
     // at expr.rs:~724 which emits a single Severity::Error diagnostic.
     // Post-step-12 that stub returns Type::Error; with the step-4 guard in
     // infer_binop_type, the enclosing `+ 5.0` short-circuits to Type::Error
-    // instead of falling through to Type::Real and emitting a type-mismatch
+    // instead of falling through to Type::dimensionless_scalar() and emitting a type-mismatch
     // cascade.
     //
     // (Renamed from `..._emits_exactly_one_diagnostic` per amendment-round-2

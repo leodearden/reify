@@ -16,8 +16,11 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{DiagnosticCode, ValueCellId};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
@@ -26,6 +29,36 @@ use reify_test_support::{
 /// scenarios index `StructureInstance.fields` with a string literal.
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(&k.to_string())
+}
+
+/// Scenario-9 call counter: incremented by `identity_fn` each time it runs.
+///
+/// Provides a direct execution proof for the ComputeNode-trampoline test:
+/// because the inline-fallback body is also `{ x }` (identity), the result
+/// cell value alone cannot distinguish trampoline-accept from inline-fallback.
+/// The ComputeNode-presence check (assertion b) is an indirect inference; this
+/// counter makes assertion (d) a first-class execution witness — if lowering
+/// ever changed to insert a ComputeNode on inline-fallback, (b) would silently
+/// lose discriminating power while (d) would still fail correctly.
+static SCENARIO_9_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Synthetic identity trampoline used by scenario 9.
+/// Mirrors compute_dispatch_registry.rs identity_fn (task γ / 3422 pattern).
+/// Increments `SCENARIO_9_CALL_COUNT` so the test can assert direct execution.
+fn identity_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    SCENARIO_9_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    ComputeOutcome::Completed {
+        result: value_inputs.first().cloned().unwrap_or(Value::Undef),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
 }
 
 /// No-op constructor: proves `Value::StructureInstance` is reachable from a
@@ -396,19 +429,111 @@ structure def RestartFixture {
     );
 }
 
-/// Scenario 9: the ComputeNode trampoline must accept a
-/// `Value::StructureInstance` argument.
+/// Scenario 9: the ComputeNode trampoline accepts a `Value::StructureInstance`
+/// argument (PRD `docs/prds/v0_3/compute-node-contract.md` §7.2 / scenario 9).
 ///
-/// Ignored until the ComputeNode contract work lands. See
-/// `docs/prds/v0_3/compute-node-contract.md` §8 task γ — the synthetic
-/// `ComputeFn` registration seam this scenario needs is built there, not in
-/// SIR-α. This is defence-in-depth, not the SIR-α user-observable signal.
+/// The seam required by this scenario — task γ / 3422: synthetic `test::identity`
+/// trampoline pattern, per-Engine `register_compute_fn` registry, and
+/// `@optimized(...)`→ComputeNode lowering wire — landed on main and is live.
+/// This test pins that the trampoline path (not the inline-fallback body) accepts
+/// and round-trips a `Value::StructureInstance` end-to-end through a compiled
+/// `.ri` source. Defence-in-depth for compute-node-contract.md §7.2; not the
+/// SIR-α user-observable signal.
 #[test]
-#[ignore = "depends on compute-node-contract.md §8 task γ (ComputeFn registration seam)"]
 fn compute_node_trampoline_arm_accepts_structure_instance() {
-    unimplemented!(
-        "blocked on compute-node-contract.md §8 task γ — synthetic ComputeFn \
-         registration seam not yet available in SIR-α scope"
+    // The `@optimized` fn receives a trait-typed param reference so the call
+    // site is an exact ElasticMaterial-to-ElasticMaterial match (no concrete
+    // StructureRef at the call site — avoids the trait-conformance-at-call-site
+    // wrinkle documented in solver_elastic.ri:410-426).
+    const SOURCE: &str = r#"
+@optimized("test::identity")
+fn identity_compute_test(x: ElasticMaterial) -> ElasticMaterial { x }
+
+structure def StructInstanceTrampolineFixture {
+    param mat : ElasticMaterial = Steel_AISI_1045()
+    let result = identity_compute_test(mat)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+    // Reset before eval so any prior (re-)run of this test in the same process
+    // doesn't bleed a stale count into assertion (d).
+    SCENARIO_9_CALL_COUNT.store(0, Ordering::Relaxed);
+    let eval_result = engine.eval(&compiled);
+
+    // (a) The result cell must be a Steel_AISI_1045 StructureInstance,
+    //     proving the StructureInstance round-tripped through the trampoline.
+    let result_id = ValueCellId::new("StructInstanceTrampolineFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_id)
+        .unwrap_or_else(|| panic!("StructInstanceTrampolineFixture.result cell missing"));
+    match result_val {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Steel_AISI_1045",
+                "expected result to be a Steel_AISI_1045 StructureInstance \
+                 (round-tripped via trampoline), got type_name: {:?}",
+                data.type_name
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for StructInstanceTrampolineFixture.result, \
+             got {other:?}"
+        ),
+    }
+
+    // (b) A ComputeNode with target "test::identity" must exist in the graph,
+    //     proving the value came from the TRAMPOLINE (not the inline-fallback
+    //     body). CRITICAL: the body is `{ x }` (also identity), so without (b)
+    //     we cannot distinguish trampoline-accept from inline-fallback.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, data)| data.target == "test::identity");
+    assert!(
+        compute_node.is_some(),
+        "expected a ComputeNode with target==\"test::identity\" in the graph \
+         (proves trampoline path, not inline-fallback); found compute nodes: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| &d.target)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) No Error diagnostics — secondary guard confirming the trampoline
+    //     registration gotcha was honored (unregistered targets emit Error + inline).
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected no Error diagnostics (trampoline was registered), \
+         got: {:?}",
+        error_diags
+    );
+
+    // (d) Direct execution proof: identity_fn's call counter was incremented.
+    //     Unlike (b), this asserts the fn body actually ran — if lowering
+    //     behaviour ever changed to insert a ComputeNode even on inline-fallback,
+    //     (b) alone would silently lose its discriminating power; (d) would not.
+    assert_eq!(
+        SCENARIO_9_CALL_COUNT.load(Ordering::Relaxed),
+        1,
+        "identity_fn must have been called exactly once by the trampoline dispatch \
+         (direct execution proof, not inferred from graph structure)"
     );
 }
 

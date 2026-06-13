@@ -237,3 +237,69 @@ fn densify_grid_to_sampled_skipped_without_cfg() {
     );
     assert!(true);
 }
+
+// ---------------------------------------------------------------------------
+// densify_grid_to_sampled via trait object  (step-3 RED → step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+/// Calls `densify_grid_to_sampled` through a `&mut dyn GeometryKernel` trait
+/// object rather than a concrete `OpenVdbKernel` receiver.
+///
+/// This pins the trait-object dispatch path that δ
+/// (`project_realization_read_handle`) relies on: the Engine holds its kernels
+/// as `Box<dyn GeometryKernel>`, so the call site in `realization_content.rs`
+/// never has a concrete receiver.
+///
+/// Asserts:
+/// - `Ok` result when called on a real ingested handle.
+/// - `field.kind == SampledGridKind::Regular3D`
+/// - `field.spacing.len() == 3`
+/// - `Err(QueryError::InvalidHandle(_))` for an unknown handle via the same
+///   trait object — ensures the override, not the default, is dispatched.
+#[cfg(has_openvdb)]
+#[test]
+fn densify_grid_to_sampled_via_trait_object() {
+    use reify_ir::{GeometryHandleId, GeometryKernel, QueryError, SampledGridKind};
+    use reify_kernel_openvdb::OpenVdbKernel;
+
+    let mesh = box_2mm();
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .ingest_mesh(&mesh)
+        .expect("ingest_mesh must succeed for the 2mm box");
+
+    // Call through a trait object — this is the path δ uses.
+    let k: &mut dyn GeometryKernel = &mut kernel;
+    let field = k
+        .densify_grid_to_sampled(handle.id)
+        .expect("densify_grid_to_sampled must succeed through a trait object");
+
+    assert_eq!(
+        field.kind,
+        SampledGridKind::Regular3D,
+        "densified field must be Regular3D when dispatched via trait object"
+    );
+    assert_eq!(
+        field.spacing.len(),
+        3,
+        "spacing must have 3 entries for a Regular3D field via trait object"
+    );
+
+    // Invalid handle through the same trait object path.
+    let bad = k.densify_grid_to_sampled(GeometryHandleId(999_999));
+    assert!(
+        matches!(bad, Err(QueryError::InvalidHandle(_))),
+        "densify_grid_to_sampled with unknown handle via trait object must return \
+         Err(InvalidHandle); got {bad:?}"
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub for the trait-object dispatch test.
+#[cfg(not(has_openvdb))]
+#[test]
+fn densify_grid_to_sampled_via_trait_object_skipped_without_cfg() {
+    println!(
+        "ingest_mesh_densify_tests: has_openvdb cfg not set, skipping trait-object dispatch test"
+    );
+    assert!(true);
+}

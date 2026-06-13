@@ -125,6 +125,7 @@ describe('engineStore', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
 
@@ -530,6 +531,7 @@ describe('engineStore', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect(spy).toHaveBeenCalledTimes(1);
@@ -549,6 +551,7 @@ describe('engineStore', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       initFromState(guiState);
@@ -569,6 +572,7 @@ describe('engineStore', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       // Must not throw when the callback is omitted.
       expect(() => initFromState(guiState)).not.toThrow();
@@ -642,6 +646,7 @@ describe('engineStore tessellationDiagnostics', () => {
         tessellation_diagnostics: [diag],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect(state.tessellationDiagnostics).toEqual([diag]);
@@ -718,6 +723,7 @@ describe('engineStore compileDiagnostics', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [diag],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect(state.compileDiagnostics).toEqual([diag]);
@@ -787,6 +793,7 @@ describe('engineStore freshness pass-through', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect(state.values['cell_failed'].freshness).toBe('failed');
@@ -1365,6 +1372,7 @@ describe('engineStore kernelStatus', () => {
           { entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0 },
           { entity_path: 'TPrism', kind: 'cable', x1: 1.0, y1: 0.0, z1: 1.0, x2: -0.5, y2: 0.866, z2: 1.0 },
         ],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toHaveLength(2);
@@ -1390,9 +1398,77 @@ describe('engineStore kernelStatus', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       };
       initFromState(guiState);
       expect((state as any).tensegrityWires).toEqual([]);
+      dispose();
+    });
+  });
+
+  // ── β: tensegritySurfaces store fan-out ──────────────────────────────────
+
+  it('initFromState writes tensegrity_surfaces from GuiState into state.tensegritySurfaces', () => {
+    // RED until EngineState.tensegritySurfaces is added and initFromState sets it.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [
+          {
+            entity_path: 'Patch',
+            kind: 'membrane',
+            i0: 0, i1: 1, i2: 2,
+            x0: 0.0, y0: 0.0, z0: 0.0,
+            x1: 1.0, y1: 0.0, z1: 0.0,
+            x2: 0.5, y2: 0.866, z2: 0.0,
+          },
+          {
+            entity_path: 'Patch',
+            kind: 'membrane',
+            i0: 1, i1: 3, i2: 2,
+            x0: 1.0, y0: 0.0, z0: 0.0,
+            x1: 1.5, y1: 0.866, z1: 0.0,
+            x2: 0.5, y2: 0.866, z2: 0.0,
+          },
+        ],
+      };
+      initFromState(guiState);
+      expect((state as any).tensegritySurfaces).toHaveLength(2);
+      expect((state as any).tensegritySurfaces[0].kind).toBe('membrane');
+      expect((state as any).tensegritySurfaces[0].entity_path).toBe('Patch');
+      expect((state as any).tensegritySurfaces[0].i0).toBe(0);
+      expect((state as any).tensegritySurfaces[0].x2).toBe(0.5);
+      expect((state as any).tensegritySurfaces[1].i0).toBe(1);
+      dispose();
+    });
+  });
+
+  it('initFromState leaves tensegritySurfaces as [] when tensegrity_surfaces is empty', () => {
+    // RED until EngineState.tensegritySurfaces is initialised to [] and initFromState sets it.
+    createRoot((dispose) => {
+      const { state, initFromState } = createEngineStore();
+      // Initial state should be []
+      expect((state as any).tensegritySurfaces).toEqual([]);
+
+      const guiState: GuiState = {
+        meshes: [],
+        values: [],
+        constraints: [],
+        files: [],
+        tessellation_diagnostics: [],
+        compile_diagnostics: [],
+        tensegrity_wires: [],
+        tensegrity_surfaces: [],
+      };
+      initFromState(guiState);
+      expect((state as any).tensegritySurfaces).toEqual([]);
       dispose();
     });
   });

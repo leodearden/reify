@@ -14,10 +14,10 @@
 //!
 //! The variant itself does **not** enforce `Type::Scalar` in the `quantity` slot.
 //! `Value::Point::infer_type()` / `Value::Vector::infer_type()` in
-//! `crates/reify-types/src/value.rs` may produce `Type::Real` or `Type::Int`
+//! `crates/reify-types/src/value.rs` may produce `Type::dimensionless_scalar()` or `Type::Int`
 //! quantities for unit-less component vectors; tests in this crate also construct
 //! those forms directly.  `is_scalar_like_leaf` in
-//! `crates/reify-compiler/src/type_compat.rs` treats `Type::Real`, `Type::Int`, and
+//! `crates/reify-compiler/src/type_compat.rs` treats `Type::dimensionless_scalar()`, `Type::Int`, and
 //! `Type::Scalar { .. }` symmetrically for compat-rule firing, so the looseness is
 //! intentional.
 //!
@@ -75,8 +75,6 @@ pub enum Type {
     Bool,
     /// Arbitrary-precision integer.
     Int,
-    /// IEEE 754 double-precision float (dimensionless).
-    Real,
     /// UTF-8 string.
     String,
     /// Dimensioned scalar (e.g., 80mm has dimension LENGTH).
@@ -175,7 +173,7 @@ pub enum Type {
     /// Sentinel for a type-inference failure ("poison value").
     ///
     /// Operations that see a `Type::Error` operand must propagate `Type::Error`
-    /// (not fall back to `Type::Real`) so that a single root-cause error does
+    /// (not fall back to `Type::dimensionless_scalar()`) so that a single root-cause error does
     /// not trigger cascading type-mismatch diagnostics downstream. Producers
     /// that emit an error diagnostic should pair it with a `Type::Error`
     /// result type; consumer sites (binary operators, index access, member
@@ -348,7 +346,7 @@ impl Type {
 
     /// Is this type a numeric type (Int, Real, or Scalar)?
     pub fn is_numeric(&self) -> bool {
-        matches!(self, Type::Int | Type::Real | Type::Scalar { .. })
+        matches!(self, Type::Int | Type::Scalar { .. })
     }
 
     /// Is this the poison-value sentinel `Type::Error`?
@@ -429,11 +427,10 @@ impl std::fmt::Display for Type {
         match self {
             Type::Bool => write!(f, "Bool"),
             Type::Int => write!(f, "Int"),
-            Type::Real => write!(f, "Real"),
             Type::String => write!(f, "String"),
             Type::Scalar { dimension } => {
                 if dimension.is_dimensionless() {
-                    write!(f, "Scalar")
+                    write!(f, "Real")
                 } else {
                     write!(f, "Scalar[{}]", dimension)
                 }
@@ -511,7 +508,7 @@ mod tests {
         assert_eq!(
             format!(
                 "{}",
-                Type::Map(Box::new(Type::String), Box::new(Type::Real))
+                Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar()))
             ),
             "Map<String, Real>"
         );
@@ -529,7 +526,7 @@ mod tests {
     fn type_function_display() {
         let func = Type::Function {
             params: vec![Type::Int],
-            return_type: Box::new(Type::Real),
+            return_type: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(format!("{}", func), "Function(Int) -> Real");
     }
@@ -585,15 +582,15 @@ mod tests {
     #[test]
     fn type_field_variant() {
         let field_ty = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         // Display
         assert_eq!(format!("{}", field_ty), "Field<Real, Real>");
         // Equality
         let field_ty2 = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(field_ty, field_ty2);
         // Not numeric
@@ -603,9 +600,9 @@ mod tests {
     #[test]
     fn type_point_vector_not_numeric() {
         assert!(!Type::point2(Type::length()).is_numeric());
-        assert!(!Type::point3(Type::Real).is_numeric());
+        assert!(!Type::point3(Type::dimensionless_scalar()).is_numeric());
         assert!(!Type::vec2(Type::length()).is_numeric());
-        assert!(!Type::vec3(Type::Real).is_numeric());
+        assert!(!Type::vec3(Type::dimensionless_scalar()).is_numeric());
     }
 
     #[test]
@@ -615,7 +612,7 @@ mod tests {
         let p3_len = Type::point3(Type::length());
         let p3_len2 = Type::point3(Type::length());
         let p2_len = Type::point2(Type::length());
-        let p3_real = Type::point3(Type::Real);
+        let p3_real = Type::point3(Type::dimensionless_scalar());
         let v3_len = Type::vec3(Type::length());
 
         // (a) Point3<Length> == Point3<Length>
@@ -634,7 +631,7 @@ mod tests {
         let v3_len_a = Type::vec3(Type::length());
         let v3_len_b = Type::vec3(Type::length());
         let v2_len = Type::vec2(Type::length());
-        let v3_real = Type::vec3(Type::Real);
+        let v3_real = Type::vec3(Type::dimensionless_scalar());
         assert_eq!(v3_len_a, v3_len_b);
         assert_ne!(v3_len_a, v2_len);
         assert_ne!(v3_len_a, v3_real);
@@ -657,10 +654,10 @@ mod tests {
             }
         );
         assert_eq!(
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -675,10 +672,10 @@ mod tests {
             }
         );
         assert_eq!(
-            Type::point3(Type::Real),
+            Type::point3(Type::dimensionless_scalar()),
             Type::Point {
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -691,7 +688,7 @@ mod tests {
             "Tensor2x3<Scalar[m]>"
         );
         assert_eq!(
-            format!("{}", Type::tensor(1, 4, Type::Real)),
+            format!("{}", Type::tensor(1, 4, Type::dimensionless_scalar())),
             "Tensor1x4<Real>"
         );
         assert_eq!(
@@ -713,11 +710,11 @@ mod tests {
         );
         // rank-1 tensor, 4 elements, quantity = Real
         assert_eq!(
-            Type::tensor(1, 4, Type::Real),
+            Type::tensor(1, 4, Type::dimensionless_scalar()),
             Type::Tensor {
                 rank: 1,
                 n: 4,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -730,7 +727,7 @@ mod tests {
         let t2_3_len2 = Type::tensor(2, 3, Type::length());
         let t1_3_len = Type::tensor(1, 3, Type::length());
         let t2_4_len = Type::tensor(2, 4, Type::length());
-        let t2_3_real = Type::tensor(2, 3, Type::Real);
+        let t2_3_real = Type::tensor(2, 3, Type::dimensionless_scalar());
         let v3_len = Type::vec3(Type::length());
         let p3_len = Type::point3(Type::length());
 
@@ -759,14 +756,14 @@ mod tests {
     #[test]
     fn type_tensor_not_numeric() {
         assert!(!Type::tensor(1, 3, Type::length()).is_numeric());
-        assert!(!Type::tensor(2, 2, Type::Real).is_numeric());
+        assert!(!Type::tensor(2, 2, Type::dimensionless_scalar()).is_numeric());
     }
 
     // ── Complex tests (step-1) ────────────────────────────────────────────────
 
     #[test]
     fn type_complex_display_real() {
-        assert_eq!(format!("{}", Type::complex(Type::Real)), "Complex<Real>");
+        assert_eq!(format!("{}", Type::complex(Type::dimensionless_scalar())), "Complex<Real>");
     }
 
     #[test]
@@ -780,7 +777,7 @@ mod tests {
     #[test]
     fn type_complex_display_nested() {
         assert_eq!(
-            format!("{}", Type::complex(Type::complex(Type::Real))),
+            format!("{}", Type::complex(Type::complex(Type::dimensionless_scalar()))),
             "Complex<Complex<Real>>"
         );
     }
@@ -788,8 +785,8 @@ mod tests {
     #[test]
     fn type_complex_factory_eq_variant() {
         assert_eq!(
-            Type::complex(Type::Real),
-            Type::Complex(Box::new(Type::Real))
+            Type::complex(Type::dimensionless_scalar()),
+            Type::Complex(Box::new(Type::dimensionless_scalar()))
         );
         assert_eq!(Type::complex(Type::Int), Type::Complex(Box::new(Type::Int)));
     }
@@ -798,8 +795,8 @@ mod tests {
     fn type_complex_eq_and_hash() {
         use std::collections::HashMap;
 
-        let c_real = Type::complex(Type::Real);
-        let c_real2 = Type::complex(Type::Real);
+        let c_real = Type::complex(Type::dimensionless_scalar());
+        let c_real2 = Type::complex(Type::dimensionless_scalar());
         let c_int = Type::complex(Type::Int);
 
         // Equal complex types are equal
@@ -807,7 +804,7 @@ mod tests {
         // Different inner types are not equal
         assert_ne!(c_real, c_int);
         // complex(Real) != Real
-        assert_ne!(c_real, Type::Real);
+        assert_ne!(c_real, Type::dimensionless_scalar());
 
         // Hash consistency: equal values produce equal hashes via HashMap
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -818,13 +815,13 @@ mod tests {
 
     #[test]
     fn type_complex_not_numeric() {
-        assert!(!Type::complex(Type::Real).is_numeric());
+        assert!(!Type::complex(Type::dimensionless_scalar()).is_numeric());
         assert!(!Type::complex(Type::Int).is_numeric());
     }
 
     #[test]
     fn type_complex_as_name_none() {
-        assert_eq!(Type::complex(Type::Real).as_name(), None);
+        assert_eq!(Type::complex(Type::dimensionless_scalar()).as_name(), None);
     }
 
     #[test]
@@ -837,7 +834,7 @@ mod tests {
 
         let v2_real = Type::Vector {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(format!("{}", v2_real), "Vector2<Real>");
     }
@@ -877,7 +874,7 @@ mod tests {
         assert_eq!(o3a, o3b);
         assert_ne!(o3a, o2);
         // Orientation != other types
-        assert_ne!(o3a, Type::Real);
+        assert_ne!(o3a, Type::dimensionless_scalar());
 
         // Hash consistency
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -902,7 +899,7 @@ mod tests {
     #[test]
     fn type_range_construction() {
         let r_int = Type::Range(Box::new(Type::Int));
-        let r_real = Type::Range(Box::new(Type::Real));
+        let r_real = Type::Range(Box::new(Type::dimensionless_scalar()));
         // Distinct inner types
         assert_ne!(r_int, r_real);
         // Same inner type equal
@@ -931,7 +928,7 @@ mod tests {
     #[test]
     fn type_range_display_real() {
         assert_eq!(
-            format!("{}", Type::Range(Box::new(Type::Real))),
+            format!("{}", Type::Range(Box::new(Type::dimensionless_scalar()))),
             "Range<Real>"
         );
     }
@@ -939,7 +936,7 @@ mod tests {
     #[test]
     fn type_range_factory() {
         assert_eq!(Type::range(Type::Int), Type::Range(Box::new(Type::Int)));
-        assert_eq!(Type::range(Type::Real), Type::Range(Box::new(Type::Real)));
+        assert_eq!(Type::range(Type::dimensionless_scalar()), Type::Range(Box::new(Type::dimensionless_scalar())));
     }
 
     #[test]
@@ -948,7 +945,7 @@ mod tests {
 
         let r_int_a = Type::range(Type::Int);
         let r_int_b = Type::range(Type::Int);
-        let r_real = Type::range(Type::Real);
+        let r_real = Type::range(Type::dimensionless_scalar());
 
         assert_eq!(r_int_a, r_int_b);
         assert_ne!(r_int_a, r_real);
@@ -965,7 +962,7 @@ mod tests {
     #[test]
     fn type_range_not_numeric() {
         assert!(!Type::range(Type::Int).is_numeric());
-        assert!(!Type::range(Type::Real).is_numeric());
+        assert!(!Type::range(Type::dimensionless_scalar()).is_numeric());
         assert!(!Type::range(Type::length()).is_numeric());
     }
 
@@ -983,12 +980,12 @@ mod tests {
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
         );
         // Different m — not equal
@@ -996,12 +993,12 @@ mod tests {
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             Type::Matrix {
                 m: 2,
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
         );
         // Different n — not equal
@@ -1009,12 +1006,12 @@ mod tests {
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             Type::Matrix {
                 m: 3,
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
         );
         // Different quantity — not equal
@@ -1022,7 +1019,7 @@ mod tests {
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             Type::Matrix {
                 m: 3,
@@ -1035,12 +1032,12 @@ mod tests {
             Type::Matrix {
                 m: 2,
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             Type::Tensor {
                 rank: 2,
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
         );
     }
@@ -1054,7 +1051,7 @@ mod tests {
                 Type::Matrix {
                     m: 3,
                     n: 2,
-                    quantity: Box::new(Type::Real)
+                    quantity: Box::new(Type::dimensionless_scalar())
                 }
             ),
             "Matrix3x2<Real>"
@@ -1076,11 +1073,11 @@ mod tests {
     fn type_matrix_factory() {
         // (b) Type::matrix(m, n, q) factory method
         assert_eq!(
-            Type::matrix(3, 2, Type::Real),
+            Type::matrix(3, 2, Type::dimensionless_scalar()),
             Type::Matrix {
                 m: 3,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
         );
         assert_eq!(
@@ -1097,9 +1094,9 @@ mod tests {
     fn type_matrix_eq_and_hash() {
         use std::collections::HashMap;
         // (c) hash consistency: same key retrieves value
-        let m_a = Type::matrix(3, 2, Type::Real);
-        let m_b = Type::matrix(3, 2, Type::Real);
-        let m_other = Type::matrix(2, 3, Type::Real);
+        let m_a = Type::matrix(3, 2, Type::dimensionless_scalar());
+        let m_b = Type::matrix(3, 2, Type::dimensionless_scalar());
+        let m_other = Type::matrix(2, 3, Type::dimensionless_scalar());
 
         assert_eq!(m_a, m_b);
         assert_ne!(m_a, m_other);
@@ -1113,14 +1110,14 @@ mod tests {
     #[test]
     fn type_matrix_not_numeric() {
         // (e) is_numeric returns false
-        assert!(!Type::matrix(3, 2, Type::Real).is_numeric());
+        assert!(!Type::matrix(3, 2, Type::dimensionless_scalar()).is_numeric());
         assert!(!Type::matrix(1, 1, Type::Int).is_numeric());
     }
 
     #[test]
     fn type_matrix_as_name_none() {
         // (f) as_name returns None
-        assert_eq!(Type::matrix(3, 2, Type::Real).as_name(), None);
+        assert_eq!(Type::matrix(3, 2, Type::dimensionless_scalar()).as_name(), None);
     }
 
     #[test]
@@ -1133,7 +1130,7 @@ mod tests {
 
         let p2_real = Type::Point {
             n: 2,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert_eq!(format!("{}", p2_real), "Point2<Real>");
 
@@ -1179,7 +1176,7 @@ mod tests {
         assert_eq!(f3a, f3b);
         assert_ne!(f3a, f2);
         // Frame != other types
-        assert_ne!(f3a, Type::Real);
+        assert_ne!(f3a, Type::dimensionless_scalar());
 
         // Hash consistency
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -1240,7 +1237,7 @@ mod tests {
         assert_eq!(t3a, t3b);
         assert_ne!(t3a, t2);
         // Transform != other types
-        assert_ne!(t3a, Type::Real);
+        assert_ne!(t3a, Type::dimensionless_scalar());
 
         // Hash consistency
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -1279,7 +1276,7 @@ mod tests {
         assert_eq!(Type::Plane, Type::Plane);
         assert_ne!(Type::Plane, Type::Axis);
         assert_ne!(Type::Plane, Type::BoundingBox);
-        assert_ne!(Type::Plane, Type::Real);
+        assert_ne!(Type::Plane, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1318,7 +1315,7 @@ mod tests {
         assert_eq!(Type::Axis, Type::Axis);
         assert_ne!(Type::Axis, Type::Plane);
         assert_ne!(Type::Axis, Type::BoundingBox);
-        assert_ne!(Type::Axis, Type::Real);
+        assert_ne!(Type::Axis, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1348,7 +1345,7 @@ mod tests {
         assert_eq!(Type::BoundingBox, Type::BoundingBox);
         assert_ne!(Type::BoundingBox, Type::Plane);
         assert_ne!(Type::BoundingBox, Type::Axis);
-        assert_ne!(Type::BoundingBox, Type::Real);
+        assert_ne!(Type::BoundingBox, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1377,7 +1374,7 @@ mod tests {
     fn type_error_construction_and_equality() {
         // (a) Construction and equality
         assert_eq!(Type::Error, Type::Error);
-        assert_ne!(Type::Error, Type::Real);
+        assert_ne!(Type::Error, Type::dimensionless_scalar());
         assert_ne!(Type::Error, Type::Int);
     }
 
@@ -1390,7 +1387,7 @@ mod tests {
     #[test]
     fn type_error_is_error_false_for_others() {
         // (c) Other types return false from is_error()
-        assert!(!Type::Real.is_error());
+        assert!(!Type::dimensionless_scalar().is_error());
         assert!(!Type::Int.is_error());
         assert!(!Type::List(Box::new(Type::Int)).is_error());
     }
@@ -1581,7 +1578,7 @@ mod tests {
         assert_eq!(a3a, a3b);
         assert_ne!(a3a, a2);
         // AffineMap != other types
-        assert_ne!(a3a, Type::Real);
+        assert_ne!(a3a, Type::dimensionless_scalar());
 
         // Hash consistency
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -1702,7 +1699,7 @@ mod tests {
         assert_eq!(sf_a, sf_b);
         assert_ne!(sf_a, se);
         // Selector(Face) != Real
-        assert_ne!(sf_a, Type::Real);
+        assert_ne!(sf_a, Type::dimensionless_scalar());
 
         // Hash consistency
         let mut map: HashMap<Type, &str> = HashMap::new();
@@ -1716,7 +1713,7 @@ mod tests {
         // Selector kind != non-Selector types
         assert_ne!(Type::Selector(SelectorKind::Face), Type::Plane);
         assert_ne!(Type::Selector(SelectorKind::Face), Type::Geometry);
-        assert_ne!(Type::Selector(SelectorKind::Body), Type::Real);
+        assert_ne!(Type::Selector(SelectorKind::Body), Type::dimensionless_scalar());
     }
 
     // ── Keyed tests (step-1 RED / task 3930 β) ───────────────────────────────
@@ -1763,7 +1760,7 @@ mod tests {
 
         let k_int_a = Type::Keyed(Box::new(Type::Int));
         let k_int_b = Type::Keyed(Box::new(Type::Int));
-        let k_real = Type::Keyed(Box::new(Type::Real));
+        let k_real = Type::Keyed(Box::new(Type::dimensionless_scalar()));
 
         // Same inner type equal; different inner not equal
         assert_eq!(k_int_a, k_int_b);
@@ -1776,5 +1773,18 @@ mod tests {
         map.insert(k_int_a.clone(), "k_int");
         assert_eq!(map.get(&k_int_b), Some(&"k_int"));
         assert_eq!(map.get(&k_real), None);
+    }
+
+    // Step-1 RED: dimensionless scalar Display prints "Real" (fails today: prints "Scalar").
+    #[test]
+    fn dimensionless_scalar_displays_real() {
+        assert_eq!(format!("{}", Type::dimensionless_scalar()), "Real");
+    }
+
+    // Step-1 guard: dimensioned scalars are not affected by the Display change.
+    #[test]
+    fn dimensioned_scalar_display_unchanged() {
+        assert_eq!(format!("{}", Type::length()), "Scalar[m]");
+        assert_eq!(format!("{}", Type::angle()), "Scalar[rad]");
     }
 }

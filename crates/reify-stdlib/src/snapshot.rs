@@ -18,13 +18,16 @@
 
 use std::collections::BTreeMap;
 
+use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_ir::Value;
 
+use crate::dynamics::eval::mass_properties_from_value;
 use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use crate::mechanism::is_world;
+use crate::resolve_body_mass;
 
 /// Evaluate a snapshot/FK stdlib function by name.
 ///
@@ -468,13 +471,23 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // Validation surface (each guard short-circuits to Undef):
             //   args.len() in {1, 2}                     → arity guard
             //   args[0] is Map with kind="snapshot"      → snapshot guard
-            // v0.1 semantic: density-weighted mean of per-body world-frame
-            // ORIGINS (translation of each body's `world_transform`).
-            // Point-mass approximation — real volumetric centroid needs
-            // OCCT (`BRepGProp::VolumeProperties`), scope of FFI task #2530.
+            //
+            // Rung precedence (task 4471):
+            //   1. Explicit-mass rung — when EVERY body carries resolvable mass
+            //      (via resolve_body_mass: explicit MassProperties solid or
+            //      build-baked derived_mass_props), compute the mass-weighted
+            //      COM honoring each body's full world_transform.  The densities
+            //      arg is ignored entirely on this rung (mass ≠ density).
+            //      All-or-nothing: a single unresolvable body drops to rung 2.
+            //   2. Legacy density-weighted centroid — v0.1 semantic: weighted
+            //      mean of per-body world-frame ORIGINS (translation of each
+            //      body's `world_transform`).  Point-mass approximation — real
+            //      volumetric centroid needs OCCT (`BRepGProp::VolumeProperties`),
+            //      scope of FFI task #2530.
+            //
             // Empty Snapshot → Undef (zero-mass divide-by-zero).
             //
-            // Density resolution (uniform fallback for partial maps):
+            // Density resolution (uniform fallback for partial maps, rung 2):
             //   - args.len() == 1 OR args[1] is Undef OR args[1] is empty Map
             //     → all bodies get density 1.0 (uniform).
             //   - args[1] is non-empty Map → per-body lookup with 1.0
@@ -488,6 +501,19 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             };
             if snap_bodies.is_empty() {
                 return Some(Value::Undef);
+            }
+
+            // ── Explicit-mass higher-precedence rung (task 4471) ─────────
+            // When EVERY body carries resolvable mass (explicit MassProperties
+            // or build-baked derived_mass_props), return the mass-weighted COM
+            // honoring the full world_transform.  If any single body is
+            // unresolvable, fall through to the unchanged legacy density path.
+            // The densities argument is intentionally ignored in the
+            // all-resolved case (mass and density are different currencies).
+            match explicit_mass_weighted_com(snap_bodies) {
+                MassRung::Resolved(p) => return Some(p),
+                MassRung::Degenerate => return Some(Value::Undef),
+                MassRung::Fallback => {}
             }
 
             // Density resolution.  When args[1] is absent OR Undef OR an
@@ -723,7 +749,20 @@ fn walk_fk(
             return None;
         }
 
-        snapshot_bodies.push(make_snapshot_body_record(id, solid, pose, world_transform));
+        // Carry through `derived_mass_props` baked by the build-time mechanism-mass
+        // derivation pass (task 4472) so that snapshot consumers and sibling 4471
+        // snapshot-CoM can read it without re-querying the kernel.
+        let derived_mass_props = body_map
+            .get(&Value::String("derived_mass_props".to_string()))
+            .cloned();
+
+        snapshot_bodies.push(make_snapshot_body_record(
+            id,
+            solid,
+            pose,
+            world_transform,
+            derived_mass_props,
+        ));
     }
     Some(snapshot_bodies)
 }
@@ -770,6 +809,152 @@ fn make_length_point3(xyz: [f64; 3]) -> Value {
         Value::length(xyz[1]),
         Value::length(xyz[2]),
     ])
+}
+
+/// Apply a body's full world_transform (rotation + translation) to a
+/// com offset given in the body's local frame, returning the world-frame
+/// position of the centre of mass.
+///
+/// Computation: `R_world · com + t_world`.
+///
+/// Reuses the existing `transform_compose` builtin (geometry.rs:810) to
+/// avoid duplicating quaternion-rotate math.  `transform_compose(A, B)`
+/// returns `(R_A · R_B, R_A · t_B + t_A)`.  Composing `world_transform`
+/// with a pure-translation transform whose translation = LENGTH-vector(com)
+/// yields a transform whose translation equals `R_world · com + t_world`.
+/// We then extract that translation via `world_transform_translation`.
+///
+/// Returns `None` when:
+/// - `world_transform` is not a valid `Value::Transform`, or
+/// - `transform_compose` returns `Value::Undef` (malformed inputs), or
+/// - the composed translation contains non-finite components.
+fn world_apply_point(world_transform: &Value, com: [f64; 3]) -> Option<[f64; 3]> {
+    // Build a pure-translation transform: identity rotation + com-as-LENGTH-Vector.
+    let com_xform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(com[0]),
+            Value::length(com[1]),
+            Value::length(com[2]),
+        ])),
+    };
+    // compose: (R_world·I, R_world·com + t_world) = (R_world, R_world·com + t_world)
+    let composed = eval_builtin("transform_compose", &[world_transform.clone(), com_xform]);
+    if composed.is_undef() {
+        return None;
+    }
+    // Extract the translation = R_world·com + t_world.
+    world_transform_translation(&composed)
+}
+
+// ── Explicit-mass rung for center_of_mass (task 4471) ────────────────────
+
+/// Canonical per-body resolution predicate shared by [`explicit_mass_weighted_com`]
+/// and [`diagnose`].
+///
+/// Returns `true` when [`resolve_body_mass`] reports this body as carrying
+/// explicit or build-baked mass (rung a: `MassProperties` solid; rung b:
+/// `derived_mass_props`).  Both the compute helper and the diagnose hook must
+/// agree on what "resolved" means so the mixed-case detection in `diagnose`
+/// exactly mirrors the all-or-nothing gate in the rung — this single function
+/// is the single source of truth for that agreement.
+fn body_mass_resolved(body: &Value) -> bool {
+    resolve_body_mass(body).is_some()
+}
+
+/// Result of attempting to compute a mass-weighted COM from explicit masses.
+///
+/// Used by [`explicit_mass_weighted_com`] to signal which branch the
+/// `center_of_mass` arm should take:
+/// - `Resolved(point)` — every body's mass was resolvable, total mass > 0,
+///   all world_transforms valid → the mass-weighted COM as a `Value::Point`.
+/// - `Degenerate` — every body resolved but total mass ≤ 0 / non-finite, or
+///   a field was malformed → `Value::Undef` (mirrors legacy `total_density==0`).
+/// - `Fallback` — ≥1 body unresolved → drop through to the unchanged legacy
+///   density-weighted centroid path.
+enum MassRung {
+    Resolved(Value),
+    Degenerate,
+    Fallback,
+}
+
+/// Attempt to compute a mass-weighted `center_of_mass` using explicit mass
+/// information on each snapshot body.
+///
+/// For each body:
+/// - Call [`resolve_body_mass`] — `None` ⇒ return [`MassRung::Fallback`]
+///   immediately (all-or-nothing: a single unresolved body drops the whole
+///   call to the legacy density path).
+/// - Extract `(mass, com, _)` via [`mass_properties_from_value`] — failure,
+///   or `!mass.is_finite() || mass < 0.0` ⇒ [`MassRung::Degenerate`].
+/// - Read the body's `"world_transform"` map key and accumulate
+///   `weighted[i] += mass × world_apply_point(wt, com)[i]`
+///   (full R·com + t — honors rotation); missing/bad
+///   `world_transform` or failed compose ⇒ [`MassRung::Degenerate`].
+///
+/// After the loop:
+/// - `!total.is_finite() || total <= 0.0` ⇒ [`MassRung::Degenerate`].
+/// - Otherwise ⇒ [`MassRung::Resolved`]`(make_length_point3([weighted[i]/total]))`.
+fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
+    let mut weighted = [0.0_f64; 3];
+    let mut total = 0.0_f64;
+
+    for body in snap_bodies {
+        // Rung resolution — uses the same predicate as `diagnose` via
+        // `body_mass_resolved`; here we also need the resolved `Value` so we
+        // call `resolve_body_mass` directly rather than the boolean wrapper.
+        let mp = match resolve_body_mass(body) {
+            Some(v) => v,
+            None => return MassRung::Fallback, // !body_mass_resolved(body)
+        };
+
+        // Extract scalar mass and com offset (SI metres).
+        let (mass, com, _) = match mass_properties_from_value(&mp) {
+            Some(t) => t,
+            None => return MassRung::Degenerate,
+        };
+
+        // Guard: mass must be finite and non-negative.
+        if !mass.is_finite() || mass < 0.0 {
+            return MassRung::Degenerate;
+        }
+
+        // Apply the FULL world_transform (rotation + translation) to the
+        // body's com offset: world_pos = R_world · com + t_world.
+        let body_map = match body {
+            Value::Map(m) => m,
+            _ => return MassRung::Degenerate,
+        };
+        let wt = match body_map.get(&Value::String("world_transform".to_string())) {
+            Some(v) => v,
+            None => return MassRung::Degenerate,
+        };
+        let origin = match world_apply_point(wt, com) {
+            Some(xyz) => xyz,
+            None => return MassRung::Degenerate,
+        };
+
+        for i in 0..3 {
+            weighted[i] += mass * origin[i];
+        }
+        total += mass;
+    }
+
+    // Degenerate: zero or invalid total mass.
+    if !total.is_finite() || total <= 0.0 {
+        return MassRung::Degenerate;
+    }
+
+    MassRung::Resolved(make_length_point3([
+        weighted[0] / total,
+        weighted[1] / total,
+        weighted[2] / total,
+    ]))
 }
 
 /// Extract the `bodies` list from a Snapshot Map, validating the
@@ -825,16 +1010,23 @@ fn make_snapshot(bodies: Vec<Value>, free_values: Vec<Value>) -> Value {
     Value::Map(m)
 }
 
-/// Build a snapshot body record `Value::Map` with the four-key layout
+/// Build a snapshot body record `Value::Map` with either a four-key layout
 /// `id`, `pose`, `solid`, `world_transform` (alphabetical, matching
-/// `BTreeMap` iteration). Mirrors `make_body_record` in mechanism.rs
-/// but adds the FK-derived `world_transform` and drops `at`/`parent`
-/// (those belong to the source mechanism, not the snapshot).
+/// `BTreeMap` iteration) or a five-key layout that also includes
+/// `derived_mass_props` when `Some` is provided. Mirrors `make_body_record`
+/// in mechanism.rs but adds the FK-derived `world_transform` and drops
+/// `at`/`parent` (those belong to the source mechanism, not the snapshot).
+///
+/// The optional `derived_mass_props` is the build-time-baked `MassProperties`
+/// StructureInstance written by the mechanism-mass derivation pass (task 4472).
+/// Pass `None` to produce the canonical 4-key record; pass `Some(v)` to carry
+/// the derived field through into the snapshot body record.
 fn make_snapshot_body_record(
     id: Value,
     solid: Value,
     pose: Value,
     world_transform: Value,
+    derived_mass_props: Option<Value>,
 ) -> Value {
     let mut b = BTreeMap::new();
     b.insert(Value::String("id".to_string()), id);
@@ -844,6 +1036,9 @@ fn make_snapshot_body_record(
         Value::String("world_transform".to_string()),
         world_transform,
     );
+    if let Some(mp) = derived_mass_props {
+        b.insert(Value::String("derived_mass_props".to_string()), mp);
+    }
     Value::Map(b)
 }
 
@@ -1157,6 +1352,80 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
     m.insert(Value::String("joint".to_string()), joint);
     m.insert(Value::String("value".to_string()), value);
     Value::Map(m)
+}
+
+// ── Fallback-Warning diagnostic hook (task 4471) ─────────────────────────
+
+/// Fallback-Warning diagnostic hook for `center_of_mass`.
+///
+/// Mirrors the `dfm::diagnose` / `flexure_diagnose` **both-path** pattern:
+/// runs on both the success AND `Value::Undef` result paths (registered as
+/// `emit_snapshot_diagnostics` in `reify-expr`, called immediately after
+/// `emit_dfm_diagnostics` at `lib.rs:475`).
+///
+/// Returns a single `Severity::Warning` with code
+/// [`DiagnosticCode::SnapshotCenterOfMassDensityFallback`] **only** in the
+/// **mixed** case: at least one body resolves via [`resolve_body_mass`] AND at
+/// least one does not.  The message names the first unresolved body's integer
+/// id so authors can identify which body to annotate.
+///
+/// All other cases return an empty `Vec`:
+/// - Any name other than `"center_of_mass"`.
+/// - `result` is `Value::Undef` (arity error, degenerate all-zero-mass path,
+///   etc. — the explicit rung was used correctly or the call was invalid).
+/// - All bodies are unresolved (pure-legacy — stays silent).
+/// - All bodies are resolved (no fallback occurred).
+pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
+    // Scoped to center_of_mass only.
+    if name != "center_of_mass" {
+        return Vec::new();
+    }
+    // Undef result → arity error or degenerate explicit path — no fallback warning.
+    if matches!(result, Value::Undef) {
+        return Vec::new();
+    }
+    // Need at least one argument (the snapshot).
+    let snap = match args.first() {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    // Extract bodies — None or empty → nothing to diagnose.
+    let bodies = match snapshot_bodies(snap) {
+        Some(b) if !b.is_empty() => b,
+        _ => return Vec::new(),
+    };
+
+    let mut any_resolved = false;
+    let mut first_unresolved_id: Option<String> = None;
+
+    for body in bodies {
+        if body_mass_resolved(body) {
+            any_resolved = true;
+        } else if first_unresolved_id.is_none() {
+            // Read the body's integer id for the diagnostic message.
+            let id_str = match body {
+                Value::Map(bm) => match bm.get(&Value::String("id".to_string())) {
+                    Some(Value::Int(k)) => k.to_string(),
+                    _ => "?".to_string(),
+                },
+                _ => "?".to_string(),
+            };
+            first_unresolved_id = Some(id_str);
+        }
+    }
+
+    // Fire only in the mixed case (>=1 resolved AND >=1 unresolved).
+    match (any_resolved, first_unresolved_id) {
+        (true, Some(id)) => vec![
+            Diagnostic::warning(format!(
+                "center_of_mass: body '{id}' has no resolvable mass; falling back to \
+                 legacy density-weighted centroid (explicit point_mass/mass_properties \
+                 on other bodies ignored)"
+            ))
+            .with_code(DiagnosticCode::SnapshotCenterOfMassDensityFallback),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -3273,6 +3542,538 @@ mod tests {
             matches_pos || matches_neg,
             "body B rotation: expected R_z(90°) ≈ ({exp_qw:.6}, 0, 0, {exp_qz:.6}) up to sign, \
              got ({rw:.6}, {rx:.6}, {ry:.6}, {rz:.6})"
+        );
+    }
+
+    // ── task-4472 step-3 RED: snapshot carry-through for derived_mass_props ──
+    //
+    // When a mechanism body carries a `derived_mass_props` key (baked by the
+    // build-time pass), the snapshot record for that body must carry the same
+    // key through. A body without the key must yield the exact 4-key
+    // {id, pose, solid, world_transform} snapshot record (no spurious field).
+    //
+    // RED today: walk_fk (snapshot.rs:726) calls make_snapshot_body_record with
+    // 4 fixed args and never reads derived_mass_props from the source body, so
+    // the field is silently dropped in the snapshot body record.
+
+    /// Build a `MassProperties`-like `Value::StructureInstance` for snapshot
+    /// carry-through tests. Uses a minimal field set (mass only) since the
+    /// test only checks key presence, not numeric content.
+    fn mass_props_value_for_carry_through() -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [("mass".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build a single-body mechanism and inject `derived_mass_props = mp` into
+    /// the first body of its `bodies` list, returning the patched mechanism Map.
+    fn mechanism_with_derived_in_body(
+        solid: Value,
+        joint: Value,
+        mp: Value,
+    ) -> Value {
+        let m0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[m0, solid, joint]);
+        let m = match &mech {
+            Value::Map(m) => m.clone(),
+            other => panic!("body() must return a Map, got {other:?}"),
+        };
+        let bodies = match m.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b.clone(),
+            _ => panic!("mechanism missing bodies"),
+        };
+        let patched_bodies: Vec<Value> = bodies
+            .iter()
+            .map(|body| {
+                let bm: BTreeMap<Value, Value> = match body {
+                    Value::Map(bm) => bm.clone().into_iter().collect(),
+                    other => panic!("body must be a Map, got {other:?}"),
+                };
+                let mut b2 = bm;
+                b2.insert(
+                    Value::String("derived_mass_props".to_string()),
+                    mp.clone(),
+                );
+                Value::Map(b2)
+            })
+            .collect();
+        let mut m2: BTreeMap<Value, Value> = m.into_iter().collect();
+        m2.insert(
+            Value::String("bodies".to_string()),
+            Value::List(patched_bodies),
+        );
+        Value::Map(m2)
+    }
+
+    /// A body in the source mechanism carrying `derived_mass_props` must yield
+    /// a snapshot body record that also carries `derived_mass_props` (5-key map).
+    ///
+    /// RED today: `walk_fk` never reads `derived_mass_props` from the source
+    /// body, so the snapshot record drops the field and has only 4 keys.
+    #[test]
+    fn snapshot_body_record_carries_derived_mass_props_through() {
+        use crate::test_fixtures::{angle_range_0_to_pi, axis_z_unit};
+
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid = Value::String("some_geometry".to_string());
+        let mp = mass_props_value_for_carry_through();
+
+        let mech = mechanism_with_derived_in_body(solid, joint.clone(), mp.clone());
+
+        // Bind the joint at 0 so the FK walk succeeds.
+        let binding = eval_builtin("bind", &[joint, Value::angle(0.0)]);
+        let snap = eval_builtin("snapshot", &[mech, Value::List(vec![binding])]);
+        let snap_map = match snap {
+            Value::Map(m) => m,
+            other => panic!("snapshot() must yield a Map, got {other:?}"),
+        };
+        let bodies = match snap_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("snapshot missing bodies list"),
+        };
+        assert_eq!(bodies.len(), 1, "one body");
+
+        let body_rec = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body record must be a Map, got {other:?}"),
+        };
+        // Must carry derived_mass_props through (5-key map).
+        assert!(
+            body_rec.contains_key(&Value::String("derived_mass_props".to_string())),
+            "snapshot body record must carry derived_mass_props; keys = {:?}",
+            body_rec.keys().collect::<Vec<_>>()
+        );
+        // The carried value must equal the injected mp.
+        assert_eq!(
+            body_rec.get(&Value::String("derived_mass_props".to_string())),
+            Some(&mp),
+            "carried derived_mass_props must equal the injected value"
+        );
+    }
+
+    /// A source body without `derived_mass_props` must yield an exact 4-key
+    /// snapshot record: {id, pose, solid, world_transform}.
+    ///
+    /// GREEN today and must stay GREEN after step-4 (pass None → no insertion).
+    #[test]
+    fn snapshot_body_record_without_derived_has_exact_4_keys() {
+        use crate::test_fixtures::{angle_range_0_to_pi, axis_z_unit};
+
+        let joint = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let solid = Value::String("some_geometry".to_string());
+
+        let m0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[m0, solid, joint.clone()]);
+
+        let binding = eval_builtin("bind", &[joint, Value::angle(0.0)]);
+        let snap = eval_builtin("snapshot", &[mech, Value::List(vec![binding])]);
+        let snap_map = match snap {
+            Value::Map(m) => m,
+            other => panic!("snapshot() must yield a Map, got {other:?}"),
+        };
+        let bodies = match snap_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("snapshot missing bodies list"),
+        };
+        let body_rec = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body record must be a Map, got {other:?}"),
+        };
+        // Without derived_mass_props in the source, body record must have exactly
+        // 4 keys: id, pose, solid, world_transform.
+        assert_eq!(
+            body_rec.len(),
+            4,
+            "body record without derived_mass_props must have exactly 4 keys; \
+             keys = {:?}",
+            body_rec.keys().collect::<Vec<_>>()
+        );
+        let expected_keys = ["id", "pose", "solid", "world_transform"];
+        for key in &expected_keys {
+            assert!(
+                body_rec.contains_key(&Value::String(key.to_string())),
+                "body record must have key '{key}'"
+            );
+        }
+    }
+
+    // ── center_of_mass: explicit-mass rung (task 4471) ────────────────────
+    //
+    // RED until step-2 wires `explicit_mass_weighted_com` into the
+    // `center_of_mass` arm.
+
+    /// Build a 2-body Snapshot where each body has a custom solid and sits
+    /// at the given world x-coordinate via a prismatic-X joint.
+    ///
+    /// Each joint gets a DISTINCT range `[xi - 1, xi + 1]` so the two
+    /// joints are structurally different values — essential for the snapshot
+    /// binding-resolution map to distinguish them (joint identity is by
+    /// `Value` structural equality, as in all other snapshot test helpers).
+    fn make_two_body_explicit_mass_snapshot(
+        solid_a: Value,
+        x_a: f64,
+        solid_b: Value,
+        x_b: f64,
+    ) -> Value {
+        let j_a = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x_a - 1.0))),
+                    upper: Some(Box::new(Value::length(x_a + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x_b - 1.0))),
+                    upper: Some(Box::new(Value::length(x_b + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_a.clone()]);
+        let m2 = eval_builtin("body", &[m1, solid_b, j_b.clone()]);
+        let bind_a = eval_builtin("bind", &[j_a, Value::length(x_a)]);
+        let bind_b = eval_builtin("bind", &[j_b, Value::length(x_b)]);
+        eval_builtin("snapshot", &[m2, Value::List(vec![bind_a, bind_b])])
+    }
+
+    /// `center_of_mass` on a 2-body snapshot where both bodies carry
+    /// explicit `point_mass` solids must return the mass-weighted COM,
+    /// not the uniform-density midpoint.
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at world x=0;
+    ///        body 1 = point_mass(3 kg) at world x=4 m.
+    /// Mass-weighted COM = (1·0 + 3·4) / (1+3) = 3.0 m (≠ midpoint 2.0 m).
+    /// Result components must carry LENGTH dimension (Value::Scalar).
+    ///
+    /// RED: currently returns 2.0 (legacy density-weighted midpoint).
+    #[test]
+    fn center_of_mass_all_explicit_mass_weights_by_mass() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_3 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 3.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let s = make_two_body_explicit_mass_snapshot(pm_1, 0.0, pm_3, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+
+        // Should be the mass-weighted COM: (1·0 + 3·4) / 4 = 3.0, not midpoint 2.0.
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - 3.0).abs() < 1e-12,
+            "COM.x should be 3.0 (mass-weighted), got {}",
+            cx
+        );
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+
+        // All components must carry LENGTH dimension.
+        let comps = match &result {
+            Value::Point(c) => c,
+            other => panic!("expected Value::Point, got {:?}", other),
+        };
+        for (i, comp) in comps.iter().enumerate() {
+            match comp {
+                Value::Scalar { dimension, .. } => {
+                    assert_eq!(
+                        *dimension,
+                        reify_core::DimensionVector::LENGTH,
+                        "COM component[{}] should carry LENGTH dimension",
+                        i
+                    );
+                }
+                other => panic!(
+                    "COM component[{}] should be Value::Scalar, got {:?}",
+                    i, other
+                ),
+            }
+        }
+    }
+
+    /// `center_of_mass` on a mixed snapshot (one explicit-mass body, one
+    /// plain-solid body) must fall back to the legacy density-weighted
+    /// centroid (all-or-nothing rule), NOT compute a partial mass mean.
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at world x=0;
+    ///        body 1 = Value::String("plain") at world x=4 m.
+    /// Legacy uniform midpoint = (0 + 4) / 2 = 2.0 m (NOT mass-weighted 3.0).
+    ///
+    /// RED: this test already passes for now but will serve as a regression
+    /// guard once the explicit-mass rung is added, ensuring mixed bodies
+    /// stay on the legacy path.
+    #[test]
+    fn center_of_mass_mixed_explicit_and_plain_falls_back() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let s = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+
+        // Must fall back to legacy uniform midpoint = 2.0, not partial mass-mean.
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - 2.0).abs() < 1e-12,
+            "mixed-snapshot COM.x should be legacy midpoint 2.0, got {}",
+            cx
+        );
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+    }
+
+    /// `center_of_mass` on a snapshot where all bodies have zero mass
+    /// (`point_mass(0 kg)`) must return `Value::Undef` — zero-total-mass
+    /// is a degenerate divide-by-zero, mirroring the legacy `total_density==0`
+    /// path.
+    ///
+    /// RED: currently returns a Point (legacy density=1.0 midpoint) because
+    /// the explicit-mass rung hasn't been wired yet.
+    #[test]
+    fn center_of_mass_all_explicit_zero_total_mass_returns_undef() {
+        let pm_0 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_0b = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let s = make_two_body_explicit_mass_snapshot(pm_0, 0.0, pm_0b, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+        assert!(
+            result.is_undef(),
+            "all-zero-mass snapshot center_of_mass should return Undef, got {:?}",
+            result
+        );
+    }
+
+    // ── center_of_mass: full world_transform com offset (task 4471 step-3) ──
+    //
+    // RED until step-4 replaces the ORIGIN-only accumulator with
+    // `world_apply_point(world_transform, com)`.
+
+    /// `center_of_mass` must honor the body's com offset under the FULL
+    /// world_transform (rotation included), not just the world origin.
+    ///
+    /// Setup:
+    ///   solid = mass_properties(1 kg, com=(1,0,0) m, zero inertia)
+    ///   joint = revolute(+Z, 0..π) bound to π/2 (90° about Z, t=0)
+    ///   → world_transform = R_z(π/2), translation = (0,0,0)
+    ///
+    /// World-frame COM = R_z(π/2) · (1,0,0) + (0,0,0) = (0,1,0).
+    ///
+    /// Distinguishes three possible computations:
+    ///   - world origin       → (0, 0, 0)  ← step-2 (ORIGIN-only) behaviour — wrong
+    ///   - naïve t + com      → (1, 0, 0)  ← if rotation is ignored — wrong
+    ///   - correct R·com + t  → (0, 1, 0)  ← required (step-4)
+    ///
+    /// RED after step-2: returns (0,0,0).
+    #[test]
+    fn center_of_mass_honors_com_offset_under_full_transform() {
+        // mass_properties(1 kg, com=(1,0,0) m, zero 3×3 inertia)
+        let mass_val = Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::MASS,
+        };
+        let com_val = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let zero_inertia = Value::Matrix(vec![vec![Value::Real(0.0); 3]; 3]);
+        let solid = eval_builtin("mass_properties", &[mass_val, com_val, zero_inertia]);
+        assert!(!solid.is_undef(), "mass_properties must not be Undef for valid args");
+
+        // revolute(+Z, 0..π) bound to π/2  →  R_z(90°), translation=(0,0,0)
+        let j_rev = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid, j_rev.clone()]);
+        let binding = eval_builtin(
+            "bind",
+            &[j_rev, Value::angle(std::f64::consts::FRAC_PI_2)],
+        );
+        let snap = eval_builtin("snapshot", &[m1, Value::List(vec![binding])]);
+
+        let result = eval_builtin("center_of_mass", &[snap]);
+
+        // Expected: R_z(90°) · (1,0,0) + (0,0,0) = (0, 1, 0)
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            cx.abs() < 1e-9,
+            "COM.x should be 0.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cx
+        );
+        assert!(
+            (cy - 1.0).abs() < 1e-9,
+            "COM.y should be 1.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cy
+        );
+        assert!(
+            cz.abs() < 1e-9,
+            "COM.z should be 0.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cz
+        );
+    }
+
+    // ── snapshot::diagnose — fallback Warning hook unit tests (task 4471 step-5)
+    //
+    // RED until step-6 adds the `diagnose` function.
+
+    /// Mixed snapshot (one resolved body, one unresolved) must emit exactly
+    /// one Warning with code `SnapshotCenterOfMassDensityFallback` naming
+    /// the first unresolved body id ("1").
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at x=0 (resolved),
+    ///        body 1 = plain String solid at x=4 (unresolved).
+    /// The legacy center_of_mass returns the midpoint (2,0,0) — a valid Point.
+    /// The diagnose hook must fire even on the success path.
+    #[test]
+    fn snapshot_diagnose_mixed_emits_density_fallback_warning() {
+        use reify_core::diagnostics::{DiagnosticCode, Severity};
+
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let mixed_snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        // Legacy center_of_mass returns the midpoint (both bodies fall back).
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&mixed_snap));
+        assert!(
+            !result.is_undef(),
+            "mixed snapshot center_of_mass must return a valid Point, got {:?}",
+            result
+        );
+
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&mixed_snap), &result);
+        assert_eq!(
+            diags.len(),
+            1,
+            "mixed snapshot must emit exactly one diagnostic, got {:?}",
+            diags
+        );
+        let diag = &diags[0];
+        assert_eq!(
+            diag.severity,
+            Severity::Warning,
+            "diagnostic severity must be Warning, got {:?}",
+            diag.severity
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback),
+            "diagnostic code must be SnapshotCenterOfMassDensityFallback, got {:?}",
+            diag.code
+        );
+        assert!(
+            diag.message.contains('1'),
+            "diagnostic message must name the first unresolved body id '1', got: {:?}",
+            diag.message
+        );
+    }
+
+    /// Snapshot with no explicit-mass bodies (all plain solids) must produce
+    /// an empty diagnostic vec — pure-legacy snapshots stay silent.
+    #[test]
+    fn snapshot_diagnose_pure_legacy_silent() {
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+        let snap = make_two_body_explicit_mass_snapshot(solid_a, 0.0, solid_b, 4.0);
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&snap));
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "pure-legacy snapshot must emit no diagnostics, got {:?}",
+            diags
+        );
+    }
+
+    /// Snapshot where ALL bodies carry explicit mass must produce no
+    /// diagnostic — the explicit rung succeeded, no fallback occurred.
+    #[test]
+    fn snapshot_diagnose_all_resolved_silent() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_3 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 3.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, pm_3, 4.0);
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&snap));
+        let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "all-resolved snapshot must emit no diagnostics, got {:?}",
+            diags
+        );
+    }
+
+    /// A non-`center_of_mass` name must always produce an empty vec —
+    /// the hook is scoped to `center_of_mass` only.
+    #[test]
+    fn snapshot_diagnose_non_center_of_mass_silent() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        let result = eval_builtin("bounding_box", std::slice::from_ref(&snap));
+        let diags = super::diagnose("bounding_box", std::slice::from_ref(&snap), &result);
+        assert!(
+            diags.is_empty(),
+            "bounding_box must emit no snapshot diagnostics, got {:?}",
+            diags
         );
     }
 }

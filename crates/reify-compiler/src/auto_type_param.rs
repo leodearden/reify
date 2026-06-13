@@ -756,45 +756,103 @@ pub enum FeasibilityResult {
 ///
 /// Only `Violated` appears in [`RejectedCandidate::violated_constraints`];
 /// `Satisfied` and `Indeterminate` ids are never recorded there.
+/// Public backward-compat wrapper around [`filter_feasible_candidates_seeded`].
+///
+/// External callers that do not have access to a `template_registry` (or
+/// operate without per-candidate ValueMap seeding — e.g. the
+/// `reify-eval` determinism test that calls this directly) should use this
+/// function. Internal callers should prefer [`filter_feasible_candidates_seeded`]
+/// so that per-candidate literal defaults are seeded into the `check()` call's
+/// `ValueMap` (hoist reversion — task 4434 γ, re-homed from task 3637).
 pub fn filter_feasible_candidates(
     candidates: &[String],
     parameterized_template: &TopologyTemplate,
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
 ) -> FeasibilityResult {
-    use reify_ir::{Satisfaction, ValueMap};
+    // Empty registry + empty param_name → no seeding → empty ValueMap per
+    // candidate (identical to the pre-reversion behaviour).
+    let empty_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+    filter_feasible_candidates_seeded(
+        candidates,
+        parameterized_template,
+        &empty_registry,
+        "",
+        constraint_checker,
+        functions,
+    )
+}
+
+/// Per-candidate feasibility filter with ValueMap seeding (hoist reversion —
+/// task 4434 γ, re-homed from task 3637).
+///
+/// Identical to [`filter_feasible_candidates`] except that `build_constraints_template`
+/// and per-candidate `ValueMap` setup now live **inside** the per-candidate loop,
+/// matching the `NOTE(substitution-pass-trigger)` reversion intent.
+///
+/// For each candidate, the `checker.check()` call receives a `ValueMap` seeded
+/// from that candidate's literal defaults via `seed_candidate_value_map`.  The
+/// key is derived from `param_type_member(parameterized_template, param_name)`,
+/// so constraints of the form `<param_member>.<field> < K` can resolve
+/// `<param_member>.<field>` from the seeded map.
+///
+/// When `template_registry` does not contain a candidate's template (or
+/// `param_type_member` returns `None` for `param_name`), the per-candidate
+/// ValueMap falls back to empty — identical to the pre-reversion behaviour.
+/// This preserves stub-path no-op semantics for callers using
+/// `CompileTimeIndeterminateChecker` (PRD §11.2).
+///
+/// # Note for external callers
+///
+/// This function is `pub(crate)`.  External callers (e.g. `reify-eval` tests
+/// that exercise Phase B in isolation) should use the public
+/// [`filter_feasible_candidates`] wrapper (which passes an empty registry and
+/// produces the pre-reversion empty-ValueMap behaviour).
+///
+/// Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md
+/// M-005/M-013 — resolved by this reversion (task 4434 γ).
+pub(crate) fn filter_feasible_candidates_seeded(
+    candidates: &[String],
+    parameterized_template: &TopologyTemplate,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    param_name: &str,
+    constraint_checker: &dyn ConstraintChecker,
+    functions: &[CompiledFunction],
+) -> FeasibilityResult {
+    use reify_ir::Satisfaction;
 
     debug_assert!(
         !candidates.is_empty(),
-        "filter_feasible_candidates: candidates slice must be non-empty (Phase A's Found arm guarantees ≥1 candidate)"
+        "filter_feasible_candidates_seeded: candidates slice must be non-empty (Phase A's Found arm guarantees ≥1 candidate)"
     );
-
-    let empty_values = ValueMap::new();
-
-    // Build the template's constraint list once — it does not change across
-    // candidates in Phase B.
-    //
-    // NOTE(substitution-pass-trigger): This hoist is sound TODAY because the empty
-    // `ValueMap` and the unchanged `template.constraints` slice means the
-    // `(ConstraintNodeId, &CompiledExpr)` list is identical across candidates.
-    // This changes the moment `Type::TypeParam(T) → Type::StructureRef(candidate)`
-    // substitution starts mutating per-candidate cell types in the expression graph.
-    // Revert this hoist when the substitution pass lands — move the build inside
-    // the per-candidate loop with per-candidate `ValueMap` setup. See
-    // `build_constraints_template` for the full deferred-substitution note.
-    // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
-    let constraints_template = build_constraints_template(parameterized_template);
 
     let mut accepted: Vec<String> = Vec::new();
     let mut rejected: Vec<RejectedCandidate> = Vec::new();
 
+    // `build_constraints_template` is hoisted out of the loop: today
+    // `template.constraints` is byte-identical across all candidates, so
+    // cloning ConstraintNodeId strings once is sufficient.
+    // NOTE(substitution-pass-trigger): once `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution lands, the constraints
+    // expression graph will specialize per-candidate and this build must move
+    // inside the loop.  The per-candidate ValueMap seeding DOES belong inside.
+    let constraints_template = build_constraints_template(parameterized_template);
+
     for candidate in candidates {
+        let candidate_values =
+            if let Some(param_member) = param_type_member(parameterized_template, param_name) {
+                if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
+                    seed_candidate_value_map(candidate_template, param_member)
+                } else {
+                    reify_ir::ValueMap::new()
+                }
+            } else {
+                reify_ir::ValueMap::new()
+            };
+
         let input = ConstraintInput {
-            // constraints_template is hoisted above the loop and does not change
-            // across candidates in Phase B; borrow it directly to avoid an
-            // O(candidates × constraints) ConstraintNodeId-String clone.
             constraints: Cow::Borrowed(&constraints_template),
-            values: &empty_values,
+            values: &candidate_values,
             functions,
             determinacy: None,
         };
@@ -1202,10 +1260,14 @@ pub fn resolve_auto_type_params(
                 SelectionResult::Ambiguous(overflow_vec)
             }
             CandidateEnumeration::Found(candidates) => {
-                // Phase B: feasibility filter.
-                let feasibility = filter_feasible_candidates(
+                // Phase B: feasibility filter (hoist-reversion wiring — task 4434 γ).
+                // Use `filter_feasible_candidates_seeded` so per-candidate ValueMaps
+                // are seeded from the candidate template's literal defaults.
+                let feasibility = filter_feasible_candidates_seeded(
                     &candidates,
                     parameterized_template,
+                    template_registry,
+                    &param.name,
                     constraint_checker,
                     functions,
                 );
@@ -1266,12 +1328,40 @@ pub fn resolve_auto_type_params(
 // below. The module-level rustdoc (top of file, "Phase E (v0.2) —
 // Backtracking" section) carries a one-line pointer to that function.
 
+/// Find the value-cell member in `parameterized_template` that holds the given
+/// `type_param_name` (the cell whose `cell_type == Type::TypeParam(type_param_name)`).
+///
+/// Returns the `member` component of that cell's `ValueCellId`, or `None` if no
+/// such cell exists (e.g. the type-param has no value-cell in the template, or the
+/// template carries no value cells at all).
+///
+/// Used by the joint-recheck in `emit_fallback_warning_and_delegate_to_bfs` and
+/// by the hoist-reversion NOTE sites (task 4434 γ, task 3637 re-homed) to derive
+/// `param_member` for `seed_candidate_value_map`.
+fn param_type_member<'t>(
+    parameterized_template: &'t TopologyTemplate,
+    type_param_name: &str,
+) -> Option<&'t str> {
+    parameterized_template
+        .value_cells
+        .iter()
+        .find(|cell| matches!(&cell.cell_type, Type::TypeParam(n) if n == type_param_name))
+        .map(|cell| cell.id.member.as_str())
+}
+
 /// Push a `Severity::Warning` diagnostic with the given `code` + `message`
 /// (anchored on `params[0].use_site_span` with a label rendered by
-/// `render_auto_type_param_label`) and tail-call into v0.1 BFS
+/// `render_auto_type_param_label`) and delegate to v0.1 BFS
 /// (`resolve_auto_type_params`). Used by the depth-bound and cross-product-cap
 /// guard branches in `resolve_auto_type_params_with_backtracking` to emit a
 /// "search-space-too-large" warning and delegate back to BFS.
+///
+/// γ (task 4434) — PRD §6.2 joint-recheck: BFS is run **first**; only if the
+/// resulting assignment is jointly feasible (or incomplete) is the Warning
+/// emitted. If BFS returns a COMPLETE assignment that is jointly INFEASIBLE
+/// under the full seeded ValueMap, the Warning is suppressed and a hard
+/// `AutoTypeParamBoundedInfeasible` Error is emitted instead — the function
+/// returns an outcome with an **empty substitution**.
 ///
 /// Centralizes the shared invariants of the two fallback branches (label
 /// anchor, severity, BFS tail-call arg list) so that adding a new guard or
@@ -1291,13 +1381,9 @@ fn emit_fallback_warning_and_delegate_to_bfs(
     functions: &[CompiledFunction],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> MultiParamResolutionOutcome {
-    let (_joined_bounds, label_message) = render_auto_type_param_label(&params[0].bounds);
-    diagnostics.push(
-        Diagnostic::warning(message)
-            .with_code(code)
-            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
-    );
-    resolve_auto_type_params(
+    // γ PRD §6.2: run BFS first so the joint recheck can inspect the full
+    // assignment before deciding Warning vs hard Error.
+    let outcome = resolve_auto_type_params(
         params,
         template_registry,
         trait_registry,
@@ -1305,7 +1391,103 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         constraint_checker,
         functions,
         diagnostics,
-    )
+    );
+
+    // Joint-recheck: only when BFS returned a COMPLETE assignment (one entry
+    // per param).  BFS-incomplete outcomes (NoCandidate/Ambiguous) already
+    // carry their own diagnostics and there is no assignment to recheck.
+    if outcome.substitution.len() == params.len() {
+        // Build the full-A ValueMap by merging one per-param seed.
+        // `seed_candidate_value_map(candidate_template, param_member)` keys
+        // entries under `param_member.field`, matching the parameterized
+        // template's constraint expressions that reference `<param_member>.<field>`.
+        let mut full_value_map = reify_ir::ValueMap::new();
+        for (param_name, candidate_name) in &outcome.substitution {
+            if let Some(param_member) = param_type_member(parameterized_template, param_name)
+                && let Some(&candidate_template) =
+                    template_registry.get(candidate_name.as_str())
+            {
+                let seed = seed_candidate_value_map(candidate_template, param_member);
+                for (k, v) in seed.iter() {
+                    // Distinct TypeParam names map to distinct value cells today
+                    // (invariant: each param's member differs).  A collision here
+                    // would silently overwrite an already-seeded key and produce a
+                    // wrong joint ValueMap.
+                    debug_assert!(
+                        !full_value_map.contains(k),
+                        "joint-recheck merge: key {k:?} already present; \
+                         two type-params resolved to the same value-cell member — \
+                         distinct-member invariant violated",
+                    );
+                    full_value_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        // Single joint check (O(1), one `checker.check()` call).
+        let constraints_template = build_constraints_template(parameterized_template);
+        let verdict = check_constraints_leaf(
+            &constraints_template,
+            constraint_checker,
+            functions,
+            &full_value_map,
+        );
+
+        if !verdict.feasible {
+            // BFS assignment is jointly infeasible (Violated constraint(s)
+            // found in the full-A ValueMap).  Emit `AutoTypeParamBoundedInfeasible`
+            // Error INSTEAD of the Warning and return empty substitution — PRD
+            // §6.2 step 4: "Produce NO substitution for the declaration."
+            let param_names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+            let bound_clause = if code == DiagnosticCode::AutoTypeParamDepthBoundExceeded {
+                "depth bound exceeded"
+            } else {
+                "cross-product cap exceeded"
+            };
+            let assignment_str: Vec<String> = outcome
+                .substitution
+                .iter()
+                .map(|(p, c)| format!("{p}={c}"))
+                .collect();
+            let violated_str: Vec<String> = verdict
+                .violated_constraints
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            let err_message = format!(
+                "auto type-parameter BFS fallback assignment is jointly infeasible: \
+                 parameters [{names}] {bound_clause}; \
+                 BFS assignment [{assignment}] violates constraint(s) [{violated}] \
+                 under joint check. No substitution produced.",
+                names = param_names.join(", "),
+                bound_clause = bound_clause,
+                assignment = assignment_str.join(", "),
+                violated = violated_str.join(", "),
+            );
+            let (_, label_message) = render_auto_type_param_label(&params[0].bounds);
+            diagnostics.push(
+                Diagnostic::error(err_message)
+                    .with_code(DiagnosticCode::AutoTypeParamBoundedInfeasible)
+                    .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
+            );
+            return MultiParamResolutionOutcome {
+                per_param: outcome.per_param,
+                substitution: vec![],
+            };
+        }
+    }
+
+    // Feasible (or BFS incomplete) → push the existing depth-bound/cap Warning
+    // and return the BFS outcome unchanged.  This is the stub-path no-op
+    // guarantee of PRD §11.2: `CompileTimeIndeterminateChecker` never returns
+    // Violated, so γ is transparent on the production compile path.
+    let (_, label_message) = render_auto_type_param_label(&params[0].bounds);
+    diagnostics.push(
+        Diagnostic::warning(message)
+            .with_code(code)
+            .with_label(DiagnosticLabel::new(params[0].use_site_span, label_message)),
+    );
+    outcome
 }
 
 /// DFS over the cross-product of `auto:` candidate sets with a depth bound.
@@ -1399,20 +1581,17 @@ pub fn resolve_auto_type_params_with_backtracking(
     // see `DiagnosticCode::AutoTypeParamDepthBoundExceeded` in
     // `crates/reify-types/src/diagnostics.rs`.
     //
-    // NOTE(substitution-pass-trigger): The BFS fallback's soundness currently relies
-    // on the deferred type-substitution scope cut (see the PRD's "Constraint-feasibility
-    // incremental binding deferred" decision): because Phase B's verdict does not depend
-    // on the candidate binding today (empty `ValueMap`, `template.constraints` unchanged
-    // across candidates), BFS picking a per-param-feasible combination is equivalent to
-    // DFS finding any cross-product feasible. Once `Type::TypeParam(T) →
-    // Type::StructureRef(candidate)` substitution lands and per-candidate cell types
-    // diverge, BFS may pick a per-param-feasible combination that is INFEASIBLE at the
-    // cross-product. At that point this branch must be revisited — either escalating the
-    // diagnostic from Warning to Error, or replacing the BFS fallback with a hard error.
-    // The runtime diagnostic already self-documents this hazard via the NOTE clause in
-    // the format! strings at the depth-bound and cap-fallback sites (steps 2+4 of task
-    // 3637). Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md
-    // M-005/M-006/M-013.
+    // NOTE(substitution-pass-trigger) — RESOLVED by task 4434 γ (re-homed from task 3637):
+    // The BFS-fallback soundness hole (BFS picking a per-param-feasible combination that is
+    // jointly INFEASIBLE at the cross-product once `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution diverges cell types) is closed by γ's
+    // joint-recheck in `emit_fallback_warning_and_delegate_to_bfs`: after BFS returns a
+    // complete assignment A, a single `check_constraints_leaf` call with the full-A seeded
+    // ValueMap rejects A if Violated and emits `AutoTypeParamBoundedInfeasible` Error with
+    // empty substitution.  The BFS branch no longer needs to be revisited for this hazard.
+    // Remaining NOTE clause in the format! strings below is kept as a user-visible audit
+    // trail but no longer reflects an open soundness concern.
+    // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-006/M-013.
 
     // strict `>`: params.len()==max_depth still runs DFS; only params.len()>max_depth falls back.
     if params.len() > max_depth {
@@ -1444,20 +1623,26 @@ pub fn resolve_auto_type_params_with_backtracking(
     // param the worst case is 10^6 leaves; the per-leaf rebuild was a
     // measurable hot-path allocation pin.
     //
-    // NOTE(substitution-pass-trigger): This hoist is sound TODAY because the empty
-    // `ValueMap` and the unchanged `template.constraints` slice means the
-    // `(ConstraintNodeId, &CompiledExpr)` list is byte-identical across DFS leaves.
-    // This changes the moment `Type::TypeParam(T) → Type::StructureRef(candidate)`
-    // substitution starts mutating per-candidate cell types in the expression graph.
-    // Revert this hoist when the substitution pass lands — move the build inside the
-    // DFS leaf with per-leaf (per-candidate) `ValueMap` setup. See
-    // `build_constraints_template` for the full deferred-substitution note.
+    // NOTE(substitution-pass-trigger) — PARTIALLY REVERTED by task 4434 γ (re-homed from
+    // task 3637): The `leaf_values` hoist is reverted — per-leaf ValueMaps are now seeded
+    // inside `dfs_search`'s leaf branch via `seed_candidate_value_map` (driven by the
+    // per-param member mapping computed below).  The `constraints_template` hoist remains
+    // sound because `template.constraints` is still unchanged across DFS leaves (the
+    // expression graph does not yet specialize per-candidate).  When `Type::TypeParam(T) →
+    // Type::StructureRef(candidate)` substitution lands and per-candidate cell types
+    // diverge, `build_constraints_template` must also move inside the DFS leaf — at that
+    // point this comment becomes the remaining NOTE.
     // Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
     let constraints_template = build_constraints_template(parameterized_template);
-    // The empty ValueMap used by every DFS leaf: built once here alongside
-    // `constraints_template` so `dfs_leaf_feasible` doesn't construct a new
-    // (zero-heap-allocation but non-trivial stack init) empty map per call.
-    let leaf_values = reify_ir::ValueMap::new();
+    // Pre-compute param→member mapping for `dfs_search`'s per-leaf ValueMap seeding.
+    // `param_type_member` scans `parameterized_template.value_cells` for the cell whose
+    // `cell_type == Type::TypeParam(param.name)` and returns its member name.  `None`
+    // means no value cell carries that type param — the leaf falls back to an empty map
+    // for that param (stub-path no-op semantics, PRD §11.2).
+    let param_members: Vec<Option<String>> = params
+        .iter()
+        .map(|p| param_type_member(parameterized_template, &p.name).map(|s| s.to_owned()))
+        .collect();
 
     // Phase A enumeration runs ONCE per param up front (before recursion),
     // producing a `Vec<Vec<String>>` of per-param candidate vectors. This
@@ -1595,9 +1780,13 @@ pub fn resolve_auto_type_params_with_backtracking(
     if params.len() == 1 {
         let param = &params[0];
         let candidates = &per_param_candidates[0];
-        let feasibility = filter_feasible_candidates(
+        // Hoist-reversion wiring (task 4434 γ, re-homed from task 3637):
+        // use the seeded version so per-candidate ValueMaps are populated.
+        let feasibility = filter_feasible_candidates_seeded(
             candidates,
             parameterized_template,
+            template_registry,
+            &param.name,
             constraint_checker,
             functions,
         );
@@ -1679,7 +1868,8 @@ pub fn resolve_auto_type_params_with_backtracking(
         &mut current,
         &mut feasible_assignments,
         &constraints_template,
-        &leaf_values,
+        template_registry,
+        &param_members,
         constraint_checker,
         functions,
         max_feasible_to_collect,
@@ -2101,10 +2291,14 @@ enum DfsControl {
 /// or removed together with the `filter_feasible_candidates` and
 /// `resolve_auto_type_params_with_backtracking` callers.
 ///
-/// NOTE(substitution-pass-trigger): Revert when `Type::TypeParam(T) →
-/// Type::StructureRef(candidate)` substitution lands — the build must move
-/// inside the per-candidate / per-leaf loop with per-candidate `ValueMap` setup.
-/// See matching NOTE(substitution-pass-trigger) comments at both call sites.
+/// NOTE(substitution-pass-trigger) — PARTIALLY REVERTED by task 4434 γ (re-homed from
+/// task 3637): the `leaf_values` / per-candidate `ValueMap` portion of the hoist reversion
+/// has landed — `dfs_search` now seeds a per-leaf `ValueMap` from the selected candidates'
+/// literal defaults, and `filter_feasible_candidates_seeded` seeds per-candidate ValueMaps.
+/// `build_constraints_template` itself is still hoisted (called once before the DFS loop)
+/// because `template.constraints` is byte-identical across leaves today.  When
+/// `Type::TypeParam(T) → Type::StructureRef(candidate)` substitution lands and per-candidate
+/// cell types diverge, this build must also move inside the per-candidate / per-leaf loop.
 /// Audit: docs/architecture-audit/findings/auto-resolution-backtracking.md M-005/M-013.
 fn build_constraints_template(
     template: &TopologyTemplate,
@@ -2274,14 +2468,33 @@ fn dfs_search(
     current: &mut Vec<String>,
     feasible_assignments: &mut Vec<Vec<String>>,
     constraints_template: &[(ConstraintNodeId, &reify_ir::CompiledExpr)],
-    leaf_values: &reify_ir::ValueMap,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    param_members: &[Option<String>],
     constraint_checker: &dyn ConstraintChecker,
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
     blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
 ) -> DfsControl {
     if level == per_param_candidates.len() {
-        // Leaf branch: call the constraint checker ONCE for this leaf.
+        // Leaf branch: build a per-leaf ValueMap seeded from each param's selected
+        // candidate's literal defaults (hoist reversion — task 4434 γ, re-homed from
+        // task 3637).  `param_members[i]` is the member name of the value cell in the
+        // parameterized template that carries `Type::TypeParam(params[i].name)`.
+        // When a member is `None` (no matching value cell) or the candidate template is
+        // absent from the registry, that param's contribution to the map is empty —
+        // stub-path no-op semantics (PRD §11.2).
+        let mut leaf_values = reify_ir::ValueMap::new();
+        for (i, candidate) in current.iter().enumerate() {
+            if let Some(Some(member)) = param_members.get(i)
+                && let Some(&candidate_template) = template_registry.get(candidate.as_str())
+            {
+                let seeded = seed_candidate_value_map(candidate_template, member);
+                for (k, v) in seeded.iter() {
+                    leaf_values.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // Call the constraint checker ONCE for this leaf.
         // The `check_constraints_leaf` helper surfaces both feasibility and
         // the violated constraint IDs in a single `checker.check()` invocation.
         //
@@ -2292,7 +2505,7 @@ fn dfs_search(
             constraints_template,
             constraint_checker,
             functions,
-            leaf_values,
+            &leaf_values,
         );
         if verdict.feasible {
             feasible_assignments.push(current.clone());
@@ -2325,7 +2538,8 @@ fn dfs_search(
             current,
             feasible_assignments,
             constraints_template,
-            leaf_values,
+            template_registry,
+            param_members,
             constraint_checker,
             functions,
             max_feasible_to_collect,
@@ -2371,6 +2585,7 @@ mod helper_tests {
         AutoTypeParam, build_constraint_blame_map, build_constraints_template,
         check_constraints_leaf, dfs_search,
     };
+    use crate::TopologyTemplate;
     use reify_test_support::MockConstraintChecker;
     use reify_core::{ConstraintNodeId, Type};
     use reify_ir::{CompiledFunction, Satisfaction, Value};
@@ -2653,7 +2868,6 @@ mod helper_tests {
         // Force the leaf to be infeasible so compute_deepest_blame_level is called.
         let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);
         let functions: &[CompiledFunction] = &[];
-        let leaf_values = reify_ir::ValueMap::new();
 
         // Malformed blame_map: blame "C0" on out-of-range index 2.
         // By induction the production `compute_blame_map` cannot emit index 2 in a
@@ -2667,13 +2881,16 @@ mod helper_tests {
 
         let mut current: Vec<String> = Vec::new();
         let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
+        let empty_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let empty_param_members: Vec<Option<String>> = Vec::new();
         dfs_search(
             0,
             &per_param_candidates,
             &mut current,
             &mut feasible_assignments,
             &constraints_template,
-            &leaf_values,
+            &empty_registry,
+            &empty_param_members,
             &checker,
             functions,
             usize::MAX,

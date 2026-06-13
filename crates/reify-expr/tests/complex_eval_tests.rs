@@ -73,7 +73,7 @@ fn complex_add_dimension_mismatch() {
         complex_val(1.0, 2.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         complex_val(3.0, 4.0, DimensionVector::TIME),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Type::complex(Type::length()),
     );
     assert!(result.is_undef());
@@ -103,7 +103,7 @@ fn complex_sub_dimension_mismatch() {
         complex_val(5.0, 7.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         complex_val(2.0, 3.0, DimensionVector::TIME),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Type::complex(Type::length()),
     );
     assert!(result.is_undef());
@@ -117,10 +117,10 @@ fn complex_mul_dimensionless() {
     let result = eval_binop(
         BinOp::Mul,
         complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(
         result,
@@ -137,8 +137,8 @@ fn complex_mul_dimension_product() {
         complex_val(2.0, 3.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         complex_val(4.0, 5.0, DimensionVector::TIME),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
     assert_eq!(result, complex_val(-7.0, 22.0, expected_dim));
@@ -155,8 +155,8 @@ fn complex_mul_scalar_right() {
         complex_val(2.0, 3.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         scalar_val(4.0, DimensionVector::TIME),
-        Type::Real,
-        Type::complex(Type::Real),
+        Type::dimensionless_scalar(),
+        Type::complex(Type::dimensionless_scalar()),
     );
     let expected_dim = DimensionVector::LENGTH.mul(&DimensionVector::TIME);
     assert_eq!(result, complex_val(8.0, 12.0, expected_dim));
@@ -168,10 +168,10 @@ fn scalar_mul_complex_left() {
     let result = eval_binop(
         BinOp::Mul,
         scalar_val(4.0, DimensionVector::TIME),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(2.0, 3.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     let expected_dim = DimensionVector::TIME.mul(&DimensionVector::LENGTH);
     assert_eq!(result, complex_val(8.0, 12.0, expected_dim));
@@ -213,7 +213,7 @@ fn complex_mul_real() {
         complex_val(2.0, 3.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Value::Real(0.5),
-        Type::Real,
+        Type::dimensionless_scalar(),
         Type::complex(Type::length()),
     );
     assert_eq!(result, complex_val(1.0, 1.5, DimensionVector::LENGTH));
@@ -225,7 +225,7 @@ fn real_mul_complex() {
     let result = eval_binop(
         BinOp::Mul,
         Value::Real(0.5),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(2.0, 3.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Type::complex(Type::length()),
@@ -241,7 +241,7 @@ fn complex_div_scalar() {
     let result = eval_binop(
         BinOp::Div,
         complex_val(6.0, 8.0, DimensionVector::AREA),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         scalar_val(2.0, DimensionVector::LENGTH),
         Type::length(),
         Type::complex(Type::length()),
@@ -272,7 +272,7 @@ fn complex_div_real() {
         complex_val(6.0, 8.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Value::Real(2.0),
-        Type::Real,
+        Type::dimensionless_scalar(),
         Type::complex(Type::length()),
     );
     assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::LENGTH));
@@ -313,10 +313,10 @@ fn complex_div_complex_dimensionless() {
     let result = eval_binop(
         BinOp::Div,
         complex_val(1.0, 0.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         complex_val(0.0, 1.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(0.0, -1.0, DimensionVector::DIMENSIONLESS));
 }
@@ -329,10 +329,10 @@ fn complex_div_complex_dimension_quotient() {
     let result = eval_binop(
         BinOp::Div,
         complex_val(6.0, 8.0, DimensionVector::AREA),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         complex_val(2.0, 0.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.0, 4.0, expected_dim));
 }
@@ -361,10 +361,10 @@ fn complex_div_complex_overflow_propagates_infinity() {
     let result = eval_binop(
         BinOp::Div,
         complex_val(f64::MAX, 0.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         complex_val(0.5, 0.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert!(
         matches!(&result, Value::Complex { re, im, .. } if re.is_infinite() && *im == 0.0),
@@ -393,9 +393,9 @@ fn complex_negation() {
 fn method_re_dimensionless() {
     let result = eval_method(
         complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "re",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert_eq!(result, Value::Real(3.0));
 }
@@ -417,9 +417,9 @@ fn method_re_dimensioned() {
 fn method_im_dimensionless() {
     let result = eval_method(
         complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "im",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert_eq!(result, Value::Real(4.0));
 }
@@ -443,9 +443,9 @@ fn method_im_dimensioned() {
 fn method_magnitude_dimensionless() {
     let result = eval_method(
         complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "magnitude",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert_eq!(result, Value::Real(5.0));
 }
@@ -472,7 +472,7 @@ fn method_phase() {
         complex_val(1.0, 1.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         "phase",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let expected = scalar_val(std::f64::consts::FRAC_PI_4, DimensionVector::ANGLE);
     assert_eq!(result, expected);
@@ -497,9 +497,9 @@ fn method_conjugate() {
 fn assert_conjugate_undef(re: f64, im: f64) {
     let result = eval_method(
         complex_val(re, im, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "conjugate",
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert!(result.is_undef());
 }
@@ -549,9 +549,9 @@ fn conjugate_inf_re_undef_dimensioned() {
 fn conjugate_pure_imaginary() {
     let result = eval_method(
         complex_val(0.0, 5.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "conjugate",
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(
         result,
@@ -565,9 +565,9 @@ fn conjugate_pure_imaginary() {
 fn conjugate_negative_im() {
     let result = eval_method(
         complex_val(2.0, -3.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "conjugate",
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(
         result,
@@ -598,7 +598,7 @@ fn method_re_on_non_complex_undef() {
         scalar_val(5.0, DimensionVector::LENGTH),
         Type::length(),
         "re",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert!(result.is_undef());
 }
@@ -609,11 +609,11 @@ fn method_magnitude_with_args_undef() {
     let expr = CompiledExpr::method_call(
         lit(
             complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS),
-            Type::complex(Type::Real),
+            Type::complex(Type::dimensionless_scalar()),
         ),
         "magnitude".to_string(),
         vec![lit(Value::Int(1), Type::Int)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -629,10 +629,10 @@ fn real_add_complex_dimensionless() {
     let result = eval_binop(
         BinOp::Add,
         Value::Real(3.2),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.2, 4.1, DimensionVector::DIMENSIONLESS));
 }
@@ -643,10 +643,10 @@ fn complex_add_real_dimensionless() {
     let result = eval_binop(
         BinOp::Add,
         complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Value::Real(3.2),
-        Type::Real,
-        Type::complex(Type::Real),
+        Type::dimensionless_scalar(),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.2, 4.1, DimensionVector::DIMENSIONLESS));
 }
@@ -659,8 +659,8 @@ fn int_add_complex_dimensionless() {
         Value::Int(3),
         Type::Int,
         complex_val(0.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS));
 }
@@ -671,10 +671,10 @@ fn complex_add_int_dimensionless() {
     let result = eval_binop(
         BinOp::Add,
         complex_val(0.0, 4.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Value::Int(3),
         Type::Int,
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.0, 4.0, DimensionVector::DIMENSIONLESS));
 }
@@ -687,10 +687,10 @@ fn real_add_complex_nonzero_re() {
     let result = eval_binop(
         BinOp::Add,
         Value::Real(3.2),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(1.0, 4.1, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(4.2, 4.1, DimensionVector::DIMENSIONLESS));
 }
@@ -702,7 +702,7 @@ fn real_add_dimensioned_complex_undef() {
     let result = eval_binop(
         BinOp::Add,
         Value::Real(3.2),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(1.0, 2.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Type::complex(Type::length()),
@@ -719,8 +719,8 @@ fn scalar_add_complex_dimensionless_undef() {
         scalar_val(0.005, DimensionVector::LENGTH),
         Type::length(),
         complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert!(result.is_undef());
 }
@@ -734,10 +734,10 @@ fn real_sub_complex_dimensionless() {
     let result = eval_binop(
         BinOp::Sub,
         Value::Real(5.0),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(4.0, -2.0, DimensionVector::DIMENSIONLESS));
 }
@@ -749,10 +749,10 @@ fn complex_sub_real_dimensionless() {
     let result = eval_binop(
         BinOp::Sub,
         complex_val(5.0, 7.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Value::Real(2.0),
-        Type::Real,
-        Type::complex(Type::Real),
+        Type::dimensionless_scalar(),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.0, 7.0, DimensionVector::DIMENSIONLESS));
 }
@@ -765,8 +765,8 @@ fn int_sub_complex_dimensionless() {
         Value::Int(5),
         Type::Int,
         complex_val(1.0, 2.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(4.0, -2.0, DimensionVector::DIMENSIONLESS));
 }
@@ -777,10 +777,10 @@ fn complex_sub_int_dimensionless() {
     let result = eval_binop(
         BinOp::Sub,
         complex_val(5.0, 7.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         Value::Int(2),
         Type::Int,
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert_eq!(result, complex_val(3.0, 7.0, DimensionVector::DIMENSIONLESS));
 }
@@ -791,7 +791,7 @@ fn real_sub_dimensioned_complex_undef() {
     let result = eval_binop(
         BinOp::Sub,
         Value::Real(5.0),
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(1.0, 2.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Type::complex(Type::length()),
@@ -808,8 +808,8 @@ fn scalar_sub_complex_dimensionless_undef() {
         scalar_val(0.005, DimensionVector::LENGTH),
         Type::length(),
         complex_val(0.0, 4.1, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
+        Type::complex(Type::dimensionless_scalar()),
     );
     assert!(result.is_undef());
 }
@@ -820,7 +820,7 @@ fn complex_undef_propagation() {
     let result = eval_binop(
         BinOp::Add,
         Value::Undef,
-        Type::Real,
+        Type::dimensionless_scalar(),
         complex_val(1.0, 2.0, DimensionVector::LENGTH),
         Type::complex(Type::length()),
         Type::complex(Type::length()),
@@ -835,9 +835,9 @@ fn complex_undef_propagation() {
 fn method_magnitude_zero_complex_returns_zero() {
     let result = eval_method(
         complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "magnitude",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert_eq!(result, Value::Real(0.0));
 }
@@ -847,9 +847,9 @@ fn method_magnitude_zero_complex_returns_zero() {
 fn method_phase_zero_complex_returns_undef() {
     let result = eval_method(
         complex_val(0.0, 0.0, DimensionVector::DIMENSIONLESS),
-        Type::complex(Type::Real),
+        Type::complex(Type::dimensionless_scalar()),
         "phase",
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     assert!(
         result.is_undef(),

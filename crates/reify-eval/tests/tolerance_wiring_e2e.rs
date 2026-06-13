@@ -195,7 +195,7 @@ fn my_design_template_with_box_realization() -> reify_compiler::TopologyTemplate
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
         .realization_named("MyDesign", 0, "body", vec![box_op])
         .build()
 }
@@ -913,7 +913,7 @@ fn my_design_template_with_box_realization_dims(
         ],
     };
     TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
         .realization_named("MyDesign", 0, "body", vec![box_op])
         .build()
 }
@@ -1239,7 +1239,7 @@ fn anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_re
         ],
     };
     let anonymous_template = TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
         // `realization(...)` → `RealizationDecl.name == None`
         .realization("MyDesign", 0, vec![box_op])
         .build();

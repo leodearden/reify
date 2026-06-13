@@ -2658,9 +2658,9 @@ fn match_arm_decl_group_outside_sub_with_different_name_emits_no_collision() {
 /// upstream "unresolved type" diagnostic but must NOT emit a spurious
 /// "non-exhaustive match" diagnostic.
 ///
-/// Control flow: `param head_type : MissingEnum` resolves to `Type::Real` (fallback)
+/// Control flow: `param head_type : MissingEnum` resolves to `Type::dimensionless_scalar()` (fallback)
 /// and emits `"unresolved type: MissingEnum"`.  When `compile_match_arm_decl_group`
-/// calls `scope.resolve("head_type")`, it gets `(cell_id, Type::Real)` → hits the
+/// calls `scope.resolve("head_type")`, it gets `(cell_id, Type::dimensionless_scalar())` → hits the
 /// `"expected an enum"` branch at entity.rs:2152 → returns early at line 2163 —
 /// never reaching the exhaustiveness gate at line 2289.
 ///

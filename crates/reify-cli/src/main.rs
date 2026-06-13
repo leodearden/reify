@@ -21,7 +21,7 @@ extern crate reify_kernel_manifold as _;
 
 mod cache;
 mod mcp_context;
-use reify_core::{ModulePath, Severity};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_ir::{ExportFormat, Satisfaction};
 
 fn print_usage(out: &mut dyn std::io::Write) {
@@ -563,13 +563,26 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
-        finish_check(
+        let exit = finish_check(
             &outcome,
             &result.constraint_results,
             strict,
             &mut std::io::stdout(),
             &mut std::io::stderr(),
-        )
+        );
+
+        // Escalate to FAILURE when a GdtIllegalModifier error is present.
+        // Scoped strictly to this code so non-GD&T modules are byte-identical.
+        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        if result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        {
+            return ExitCode::FAILURE;
+        }
+
+        exit
     } else {
         // --purpose path: replicates the canonical
         // eval → activate_purpose → check_constraints_with_values sequence
@@ -577,6 +590,12 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // engine.check() does NOT visit purpose-injected constraints —
         // they live in snapshot.graph.constraints, visited only by
         // check_constraints_with_values.
+        //
+        // GD&T legality (check_gdt_legality) is only enforced on the non-purpose
+        // path above.  A design with an illegal MMC modifier will not produce a
+        // GdtIllegalModifier diagnostic when checked via --purpose.  This is a
+        // known limitation of task 4475 β scope; a follow-up task should wire
+        // check_gdt_legality (and the same exit-code escalation) into this branch.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.

@@ -11,7 +11,7 @@ use reify_test_support::{compile_source, errors_only, warnings_only};
 fn collection_member_typo_produces_diagnostic() {
     // "diametr" is a typo for "diameter" — the compiler should emit
     // a diagnostic about an unknown member rather than silently defaulting
-    // to Type::Real.
+    // to Type::dimensionless_scalar().
     let source = r#"
         structure Bolt {
             param diameter : Length = 10mm
@@ -206,7 +206,7 @@ fn box_wrong_arg_count_produces_preexisting_diagnostic() {
 fn trait_member_no_type_annotation_emits_diagnostic() {
     // A structure implementing a trait where one of the structure's params
     // has no type annotation should produce a diagnostic (conformance.rs:46
-    // outer unwrap_or). Currently defaults silently to Type::Real.
+    // outer unwrap_or). Currently defaults silently to Type::dimensionless_scalar().
     let source = r#"
         trait T {
             param x : Real
@@ -235,7 +235,7 @@ fn trait_let_no_type_annotation_compiles_clean() {
     // A structure implementing a trait may have let bindings without explicit
     // type annotations — the type is inferred from the expression. This must
     // NOT produce an error (conformance.rs:73 path). Previously this silently
-    // defaulted to Type::Real; the correct behavior is to simply omit the
+    // defaulted to Type::dimensionless_scalar(); the correct behavior is to simply omit the
     // member from the structure_members map (its type is expression-inferred).
     let source = r#"
         trait T {
@@ -359,7 +359,7 @@ fn guarded_param_resolves_without_ice() {
 fn port_param_unknown_type_name_emits_error() {
     // A port param whose type name doesn't exist (Nonexistent) should produce
     // an error diagnostic. Previously, entity.rs:366 silently defaulted to
-    // Type::Real via unwrap_or without any diagnostic.
+    // Type::dimensionless_scalar() via unwrap_or without any diagnostic.
     let source = r#"
         trait MechPort {
             param diameter : Length
@@ -388,7 +388,7 @@ fn port_param_unknown_type_name_emits_error() {
 #[test]
 fn empty_list_literal_emits_type_inference_warning() {
     // An empty list literal `[]` has no elements to infer the element type from.
-    // expr.rs:895 silently defaulted to Type::Real. It should now emit a warning
+    // expr.rs:895 silently defaulted to Type::dimensionless_scalar(). It should now emit a warning
     // diagnostic informing the user that element type is defaulting to Real.
     let source = r#"
         structure S {
@@ -417,7 +417,7 @@ fn empty_list_literal_emits_type_inference_warning() {
 #[test]
 fn empty_set_literal_emits_type_inference_warning() {
     // An empty set literal `set{}` has no elements to infer from.
-    // expr.rs:917 silently defaulted to Type::Real. It should now emit a warning.
+    // expr.rs:917 silently defaulted to Type::dimensionless_scalar(). It should now emit a warning.
     let source = r#"
         structure S {
             let x = set{}
@@ -445,7 +445,7 @@ fn empty_set_literal_emits_type_inference_warning() {
 #[test]
 fn empty_map_literal_emits_type_inference_warning() {
     // An empty map literal `map{}` has no entries to infer key/value types from.
-    // expr.rs:949 and 953 silently defaulted to Type::String/Type::Real. Should warn.
+    // expr.rs:949 and 953 silently defaulted to Type::String/Type::dimensionless_scalar(). Should warn.
     let source = r#"
         structure S {
             let x = map{}
@@ -474,7 +474,7 @@ fn empty_map_literal_emits_type_inference_warning() {
 
 /// Range with valid bounds (green-path ICE documentation).
 ///
-/// expr.rs:369 has `.unwrap_or(Type::Real)` for the case where both
+/// expr.rs:369 has `.unwrap_or(Type::dimensionless_scalar())` for the case where both
 /// `compiled_lower` and `compiled_upper` are `None`.  The parser
 /// (`lower_range_expr`) requires **both** lower and upper nodes via `?`, so
 /// `ExprKind::Range { lower: None, upper: None, .. }` is unreachable from user
@@ -666,7 +666,7 @@ fn non_collection_sub_member_type_resolves_without_ice() {
 
 /// Match with no arms (ICE-path documentation / parse-guard).
 ///
-/// expr.rs:1046 has `.unwrap_or(Type::Real)` on `compiled_arms.first()`.
+/// expr.rs:1046 has `.unwrap_or(Type::dimensionless_scalar())` on `compiled_arms.first()`.
 /// If the grammar allows `match x {}` (no arms), that path is reachable and
 /// should emit an ICE diagnostic.  If the grammar rejects it (parse error),
 /// the code at expr.rs:1046 is an unreachable ICE path.
@@ -704,9 +704,9 @@ fn match_no_arms_emits_diagnostic() {
 /// Index access on a non-collection type should emit a diagnostic.
 ///
 /// `x` has type `Int` (whole-number literal `5`), so `x[0]` hits the
-/// currently-silent `_ => Type::Real` fallback at expr.rs:1323-1328.
+/// currently-silent `_ => Type::dimensionless_scalar()` fallback at expr.rs:1323-1328.
 /// Before the fix (task-2066), no diagnostic is emitted — the fallback
-/// silently returns `Type::Real` for `y`.
+/// silently returns `Type::dimensionless_scalar()` for `y`.
 ///
 /// Regression guard: guards expr.rs:1323-1328 against silent fallback (task-2066).
 #[test]
@@ -736,8 +736,8 @@ fn index_into_non_collection_emits_diagnostic() {
 /// Quantifier over a non-collection type should emit a diagnostic.
 ///
 /// `x` has type `Int` (whole-number literal `5`), so `forall i in x : i > 0`
-/// hits the currently-silent `_ => Type::Real` fallback at expr.rs:1635-1642
-/// and silently infers `elem_type = Type::Real` with no diagnostic.
+/// hits the currently-silent `_ => Type::dimensionless_scalar()` fallback at expr.rs:1635-1642
+/// and silently infers `elem_type = Type::dimensionless_scalar()` with no diagnostic.
 /// Before the fix (task-2066), no diagnostic is emitted.
 ///
 /// Regression guard: guards expr.rs:1635-1642 against silent fallback (task-2066).

@@ -788,7 +788,7 @@ fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
 ///
 /// Recurses through composite quantity-bearing variants
 /// (`Type::Tensor`/`Vector`/`Point`/`Matrix`) to reach the leaf
-/// `Type::Scalar { dimension }`. `Type::Real` is treated as
+/// `Type::Scalar { dimension }`. `Type::dimensionless_scalar()` is treated as
 /// [`DimensionVector::DIMENSIONLESS`] for compatibility with the rest of
 /// the language. All other variants (Bool, Int, String, Enum, Function,
 /// Geometry, etc.) are not meaningful field codomains for OpenVDB-imported
@@ -796,7 +796,6 @@ fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
 fn extract_codomain_dimension(t: &Type) -> Result<DimensionVector, IngestError> {
     match t {
         Type::Scalar { dimension } => Ok(*dimension),
-        Type::Real => Ok(DimensionVector::DIMENSIONLESS),
         Type::Tensor { quantity, .. }
         | Type::Vector { quantity, .. }
         | Type::Point { quantity, .. }
@@ -826,8 +825,8 @@ fn format_type_repr(t: &Type) -> String {
     match t {
         Type::Bool => "Bool",
         Type::Int => "Int",
-        Type::Real => "Real",
         Type::String => "String",
+        Type::Scalar { dimension } if dimension.is_dimensionless() => "Real",
         Type::Scalar { .. } => "Scalar",
         Type::Enum(_) => "Enum",
         Type::List(_) => "List",
@@ -898,13 +897,13 @@ mod tests {
         assert_eq!(extract_codomain_dimension(&t), Ok(DimensionVector::LENGTH));
     }
 
-    /// Step-13(c): `Type::Real` codomain → `Ok(DIMENSIONLESS)`. Pins the
+    /// Step-13(c): `Type::dimensionless_scalar()` codomain → `Ok(DIMENSIONLESS)`. Pins the
     /// `Real` arm, which exists for compatibility with the rest of the
-    /// language treating dimensionless numerics as `Type::Real`.
+    /// language treating dimensionless numerics as `Type::dimensionless_scalar()`.
     #[test]
     fn extract_codomain_dimension_real_is_dimensionless() {
         assert_eq!(
-            extract_codomain_dimension(&Type::Real),
+            extract_codomain_dimension(&Type::dimensionless_scalar()),
             Ok(DimensionVector::DIMENSIONLESS)
         );
     }
@@ -921,7 +920,7 @@ mod tests {
         // Unit variants (9)
         assert_eq!(format_type_repr(&Type::Bool), "Bool");
         assert_eq!(format_type_repr(&Type::Int), "Int");
-        assert_eq!(format_type_repr(&Type::Real), "Real");
+        assert_eq!(format_type_repr(&Type::dimensionless_scalar()), "Real");
         assert_eq!(format_type_repr(&Type::String), "String");
         assert_eq!(format_type_repr(&Type::Geometry), "Geometry");
         assert_eq!(format_type_repr(&Type::Plane), "Plane");
@@ -942,7 +941,7 @@ mod tests {
             "Option"
         );
         assert_eq!(
-            format_type_repr(&Type::Complex(Box::new(Type::Real))),
+            format_type_repr(&Type::Complex(Box::new(Type::dimensionless_scalar()))),
             "Complex"
         );
         assert_eq!(format_type_repr(&Type::Range(Box::new(Type::Int))), "Range");
@@ -977,7 +976,7 @@ mod tests {
         // Struct-like variants (7)
         assert_eq!(
             format_type_repr(&Type::Scalar {
-                dimension: DimensionVector::DIMENSIONLESS
+                dimension: DimensionVector::LENGTH
             }),
             "Scalar"
         );
@@ -990,22 +989,22 @@ mod tests {
         );
         assert_eq!(
             format_type_repr(&Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }),
             "Field"
         );
         assert_eq!(
             format_type_repr(&Type::Point {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Point"
         );
         assert_eq!(
             format_type_repr(&Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Vector"
         );
@@ -1013,7 +1012,7 @@ mod tests {
             format_type_repr(&Type::Tensor {
                 rank: 2,
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Tensor"
         );
@@ -1021,7 +1020,7 @@ mod tests {
             format_type_repr(&Type::Matrix {
                 m: 2,
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Matrix"
         );

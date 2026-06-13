@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn equality_constraint_returns_single_bool_expr() {
-        let exprs = equality_constraint("Beam", "ratio", Type::Real, literal(Value::Real(2.0)));
+        let exprs = equality_constraint("Beam", "ratio", Type::dimensionless_scalar(), literal(Value::Real(2.0)));
         assert_eq!(
             exprs.len(),
             1,

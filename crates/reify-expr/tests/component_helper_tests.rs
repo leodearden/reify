@@ -25,9 +25,9 @@ fn eval(expr: &CompiledExpr) -> Value {
 /// Exercises componentwise_binop's empty-components guard.
 #[test]
 fn add_empty_tensors_returns_undef() {
-    let a = lit(Value::Tensor(vec![]), Type::Real);
-    let b = lit(Value::Tensor(vec![]), Type::Real);
-    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+    let a = lit(Value::Tensor(vec![]), Type::dimensionless_scalar());
+    let b = lit(Value::Tensor(vec![]), Type::dimensionless_scalar());
+    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -35,9 +35,9 @@ fn add_empty_tensors_returns_undef() {
 /// Exercises scale_components' empty-components guard.
 #[test]
 fn scale_empty_vector_returns_undef() {
-    let v = lit(Value::Vector(vec![]), Type::Real);
-    let s = lit(Value::Int(2), Type::Real);
-    let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::Real);
+    let v = lit(Value::Vector(vec![]), Type::dimensionless_scalar());
+    let s = lit(Value::Int(2), Type::dimensionless_scalar());
+    let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -50,10 +50,10 @@ fn scale_empty_vector_returns_undef() {
 fn scale_vector_by_undef_scalar_returns_undef() {
     let v = lit(
         Value::Vector(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
-    let s = lit(Value::Undef, Type::Real);
-    let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::Real);
+    let s = lit(Value::Undef, Type::dimensionless_scalar());
+    let expr = CompiledExpr::binop(BinOp::Mul, v, s, Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -69,13 +69,13 @@ fn componentwise_binop_first_element_undef_returns_undef() {
     // First pair: Length(1.0) + Real(1.0) → Undef (dimension mismatch)
     let a = lit(
         Value::Tensor(vec![Value::length(1.0), Value::Int(2)]),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let b = lit(
         Value::Tensor(vec![Value::Real(1.0), Value::Int(3)]),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
-    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Add, a, b, Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -88,10 +88,10 @@ fn scale_components_first_element_undef_returns_undef() {
     // First: Bool(true) * Int(3) → Undef (type mismatch)
     let t = lit(
         Value::Tensor(vec![Value::Bool(true), Value::Int(2)]),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
-    let s = lit(Value::Int(3), Type::Real);
-    let expr = CompiledExpr::binop(BinOp::Mul, t, s, Type::Real);
+    let s = lit(Value::Int(3), Type::dimensionless_scalar());
+    let expr = CompiledExpr::binop(BinOp::Mul, t, s, Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -100,14 +100,14 @@ fn scale_components_first_element_undef_returns_undef() {
 /// Negate an Int value.
 #[test]
 fn negate_int() {
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(42), Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(42), Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Int(-42));
 }
 
 /// Negate a Real value.
 #[test]
 fn negate_real() {
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Real(3.5), Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Real(3.5), Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Real(-3.5));
 }
 
@@ -148,7 +148,7 @@ fn negate_complex_with_dimension() {
 /// Negating Int::MIN (i64::MIN) overflows checked_neg → Undef.
 #[test]
 fn negate_int_min_returns_undef() {
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(i64::MIN), Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(Value::Int(i64::MIN), Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -158,7 +158,7 @@ fn negate_int_min_returns_undef() {
 #[test]
 fn negate_vector_ints() {
     let v = Value::Vector(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(
         eval(&expr),
         Value::Vector(vec![Value::Int(-1), Value::Int(-2), Value::Int(-3)])
@@ -171,8 +171,8 @@ fn negate_tensor_mixed_int_real() {
     let t = Value::Tensor(vec![Value::Int(5), Value::Real(2.5), Value::Int(-1)]);
     let expr = CompiledExpr::unop(
         UnOp::Neg,
-        lit(t, Type::tensor(1, 3, Type::Real)),
-        Type::tensor(1, 3, Type::Real),
+        lit(t, Type::tensor(1, 3, Type::dimensionless_scalar())),
+        Type::tensor(1, 3, Type::dimensionless_scalar()),
     );
     assert_eq!(
         eval(&expr),
@@ -184,7 +184,7 @@ fn negate_tensor_mixed_int_real() {
 #[test]
 fn negate_empty_vector_returns_undef() {
     let v = Value::Vector(vec![]);
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -192,7 +192,7 @@ fn negate_empty_vector_returns_undef() {
 #[test]
 fn negate_empty_tensor_returns_undef() {
     let t = Value::Tensor(vec![]);
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(t, Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(t, Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -202,7 +202,7 @@ fn negate_empty_tensor_returns_undef() {
 #[test]
 fn negate_vector_with_int_min_component_returns_undef() {
     let v = Value::Vector(vec![Value::Int(i64::MIN), Value::Int(1)]);
-    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::Real), Type::Real);
+    let expr = CompiledExpr::unop(UnOp::Neg, lit(v, Type::dimensionless_scalar()), Type::dimensionless_scalar());
     assert_eq!(eval(&expr), Value::Undef);
 }
 
@@ -212,7 +212,7 @@ fn negate_vector_with_int_min_component_returns_undef() {
 #[test]
 fn negate_tensor_with_int_min_component_returns_undef() {
     let t = Value::Tensor(vec![Value::Int(i64::MIN), Value::Int(2), Value::Int(3)]);
-    let ty = Type::tensor(1, 3, Type::Real);
+    let ty = Type::tensor(1, 3, Type::dimensionless_scalar());
     let expr = CompiledExpr::unop(UnOp::Neg, lit(t, ty.clone()), ty);
     assert_eq!(eval(&expr), Value::Undef);
 }

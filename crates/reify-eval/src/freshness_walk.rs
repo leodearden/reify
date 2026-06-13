@@ -1496,7 +1496,7 @@ mod tests {
                 ValueCellNode {
                     id: id.clone(),
                     kind: ValueCellKind::Param,
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_expr: None,
                     content_hash: ContentHash::of_str(name),
                 },

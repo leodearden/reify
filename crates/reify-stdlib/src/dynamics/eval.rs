@@ -320,7 +320,7 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 /// The `com` Length dimension and inertia MomentOfInertia dimension are both
 /// stripped to raw SI f64 values via `cell_f64`. Returns `None` for any
 /// non-MassProperties value or a malformed/absent field.
-fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
+pub(crate) fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
     let data = match v {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
         _ => return None,
@@ -336,16 +336,15 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
 /// The single canonical read-path for body mass in every inverse-dynamics and
 /// modal consumer.
 ///
-/// Reads `body.solid` and returns `Some(MassProperties StructureInstance)` when
-/// the solid is a `Value::StructureInstance` with `type_name == "MassProperties"`.
-///
 /// Rung precedences (highest first):
 /// (a) **Explicit MassProperties** — `body.solid` is a `MassProperties`
 ///     StructureInstance → `Some(solid.clone())`.
-/// (b) **Derived geometry×density** — documented TODO(3620 tail / task 4472):
-///     real-geometry solid with density; stub returns `None`.
-/// (c) **Unresolvable** — missing `solid` key, wrong type, non-MassProperties
-///     StructureInstance → `None`.
+/// (b) **Derived geometry×density** — `body.derived_mass_props` is a
+///     `MassProperties` StructureInstance baked by the build-time
+///     `post_process_mechanism_mass_props` pass (task 4472) → `Some(that.clone())`.
+///     Rung (a) wins when `solid` is already an explicit MassProperties; rung (b)
+///     fires only when `solid` is absent or is not a MassProperties.
+/// (c) **Unresolvable** — neither rung above matched → `None`.
 ///
 /// Consumers extract fields from the returned `Value` via
 /// [`mass_properties_from_value`].
@@ -354,12 +353,22 @@ pub fn resolve_body_mass(body: &Value) -> Option<Value> {
         Value::Map(m) => m,
         _ => return None,
     };
-    let solid = map_get(bm, "solid")?;
-    match solid {
-        Value::StructureInstance(d) if d.type_name == "MassProperties" => Some(solid.clone()),
-        // TODO(3620 tail / task 4472): real-geometry×density derived rung
-        _ => None,
+    // Rung (a): explicit MassProperties solid wins unconditionally.
+    if let Some(solid) = map_get(bm, "solid")
+        && let Value::StructureInstance(d) = solid
+        && d.type_name == "MassProperties"
+    {
+        return Some(solid.clone());
     }
+    // Rung (b): build-pass-baked derived_mass_props (task 4472).
+    if let Some(derived) = map_get(bm, "derived_mass_props")
+        && let Value::StructureInstance(d) = derived
+        && d.type_name == "MassProperties"
+    {
+        return Some(derived.clone());
+    }
+    // Rung (c): unresolvable.
+    None
 }
 
 // ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
@@ -3515,6 +3524,174 @@ mod tests {
         assert!(
             matches!(r, Value::Undef),
             "Length-dimensioned mass arg must return Undef (not silently treat as kg), got {r:?}"
+        );
+    }
+
+    // ── task-4472 step-1 RED: resolve_body_mass rung (b) ─────────────────────
+    //
+    // Tests for rung (b): a body whose solid is NOT a MassProperties but which
+    // carries a `derived_mass_props` MassProperties key → resolve_body_mass
+    // returns Some(derived_mass_props).
+    //
+    // All four tests are RED today because rung (b) is not yet implemented
+    // (step-2 will green them).
+
+    /// Build a body `Value::Map` that has the given `solid` PLUS an injected
+    /// `derived_mass_props` key set to `mp`. Bypasses `eval_builtin("body",…)` so
+    /// the solid is set to a non-MassProperties value independently of whether
+    /// mechanism.rs would accept it.
+    fn body_with_solid_and_derived(solid: Value, mp: Value) -> Value {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<Value, Value> = BTreeMap::new();
+        m.insert(Value::String("id".to_string()), Value::Int(0));
+        m.insert(Value::String("solid".to_string()), solid);
+        m.insert(Value::String("derived_mass_props".to_string()), mp);
+        Value::Map(m)
+    }
+
+    /// Replace the `solid` of every body in a mechanism Map with `new_solid`,
+    /// inject `derived_mass_props = mp` into each body, and return the patched
+    /// mechanism.  Used by the rung-(b) integration test to swap the explicit
+    /// MassProperties solid out and replace it with a derived key.
+    fn patch_mechanism_bodies(mech: &Value, new_solid: Value, mp: Value) -> Value {
+        use std::collections::BTreeMap;
+        let m = match mech {
+            Value::Map(m) => m,
+            other => panic!("expected mechanism Map, got {other:?}"),
+        };
+        let bodies = match m.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("mechanism missing bodies list"),
+        };
+        let patched_bodies: Vec<Value> = bodies
+            .iter()
+            .map(|body| {
+                let bm = match body {
+                    Value::Map(bm) => bm,
+                    other => panic!("body must be a Map, got {other:?}"),
+                };
+                let mut b2: BTreeMap<Value, Value> = bm.clone().into_iter().collect();
+                b2.insert(Value::String("solid".to_string()), new_solid.clone());
+                b2.insert(
+                    Value::String("derived_mass_props".to_string()),
+                    mp.clone(),
+                );
+                Value::Map(b2)
+            })
+            .collect();
+        let mut m2: BTreeMap<Value, Value> = m.clone().into_iter().collect();
+        m2.insert(
+            Value::String("bodies".to_string()),
+            Value::List(patched_bodies),
+        );
+        Value::Map(m2)
+    }
+
+    // (a) A body with a non-MassProperties solid and a derived_mass_props key
+    //     → resolve_body_mass returns Some(derived_mass_props).
+    #[test]
+    fn resolve_body_mass_rung_b_derived_props_resolves() {
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        // solid is a plain Real (not MassProperties)
+        let body = body_with_solid_and_derived(Value::Real(0.0), mp.clone());
+        let resolved = resolve_body_mass(&body)
+            .expect("body with derived_mass_props must resolve to Some");
+        let (mass, com, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        assert!((mass - 1.0).abs() < 1e-12, "mass = {mass}");
+        assert!((com[2] - (-0.1)).abs() < 1e-12, "com[2] = {}", com[2]);
+    }
+
+    // (b) When solid IS a MassProperties, rung (a) wins — derived key ignored.
+    #[test]
+    fn resolve_body_mass_rung_a_wins_over_derived() {
+        let mp_solid = mass_properties_fixture(5.0, [0.1, 0.2, 0.3], [[0.0; 3]; 3]);
+        let mp_derived = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let body = body_with_solid_and_derived(mp_solid, mp_derived);
+        let resolved = resolve_body_mass(&body)
+            .expect("body with MassProperties solid must resolve via rung (a)");
+        let (mass, _, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        // Rung (a) wins: mass = 5.0 (from solid), not 1.0 (from derived).
+        assert!((mass - 5.0).abs() < 1e-12, "rung (a) mass = {mass}; expected 5.0");
+    }
+
+    // (c) A body with neither a MassProperties solid nor derived_mass_props → None.
+    #[test]
+    fn resolve_body_mass_rung_c_none_when_no_derived() {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<Value, Value> = BTreeMap::new();
+        m.insert(Value::String("id".to_string()), Value::Int(0));
+        m.insert(Value::String("solid".to_string()), Value::Real(0.0));
+        let body = Value::Map(m);
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "non-MassProperties solid with no derived_mass_props must return None"
+        );
+    }
+
+    // (d) Integration: mirror inverse_dynamics_at_snapshot_single_pendulum_static_gravity
+    // but move the MassProperties to derived_mass_props (solid = Real(0.0)).
+    // Rung (b) must resolve the mass, so the RNEA still yields ≈0.4905 N·m.
+    // RED today: rung (b) is a stub → consumer sees Undef → result is Undef.
+    #[test]
+    fn inverse_dynamics_at_snapshot_rung_b_derived_mass_static_gravity() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+
+        // Build mechanism with a non-MassProperties solid (Real(0.0)).
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech_real_solid =
+            eval_builtin("body", &[mech0, Value::Real(0.0), joint.clone()]);
+        assert!(
+            matches!(mech_real_solid, Value::Map(_)),
+            "body() must yield a Mechanism Map"
+        );
+
+        // Inject derived_mass_props = mp into the first body.
+        let mech = patch_mechanism_bodies(&mech_real_solid, Value::Real(0.0), mp.clone());
+
+        // snapshot at θ = −30°
+        let theta = -PI / 6.0;
+        let binding = eval_builtin("bind", &[joint.clone(), Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must yield a Snapshot Map");
+
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be recognised");
+
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!(
+                "expected a List<JointForce> (rung b resolved), got {other:?}"
+            ),
+        };
+        assert_eq!(forces.len(), 1, "one joint ⇒ one JointForce");
+
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+
+        let expected = 0.4905_f64;
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "rung (b) torque expected {expected} N·m, got {torque}"
         );
     }
 

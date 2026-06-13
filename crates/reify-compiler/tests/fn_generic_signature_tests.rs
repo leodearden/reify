@@ -36,7 +36,7 @@ fn generic_fn_lowers_type_params_and_nongeneric_is_empty() {
     let module = compile_source(source);
 
     // constant_field must be present (compile_function returns Some even with
-    // unresolved signature types, falling back to Type::Real).
+    // unresolved signature types, falling back to Type::dimensionless_scalar()).
     let cf = module
         .functions
         .iter()
@@ -93,7 +93,7 @@ fn generic_fn_lowers_type_params_and_nongeneric_is_empty() {
 ///
 /// RED until step-4: `compile_function` passes `empty_params` to
 /// `resolve_type_expr_with_aliases`, so `T` is unknown → "unresolved type" Error +
-/// `Type::Real` fallback.
+/// `Type::dimensionless_scalar()` fallback.
 #[test]
 fn bare_type_param_resolves_in_param_and_return() {
     let source = r#"fn id<T>(x: T) -> T { x }"#;
@@ -138,7 +138,7 @@ fn bare_type_param_resolves_in_param_and_return() {
 /// RED until step-6: `resolve_parameterized_builtin_type` uses its own internal
 /// `empty_type_params` for all inner `resolve_type_expr_with_aliases` calls, so D/C/T
 /// remain unresolved → the outer Field/List returns None → "unresolved type" Error +
-/// `Type::Real` fallback.
+/// `Type::dimensionless_scalar()` fallback.
 #[test]
 fn type_param_resolves_inside_parameterized_builtin() {
     let source = r#"

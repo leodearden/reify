@@ -403,7 +403,276 @@ fn trampoline_short_value_inputs_is_failed() {
         Value::List(vec![Value::Real(1.0); 4]),
         // anchors omitted → only 2 inputs reach the trampoline
     ];
-    assert_failed_infeasible(call_form_find(&value_inputs), "expects 3 inputs");
+    assert_failed_infeasible(call_form_find(&value_inputs), "expects at least 3 inputs");
+}
+
+// ── step-9 (γ): surface / membrane trampoline tests ──────────────────────────
+//
+// The line-only tests above leave the γ surface path uncovered. These exercise
+// the additive membrane extension: surface CONNECTIVITY is read from
+// `structure.surfaces` (not a new arg), an OPTIONAL `surface_stresses` is the
+// 4th value_input, the FormFindResult gains a per-triangle `surface_stresses`
+// echo (real values when surfaces are present, an empty list — NEVER Undef — on
+// the line-only path), and the new infeasibility guards (DegenerateTriangle /
+// NonTensionSurfaceStress / SurfaceCountMismatch) surface as located
+// E_FormFindInfeasible diagnostics. RED until step-10 wires
+// `form_find_anchored_surfaces` into the trampoline `run()`.
+
+/// A `surfaces` field value: triangle corner index-triples `[[i,j,k], …]` into
+/// `nodes` (the `List<List<Int>>` shape task-α put on `Tensegrity`).
+fn surface_tris(tris: &[[i64; 3]]) -> Value {
+    Value::List(
+        tris.iter()
+            .map(|t| Value::List(vec![Value::Int(t[0]), Value::Int(t[1]), Value::Int(t[2])]))
+            .collect(),
+    )
+}
+
+/// "Tent" membrane Tensegrity: a planar diamond of 4 anchored corners (z=0) plus
+/// one free interior node seeded off-plane (z=0.3), fanned by 4 triangles, with
+/// empty struts/cables (a pure membrane). Mirrors the kernel's `tent_membrane()`
+/// golden (form_find.rs) — a proven-feasible σ>0 surface solve. The `surfaces`
+/// field is the γ connectivity source the trampoline reads from the structure
+/// (NOT passed as a call argument).
+fn membrane_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        node(0.1, 0.1, 0.3),  // 0: free interior — deliberately off-solution
+        node(1.0, 0.0, 0.0),  // 1: anchor
+        node(0.0, 1.0, 0.0),  // 2: anchor
+        node(-1.0, 0.0, 0.0), // 3: anchor
+        node(0.0, -1.0, 0.0), // 4: anchor
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), Value::List(vec![])),
+        ("cables".to_string(), Value::List(vec![])),
+        (
+            "surfaces".to_string(),
+            surface_tris(&[[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]]),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// A membrane whose single triangle (0,1,2) has three COLLINEAR corners (all on
+/// the x-axis) ⇒ zero area ⇒ the cotangent weights `cot(θ) = (e_a·e_b)/(2·Area)`
+/// diverge. Node 0 is free, 1 & 2 anchored. The kernel must reject this as
+/// DegenerateTriangle rather than assemble a NaN/∞ stencil.
+fn degenerate_membrane_tensegrity() -> Value {
+    let nodes = Value::List(vec![
+        node(0.0, 0.0, 0.0), // 0: free — collinear with 1,2 (zero-area triangle)
+        node(1.0, 0.0, 0.0), // 1: anchor
+        node(2.0, 0.0, 0.0), // 2: anchor
+    ]);
+    let fields: PersistentMap<String, Value> = [
+        ("nodes".to_string(), nodes),
+        ("struts".to_string(), Value::List(vec![])),
+        ("cables".to_string(), Value::List(vec![])),
+        ("surfaces".to_string(), surface_tris(&[[0, 1, 2]])),
+    ]
+    .into_iter()
+    .collect();
+    Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(0),
+        type_name: "Tensegrity".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Extract `FormFindResult.surface_stresses` as a list of f64 echoes, asserting
+/// it is a (possibly empty) `Value::List` — never `Undef` and never absent. Each
+/// entry is read via `coord` (accepts a dimensioned Scalar or a bare Real), so
+/// this stays agnostic to the trampoline's exact numeric encoding.
+fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
+    match fields.get(&"surface_stresses".to_string()) {
+        Some(Value::List(items)) => items.iter().map(coord).collect(),
+        other => panic!(
+            "FormFindResult.surface_stresses must be a Value::List \
+             (never Undef / absent), got {other:?}"
+        ),
+    }
+}
+
+/// (γ-a) A σ>0 membrane (connectivity from `structure.surfaces`, per-triangle σ
+/// from the 4th value_input) solves: `Completed` with `converged == true` and a
+/// `surface_stresses` list of one finite Scalar per triangle, each echoing the
+/// prescribed σ.
+#[test]
+fn trampoline_membrane_solves_and_echoes_surface_stresses() {
+    let sigma = 2.0;
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables ⇒ empty force_densities
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![Value::Real(sigma); 4]), // one σ per triangle
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => {
+                assert_eq!(
+                    d.type_name, "FormFindResult",
+                    "result should be a FormFindResult, got {:?}",
+                    d.type_name
+                );
+                d.fields
+            }
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed for a σ>0 membrane, got {other:?}"),
+    };
+
+    // One finite Scalar per triangle, echoing the prescribed σ (the per-triangle
+    // granularity contract — never Undef).
+    let echoes = surface_stress_echoes(&fields);
+    assert_eq!(echoes.len(), 4, "one surface_stress echo per triangle");
+    for (t, &s) in echoes.iter().enumerate() {
+        assert!(s.is_finite(), "surface_stresses[{t}] must be finite, got {s}");
+        assert!(
+            (s - sigma).abs() < 1e-12,
+            "surface_stresses[{t}] = {s}, expected echoed σ = {sigma}",
+        );
+    }
+
+    assert_eq!(
+        fields.get(&"converged".to_string()),
+        Some(&Value::Bool(true)),
+        "a well-posed σ>0 membrane solve must report converged == true",
+    );
+}
+
+/// (γ-b) The LEGACY 3-input line-only call (no surface arg, no `surfaces` field)
+/// still Completes, and its `surface_stresses` is an EMPTY `Value::List` — never
+/// `Undef` / absent. This is the additive-extension invariant: the now-5-field
+/// FormFindResult stays well-formed on the line-only path.
+#[test]
+fn trampoline_legacy_line_only_has_empty_surface_stresses() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    };
+    let echoes = surface_stress_echoes(&fields);
+    assert!(
+        echoes.is_empty(),
+        "line-only path ⇒ empty surface_stresses echo, got {echoes:?}",
+    );
+}
+
+/// (γ-b′) A line-only call whose OPTIONAL 4th `surface_stresses` slot is present
+/// but `Undef` must fall back to the line-only path — NOT fail. This pins the
+/// robustness amendment that made `run()` tolerate `Value::Undef` in
+/// `value_inputs[3]` the same way `crack_index_triples` tolerates a missing/Undef
+/// `surfaces` field. Without it, a legacy 3-arg caller whose default `[]` ever
+/// materialized as `Undef` (engine capture / default-padding) would fail with a
+/// spurious `E_FormFindInfeasible` instead of solving the line-only system.
+#[test]
+fn trampoline_undef_surface_stresses_falls_back_to_line_only() {
+    let value_inputs = vec![
+        cable_net_tensegrity(),
+        Value::List(vec![Value::Real(1.0); 4]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::Undef, // present-but-Undef 4th slot ⇒ treated as empty (line-only)
+    ];
+
+    let fields = match call_form_find(&value_inputs) {
+        ComputeOutcome::Completed { result, .. } => match result {
+            Value::StructureInstance(d) => d.fields,
+            other => panic!("Completed result should be a StructureInstance, got {other:?}"),
+        },
+        other => panic!("expected ComputeOutcome::Completed for an Undef 4th input, got {other:?}"),
+    };
+    let echoes = surface_stress_echoes(&fields);
+    assert!(
+        echoes.is_empty(),
+        "Undef surface_stresses ⇒ line-only ⇒ empty echo, got {echoes:?}",
+    );
+}
+
+/// (γ-c) A degenerate (collinear) surface triangle is rejected with a located
+/// `degenerate` diagnostic — never a NaN stencil or a silently-wrong solve.
+#[test]
+fn trampoline_degenerate_triangle_is_failed() {
+    let value_inputs = vec![
+        degenerate_membrane_tensegrity(),
+        Value::List(vec![]), // no struts/cables
+        Value::List(vec![Value::Int(1), Value::Int(2)]),
+        Value::List(vec![Value::Real(1.0)]), // one σ>0 (so degeneracy, not σ-sign, is the cause)
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "degenerate");
+}
+
+/// (γ-d) A non-tension surface stress (σ ≤ 0) is infeasible prestress — the
+/// surface analogue of the cable q>0 contract — surfaced with a `tension`
+/// diagnostic.
+#[test]
+fn trampoline_non_tension_surface_stress_is_failed() {
+    let value_inputs = vec![
+        membrane_tensegrity(),
+        Value::List(vec![]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(-0.5), // triangle 1 violates the σ>0 tension contract
+            Value::Real(1.0),
+            Value::Real(1.0),
+        ]),
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "tension");
+}
+
+/// (γ-e) `surface_stresses` shorter than the triangle count (4 triangles, 3 σ)
+/// is a count mismatch — each triangle needs exactly one isotropic σ.
+#[test]
+fn trampoline_surface_count_mismatch_is_failed() {
+    let value_inputs = vec![
+        membrane_tensegrity(), // 4 triangles
+        Value::List(vec![]),
+        Value::List(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]),
+        Value::List(vec![Value::Real(1.0); 3]), // only 3 σ — one short
+    ];
+    assert_failed_infeasible(call_form_find(&value_inputs), "surface");
 }
 
 // ── step-11: e2e + cache-hit + CLI over examples/tensegrity_cable_net.ri ──────
@@ -671,5 +940,256 @@ fn cli_cable_net_prints_solved_z() {
         stdout.contains("point(0 m, 0 m, 0.5 m)"),
         "expected the solved node 0 at the anchor centroid `point(0 m, 0 m, 0.5 m)` \
          in `reify eval` stdout; got:\n{stdout}"
+    );
+}
+
+// ── step-11 (γ): membrane form-find e2e + cache-hit + CLI ─────────────────────
+//
+// The cable_net trio above proves the LINE form-find slice end-to-end. This
+// mirrors it for the γ SURFACE slice over a NEW curved-boundary membrane example
+// (examples/tensegrity_membrane_formfind.ri, created in step-12 — a *separate*
+// file from task-α's flat examples/tensegrity_membrane_patch.ri, which cannot
+// form-find: an all-boundary planar patch yields EmptyFreeSet). It asserts the
+// same three signals — @optimized→ComputeNode lowering, Final-gate cache hit,
+// and a CLI exit-0 smoke — plus the γ-specific non-empty per-triangle
+// `surface_stresses` echo. RED until step-12 creates the example file
+// (`include_str!` of a missing path is a compile error).
+
+/// The committed curved-boundary membrane form-find example (step-12).
+/// `include_str!` makes a *missing* file a compile error — the step-11 RED signal
+/// until step-12 creates it.
+fn membrane_formfind_source() -> &'static str {
+    include_str!("../../../examples/tensegrity_membrane_formfind.ri")
+}
+
+/// Crack a `MembraneFormFind.form` FormFindResult cell into its `converged` flag
+/// and per-triangle `surface_stresses` echoes (one f64 per triangle). Reuses
+/// `surface_stress_echoes`, which panics unless the field is a `Value::List`
+/// (never Undef / absent) — the γ field-population invariant.
+fn form_converged_and_surface_stresses(form: &Value) -> (bool, Vec<f64>) {
+    let data = match form {
+        Value::StructureInstance(d) => d,
+        other => panic!("form cell must be a FormFindResult StructureInstance, got {other:?}"),
+    };
+    assert_eq!(
+        data.type_name, "FormFindResult",
+        "form cell should be a FormFindResult, got {:?}",
+        data.type_name
+    );
+    let converged = matches!(
+        data.fields.get(&"converged".to_string()),
+        Some(Value::Bool(true))
+    );
+    (converged, surface_stress_echoes(&data.fields))
+}
+
+/// (a) End-to-end: the curved-boundary membrane example compiles + evals with no
+/// Error diagnostics, `@optimized("solver::form_find")` lowers to a ComputeNode
+/// (proof of lowering, not body-inlining), and the trampoline solves the
+/// fixed-boundary membrane to a converged equilibrium whose `surface_stresses` is
+/// a non-empty, non-Undef per-triangle echo (each finite and in tension, σ > 0).
+#[test]
+fn e2e_membrane_lowers_to_compute_node_and_solves() {
+    let compiled = compile_source_with_stdlib(membrane_formfind_source());
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // No Error-severity diagnostics from the full compile + eval pipeline.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {errors:#?}"
+    );
+
+    // A ComputeNode with target == "solver::form_find" must be in the graph —
+    // proof the @optimized call lowered to a ComputeNode and was NOT inlined.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let targets: Vec<&str> = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .map(|(_, d)| d.target.as_str())
+        .collect();
+    assert!(
+        targets.contains(&"solver::form_find"),
+        "expected a ComputeNode with target==\"solver::form_find\"; found {targets:?}"
+    );
+
+    // The result cell form-finds to a converged equilibrium with a non-empty,
+    // non-Undef per-triangle surface_stresses echo.
+    let form = eval_result
+        .values
+        .get(&ValueCellId::new("MembraneFormFind", "form"))
+        .unwrap_or_else(|| panic!("MembraneFormFind.form cell missing from eval result"));
+    let (converged, stresses) = form_converged_and_surface_stresses(form);
+    assert!(
+        converged,
+        "a well-posed σ>0 fixed-boundary membrane must report converged == true"
+    );
+    assert!(
+        !stresses.is_empty(),
+        "surfaces present ⇒ a non-empty per-triangle surface_stresses echo, got {stresses:?}"
+    );
+    for (t, &s) in stresses.iter().enumerate() {
+        assert!(
+            s.is_finite() && s > 0.0,
+            "surface_stresses[{t}] = {s} must be finite and in tension (σ > 0)"
+        );
+    }
+}
+
+/// Dispatch counter for the membrane cache-hit wrapper. Kept SEPARATE from the
+/// cable-net `DISPATCH_COUNT` so the two cache tests never race on a shared
+/// global under the default parallel test runner.
+static MEMBRANE_DISPATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Counting wrapper around the production trampoline — increments
+/// MEMBRANE_DISPATCH_COUNT then delegates, so a re-dispatch is observable.
+fn membrane_counting_wrapper(
+    value_inputs: &[Value],
+    realization_inputs: &[RealizationReadHandle],
+    options: &Value,
+    prior_warm_state: Option<&OpaqueState>,
+    cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    MEMBRANE_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    reify_eval::compute_targets::form_find::solve_form_find_trampoline(
+        value_inputs,
+        realization_inputs,
+        options,
+        prior_warm_state,
+        cancellation,
+    )
+}
+
+/// (b) Cache hit: a second `eval()` of the same compiled membrane module must NOT
+/// re-dispatch the trampoline — the §8-η Final-gate short-circuits when all
+/// inputs and the output VC are already Final (the surface form-find is a pure
+/// ComputeNode, same as the line case).
+#[test]
+fn e2e_membrane_second_eval_hits_cache() {
+    MEMBRANE_DISPATCH_COUNT.store(0, Ordering::SeqCst);
+
+    let compiled = compile_source_with_stdlib(membrane_formfind_source());
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("solver::form_find", membrane_counting_wrapper as ComputeFn);
+
+    // First eval: cold start — exactly one dispatch.
+    let eval1 = engine.eval(&compiled);
+    let errors1: Vec<_> = eval1
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors1.is_empty(),
+        "first eval must have no Error diagnostics, got: {errors1:#?}"
+    );
+    assert_eq!(
+        MEMBRANE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "first eval must dispatch the trampoline exactly once"
+    );
+
+    // Second eval on the same module: Final-gate cache hit — no re-dispatch.
+    let eval2 = engine.eval(&compiled);
+    let errors2: Vec<_> = eval2
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors2.is_empty(),
+        "second eval must have no Error diagnostics, got: {errors2:#?}"
+    );
+    assert_eq!(
+        MEMBRANE_DISPATCH_COUNT.load(Ordering::SeqCst),
+        1,
+        "second eval must hit the cache and NOT re-dispatch (count must stay at 1)"
+    );
+}
+
+/// Resolve the prebuilt `reify` binary from this test binary's own location —
+/// the profile-local `…/target/<profile>/reify`, falling back to the
+/// debug-profile sibling when the release pass did not build `reify-cli`. The
+/// full rationale (merge-gate profile scoping, why not `cargo run`) is documented
+/// at length on `cli_cable_net_prints_solved_z` above; this factors just the path
+/// resolution for the second CLI smoke.
+fn resolve_reify_bin() -> std::path::PathBuf {
+    let test_bin = std::env::current_exe().expect("current_exe");
+    let profile_dir = test_bin
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary lives in target/<profile>/deps");
+    let profile_local = profile_dir.join("reify");
+    if profile_local.exists() {
+        profile_local
+    } else {
+        profile_dir
+            .parent()
+            .map(|target_dir| target_dir.join("debug").join("reify"))
+            .filter(|p| p.exists())
+            .unwrap_or(profile_local)
+    }
+}
+
+/// (c) CLI smoke: `reify eval examples/tensegrity_membrane_formfind.ri` exits zero
+/// and prints the form-found membrane result — `FormFindResult { converged: true,
+/// … }`. No exact coordinate is asserted (the curved minimal-surface shape is a
+/// MEASURED mesh-convergence bound that lives only in the kernel golden, never at
+/// the .ri level); `converged: true` is the honest user-observable γ signal.
+#[test]
+fn cli_membrane_prints_converged() {
+    let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
+    let workspace_root = std::path::Path::new(manifest)
+        .ancestors()
+        .nth(2)
+        .expect("workspace root is two levels above crates/reify-eval")
+        .to_path_buf();
+    let example = workspace_root.join("examples/tensegrity_membrane_formfind.ri");
+
+    let reify_bin = resolve_reify_bin();
+
+    let output = std::process::Command::new(&reify_bin)
+        .current_dir(&workspace_root)
+        .arg("eval")
+        .arg(&example)
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
+                 The gated verify pass builds it when it compiles `reify-cli` \
+                 (the merge gate's debug `--workspace` pass builds all `[[bin]]` \
+                 targets).",
+                reify_bin.display()
+            )
+        });
+
+    assert!(
+        output.status.success(),
+        "`reify eval examples/tensegrity_membrane_formfind.ri` exited non-zero.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be valid UTF-8");
+    // The form cell renders as `MembraneFormFind.form = FormFindResult { converged:
+    // true, … }` (fields alphabetised, so `converged` leads). Asserting the
+    // `FormFindResult { converged: true,` prefix ties the convergence flag to the
+    // form-find result — the user-observable γ signal — without pinning any
+    // (non-honest) solved coordinate.
+    assert!(
+        stdout.contains("FormFindResult { converged: true,"),
+        "expected a form-found `FormFindResult {{ converged: true, … }}` in \
+         `reify eval` stdout; got:\n{stdout}"
     );
 }

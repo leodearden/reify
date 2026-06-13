@@ -1,0 +1,9 @@
+module platform_wasm
+
+pub structure def WasmCore {
+    param id : Real
+}
+
+pub structure def Platform {
+    param core : WasmCore
+}

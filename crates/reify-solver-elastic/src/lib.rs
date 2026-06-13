@@ -507,6 +507,8 @@ pub use elements::{
     Jacobian, QuadraturePoint, ReferenceCoord, ReferenceElement,
     degenerate_shell::{Director, ShellRefCoord3, directors_from_facets},
     hex_p1::HexP1,
+    // Task 4417/ζ: dedicated CST membrane element K_e.
+    membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
     tet_p1::TetP1,
     tet_p2::TetP2,
@@ -537,7 +539,8 @@ pub use resample::{
     resample_nodal_to_grid_instrumented,
 };
 pub use result::{
-    StressElement, element_stress_p1, element_stress_p2, recover_nodal_stress_p1, tet_volume_p1,
+    GradientElement, StressElement, element_gradient_p1, element_stress_p1, element_stress_p2,
+    recover_nodal_gradient_p1, recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
@@ -575,6 +578,12 @@ pub use geometric_stiffness::{
     geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
     geometric_element_stiffness_wedge_p1,
+};
+// Task 4417/ζ: Tensegrity-membrane — CST membrane K_g element kernel,
+// in-plane prestress resultant, and per-element tangent K_t = K_e + K_g.
+// PRD: docs/prds/v0_6/tensegrity-membrane.md §5 / D1 / D2.
+pub use geometric_stiffness::{
+    MembranePrestress, geometric_element_stiffness_membrane_cst, membrane_tangent_stiffness,
 };
 // Task 3818: P1-tet consistent mass-matrix element kernel; reuses
 // `assemble_global_stiffness` for the global scatter (the assembler treats
@@ -651,7 +660,12 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // PRD: docs/prds/v0_6/tensegrity-structures.md §4. Pure numeric kernel behind
 // the `solver::form_find` ComputeNode target; the Value-cracking trampoline
 // lives in reify-eval's compute_targets/form_find.rs.
-pub use form_find::{FormFindError, FormFindSolve, MemberKind, form_find_anchored};
+// Task 4414: Tensegrity-membrane γ — `form_find_anchored_surfaces` adds isotropic
+// NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
+// (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
+pub use form_find::{
+    FormFindError, FormFindSolve, MemberKind, form_find_anchored, form_find_anchored_surfaces,
+};
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline

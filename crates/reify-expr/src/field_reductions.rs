@@ -28,6 +28,14 @@
 //!   windows (vM=0 → SF=+∞) are dropped by the `is_finite()` gate;
 //!   all-hydrostatic fields return `Value::Undef`. Malformed lambda
 //!   (non-List, wrong arity, non-numeric yield) → `Value::Undef`. (task 4543)
+//! - **PrincipalStresses** — pointwise tensor→LIST projection: each stride-9
+//!   window eigen-decomposes to a List of 3 principal stresses (ascending:
+//!   eigs[0]=σ₃, eigs[2]=σ₁). `max(field)` = global max eigenvalue across all
+//!   windows (eigs[2] per window → global max); `min(field)` = global min
+//!   eigenvalue (eigs[0] per window → global min). The List codomain is
+//!   unwrapped to its element `Scalar<dim>` type for the result.
+//!   `argmax`/`argmin` return the domain coord of the extremal window (coord
+//!   only; the winning entry index is not surfaced). (task 4562)
 //!
 //! `FieldSourceKind::Analytical`, `FieldSourceKind::Composed`, and
 //! `FieldSourceKind::VonMises` are also supported via the **2-arg bounded
@@ -51,15 +59,14 @@
 //!   `bounded_reductions_on_derived_safetyfactor_field_return_undef`.
 //!
 //! All other source kinds (`Imported`, and the derived wrappers
-//! `Gradient`/`Divergence`/`Curl`/`Laplacian`/`PrincipalStresses`) return
-//! `Value::Undef` for the 1-arg form. The 1-arg `Analytical`/`Composed` form
+//! `Gradient`/`Divergence`/`Curl`/`Laplacian`) return `Value::Undef` for
+//! the 1-arg form. The 1-arg `Analytical`/`Composed` form
 //! also returns `Value::Undef` (no bounds are supplied, so a global extremum
 //! is ill-posed for an unbounded analytical domain).
 //!
 //! Deferred follow-ups by category:
 //! - **Analytical/Composed numerical-optimisation** — task 4561 (landed; 2-arg
 //!   bounded form covers the main use-case; unbounded 1-arg remains Undef).
-//! - **PrincipalStresses** (pointwise list, max-entry) — task 4562.
 //! - **Gradient/Divergence/Curl/Laplacian** (differential, need neighbor-stencil
 //!   FD primitive) — the differential-field-reductions PRD.
 //!
@@ -85,14 +92,16 @@ use reify_core::Type;
 use reify_ir::{FieldSourceKind, SampledField, Value};
 
 /// Compute `max(field)` — return the maximum codomain value of a
-/// `Sampled`-, `VonMises`-, `MaxShear`-, or `SafetyFactor`-source field,
-/// wrapped per the field's `codomain_type`.
+/// `Sampled`-, `VonMises`-, `MaxShear`-, `SafetyFactor`-, or
+/// `PrincipalStresses`-source field, wrapped per the field's `codomain_type`.
 ///
 /// For derived tensor-field projections:
 /// - `VonMises` — per-window `compute_von_mises_3x3`
 /// - `MaxShear` — per-window `compute_max_shear_3x3` ((σ₁−σ₃)/2)
 /// - `SafetyFactor` — per-window `yield / compute_von_mises_3x3`
 ///   (hydrostatic vM=0 → +∞ → skipped)
+/// - `PrincipalStresses` — per-window `compute_eigenvalues_3x3` selecting
+///   eigs[2] (max principal σ₁); List codomain unwrapped to element Scalar
 ///
 /// Other source kinds return `Value::Undef` (deferred — see module
 /// doc-comment for the staging rationale and follow-up task list).
@@ -203,12 +212,12 @@ const GRID_SAMPLES_PER_AXIS: usize = 11;
 
 /// Return the number of domain dimensions for a supported field domain type.
 ///
-/// - `Type::Real` / `Type::Scalar { .. }` → `Some(1)` (1-D scalar domain)
+/// - `Type::dimensionless_scalar()` / `Type::Scalar { .. }` → `Some(1)` (1-D scalar domain)
 /// - `Type::Point { n, .. }` → `Some(n)` (n-D point domain)
 /// - Anything else → `None` (unsupported domain)
 fn domain_dim(domain_type: &Type) -> Option<usize> {
     match domain_type {
-        Type::Real | Type::Scalar { .. } => Some(1),
+        Type::Scalar { .. } => Some(1),
         Type::Point { n, .. } => Some(*n),
         _ => None,
     }
@@ -641,12 +650,33 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
             Some(sf) => reduce_sampled_extremum(&sf, codomain_type, find_min),
             None => Value::Undef,
         },
+        // PrincipalStresses: project each 9-float tensor window via
+        // `compute_eigenvalues_3x3` selecting eigs[2] (max principal σ₁) for
+        // max/argmax or eigs[0] (min principal σ₃) for min/argmin.
+        // The codomain is List(Scalar<dim>); unwrap to the element type so that
+        // `reduce_sampled_extremum` → `wrap_codomain` produces
+        // Value::Scalar{dimension} instead of falling through to dimensionless
+        // Value::Real (task 4562).
+        FieldSourceKind::PrincipalStresses => {
+            match project_principal_stresses_sampled(lambda.as_ref(), find_min) {
+                Some(sf) => {
+                    // Unwrap List(inner) → inner to get the element scalar type.
+                    // If for some reason the codomain is not a List (malformed
+                    // field), fall back to the codomain_type as-is (defensive).
+                    let elem = match codomain_type {
+                        Type::List(inner) => inner.as_ref(),
+                        other => other,
+                    };
+                    reduce_sampled_extremum(&sf, elem, find_min)
+                }
+                None => Value::Undef,
+            }
+        }
         // Analytical/Composed 1-arg: stays honest-Undef — no bounds are
         // supplied, so a global extremum is ill-posed for an unbounded analytical
         // domain.  The 2-arg bounded form `max(field, bbox)` is implemented in
         // `compute_bounded_extremum` / `reduce_analytical_extremum_bounded`
         // (task 4561, step-4).  Remaining deferred by category:
-        // - PrincipalStresses (pointwise list, max-entry) — task 4562.
         // - Gradient/Divergence/Curl/Laplacian (differential, neighbor-stencil
         //   FD primitive) — the differential-field-reductions PRD.
         // - Imported (no lambda data).
@@ -655,7 +685,7 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
         // - all_reductions_on_analytical_field_return_undef
         // - all_reductions_on_composed_field_return_undef
         // - all_reductions_on_imported_field_return_undef
-        // - all_reductions_on_derived_non_vonmises_field_return_undef (→ PrincipalStresses)
+        // - all_reductions_on_deferred_differential_field_return_undef (→ Gradient)
         _ => Value::Undef,
     }
 }
@@ -827,6 +857,46 @@ fn project_safety_factor_sampled(lambda: &Value) -> Option<SampledField> {
     })
 }
 
+/// Project the backing Sampled tensor field stored in a PrincipalStresses
+/// field's lambda slot into a fresh stride-1 scalar `SampledField` containing
+/// one principal stress per window.
+///
+/// # Entry selection
+///
+/// `find_min == false` → selects `eigs[2]` (max principal stress σ₁).
+/// `find_min == true`  → selects `eigs[0]` (min principal stress σ₃).
+///
+/// `compute_eigenvalues_3x3` returns eigenvalues ASCENDING, so `eigs[2]` is
+/// the largest and `eigs[0]` is the smallest principal stress.  This
+/// parameterisation matches the global-extremum identity:
+/// `max(samples × entries) = max_samples(max_entry)` and
+/// `min(samples × entries) = min_samples(min_entry)`.
+///
+/// # NaN handling
+///
+/// A `None` from `compute_eigenvalues_3x3` (all-NaN window — out-of-solid
+/// FEA sentinel) maps to `f64::NAN`, which the `is_finite()` gate in
+/// `reduce_sampled_extremum` / `argmax_argmin_index` skips.
+///
+/// The lambda slot of a `PrincipalStresses` field holds the ORIGINAL tensor
+/// `Value::Field { source: Sampled, .. }` — same layout as VonMises/MaxShear.
+/// All shape/stride/non-Sampled-lambda guards are delegated to
+/// [`project_sampled_tensor_windows`].
+fn project_principal_stresses_sampled(lambda: &Value, find_min: bool) -> Option<SampledField> {
+    project_sampled_tensor_windows(lambda, move |w| {
+        match reify_stdlib::compute_eigenvalues_3x3(w) {
+            Some(e) => {
+                if find_min {
+                    e[0] // σ₃ — smallest principal stress
+                } else {
+                    e[2] // σ₁ — largest principal stress
+                }
+            }
+            None => f64::NAN,
+        }
+    })
+}
+
 /// Reduce a `SampledField`'s data buffer to a single extremum value,
 /// wrapped per the codomain type.
 ///
@@ -917,11 +987,26 @@ fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
             },
             None => Value::Undef,
         },
+        // PrincipalStresses: project via eigendecomposition (find_min selects
+        // eigs[0] or eigs[2]), then locate extremum index and decompose to a
+        // domain coordinate.  No codomain unwrap needed here — compute_argextremum
+        // returns a domain coord and never reads codomain_type.
+        // Mirrors the MaxShear/SafetyFactor arg-reduction arms structurally
+        // (task 4562).
+        FieldSourceKind::PrincipalStresses => {
+            match project_principal_stresses_sampled(lambda.as_ref(), find_min) {
+                Some(sf) => match argmax_argmin_index(&sf.data, find_min) {
+                    Some(linear) => arg_coord_from_index(&sf, linear, domain_type),
+                    None => Value::Undef,
+                },
+                None => Value::Undef,
+            }
+        }
         // Analytical/Composed 1-arg: stays honest-Undef (mirrors compute_extremum
         // above).  The 2-arg bounded form is in `compute_bounded_argextremum` /
         // `reduce_analytical_argextremum_bounded` (task 4561, step-4).
-        // Remaining deferred: Imported + derived wrappers — same rationale as
-        // in compute_extremum.
+        // Remaining deferred: Imported + differential wrappers
+        // (Gradient/Divergence/Curl/Laplacian) — differential-field-reductions PRD.
         // Pinned by the same step-15 / S5 negative-path tests as compute_extremum.
         _ => Value::Undef,
     }
@@ -1063,11 +1148,11 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
 /// Wrap per-axis SI coords as a `Value` per the field's `domain_type`.
 ///
 /// Supported domains:
-/// - **1-D scalar domain** (`Type::Real`, `Type::Scalar { dim }`):
+/// - **1-D scalar domain** (`Type::dimensionless_scalar()`, `Type::Scalar { dim }`):
 ///   returns a single `Value::Real` (dimensionless) or `Value::Scalar`
 ///   (dimensioned). Requires `coords_si.len() == 1`.
 /// - **N-D Point domain** (`Type::Point { n, quantity }` where
-///   `quantity ∈ { Type::Real, Type::Scalar { .. } }`): returns
+///   `quantity ∈ { Type::dimensionless_scalar(), Type::Scalar { .. } }`): returns
 ///   `Value::Point(per-axis-coords)` where each component follows the
 ///   same per-quantity wrap rule. Requires `coords_si.len() == n`.
 ///
@@ -1102,7 +1187,7 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
         }
         // 1-D scalar/dimensionless domain: single coord. `Type::Int` is
         // intentionally NOT in this arm — see doc-comment above.
-        Type::Real | Type::Scalar { .. } if coords_si.len() == 1 => {
+        Type::Scalar { .. } if coords_si.len() == 1 => {
             wrap_scalar_coord(coords_si[0], domain_type)
         }
         _ => Value::Undef,
@@ -1112,12 +1197,12 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
 /// Predicate: is `quantity` a supported per-axis scalar quantity for
 /// `Point`-domain wrapping?
 ///
-/// Returns true only for `Type::Real` and `Type::Scalar { .. }`.
+/// Returns true only for `Type::dimensionless_scalar()` and `Type::Scalar { .. }`.
 /// `Type::Int` and other types are rejected — see [`wrap_coord_for_domain`]
 /// for the rationale (no precise integer round-trip from `axis_grids`'
 /// `f64` storage).
 fn is_supported_scalar_quantity(ty: &Type) -> bool {
-    matches!(ty, Type::Real | Type::Scalar { .. })
+    matches!(ty, Type::Scalar { .. })
 }
 
 /// Wrap a single SI coord per a scalar quantity type.
@@ -1125,14 +1210,14 @@ fn is_supported_scalar_quantity(ty: &Type) -> bool {
 /// Contract:
 /// - `Type::Scalar { dimension }` with non-dimensionless `dimension`
 ///   → `Value::Scalar { si_value, dimension }`.
-/// - `Type::Real` and `Type::Scalar` with dimensionless `dimension`
+/// - `Type::dimensionless_scalar()` and `Type::Scalar` with dimensionless `dimension`
 ///   → `Value::Real(coord_si)`.
 ///
 /// Callers MUST pre-filter `quantity` via [`is_supported_scalar_quantity`]
 /// — passing any other type (e.g. `Type::Int`) hits the catch-all arm
 /// and silently returns `Value::Real`, which is incorrect for the caller's
 /// contract. The `wrap_coord_for_domain` Point arm performs this check.
-/// The 1-D scalar arm only routes `Type::Real` / `Type::Scalar` here, so
+/// The 1-D scalar arm only routes `Type::dimensionless_scalar()` / `Type::Scalar` here, so
 /// it is also safe.
 fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
     match quantity {
@@ -1151,7 +1236,7 @@ fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
 ///   (e.g. `PRESSURE`, `LENGTH`) → `Value::Scalar { si_value, dimension }`,
 ///   preserving the field's codomain dimension on the reduction result so
 ///   `max(von_mises(stress)) < yield_stress` etc. unify dimensionally.
-/// - `Type::Real`, `Type::Int`, dimensionless `Type::Scalar`, and any
+/// - `Type::dimensionless_scalar()`, `Type::Int`, dimensionless `Type::Scalar`, and any
 ///   other codomain → `Value::Real(v)` (the `_` arm is the dimensionless
 ///   default; the codomain type is otherwise unused for max/min).
 fn wrap_codomain(v: f64, codomain_type: &Type) -> Value {

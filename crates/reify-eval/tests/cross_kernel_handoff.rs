@@ -182,7 +182,7 @@ fn my_design_template_with_union_realization() -> reify_compiler::TopologyTempla
         right: GeomRef::Step(1),
     };
     TopologyTemplateBuilder::new("MyDesign")
-        .param("MyDesign", "thickness", Type::Real, None)
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
         .realization_named("MyDesign", 0, "body", vec![box_op(), box_op(), union_op])
         .build()
 }

@@ -30,7 +30,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::collect_value_ref_members;
+use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
-    let expected: &[(&str, Type)] = &[("alpha", Type::Real), ("beta", Type::Real)];
+    let expected: &[(&str, Type)] = &[("alpha", Type::dimensionless_scalar()), ("beta", Type::dimensionless_scalar())];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
         assert_eq!(
@@ -352,10 +352,11 @@ fn mode_struct_has_correct_param_shape() {
             "shape",
             Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
         ),
-        // participation_mass / damping_ratio remain `Real` placeholders
-        // (out of scope for task 4548's Mode.frequency tightening).
-        ("participation_mass", Type::Real),
-        ("damping_ratio", Type::Real),
+        // participation_mass / damping_ratio remain dimensionless-scalar
+        // placeholders (out of scope for task 4548's Mode.frequency tightening;
+        // adopt main's Type::Real → dimensionless_scalar() sweep).
+        ("participation_mass", Type::dimensionless_scalar()),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
@@ -421,12 +422,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
 /// exactly the six PRD §4.1 params with the canonical types, in declaration
 /// order:
 ///
-///   - `part                  : String`                  (PLACEHOLDER for the
-///                                                        future `Part`
-///                                                        structure_def from
-///                                                        the v0.3 solver-
-///                                                        elastic PRD — see
-///                                                        plan design-decision-2)
+///   - `part                  : Part`                    (StructureRef — task 4578)
 ///   - `modes                 : List<Mode>`              (computed eigenpairs;
 ///                                                        `Mode` is module-local
 ///                                                        → `Type::StructureRef`)
@@ -473,7 +469,7 @@ fn modal_result_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "modes",
             Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
@@ -486,8 +482,8 @@ fn modal_result_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("mass_matrix_norm", Type::Real),
-        ("stiffness_matrix_norm", Type::Real),
+        ("mass_matrix_norm", Type::dimensionless_scalar()),
+        ("stiffness_matrix_norm", Type::dimensionless_scalar()),
     ];
 
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
@@ -608,8 +604,8 @@ fn modal_options_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("sigma", Type::Real),
-        ("tol", Type::Real),
+        ("sigma", Type::dimensionless_scalar()),
+        ("tol", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         (
             "reference_direction",
@@ -1551,8 +1547,7 @@ fn forcing_function_trait_declared() {
 /// forcing sources at the per-Part layer. Must declare exactly 2 params in
 /// declaration order:
 ///
-///   - `part    : String`                      (PLACEHOLDER for future `Part` type;
-///                                              mirrors `ModalResult.part : String`)
+///   - `part    : Part`                        (StructureRef — task 4578)
 ///   - `sources : List<ForcingFunction>`       (List of trait-object conformers;
 ///                                              resolves to
 ///                                              `Type::List(Box::new(Type::TraitObject("ForcingFunction")))`)
@@ -1578,7 +1573,7 @@ fn forcing_time_history_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "sources",
             Type::List(Box::new(Type::TraitObject("ForcingFunction".to_string()))),
@@ -1784,5 +1779,195 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
         "std/solver/elastic ElementOrder variants should be [P1, P2] in canonical order; \
          modal trampoline reads `variant == \"P2\"` against this set. Got: {:?}",
         enum_def.variants
+    );
+}
+
+// ─── task-4578: Part structure_def (step-1 RED) ───────────────────────────────
+
+/// `Part` must be declared as a zero-field opaque marker structure in
+/// `std/modal/analysis` (PRD §12 open-question-3: "minimal opaque
+/// structure_def first, then grow").
+///
+/// Mirrors `no_damping_marker_structure` (above) but asserts `trait_bounds`
+/// is EMPTY — `Part` refines no trait (unlike `NoDamping : DampingDescriptor`).
+///
+/// RED before step-2 (Part is not yet declared in modal_analysis.ri).
+/// GREEN once `structure def Part { }` lands before `ModalResult`.
+#[test]
+fn part_structure_def_declared() {
+    let template = find_structure("Part");
+
+    // (a) zero param cells — opaque marker, no fields
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        0,
+        "Part should be a zero-field opaque marker structure, but got params: {:?}",
+        params.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    // (b) no constraints — nothing to constrain on a zero-field structure
+    assert!(
+        template.constraints.is_empty(),
+        "Part should declare no constraints (zero-field opaque marker); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) no trait refinements — Part refines no trait in this phase
+    assert!(
+        template.trait_bounds.is_empty(),
+        "Part should have no trait_bounds (it refines no trait in the opaque-marker phase); \
+         got: {:?}",
+        template.trait_bounds
+    );
+}
+
+/// POSITIVE boundary test: compiling `ForcingTimeHistory(part: Part(), sources: [StepForce(...)])`
+/// via the stdlib must produce zero Error-severity diagnostics once `Part` is declared.
+///
+/// Reuses the `StepForce` construction from examples/modal/transient_step_response.ri:90-96.
+/// The `sources.count > 0` constraint is satisfied by the single StepForce.
+///
+/// RED before step-2: `Part()` is an unknown symbol (no `structure def Part` yet).
+/// GREEN once step-2 declares `structure def Part { }` in std/modal/analysis.
+#[test]
+fn part_value_accepted_where_part_param_declared() {
+    let source = r#"
+structure PartBoundarySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: Part(), sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected zero Error-severity diagnostics for ForcingTimeHistory(part: Part(), ...); \
+         RED until `structure def Part {{ }}` lands in std/modal/analysis (step-2). \
+         Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+// ─── task-4578: Part param shape (step-3 RED) ────────────────────────────────
+
+/// `DisplacementTimeHistory` (PRD §5.2) must declare exactly 4 params in order:
+///   - `part         : Part`              (StructureRef — task 4578)
+///   - `modal_result : ModalResult`       (StructureRef)
+///   - `t_samples    : List<Time>`        (List<Scalar<Time>>)
+///   - `mode_coords  : List<List<Real>>`  (List<List<dimensionless>>)
+///
+/// No existing compiler test pinned DisplacementTimeHistory's param shape;
+/// this test adds the missing coverage (per plan design decision).
+///
+/// RED before step-4 (DisplacementTimeHistory.part is still `: String` in .ri).
+/// GREEN once step-4 replaces `param part : String` with `param part : Part`.
+#[test]
+fn displacement_time_history_part_is_part_type() {
+    let template = find_structure("DisplacementTimeHistory");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count — exactly 4 params
+    assert_eq!(
+        params.len(),
+        4,
+        "DisplacementTimeHistory should have exactly 4 params \
+         (part, modal_result, t_samples, mode_coords), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("part", Type::StructureRef("Part".to_string())),
+        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "t_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::TIME,
+            })),
+        ),
+        (
+            "mode_coords",
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+        ),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "DisplacementTimeHistory params must be in canonical order \
+         (part, modal_result, t_samples, mode_coords); got: {:?}",
+        names
+    );
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "DisplacementTimeHistory.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — solver-populated output container
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "DisplacementTimeHistory.{} should have no default_expr \
+             (solver-only-produced output container), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
+
+/// LENIENCY pin-down: a string arg to `part : Part` must silently compile
+/// with zero Error-severity diagnostics (no nominal type-arg rejection for
+/// StructureRef params — verified in check_expr_struct_ctor_args and
+/// walk_param_against_arg_type).
+///
+/// Green-from-add characterization (the leniency holds BEFORE and AFTER the
+/// type switch; it cannot be made RED→GREEN by this task).
+///
+/// IMPORTANT: update this test intentionally when task 4584 (which
+/// depends_on task 4578) lands nominal StructureRef arg-rejection. That task
+/// is the deliberate owner of "string rejected for Part param" behaviour.
+#[test]
+fn string_arg_to_part_param_silently_accepted() {
+    let source = r#"
+structure PartLeniencySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: "beam", sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    // pin-down: the compiler currently does NOT reject a string arg at a
+    // StructureRef-typed param slot. If task 4584 adds that rejection,
+    // update this assertion intentionally to reflect the new behaviour.
+    assert!(
+        errors.is_empty(),
+        "pin-down: expected zero Error-severity diagnostics for \
+         ForcingTimeHistory(part: \"beam\", ...) — string-arg leniency must hold. \
+         If errors appear, task 4584 likely landed nominal arg-rejection; \
+         update this test intentionally. Got {}: {:#?}",
+        errors.len(),
+        errors
     );
 }

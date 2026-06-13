@@ -1568,7 +1568,7 @@ impl Value {
                     // G-allow: documented `infer_type()` with-defaults contract (function
                     // docstring above); `try_infer_type()` returns None for ambiguity
                     // (task 3639 review).
-                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::dimensionless_scalar());
                     Type::List(Box::new(elem_ty))
                 }
                 Value::Set(items) => {
@@ -1579,7 +1579,7 @@ impl Value {
                         // G-allow: documented `infer_type()` with-defaults contract (function
                         // docstring above); `try_infer_type()` returns None for ambiguity
                         // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .unwrap_or(Type::dimensionless_scalar());
                     Type::Set(Box::new(elem_ty))
                 }
                 Value::Map(m) => {
@@ -1587,7 +1587,7 @@ impl Value {
                         .iter()
                         .next()
                         .map(|(k, v)| (k.infer_type(), v.infer_type()))
-                        .unwrap_or((Type::String, Type::Real));
+                        .unwrap_or((Type::String, Type::dimensionless_scalar()));
                     Type::Map(Box::new(k_ty), Box::new(v_ty))
                 }
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
@@ -1630,7 +1630,7 @@ impl Value {
                         // G-allow: documented `infer_type()` with-defaults contract (function
                         // docstring above); `try_infer_type()` returns None for ambiguity
                         // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .unwrap_or(Type::dimensionless_scalar());
                     Type::Range(Box::new(elem_ty))
                 }
                 Value::Tensor(_) => panic!(
@@ -1679,7 +1679,7 @@ impl Value {
         match self {
             Value::Bool(_) => Some(Type::Bool),
             Value::Int(_) => Some(Type::Int),
-            Value::Real(_) => Some(Type::Real),
+            Value::Real(_) => Some(Type::dimensionless_scalar()),
             Value::String(_) => Some(Type::String),
             Value::Scalar { dimension, .. } => Some(Type::Scalar {
                 dimension: *dimension,
@@ -1707,7 +1707,7 @@ impl Value {
             }
             Value::Option(None) => None,
             Value::Lambda { params, body, .. } => {
-                let param_types = params.iter().map(|_| Type::Real).collect();
+                let param_types = params.iter().map(|_| Type::dimensionless_scalar()).collect();
                 Some(Type::Function {
                     params: param_types,
                     return_type: Box::new(body.result_type.clone()),
@@ -5817,8 +5817,8 @@ mod tests {
     fn value_field_variant() {
         use reify_core::ty::Type;
         let field_val = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -5831,8 +5831,8 @@ mod tests {
         );
         // Content hash determinism
         let field_val2 = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -8654,8 +8654,8 @@ mod tests {
             (
                 "Field",
                 Value::Field {
-                    domain_type: reify_core::ty::Type::Real,
-                    codomain_type: reify_core::ty::Type::Real,
+                    domain_type: reify_core::ty::Type::dimensionless_scalar(),
+                    codomain_type: reify_core::ty::Type::dimensionless_scalar(),
                     source: FieldSourceKind::Analytical,
                     lambda: Arc::new(Value::Undef),
                 },
@@ -8666,7 +8666,7 @@ mod tests {
                     params: vec![],
                     body: Box::new(CompiledExpr {
                         kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
-                        result_type: reify_core::ty::Type::Real,
+                        result_type: reify_core::ty::Type::dimensionless_scalar(),
                         content_hash: ContentHash::of(&[0]),
                     }),
                     captures: ValueMap::new(),
@@ -8866,7 +8866,7 @@ mod tests {
         assert_eq!(Value::Int(0).try_infer_type(), Some(reify_core::ty::Type::Int));
         assert_eq!(
             Value::Real(0.0).try_infer_type(),
-            Some(reify_core::ty::Type::Real)
+            Some(reify_core::ty::Type::dimensionless_scalar())
         );
         assert_eq!(
             Value::String("".into()).try_infer_type(),
@@ -8882,7 +8882,7 @@ mod tests {
         let v = Value::List(vec![]);
         assert_eq!(
             v.infer_type(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             "empty List should default element type to Real (matching compiler)"
         );
     }
@@ -8893,7 +8893,7 @@ mod tests {
         let v = Value::Set(BTreeSet::new());
         assert_eq!(
             v.infer_type(),
-            Type::Set(Box::new(Type::Real)),
+            Type::Set(Box::new(Type::dimensionless_scalar())),
             "empty Set should default element type to Real (matching compiler)"
         );
     }
@@ -8904,7 +8904,7 @@ mod tests {
         let v = Value::Map(BTreeMap::new());
         assert_eq!(
             v.infer_type(),
-            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
             "empty Map should default value type to Real (key stays String, matching compiler)"
         );
     }
@@ -8930,7 +8930,7 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::List(vec![]))));
         assert_eq!(
             v.infer_type(),
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
             "Option(Some(empty List)) should produce Option(List(Real)) via inner infer_type()"
         );
     }
@@ -8958,7 +8958,7 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::Set(BTreeSet::new()))));
         assert_eq!(
             v.infer_type(),
-            Type::Option(Box::new(Type::Set(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::Set(Box::new(Type::dimensionless_scalar())))),
             "Option(Some(empty Set)) should produce Option(Set(Real)) via inner infer_type()"
         );
     }
@@ -8972,7 +8972,7 @@ mod tests {
         let v = Value::List(vec![Value::List(vec![])]);
         assert_eq!(
             v.infer_type(),
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
             "List([List([])]) should produce List(List(Real)), not List(Real)"
         );
     }
@@ -8983,7 +8983,7 @@ mod tests {
         let v = Value::Set([Value::Set(BTreeSet::new())].into_iter().collect());
         assert_eq!(
             v.infer_type(),
-            Type::Set(Box::new(Type::Set(Box::new(Type::Real)))),
+            Type::Set(Box::new(Type::Set(Box::new(Type::dimensionless_scalar())))),
             "Set({{Set({{}})}}) should produce Set(Set(Real)), not Set(Real)"
         );
     }
@@ -8999,7 +8999,7 @@ mod tests {
             v.infer_type(),
             Type::Map(
                 Box::new(Type::String),
-                Box::new(Type::List(Box::new(Type::Real)))
+                Box::new(Type::List(Box::new(Type::dimensionless_scalar())))
             ),
             "Map with empty-list value should produce Map(String, List(Real))"
         );
@@ -9056,7 +9056,7 @@ mod tests {
             v.infer_type(),
             Type::Point {
                 n: 2,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
             "non-empty Point(Real, Real) should infer as Type::Point {{ n: 2, quantity: Real }}"
         );
@@ -9071,7 +9071,7 @@ mod tests {
             v.infer_type(),
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
             "non-empty Vector(Real×3) should infer as Type::Vector {{ n: 3, quantity: Real }}"
         );

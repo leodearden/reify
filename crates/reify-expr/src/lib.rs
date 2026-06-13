@@ -16,6 +16,7 @@ mod sanitize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
@@ -221,6 +222,27 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "curl" if evaluated_args.len() == 1 => calculus::compute_curl(&evaluated_args[0]),
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
+                }
+                // fn_field(lambda): wrap a user lambda as FieldSourceKind::Analytical.
+                //
+                // This is the β-phase intercepting builtin (task 4220,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.2). It constructs a
+                // `Value::Field { source: Analytical, lambda: Arc(lambda) }` from
+                // the evaluated first argument (which must be a `Value::Lambda`).
+                //
+                // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
+                // recursive frame small in debug builds — the two `Type` locals
+                // (`domain_type`, `codomain_type`) would otherwise sit on every
+                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+                // evaluation (same rationale as `eval_structure_instance_ctor`,
+                // `eval_quantifier`, etc.; pinned by
+                // `eval_user_fn_recursion_depth_exceeded`).
+                "fn_field"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
+                {
+                    eval_fn_field(&evaluated_args[0], &expr.result_type)
                 }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
@@ -451,6 +473,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // usage error. Extracted into `emit_dfm_diagnostics` for the same
                     // stack-shrinking rationale as `emit_flexure_diagnostics`.
                     emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // Snapshot center_of_mass fallback Warning (task 4471): fires on
+                    // BOTH paths like the flexure/DFM hooks — the fallback Warning is
+                    // emitted even when center_of_mass returns a valid Point (success
+                    // path), so the Undef-only `emit_undef_builtin_diagnostics` gate
+                    // cannot surface it. A no-op for every non-snapshot name.
+                    emit_snapshot_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -1121,7 +1149,6 @@ fn type_carries_type_param(t: &Type) -> bool {
         // All remaining leaves carry no inner `Type`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1579,6 +1606,29 @@ fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalCo
     }
 }
 
+/// Emit snapshot `center_of_mass` fallback diagnostics for a builtin call into
+/// the runtime sink (task 4471).
+///
+/// Mirrors [`emit_dfm_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::snapshot_diagnose`]
+/// into the sink. Like the flexure/DFM hooks — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics`
+/// — `snapshot_diagnose` fires on BOTH paths: the `center_of_mass` fallback
+/// Warning is emitted when the result is a valid `Point` (success path, the
+/// legacy density-weighted centroid). `snapshot_diagnose` returns an empty
+/// `Vec` for every non-`center_of_mass` name, so this is a cheap no-op for
+/// other builtins. Extracted `#[inline(never)]` for the same stack-shrinking
+/// reason as `emit_flexure_diagnostics` and `emit_dfm_diagnostics`.
+#[inline(never)]
+fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::snapshot_diagnose(name, args, result) {
+        sink.borrow_mut().push(diag);
+    }
+}
+
 /// Dispatch `worst_case(mcr, lambda)` — apply `lambda` to each per-case
 /// `ElasticResult` in `mcr.cases`, expect each call to return a `Field`,
 /// collapse via `field_reductions::compute_max`, and return the case name
@@ -1946,6 +1996,39 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
         }));
     }
     result
+}
+
+/// Wrap a user lambda as a `Value::Field { source: Analytical, .. }`.
+///
+/// Implements the `fn_field` intercepting builtin (task 4220 β,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.2).
+///
+/// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
+/// debug builds — the `domain_type` and `codomain_type` locals (each a
+/// `Type`) would otherwise sit on every recursive `eval_expr` frame and
+/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// levels of user-fn recursion (same rationale as
+/// `eval_structure_instance_ctor`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "fn_field result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4219 α); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda.clone()),
+    }
 }
 
 /// Apply a lambda closure to a list of argument values.
@@ -2340,7 +2423,7 @@ fn eval_method_call(
                 if items.is_empty() {
                     return match result_type {
                         Type::Int => Value::Int(0),
-                        Type::Real => Value::Real(0.0),
+                        Type::Scalar { dimension } if dimension.is_dimensionless() => Value::Real(0.0),
                         Type::Scalar { dimension } => Value::Scalar {
                             si_value: 0.0,
                             dimension: *dimension,
@@ -4080,10 +4163,10 @@ mod tests {
     #[test]
     fn function_call_abs_dispatches_to_stdlib() {
         // FunctionCall('abs', [Literal(Real(-3.0))]) should return Real(3.0), not Undef
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[42]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4134,7 +4217,7 @@ mod tests {
         };
 
         // The literal args' static Type is not consulted at runtime (eval_expr's
-        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        // Literal arm clones the value), so Type::dimensionless_scalar() is a neutral placeholder.
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
             result_type: Type::Bool,
@@ -4144,9 +4227,9 @@ mod tests {
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
                 args: vec![
-                    lit(part, Type::Real),
-                    lit(env, Type::Real),
-                    lit(sev, Type::Real),
+                    lit(part, Type::dimensionless_scalar()),
+                    lit(env, Type::dimensionless_scalar()),
+                    lit(sev, Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -4210,9 +4293,9 @@ mod tests {
                     name: "fits_build_volume".to_string(),
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
-                // Literal args' static Type is not consulted at runtime; Type::Real
+                // Literal args' static Type is not consulted at runtime; Type::dimensionless_scalar()
                 // is a neutral placeholder (matches the step-11 test).
-                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
             },
         }
     }
@@ -4278,7 +4361,7 @@ mod tests {
         );
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[43]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "sin".to_string(),
@@ -4297,10 +4380,10 @@ mod tests {
 
     #[test]
     fn function_call_unknown_returns_undef() {
-        let arg = lit(Value::Real(1.0), Type::Real);
+        let arg = lit(Value::Real(1.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[44]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "nonexistent".to_string(),
@@ -4316,10 +4399,10 @@ mod tests {
     #[test]
     fn function_call_undef_propagation() {
         // abs(Undef) should return Undef (strict propagation)
-        let arg = lit(Value::Undef, Type::Real);
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[45]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4373,7 +4456,7 @@ mod tests {
         // abs() with no args should return Undef
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[47]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -5084,7 +5167,7 @@ mod tests {
             1,
             vec![
                 ("youngs_modulus", lit(Value::Int(200), Type::Int)),
-                ("poisson", lit(Value::Real(0.3), Type::Real)),
+                ("poisson", lit(Value::Real(0.3), Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5176,7 +5259,7 @@ mod tests {
             1,
             vec![
                 ("length", lit(Value::Int(5), Type::Int)),
-                ("mystery", vref("Nowhere", "missing", Type::Real)),
+                ("mystery", vref("Nowhere", "missing", Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5210,16 +5293,16 @@ mod tests {
         // let sum = a + b
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", lit(Value::Real(3.0), Type::Real)),
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", lit(Value::Real(3.0), Type::dimensionless_scalar())),
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5257,20 +5340,20 @@ mod tests {
         // let quad   = double + double → 8.0
         let double_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "a", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "a", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let quad_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "double", Type::Real),
-            vref("S", "double", Type::Real),
-            Type::Real,
+            vref("S", "double", Type::dimensionless_scalar()),
+            vref("S", "double", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
-            vec![("a", lit(Value::Real(2.0), Type::Real))],
+            vec![("a", lit(Value::Real(2.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("double", double_let), ("quad", quad_let)],
         );
@@ -5304,14 +5387,14 @@ mod tests {
         // inner struct
         let inner_derived_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S_inner", "x", Type::Real),
-            vref("S_inner", "x", Type::Real),
-            Type::Real,
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let inner_ctor = sct_with_lets(
             "S_inner",
             1,
-            vec![("x", lit(Value::Real(3.0), Type::Real))],
+            vec![("x", lit(Value::Real(3.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("derived", inner_derived_let)],
         );
@@ -5322,7 +5405,7 @@ mod tests {
             Value::String("derived".to_string()),
             Type::String,
         );
-        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::Real);
+        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::dimensionless_scalar());
         let expr = sct_with_lets(
             "S_outer",
             1,
@@ -5355,16 +5438,16 @@ mod tests {
         // let sum = a + b → Undef (Undef propagation)
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", vref("nowhere", "missing", Type::Real)), // unbound → Undef
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", vref("nowhere", "missing", Type::dimensionless_scalar())), // unbound → Undef
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5394,21 +5477,21 @@ mod tests {
 
     fn make_double_fn() -> CompiledFunction {
         // fn double(x: Real) -> Real { x + x }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "double".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("double", "x", Type::Real),
-                    vref("double", "x", Type::Real),
-                    Type::Real,
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"double"),
@@ -5420,29 +5503,29 @@ mod tests {
 
     fn make_fn_with_let() -> CompiledFunction {
         // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "f".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![(
                     "y".to_string(),
                     CompiledExpr::binop(
                         BinOp::Add,
-                        vref("f", "x", Type::Real),
+                        vref("f", "x", Type::dimensionless_scalar()),
                         lit(Value::Int(1), Type::Int),
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                     ),
                 )],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("f", "y", Type::Real),
+                    vref("f", "y", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
@@ -5457,10 +5540,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Real(5.0), Type::Real)],
+                args: vec![lit(Value::Real(5.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5488,7 +5571,7 @@ mod tests {
             "x".to_string(),
             Type::Field {
                 domain: Box::new(Type::TypeParam("T".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             },
         )];
         let generic_fn = CompiledFunction {
@@ -5497,10 +5580,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"generic_field_f"),
             annotations: vec![],
@@ -5514,8 +5597,8 @@ mod tests {
         // Arg's result_type is the concrete Field<Real, Real>; the Value payload
         // is irrelevant to overload resolution (which keys on result_type).
         let concrete_field = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         let args = vec![lit(Value::Undef, concrete_field)];
         let fns = [generic_fn];
@@ -5548,10 +5631,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"non_generic_trait_obj_solve"),
             annotations: vec![],
@@ -5659,10 +5742,10 @@ mod tests {
         let f = make_fn_with_let();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_f"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "f".to_string(),
-                args: vec![lit(Value::Real(4.0), Type::Real)],
+                args: vec![lit(Value::Real(4.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5726,10 +5809,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double_undef"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Undef, Type::Real)],
+                args: vec![lit(Value::Undef, Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5823,21 +5906,21 @@ mod tests {
     #[test]
     fn eval_user_fn_overload_by_arity() {
         // fn process(x: Real) -> Real { x * 2 }
-        let params1 = vec![("x".to_string(), Type::Real)];
+        let params1 = vec![("x".to_string(), Type::dimensionless_scalar())];
         let process1 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params1),
             params: params1,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("process", "x", Type::Real),
+                    vref("process", "x", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
@@ -5846,21 +5929,21 @@ mod tests {
             type_params: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
-        let params2 = vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)];
+        let params2 = vec![("x".to_string(), Type::dimensionless_scalar()), ("y".to_string(), Type::dimensionless_scalar())];
         let process2 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params2),
             params: params2,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("process", "x", Type::Real),
-                    vref("process", "y", Type::Real),
-                    Type::Real,
+                    vref("process", "x", Type::dimensionless_scalar()),
+                    vref("process", "y", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
@@ -5875,10 +5958,10 @@ mod tests {
         // Call with 1 arg: process(3.0) → 6.0
         let call1 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process1"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
         let ctx = EvalContext::new(&values, &functions);
@@ -5890,12 +5973,12 @@ mod tests {
         // Call with 2 args: process(3.0, 4.0) → 7.0
         let call2 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process2"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
                 args: vec![
-                    lit(Value::Real(3.0), Type::Real),
-                    lit(Value::Real(4.0), Type::Real),
+                    lit(Value::Real(3.0), Type::dimensionless_scalar()),
+                    lit(Value::Real(4.0), Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -5958,8 +6041,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5975,8 +6058,8 @@ mod tests {
             im: f64::NAN,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5992,8 +6075,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6009,8 +6092,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6026,8 +6109,8 @@ mod tests {
             im: f64::INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6043,8 +6126,8 @@ mod tests {
             im: f64::NEG_INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -6077,8 +6160,8 @@ mod tests {
             im: -3.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Complex { re, im, dimension } => {
@@ -6465,12 +6548,12 @@ mod tests {
 
         // Lambda body: ValueRef of param `p`.
         let p_id = ValueCellId::new("__field.base", "p");
-        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::dimensionless_scalar());
         let body = CompiledExpr::binop(
             BinOp::Mul,
             p_ref,
-            lit(Value::Real(2.0), Type::Real),
-            Type::Real,
+            lit(Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // The lambda value (as it would appear inside Value::Field.lambda).
@@ -6482,8 +6565,8 @@ mod tests {
 
         // Build the field cell and seed the values map under __field.base.
         let field_value = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Composed,
             lambda: Arc::new(lambda_value),
         };
@@ -6494,13 +6577,13 @@ mod tests {
         // Synthesize a FunctionCall: `base(3.0)`.
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[100]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "base".to_string(),
                     qualified_name: "field::base".to_string(),
                 },
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
 
@@ -6524,10 +6607,10 @@ mod tests {
         // No `__field.abs` cell present → dispatch fall-through →
         // `reify_stdlib::eval_builtin("abs", &[Real(-3.0)])` runs and
         // returns Real(3.0).
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[101]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -7087,9 +7170,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7100,9 +7183,9 @@ mod tests {
 
     #[test]
     fn real_add_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7113,9 +7196,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7127,8 +7210,8 @@ mod tests {
     #[test]
     fn int_add_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7141,8 +7224,8 @@ mod tests {
     fn dimensioned_scalar_add_real_is_undef() {
         // Scalar{LENGTH} + Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -7154,9 +7237,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7167,9 +7250,9 @@ mod tests {
 
     #[test]
     fn real_sub_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7180,9 +7263,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7194,8 +7277,8 @@ mod tests {
     #[test]
     fn int_sub_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7208,8 +7291,8 @@ mod tests {
     fn dimensioned_scalar_sub_real_is_undef() {
         // Scalar{LENGTH} - Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -7230,7 +7313,7 @@ mod tests {
                     qualified_name: "std::iso_it_tolerance".to_string(),
                 },
                 // Literal args' static Type is not consulted at runtime.
-                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
             },
         }
     }
@@ -7355,6 +7438,140 @@ mod tests {
             diags[0].message.contains("E_TolerancingOutOfEnvelope"),
             "message must contain E_TolerancingOutOfEnvelope prefix: {}",
             diags[0].message
+        );
+    }
+
+    // ── center_of_mass emit_snapshot_diagnostics wiring (task 4471 step-7) ──
+    //
+    // End-to-end tests that emit_snapshot_diagnostics pushes a
+    // SnapshotCenterOfMassDensityFallback Warning into the runtime sink when
+    // center_of_mass falls back to the legacy density path on a mixed snapshot.
+    // RED until step-8 wires emit_snapshot_diagnostics immediately after
+    // emit_dfm_diagnostics in the FunctionCall post-process.
+
+    /// Build an axis_x unit vector (1,0,0) for test snapshots.
+    fn snap_axis_x() -> Value {
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    }
+
+    /// Build a two-body snapshot where body 0 has `solid0` placed at world
+    /// x=`x0` (metres) and body 1 has `solid1` at world x=`x1`, via
+    /// prismatic-X joints.  Mirrors `make_two_body_explicit_mass_snapshot`
+    /// in reify-stdlib's snapshot.rs tests but is self-contained here to
+    /// avoid a test-only cross-crate dependency on private helpers.
+    fn snap_two_body(solid0: Value, x0: f64, solid1: Value, x1: f64) -> Value {
+        let j0 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x0 - 1.0))),
+                    upper: Some(Box::new(Value::length(x0 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j1 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x1 - 1.0))),
+                    upper: Some(Box::new(Value::length(x1 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let m0 = reify_stdlib::eval_builtin("mechanism", &[]);
+        let m1 = reify_stdlib::eval_builtin("body", &[m0, solid0, j0.clone()]);
+        let m2 = reify_stdlib::eval_builtin("body", &[m1, solid1, j1.clone()]);
+        let bind0 = reify_stdlib::eval_builtin("bind", &[j0, Value::length(x0)]);
+        let bind1 = reify_stdlib::eval_builtin("bind", &[j1, Value::length(x1)]);
+        reify_stdlib::eval_builtin("snapshot", &[m2, Value::List(vec![bind0, bind1])])
+    }
+
+    /// Build a `center_of_mass(snapshot)` FunctionCall CompiledExpr.
+    fn com_call_expr(snapshot: Value, hash_bytes: [u8; 4]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&hash_bytes),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "std::center_of_mass".to_string(),
+                },
+                args: vec![lit(snapshot, Type::dimensionless_scalar())],
+            },
+        }
+    }
+
+    /// `center_of_mass` on a mixed snapshot (one explicit-mass body, one plain
+    /// body) evaluated through `eval_expr` must push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning into the runtime sink.
+    ///
+    /// RED until step-8 wires `emit_snapshot_diagnostics` after
+    /// `emit_dfm_diagnostics` — without that call the sink stays empty even
+    /// though `reify_stdlib::snapshot_diagnose` returns the Warning.
+    #[test]
+    fn center_of_mass_mixed_snapshot_emits_density_fallback_warning_into_sink() {
+        let pm_1 = reify_stdlib::eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let snapshot = snap_two_body(pm_1, 0.0, plain, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x10]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(
+            !result.is_undef(),
+            "mixed snapshot center_of_mass must return a valid Point (legacy fallback), got {:?}",
+            result
+        );
+
+        let diags = sink.borrow();
+        assert!(
+            diags.iter().any(|d| {
+                d.severity == reify_core::Severity::Warning
+                    && d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)
+            }),
+            "expected a SnapshotCenterOfMassDensityFallback Warning in the runtime sink, \
+             got {diags:?}"
+        );
+    }
+
+    /// `center_of_mass` on a pure-legacy snapshot (no explicit-mass bodies)
+    /// evaluated through `eval_expr` must NOT push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning — pure-legacy mechanisms
+    /// stay silent (the mixed-case Warning fires only when >= 1 body resolves
+    /// AND >= 1 body does not).
+    #[test]
+    fn center_of_mass_pure_legacy_snapshot_emits_no_density_fallback_warning() {
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+        let snapshot = snap_two_body(solid_a, 0.0, solid_b, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x11]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        eval_expr(&expr, &ctx);
+
+        let diags = sink.borrow();
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)),
+            "pure-legacy snapshot must NOT emit SnapshotCenterOfMassDensityFallback, \
+             got {diags:?}"
         );
     }
 }

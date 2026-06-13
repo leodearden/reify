@@ -15,7 +15,7 @@ use super::*;
 ///      structures, traits). On `None`, fall back to enum lookup, then the
 ///      "unresolved type in trait" diagnostic.
 ///
-/// All error paths return `Type::Real` for downstream error-recovery so subsequent
+/// All error paths return `Type::dimensionless_scalar()` for downstream error-recovery so subsequent
 /// trait machinery has a concrete type to work with.
 #[allow(clippy::too_many_arguments)]
 fn resolve_trait_member_type_annotation(
@@ -41,7 +41,7 @@ fn resolve_trait_member_type_annotation(
                     "unexpected dimensional expression",
                 )),
             );
-            return Type::Real;
+            return Type::dimensionless_scalar();
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             // Let the resolver emit its specific diagnostic by calling it once for
@@ -54,7 +54,7 @@ fn resolve_trait_member_type_annotation(
                 structure_names,
                 trait_names,
             );
-            return Type::Real;
+            return Type::dimensionless_scalar();
         }
         _ => {}
     }
@@ -93,7 +93,7 @@ fn resolve_trait_member_type_annotation(
                     .with_code(DiagnosticCode::UnresolvedType)
                     .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                 );
-                Type::Real
+                Type::dimensionless_scalar()
             }
         }
     }
@@ -106,7 +106,7 @@ fn resolve_trait_member_type_annotation(
 /// `type_expr` and the `return_type` resolve through the same
 /// [`resolve_trait_member_type_annotation`] path the rest of `compile_trait`
 /// uses (so unresolved/DimensionalOp/IntegerLiteral annotations produce the
-/// same diagnostics). A missing return type defaults to `Type::Real`, matching
+/// same diagnostics). A missing return type defaults to `Type::dimensionless_scalar()`, matching
 /// `compile_function`'s convention. Added by task 3939 δ.
 #[allow(clippy::too_many_arguments)]
 fn assoc_fn_sig(
@@ -152,7 +152,7 @@ fn assoc_fn_sig(
             trait_names,
             diagnostics,
         ),
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     };
     CompiledAssocFnSig {
         name: fn_def.name.clone(),
@@ -189,7 +189,7 @@ pub(crate) fn compile_trait(
                         diagnostics,
                     )
                 } else {
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
 
                 if param.default.is_some() {
@@ -1166,7 +1166,7 @@ mod tests {
             "the self receiver must be excluded from params, got: {:?}",
             sig.params
         );
-        assert_eq!(sig.return_type, Type::Real);
+        assert_eq!(sig.return_type, Type::dimensionless_scalar());
         // A required (bodyless) fn must NOT also appear as a default.
         assert!(
             !compiled

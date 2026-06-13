@@ -176,7 +176,7 @@ fn unfold_recursive_multiple_params() {
     );
     let width_half = binop(
         BinOp::Mul,
-        value_ref_typed("S", "width", Type::Real),
+        value_ref_typed("S", "width", Type::dimensionless_scalar()),
         literal(Value::Real(0.5)),
     );
 
@@ -190,8 +190,8 @@ fn unfold_recursive_multiple_params() {
         .param(
             "S",
             "width",
-            Type::Real,
-            Some(CompiledExpr::literal(Value::Real(10.0), Type::Real)),
+            Type::dimensionless_scalar(),
+            Some(CompiledExpr::literal(Value::Real(10.0), Type::dimensionless_scalar())),
         )
         .is_recursive(true)
         .sub_component_with_guard(

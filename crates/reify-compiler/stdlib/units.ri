@@ -84,10 +84,15 @@ pub unit USD : Money
 // rule. To give these constants accurate `Scalar<dim>` return types, we
 // introduce the aliases below; user code may reference them too. esc-4026-121.
 
-/// Velocity dimension, m/s. Aliases `Length / Time` so it can appear in
-/// function return type position (where the grammar admits `identifier`
-/// only). Note: `Velocity` is intentionally absent from `NAMED_DIMENSIONS`
-/// (only `AngularVelocity` is registered) — this alias substitutes.
+/// Velocity dimension, m/s. Originally introduced so `Velocity` could appear in
+/// function return type position (where the grammar admits `identifier` only).
+/// As of task 4580, `Velocity` IS registered in `NAMED_DIMENSIONS` (m·s⁻¹,
+/// adjacent to Acceleration) and the builtin shadows this alias at every
+/// use-site (resolution checks builtins before the alias registry). This alias
+/// is now effectively dead — kept only as a harmless back-compat alias for any
+/// external code that may reference it. Removing it is safe; deferred to a
+/// dedicated cleanup pass. TODO(cleanup): remove this alias once the stdlib
+/// alias surface is audited for external dependents.
 pub type Velocity = Length / Time
 
 /// Energy per unit temperature — dimension of entropy / heat capacity /

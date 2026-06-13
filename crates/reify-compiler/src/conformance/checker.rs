@@ -116,7 +116,7 @@ pub(super) fn check_phase_resolve_structure_members(
     //      names). On `None`, fall back to enum-name lookup, then emit a root-cause
     //      "unresolved type in conformance check" diagnostic.
     //
-    // All error paths return `Type::Error` (poison sentinel), NOT `Type::Real`.
+    // All error paths return `Type::Error` (poison sentinel), NOT `Type::dimensionless_scalar()`.
     // Rationale: `structure_members` (populated by this closure's output) is consumed
     // by the `RequirementKind::{Param,Let}` arm of the requirement-checking loop below,
     // where `actual_type` is passed as the `from`/producer side of
@@ -124,7 +124,7 @@ pub(super) fn check_phase_resolve_structure_members(
     // wildcard in `type_compat.rs:3–26` short-circuits `implicitly_converts_to(Error, _)`
     // to `true`, suppressing the cascade "type mismatch for trait member" diagnostic
     // that would otherwise appear on top of the root-cause error already emitted here.
-    // Returning `Type::Real` instead would poison the downstream requirement check
+    // Returning `Type::dimensionless_scalar()` instead would poison the downstream requirement check
     // whenever the trait requires a non-Real type (e.g. Length), generating a misleading
     // second diagnostic and obscuring the actual problem for the user.
     //
@@ -243,7 +243,7 @@ pub(super) fn check_phase_resolve_structure_members(
                             ))
                             .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     }
                 };
                 structure_param_members.insert(p.name.clone(), ty);
@@ -562,7 +562,7 @@ pub(super) fn check_phase_pre_register_default_types(
     // slot is vacant, the expression is cached in `inferred_let_exprs` for
     // reuse by the injection loop (avoids double compilation) and by
     // `available_defaults` (so requirement-matching uses the inferred type
-    // instead of the old `Type::Real` fallback).
+    // instead of the old `Type::dimensionless_scalar()` fallback).
     //
     // Error suppression (task 1914 suggestion #1, hardened by task 2158):
     // snapshot the diagnostic-vector length before each compile_expr call, then
@@ -658,6 +658,28 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
+    // Pass 2 post-pass: register unannotated Let defaults that were skipped by Pass 2's
+    // `!structure_members.contains_key(name)` guard (conformer already declares the name).
+    // These names are absent from `inferred_let_exprs` and `pass2_compile_errors` because
+    // compilation was never attempted, and absent from `pass2_skipped` because
+    // `register_if_absent` was never called. Without this registration,
+    // `check_phase_build_available_defaults_map`'s debug_assert! at :802 fires:
+    //
+    //   cell_type.is_some() || inferred_let_exprs.contains_key(&key)
+    //
+    // Adding the name to `pass2_skipped` satisfies the guard at :777-778
+    // (`cell_type.is_none() && pass2_skipped.contains(name) → return None`),
+    // correctly excluding the default from the available_defaults advertisement map —
+    // there is nothing to advertise because the conformer member overrides it.
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && structure_members.contains_key(name.as_str())
+            && let DefaultKind::Let { cell_type: None, .. } = &default.kind
+        {
+            pass2_skipped.insert(name.to_string());
+        }
+    }
+
     PreRegisterOutput {
         inferred_let_exprs,
         pass1_skipped,
@@ -735,7 +757,7 @@ pub(super) fn check_phase_pre_register_default_types(
 ///
 /// For `DefaultKind::Let { cell_type: None, .. }` entries that passed both guards, the
 /// advertised type is the inferred result type from `inferred_let_exprs` (populated by phase
-/// 3's Pass 2). Falls back to `Type::Real` if the name is absent from the cache — after task
+/// 3's Pass 2). Falls back to `Type::dimensionless_scalar()` if the name is absent from the cache — after task
 /// 1914 this is a defensive-default that should not be reached in practice: compile-error
 /// names are excluded by `pass2_compile_errors` and skipped names by `pass2_skipped`.
 /// A `debug_assert!` guards the fallback to catch any drift.
@@ -802,7 +824,7 @@ pub(super) fn check_phase_build_available_defaults_map(
                         cell_type.is_some() || inferred_let_exprs.contains_key(&key),
                         "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
                          (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
-                         contract broken; Type::Real fallback would re-introduce the \
+                         contract broken; Type::dimensionless_scalar() fallback would re-introduce the \
                          phantom-type-mismatch bug fixed by task 1951 Option B"
                     );
                     let resolved =
@@ -831,7 +853,7 @@ pub(super) fn check_phase_build_available_defaults_map(
 /// `resolve_type_expr_with_aliases` — the SAME resolver the trait side funnels
 /// through — so the structure-derived sig is directly `PartialEq`-comparable
 /// with the trait-derived requirement sig. A missing return type defaults to
-/// `Type::Real`, matching `compile_function` / `assoc_fn_sig`.
+/// `Type::dimensionless_scalar()`, matching `compile_function` / `assoc_fn_sig`.
 ///
 /// Resolution here is deliberately side-effect-free: a failure resolves to
 /// `Type::Error` and emits NO diagnostic (a throwaway sink absorbs any the
@@ -927,7 +949,7 @@ pub(super) fn collect_structure_assoc_type_bindings(
 /// through `resolve_type_expr_with_aliases` — the same resolver `assoc_fn_sig`
 /// (traits.rs) uses on the trait side — so equal annotations on a trait default
 /// and a structure override compare equal under the derived `PartialEq`. A
-/// missing return type defaults to `Type::Real`, matching `compile_function` /
+/// missing return type defaults to `Type::dimensionless_scalar()`, matching `compile_function` /
 /// `assoc_fn_sig`.
 ///
 /// Resolution is deliberately side-effect-free: a failure resolves to
@@ -973,7 +995,7 @@ fn derive_assoc_fn_sig_silent(
             trait_names,
         )
         .unwrap_or(Type::Error),
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     };
     CompiledAssocFnSig {
         name: fn_def.name.clone(),
@@ -1555,6 +1577,83 @@ pub(super) fn check_phase_check_members_against_requirements(
             }
         }
     }
+    // Conformance collision rule (PRD v0_6 type-hygiene §7.4, task η): a conformer member
+    // colliding with a DEFAULTED trait member (which never enters ctx.requirements) must
+    // implicitly_converts_to the trait's declared type — closing the silent-accept gap
+    // (probe-7: scalar override vs tensor-defaulted trait param). Compatible collision stays
+    // legal (override idiom); mirrors the kind-agnostic inject-skip in check_phase_inject_defaults.
+    //
+    // Guard: skip defaults whose name is already covered by a requirement in ctx.requirements.
+    // A sub-trait can override a parent's `param x : Option<T> = none` default with a REQUIRED
+    // `param x : T` (no default), putting BOTH the requirement and the old default into the
+    // merged ctx. The requirements loop above already validates the conformer's `x` against the
+    // required type T; re-checking it against Option<T> from the default would fire a false
+    // positive. Example: RotaryPort `param max_torque : Torque` (required) shadows MotivePort
+    // `param max_torque : Option<Torque> = none` (default).
+    let required_names: std::collections::HashSet<&str> =
+        ctx.requirements.iter().map(|r| r.name.as_str()).collect();
+    // Dedup guard for the defaults loop below.
+    //
+    // Upstream dedup guarantees in collect_all_requirements (trait_requirements.rs):
+    //   • Param defaults: deduped by (name, DefaultKindTag::Param) via seen_defaults — at most
+    //     one Param default per name in ctx.defaults; duplicate is impossible.
+    //   • Annotated Let defaults WITHOUT structure override: deduped by seen_let_hashes (content-
+    //     hash comparison); at most one Let default per name reaches ctx.defaults.
+    //   • Annotated Let defaults WITH structure override: NOT deduped. When the structure already
+    //     declares a member `x`, hash-recording is suppressed (`if !structure_members.contains_key`)
+    //     so each trait's `let x` default is pushed unconditionally — multiple entries for the same
+    //     name can appear. The injection loop skips them all (re-checks structure_members), but the
+    //     collision rule runs first. Without this guard, a conformer override that is incompatible
+    //     with multiple same-named Let defaults (diamond / multi-trait) would emit one identical
+    //     "type mismatch" diagnostic per redundant entry rather than one per name.
+    //
+    // This HashSet is therefore a no-op for Params and unoverridden Lets (at most one entry each)
+    // but is the correct defensive guard for the overridden-Let edge case documented above.
+    let mut checked_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for default in &ctx.defaults {
+        let Some(name) = default.name.as_deref() else {
+            continue;
+        };
+        // Name is already handled by the requirements loop — skip to avoid false positives.
+        if required_names.contains(name) {
+            continue;
+        }
+        // Emit at most one verdict per name: the overridden-Let multi-push scenario
+        // (see comment on checked_names above) can produce multiple ctx.defaults entries
+        // for the same name when the structure overrides it. Skip subsequent entries so
+        // only one diagnostic fires per name regardless of how many redundant entries exist.
+        if !checked_names.insert(name) {
+            continue;
+        }
+        let trait_declared_type = match &default.kind {
+            DefaultKind::Param { cell_type, .. } => cell_type,
+            DefaultKind::Let { cell_type: Some(ty), .. } => ty,
+            // Unannotated let: declared type is the inferred expr type, NOT computed for names
+            // colliding with a structure member (pre-register Pass 2 skips structure_members
+            // names, checker.rs:596) — mirrors structure_let_members holding only annotated
+            // conformer lets (:257). Closing this gap would require compiling the trait-let
+            // expression against the conformer scope — deferred.
+            DefaultKind::Let { cell_type: None, .. }
+            | DefaultKind::Constraint(_)
+            | DefaultKind::Fn(_)
+            | DefaultKind::AssocType(_) => continue,
+        };
+        let Some(conformer_type) =
+            structure_param_members.get(name).or_else(|| structure_let_members.get(name))
+        else {
+            continue;
+        };
+        if !implicitly_converts_to(conformer_type, trait_declared_type) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch for trait member '{}': expected {}, got {}",
+                    name, trait_declared_type, conformer_type
+                ))
+                .with_code(DiagnosticCode::TypeMismatchForTraitMember)
+                .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+            );
+        }
+    }
 }
 
 /// Phase 6 of trait conformance checking: inject trait defaults for non-overridden members.
@@ -1825,7 +1924,7 @@ pub(super) fn check_phase_inject_defaults(
                     // Annotation is authoritative on the injected cell type when present
                     // (matches the scope pre-registration in check_phase_pre_register_default_types
                     // (Pass 1) which also prefers the annotation over the inferred expression type).
-                    // Falls back to the inferred expression type, then to Type::Real (defensive).
+                    // Falls back to the inferred expression type, then to Type::dimensionless_scalar() (defensive).
                     // Uses the shared resolve_let_advertised_type helper for site 2 of 2.
                     let injected_cell_type =
                         resolve_let_advertised_type(cell_type, Some(&compiled_expr));

@@ -43,19 +43,18 @@
 //     solver_elastic.ri:389). The trampoline reads `youngs_modulus`,
 //     `poisson_ratio`, and `density` off the runtime StructureInstance.
 //
-//   `options : ModalOptions` (no default):
-//     Even though `ModalOptions` is now in the prelude (loaded earlier via
-//     `std.modal.analysis`), the TODO(phase-order) ctor-default is deferred to
-//     a follow-up — callers must pass `ModalOptions(...)` explicitly. Same
-//     limitation as `BucklingOptions` (solver_buckling_fns.ri:44-48).
-//     TODO(phase-order): add `= ModalOptions()` default once confirmed safe.
+//   `options : ModalOptions = ModalOptions()`:
+//     `ModalOptions` is in the prelude (loaded earlier via `std.modal.analysis`),
+//     so the cross-module ctor default compiles cleanly (task-4544 resolved).
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `ModalOptions(...)` to override specific fields.
 @optimized("modal::free_vibration")
 pub fn modal_analysis(
     material : ElasticMaterial,
     length   : Length,
     width    : Length,
     height   : Length,
-    options  : ModalOptions
+    options  : ModalOptions = ModalOptions()
 ) -> ModalResult {
     ModalResult()
 }

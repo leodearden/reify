@@ -137,11 +137,14 @@ pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
 ///
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 ///
-/// `pub(crate)` for cross-module reuse from
-/// `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — the
-/// per-grid-point projection inlines this call on each 9-float row-major
-/// stress window and selects `eigs[2]` (the largest principal stress).
-pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+/// `pub` for cross-crate reuse from:
+/// - `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — per-grid-point
+///   projection inlines this call on each 9-float row-major stress window and
+///   selects `eigs[2]` (the largest principal stress).
+/// - `crates/reify-expr/src/field_reductions.rs::project_principal_stresses_sampled`
+///   — selects `eigs[2]` (max) or `eigs[0]` (min) per window during a
+///   `max|min|argmax|argmin(principal_stresses_field)` reduction (task 4562).
+pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     debug_assert!(
         d.len() >= 9,
         "compute_eigenvalues_3x3 requires at least 9 elements, got {}",

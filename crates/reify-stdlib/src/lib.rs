@@ -94,6 +94,19 @@ pub use dynamics::eval::resolve_body_mass;
 /// `geometry_diagnose` pattern.
 pub use dynamics::eval::diagnose as dynamics_diagnose;
 
+/// Public re-export of the `center_of_mass` fallback-Warning diagnostic hook
+/// (task 4471).
+///
+/// Called by `crates/reify-expr/src/lib.rs` immediately after
+/// `emit_dfm_diagnostics` (both-path hook at `lib.rs:475`) as
+/// `emit_snapshot_diagnostics`. Fires a `Severity::Warning` with code
+/// `W_SnapshotCenterOfMassDensityFallback` ONLY in the **mixed** case: ≥1
+/// body carries resolvable mass (via `resolve_body_mass`) while ≥1 other
+/// body does not. Pure-legacy snapshots (all unresolved) and all-resolved
+/// snapshots stay silent. Mirrors the `dfm_diagnose` / `flexure_diagnose`
+/// both-path pattern.
+pub use snapshot::diagnose as snapshot_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the
@@ -113,6 +126,15 @@ pub use analysis::compute_von_mises_3x3;
 /// `analysis.rs`, shared by both the `max_shear` builtin and the
 /// cross-crate field reduction.
 pub use analysis::compute_max_shear_3x3;
+/// Public re-export of the symmetric-3×3 eigenvalue kernel for cross-crate reuse.
+///
+/// Called by `crates/reify-expr/src/field_reductions.rs` in the
+/// `project_principal_stresses_sampled` helper to project each 9-float
+/// stride-1 window of a Sampled tensor field to a scalar principal-stress
+/// value during field reduction (max/min/argmax/argmin of a
+/// PrincipalStresses-derived field). Selects `eigs[2]` (max principal σ₁)
+/// or `eigs[0]` (min principal σ₃) per window (task 4562).
+pub use analysis::compute_eigenvalues_3x3;
 /// Public re-export of the impulse-shaper math (`ImpulseTrain` + its residual /
 /// convolution API) and the `Shaper`→`ImpulseTrain` marshalling boundary.
 ///
