@@ -2414,6 +2414,36 @@ fn rewrite_geometry_queries(
             .unwrap_or(reify_ir::Value::Undef);
             reify_ir::CompiledExpr::literal(value, expr.result_type.clone())
         }
+        // Non-query outer FunctionCall (task 4358 ε): recurse into each argument
+        // so inner geometry-query leaves fold, but leave the outer call's
+        // identity (function + arity + result type) intact. The leaf arm above
+        // (guarded by `is_geometry_query_call`) wins for recognised query calls;
+        // this arm handles every OTHER FunctionCall — e.g. the constraint shape
+        // `fits_build_volume(bounding_box(..), bounding_box(..))` — so its inner
+        // query leaves resolve instead of being left un-folded (→ Undef) by the
+        // `_` fallthrough.
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            let rewritten_args: Vec<reify_ir::CompiledExpr> = args
+                .iter()
+                .map(|a| rewrite_geometry_queries(a, named_steps, kernel, diagnostics))
+                .collect();
+            // No public `function_call` constructor: rebuild manually with a
+            // fresh content hash mirroring `compile_expr`'s combine order
+            // (qualified_name + each arg hash), per expr.rs `map_value_refs`.
+            let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(reify_core::ContentHash::of_str(&function.qualified_name));
+            for a in &rewritten_args {
+                content_hash = content_hash.combine(a.content_hash);
+            }
+            reify_ir::CompiledExpr {
+                kind: reify_ir::CompiledExprKind::FunctionCall {
+                    function: function.clone(),
+                    args: rewritten_args,
+                },
+                result_type: expr.result_type.clone(),
+                content_hash,
+            }
+        }
         reify_ir::CompiledExprKind::BinOp { op, left, right } => reify_ir::CompiledExpr::binop(
             *op,
             rewrite_geometry_queries(left, named_steps, kernel, diagnostics),
