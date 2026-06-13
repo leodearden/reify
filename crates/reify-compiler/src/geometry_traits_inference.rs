@@ -91,6 +91,86 @@ pub enum GeometryTrait {
     Convex,
 }
 
+/// A geometric-relations ε **datum-projection target** — the datum kind a
+/// [`DatumTrait`] projects, named by the user-facing feature projection
+/// (`feature.axis`/`.plane`/`.point`/`.dir`). Mirrors the `reify-eval`
+/// `feature_datum::Datum` carrier kinds (the resolve-time bundle), so the
+/// compile-time marker table and the eval-time bundle agree on the four targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DatumProjectionTarget {
+    /// `feature.axis : Axis` — cylinder/cone/line/arc/revolution axis.
+    Axis,
+    /// `feature.plane : Plane` — a planar face.
+    Plane,
+    /// `feature.point : Point3<Length>` — a sphere centre, arc/cone centre, or vertex.
+    Point,
+    /// `feature.dir : Direction` — an extrusion direction.
+    Direction,
+}
+
+/// The geometric-relations ε **datum-bearing marker traits** (design §2.2).
+///
+/// A realized feature carries one or more of these traits; each *projects* one or
+/// more datums, and the feature's bundle is the deduplicated union of every
+/// projected datum (computed resolve-time by `reify-eval`'s `feature_datum`
+/// module — analytic `GeomAbs_*` classification ∪ construction-history traits).
+/// This enum is the **compile-time surface** of design §2.2's table — the new
+/// "marker trait that carries a projection" category that extends the
+/// `Bounded`/`Connected`/`Convex` inference in this module.
+///
+/// The provenance-source column of the design table (`GeomAbs_*` for the analytic
+/// faces/edges, the revolve/extrude op for the construction-history traits) is
+/// realized by the kernel analytic-datum queries + attribute-table read on the
+/// eval side; here we record only the **trait → datum-projection-target** mapping
+/// ([`DatumTrait::projects`]). The auxiliary scalars of the design table
+/// (`radius`/`apex`/`half_angle`) are not datum targets and ride in the eval-side
+/// bundle's trait record, outside this task's typed projection surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DatumTrait {
+    /// Planar face → `Plane` (`GeomAbs_Plane`).
+    Planar,
+    /// Cylindrical face → `Axis` (+ `radius`) (`GeomAbs_Cylinder`).
+    Cylindrical,
+    /// Conical face → `Axis` + apex `Point` (+ `half_angle`) (`GeomAbs_Cone`).
+    Conical,
+    /// Spherical face → centre `Point` (+ `radius`) (`GeomAbs_Sphere`).
+    Spherical,
+    /// Linear edge → `Axis` (`GeomAbs_Line`).
+    Linear,
+    /// Arc/ellipse edge → `Axis` + centre `Point` (+ `radius`) (`GeomAbs_Circle`/`Ellipse`).
+    ArcBounded,
+    /// Revolution solid/face → `Axis` (revolve op / symmetry history).
+    Revolute,
+    /// Extruded solid → `Direction` (prism ruling / extrude op history).
+    Extruded,
+    /// Vertex → `Point` (always).
+    Vertex,
+}
+
+impl DatumTrait {
+    /// The datum-projection target(s) this marker trait carries (design §2.2
+    /// table, datum columns only — the `radius`/`apex`/`half_angle` scalars are
+    /// excluded as they are not datum targets).
+    ///
+    /// A trait may carry more than one target: `Conical`/`ArcBounded` carry both
+    /// an `Axis` and a centre/apex `Point`. The first element is the trait's
+    /// *primary* datum (the one its name implies).
+    pub const fn projects(self) -> &'static [DatumProjectionTarget] {
+        use DatumProjectionTarget::*;
+        match self {
+            DatumTrait::Planar => &[Plane],
+            DatumTrait::Cylindrical => &[Axis],
+            DatumTrait::Conical => &[Axis, Point],
+            DatumTrait::Spherical => &[Point],
+            DatumTrait::Linear => &[Axis],
+            DatumTrait::ArcBounded => &[Axis, Point],
+            DatumTrait::Revolute => &[Axis],
+            DatumTrait::Extruded => &[Direction],
+            DatumTrait::Vertex => &[Point],
+        }
+    }
+}
+
 /// The computed, **mutually-exclusive** dimensionality of a geometry
 /// expression: a shape is exactly one of 1-D / 2-D / 3-D.
 ///
@@ -833,5 +913,68 @@ mod tests {
             Some(InferredTraits::all()),
             "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
         );
+    }
+
+    // --- geometric-relations ε: datum-trait marker table (design §2.2) ---
+
+    /// Every [`DatumTrait`] projects exactly the datum target(s) of design §2.2's
+    /// table (datum columns only — the radius/apex/half_angle scalars are not
+    /// targets). Pins the compile-time marker table against the design of record
+    /// so the eval-side bundle (`reify-eval` `feature_datum`) and this surface
+    /// cannot silently drift apart.
+    #[test]
+    fn datum_trait_projects_match_design_table() {
+        use DatumProjectionTarget::*;
+        let cases: &[(DatumTrait, &[DatumProjectionTarget])] = &[
+            (DatumTrait::Planar, &[Plane]),
+            (DatumTrait::Cylindrical, &[Axis]),
+            (DatumTrait::Conical, &[Axis, Point]),
+            (DatumTrait::Spherical, &[Point]),
+            (DatumTrait::Linear, &[Axis]),
+            (DatumTrait::ArcBounded, &[Axis, Point]),
+            (DatumTrait::Revolute, &[Axis]),
+            (DatumTrait::Extruded, &[Direction]),
+            (DatumTrait::Vertex, &[Point]),
+        ];
+        for (trait_, expected) in cases {
+            assert_eq!(
+                trait_.projects(),
+                *expected,
+                "{trait_:?} must project {expected:?} per design §2.2"
+            );
+        }
+    }
+
+    /// The four datum-projection targets correspond one-to-one with the ε
+    /// feature projections (`feature.axis`/`.plane`/`.point`/`.dir`) and are the
+    /// only targets any marker trait carries — guarding against an out-of-band
+    /// target sneaking into the table.
+    #[test]
+    fn datum_trait_targets_are_the_four_feature_projections() {
+        let all = [
+            DatumTrait::Planar,
+            DatumTrait::Cylindrical,
+            DatumTrait::Conical,
+            DatumTrait::Spherical,
+            DatumTrait::Linear,
+            DatumTrait::ArcBounded,
+            DatumTrait::Revolute,
+            DatumTrait::Extruded,
+            DatumTrait::Vertex,
+        ];
+        for t in all {
+            for target in t.projects() {
+                assert!(
+                    matches!(
+                        target,
+                        DatumProjectionTarget::Axis
+                            | DatumProjectionTarget::Plane
+                            | DatumProjectionTarget::Point
+                            | DatumProjectionTarget::Direction
+                    ),
+                    "{t:?} carries an unexpected projection target {target:?}"
+                );
+            }
+        }
     }
 }
