@@ -7605,6 +7605,54 @@ mod tests {
         );
     }
 
+    /// Invariant V (task 4374/β): no ARITHMETIC op may construct a
+    /// `Value::Scalar { dimension }` with `dimension.is_dimensionless()`. This
+    /// is the consolidated regression lock for the per-op routing (steps
+    /// 2/4/6/8). It asserts only runtime VARIANTS — never docstrings or symbol
+    /// names. Scoped to arithmetic eval_* ops; the geometry_ops producer has
+    /// its own guard in reify-eval.
+    #[test]
+    fn arithmetic_never_produces_dimensionless_scalar() {
+        fn assert_no_dimensionless_scalar(v: &Value) {
+            if let Value::Scalar { dimension, .. } = v {
+                assert!(
+                    !dimension.is_dimensionless(),
+                    "Invariant V violated: arithmetic produced a dimensionless Scalar: {:?}",
+                    v
+                );
+            }
+        }
+
+        // 1/L operand for the dimension-cancelling product case.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+
+        // Direct private-fn calls across the dimension-cancelling matrix.
+        assert_no_dimensionless_scalar(&eval_div(&mm_val(30.0), &mm_val(10.0))); // L / L
+        assert_no_dimensionless_scalar(&eval_mul(&inv_len, &mm_val(250.0))); // (1/L) · L
+        assert_no_dimensionless_scalar(&eval_pow(&mm_val(5.0), &Value::Int(0))); // L ^ 0
+        assert_no_dimensionless_scalar(&eval_add(
+            &dimensionless_val(2.0),
+            &dimensionless_val(3.0),
+        )); // DL + DL
+        assert_no_dimensionless_scalar(&eval_sub(
+            &dimensionless_val(5.0),
+            &dimensionless_val(2.0),
+        )); // DL - DL
+
+        // Headline via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        assert_no_dimensionless_scalar(&eval_expr(&expr, &EvalContext::simple(&values)));
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
