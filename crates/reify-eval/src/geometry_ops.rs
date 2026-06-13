@@ -1956,9 +1956,11 @@ pub(crate) fn try_eval_conformance_query(
 /// Tessellation deflection forwarded to `GeometryQuery::MaxDeviation.tolerance`
 /// when the `max_deviation(actual, nominal)` callable is evaluated.
 ///
-/// Mirrors `Engine::DEFAULT_TESSELLATION_TOLERANCE` (engine_build.rs). Kept
-/// local to confine ζ's eval footprint to geometry_ops.rs and avoid locking
-/// the hot engine_build.rs for a const reference (ζ / C4, task 4479).
+/// Mirrors `Engine::DEFAULT_TESSELLATION_TOLERANCE` (engine_build.rs:3165 =
+/// 0.0001 m). Kept local to confine ζ's eval footprint to geometry_ops.rs and
+/// avoid locking the hot engine_build.rs for a const reference (ζ / C4, task
+/// 4479). The test `max_deviation_tessellation_tolerance_pins_engine_default_value`
+/// pins this value and documents the update procedure (see the test comment).
 const MAX_DEVIATION_TESSELLATION_TOLERANCE_M: f64 = 0.0001;
 //
 // `length` / `perimeter` are deliberately NOT handled here: they are already
@@ -2030,10 +2032,18 @@ pub(crate) fn try_eval_geometry_query(
 ) -> Option<reify_ir::Value> {
     // ── Case (ζ): DIRECT 2-arg — `max_deviation(actual, nominal)`. Kept
     //    SEPARATE from the 1-arg `is_geometry_query_call` invariant (ζ / C4,
-    //    task 4479). Returns `None` when either arg is unresolvable (non-
-    //    ValueRef or missing named_steps entry), leaving the cell at its
-    //    compiled default. Scope: direct-call only; nested-arithmetic fold is
-    //    out of scope (matches the min_clearance/kinematic-sibling convention).
+    //    task 4479). Returns `None` (cell keeps compiled default Value::Undef)
+    //    when either arg is unresolvable (non-ValueRef literal or missing
+    //    named_steps entry). This is a **deliberate** design choice matching
+    //    the 2-arg sibling convention (min_clearance, distance, contains) —
+    //    literal-arg calls are rejected by the type checker before reaching
+    //    eval, so a silent None here avoids spurious Warning diagnostics on
+    //    type-unsafe call patterns the compiler already surfaces. If usability
+    //    concerns outweigh sibling consistency in a future revision, change
+    //    the `?` operators to explicit `else { emit Warning; return
+    //    Some(Value::Undef); }` guards. Scope: direct-call only;
+    //    nested-arithmetic fold is out of scope (matches the
+    //    min_clearance/kinematic-sibling convention).
     if let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind
         && function.name == "max_deviation" && args.len() == 2
     {
@@ -2243,11 +2253,19 @@ fn rewrite_geometry_queries(
     }
 }
 
-/// Issue a scalar-returning kernel query (`Volume` / `SurfaceArea`) and wrap the
-/// `Value::Real` (or, defensively, `Value::Scalar`) reply as
-/// `Value::Scalar { si_value, dimension }`. Returns `Some(Value::Undef)` + one
-/// Warning on a kernel error or unexpected reply type (PRD §4 defensive
-/// downgrade), mirroring `dispatch_edge_length`.
+/// Issue a scalar-returning kernel query (`Volume` / `SurfaceArea` /
+/// `MaxDeviation`) and wrap the `Value::Real` (or, defensively,
+/// `Value::Scalar`) reply as `Value::Scalar { si_value, dimension }`.
+///
+/// Returns `Some(Value::Undef)` + one Warning on:
+/// - a kernel error,
+/// - an unexpected reply type (PRD §4 defensive downgrade),
+/// - a **non-finite or negative** kernel value — a degenerate result (NaN /
+///   ±Inf) or a negative measurement (impossible for volume / area /
+///   deviation) propagating as a valid `Scalar` would silently corrupt
+///   downstream arithmetic; surfacing it as Undef + Warning matches PRD §4.
+///
+/// Mirrors `dispatch_edge_length`.
 fn dispatch_scalar_query(
     kernel: &dyn reify_ir::GeometryKernel,
     query: reify_ir::GeometryQuery,
@@ -2256,10 +2274,19 @@ fn dispatch_scalar_query(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match kernel.query(&query) {
-        Ok(reify_ir::Value::Real(v)) => Some(reify_ir::Value::Scalar {
-            si_value: v,
-            dimension,
-        }),
+        Ok(reify_ir::Value::Real(v)) if v.is_finite() && v >= 0.0 => {
+            Some(reify_ir::Value::Scalar {
+                si_value: v,
+                dimension,
+            })
+        }
+        Ok(reify_ir::Value::Real(v)) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}(...) kernel returned a non-finite or negative value ({v}); \
+                 cell left at Undef",
+            )));
+            Some(reify_ir::Value::Undef)
+        }
         Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::Scalar {
             si_value,
             dimension,
@@ -21502,5 +21529,71 @@ mod tests {
              got {:?}",
             result
         );
+    }
+
+    /// Drift-pin: `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` must equal
+    /// `Engine::DEFAULT_TESSELLATION_TOLERANCE` (engine_build.rs:3165 = 0.0001).
+    ///
+    /// `Engine::DEFAULT_TESSELLATION_TOLERANCE` is a private associated const, so
+    /// this test pins its numeric value. **If the engine default ever changes**,
+    /// update `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` in this file to match and
+    /// also update the `const TOL` literals in the tests above (they mirror the
+    /// same value).
+    #[test]
+    fn max_deviation_tessellation_tolerance_pins_engine_default_value() {
+        assert_eq!(
+            super::MAX_DEVIATION_TESSELLATION_TOLERANCE_M,
+            0.0001_f64,
+            "MAX_DEVIATION_TESSELLATION_TOLERANCE_M must equal \
+             Engine::DEFAULT_TESSELLATION_TOLERANCE (engine_build.rs:3165); \
+             update both if the engine default changes"
+        );
+    }
+
+    /// Pins the finite/non-negative guard in `dispatch_scalar_query` (amend task
+    /// 4479 — reviewer suggestion 3). Kernels that return NaN, ±Inf, or a negative
+    /// deviation must produce `Some(Value::Undef)` + exactly one Warning rather
+    /// than silently propagating a bogus `Scalar<LENGTH>` into downstream
+    /// arithmetic.
+    #[test]
+    fn dispatch_scalar_query_non_finite_or_negative_emits_warning_and_undef() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(40);
+        let nominal = reify_ir::GeometryHandleId(41);
+        const TOL: f64 = 0.0001;
+
+        for bad_value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-4_f64] {
+            let kernel = MockGeometryKernel::new().with_max_deviation_result(
+                actual,
+                nominal,
+                TOL,
+                reify_ir::Value::Real(bad_value),
+            );
+            let query = reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            };
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = super::dispatch_scalar_query(
+                &kernel,
+                query,
+                reify_core::DimensionVector::LENGTH,
+                "max_deviation",
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result,
+                Some(reify_ir::Value::Undef),
+                "dispatch_scalar_query with bad_value={bad_value:?} must return Some(Undef)"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "dispatch_scalar_query with bad_value={bad_value:?} must emit exactly \
+                 one Warning; got: {:?}",
+                diagnostics
+            );
+        }
     }
 }
