@@ -2688,6 +2688,83 @@ structure Plain {
 }
 
 #[cfg(test)]
+mod geometric_conforms_gate_tests {
+    use super::module_has_geometric_conforms;
+
+    /// Non-OCCT routing gate test: `module_has_geometric_conforms` must detect a
+    /// *geometric* `Conforms` instance (one carrying an explicit `actual`
+    /// binding) in real compiled IR, and must return `false` for a *scalar*
+    /// `Conforms` (no `actual`) and for a plain module with no `Conforms` at all.
+    ///
+    /// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+    /// fast-path gate (`Engine::measure_gdt_conformance`): both key on the
+    /// presence of an `"actual"` arg-binding on a template (or guarded-group)
+    /// constraint. `Conforms`'s predicate body never references `actual`, so the
+    /// arg-binding — captured at instantiation on `CompiledConstraint` — is the
+    /// only static trace of geometric intent.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the OCCT-gated
+    /// CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `Conforms`, `Flatness`, and
+    /// `Geometry` are stdlib-prelude entities, mirroring the engine GD&T
+    /// conformance fixtures.
+    #[test]
+    fn module_has_geometric_conforms_detects_explicit_actual_vs_scalar_and_plain() {
+        // Geometric module: a `Conforms` instance with an EXPLICIT `actual`
+        // binding — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build-before-check path that populates live
+        // B-rep handles for the η `measure_gdt_conformance` pass.
+        let geometric_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+        let compiled_geometric = reify_test_support::parse_and_compile_with_stdlib(geometric_source);
+        assert!(
+            module_has_geometric_conforms(&compiled_geometric),
+            "module with a Conforms instance binding an explicit `actual` should be \
+             detected (routing gate must return true)"
+        );
+
+        // Scalar module: a `Conforms` instance with NO `actual` (falls to its
+        // `nominal()` default) — must NOT be detected (returns `false`) so that
+        // `cmd_check` keeps the lightweight path and the scalar verdict stays
+        // byte-identical (B4).
+        let scalar_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+}
+"#;
+        let compiled_scalar = reify_test_support::parse_and_compile_with_stdlib(scalar_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_scalar),
+            "module with a scalar-only Conforms (no explicit `actual`) must NOT be \
+             detected (routing gate must return false — B4 scalar path preserved)"
+        );
+
+        // Plain module: no `Conforms` constraints anywhere — must NOT be detected.
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_plain),
+            "module without any Conforms constraints must NOT be detected \
+             (routing gate must return false)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
