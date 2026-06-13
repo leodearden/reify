@@ -1772,36 +1772,36 @@ mod tests {
     /// `structure_members` is a local binding inside `check_trait_conformance` and is not
     /// directly observable from outside the function.  Rather than restructuring the API,
     /// this test uses three negative-assertion sentinels as a proxy for correct
-    /// `Type::Enum("Direction")` resolution:
+    /// `Type::Enum("Polarity")` resolution:
     ///
     /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
     ///   back to `Type::dimensionless_scalar()`)
     /// - Absence of **"type mismatch"** → the resolved types matched the trait's
-    ///   `Type::Enum("Direction")` requirements
+    ///   `Type::Enum("Polarity")` requirements
     /// - Absence of **"missing required member"** → both members appeared in `structure_members`
     ///
-    /// Together these three imply `Type::Enum("Direction")` was produced.  A regression that
+    /// Together these three imply `Type::Enum("Polarity")` was produced.  A regression that
     /// accidentally resolves enum params to `Type::dimensionless_scalar()` would trip "type mismatch", and one
     /// that omits a member from `structure_members` would trip "missing required member".
     #[test]
     fn check_trait_conformance_resolves_enum_typed_param_and_let() {
-        // Direction enum defined in the same module
+        // Polarity enum defined in the same module
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
 
-        // TypeExpr for `Direction` (bare named type, no type_args)
+        // TypeExpr for `Polarity` (bare named type, no type_args)
         let direction_type_expr = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
-                name: "Direction".to_string(),
+                name: "Polarity".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
 
-        // TraitDir: requires `param dir : Direction` and `let kind : Direction`
+        // TraitDir: requires `param dir : Polarity` and `let kind : Polarity`
         let trait_dir = CompiledTrait {
             name: "TraitDir".to_string(),
             is_pub: false,
@@ -1811,12 +1811,12 @@ mod tests {
             required_members: vec![
                 TraitRequirement {
                     name: "dir".to_string(),
-                    kind: RequirementKind::Param(Type::Enum("Direction".to_string())),
+                    kind: RequirementKind::Param(Type::Enum("Polarity".to_string())),
                     span: SourceSpan::empty(0),
                 },
                 TraitRequirement {
                     name: "kind".to_string(),
-                    kind: RequirementKind::Let(Type::Enum("Direction".to_string())),
+                    kind: RequirementKind::Let(Type::Enum("Polarity".to_string())),
                     span: SourceSpan::empty(0),
                 },
             ],
@@ -1826,7 +1826,7 @@ mod tests {
             pragmas: vec![],
         };
 
-        // Structure S : TraitDir { param dir : Direction; let kind : Direction = 0.0; }
+        // Structure S : TraitDir { param dir : Polarity; let kind : Polarity = 0.0; }
         let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
@@ -1887,7 +1887,7 @@ mod tests {
             diagnostics
         );
 
-        // No "type mismatch" → both resolved to Type::Enum("Direction"), satisfying the trait
+        // No "type mismatch" → both resolved to Type::Enum("Polarity"), satisfying the trait
         let mismatch_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| d.message.contains("type mismatch"))
@@ -2346,13 +2346,13 @@ mod tests {
 
     /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
     /// user-facing `Diagnostic::error` with the message
-    /// "enum `Direction` does not accept type arguments".
+    /// "enum `Polarity` does not accept type arguments".
     ///
     /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
     /// so this test validates the error is always surfaced to users regardless of build profile.
     #[test]
     fn enum_with_type_args_emits_error_diagnostic() {
-        // Direction<Something> — non-empty type_args that should trigger the diagnostic
+        // Polarity<Something> — non-empty type_args that should trigger the diagnostic
         let bogus_type_arg = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
                 name: "Something".to_string(),
@@ -2362,14 +2362,14 @@ mod tests {
         };
         let direction_with_args = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
-                name: "Direction".to_string(),
+                name: "Polarity".to_string(),
                 type_args: vec![bogus_type_arg],
             },
             span: SourceSpan::empty(0),
         };
 
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
@@ -2439,7 +2439,7 @@ mod tests {
         };
 
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
