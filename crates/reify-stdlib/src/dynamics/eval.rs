@@ -320,7 +320,7 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 /// The `com` Length dimension and inertia MomentOfInertia dimension are both
 /// stripped to raw SI f64 values via `cell_f64`. Returns `None` for any
 /// non-MassProperties value or a malformed/absent field.
-fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
+pub(crate) fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
     let data = match v {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
         _ => return None,

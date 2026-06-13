@@ -1680,6 +1680,27 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassUnresolved`.
     /// Registered in task 4278 (v0.3 flexures uniform-mass substrate).
     DynamicsBodyMassUnresolved,
+    /// Origin: `crates/reify-stdlib/src/snapshot.rs` `diagnose` hook, wired
+    /// into `reify-expr` as `emit_snapshot_diagnostics` (task 4471).
+    ///
+    /// Emitted as a `Severity::Warning` when a `center_of_mass` call falls
+    /// back to the legacy density-weighted centroid because at least one
+    /// snapshot body has no resolvable mass (neither an explicit
+    /// `MassProperties` solid nor a build-baked `derived_mass_props` field)
+    /// while at least one other body **does** carry resolvable mass (the
+    /// mixed case). Pure-legacy snapshots (no body resolves) and
+    /// all-resolved snapshots are silent.
+    ///
+    /// The diagnostic names the **first** unresolved body by its integer id.
+    ///
+    /// Canonical message form:
+    /// `"center_of_mass: body '<id>' has no resolvable mass; falling back to
+    ///   legacy density-weighted centroid (explicit point_mass/mass_properties
+    ///   on other bodies ignored)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SnapshotCenterOfMassDensityFallback`.
+    /// Registered in task 4471 (v0.3 flexures snapshot center_of_mass rung).
+    SnapshotCenterOfMassDensityFallback,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///
