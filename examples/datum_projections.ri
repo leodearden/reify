@@ -1,0 +1,38 @@
+// Datum-projection member access (geometric-relations β, task 4382).
+//
+// Demonstrates the β capability: first-class `Direction` plus total-downward
+// datum-projection member access on Axis / Plane / Frame / Direction. Each
+// `let` below projects a member off a datum-typed param; every projection here
+// is a VALID one (the unique/unambiguous cases), so `reify check` accepts the
+// file with zero error diagnostics.
+//
+// The params are intentionally default-less: there are no value constructors
+// for Axis/Plane/Frame yet (that is geometry-transforms' scope), and a typed
+// default-less param is enough for the projections to type-check.
+//
+// See docs/prds/v0_6/geometric-relations.md §9 β.
+
+structure DatumProjections {
+    param a : Axis
+    param pl : Plane
+    param f : Frame
+
+    // Axis: .dir is the unique direction; .origin is the base point.
+    let ad : Direction = a.dir
+    let ao = a.origin
+
+    // Plane: .normal is the unique direction (.dir would be Unavailable).
+    let pn : Direction = pl.normal
+
+    // Frame: each basis axis projects to a Direction; .origin to a Point;
+    // .xy_plane to the Plane spanned by the x/y axes. (.dir/.normal would be
+    // Ambiguous — "write frame.z".)
+    let fx : Direction = f.x
+    let fy : Direction = f.y
+    let fz : Direction = f.z
+    let fo = f.origin
+    let fxy : Plane = f.xy_plane
+
+    // Direction components are dimensionless reals.
+    let cx = ad.x
+}
