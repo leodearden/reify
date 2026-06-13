@@ -5014,6 +5014,55 @@ fn sampled_curl_3d_linear_sample_returns_exact_curl() {
     );
 }
 
+// ── η fixture builders and helpers (pre-1 / PRD §9 task η) ──────────────────
+
+/// Build a Regular3D stride-1 `SampledField` with n×n×n nodes, uniform spacing `h`,
+/// where `data[i*(n*n) + j*n + k] = sqrt((x−cx)²+(y−cy)²+(z−cz)²) − radius`
+/// (sphere signed-distance function centered at `center` with given `radius`).
+/// Grid layout: `xi = i as f64 * h`, x-major order (same as `make_sampled_3d_vector`).
+///
+/// Singularity-safe: pass `center = [base + h/2, …]` so no node falls at r=0
+/// (center sits at the midpoint between adjacent nodes; min r ≈ h·√3/2 > 0).
+fn make_sphere_sdf_3d(n: usize, h: f64, center: [f64; 3], radius: f64) -> SampledField {
+    let xs: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+    let ys: Vec<f64> = (0..n).map(|j| j as f64 * h).collect();
+    let zs: Vec<f64> = (0..n).map(|k| k as f64 * h).collect();
+    let mut data = Vec::with_capacity(n * n * n);
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dz = z - center[2];
+                data.push((dx * dx + dy * dy + dz * dz).sqrt() - radius);
+            }
+        }
+    }
+    SampledField {
+        name: "sphere-sdf-3d".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![(n - 1) as f64 * h, (n - 1) as f64 * h, (n - 1) as f64 * h],
+        spacing: vec![h, h, h],
+        axis_grids: vec![xs, ys, zs],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Analytic Laplacian of the sphere SDF φ(p) = |p−c| − R:
+/// ∇²φ = 2/r, where r = |p−c| is the distance from the sphere center.
+///
+/// Derivation (3D): φ = r − R ⟹ ∇φ = (p−c)/r ⟹
+/// ∇²φ = Σᵢ ∂/∂xᵢ[(xᵢ−cᵢ)/r] = Σᵢ [1/r − (xᵢ−cᵢ)²/r³]
+/// = 3/r − r²/r³ = 3/r − 1/r = 2/r.
+/// At the surface r = R: ∇²φ = 2/R = 2H (twice mean curvature H = 1/R).
+/// Valid for r > 0.
+fn sphere_lap_exact(r: f64) -> f64 {
+    2.0 / r
+}
+
 // ── η acceptance (PRD §9 task η): SDF mean-curvature ∇²φ ≈ 2/R sphere ────────
 //
 // Asserts ∇²φ ≈ 2/r (interior nodes in fixed annular band R_inner≤r≤R_outer)
