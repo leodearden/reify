@@ -238,7 +238,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
         | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" | "fillet_all" | "zone_slab" => &[0],
+        | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -789,7 +789,8 @@ fn check_profile_preconditions(
             check_profile_arg(compiled_args, ast_args, 1, &PATH_SLOT, diagnostics);
         }
         // Lowering arm `"pipe"`: arg0 is the Curve path; arg1 is the radius (scalar).
-        "pipe" => {
+        // Lowering arm `"zone_cylinder"`: arg0 is the Curve axis path; arg1 is the width (scalar).
+        "pipe" | "zone_cylinder" => {
             check_profile_arg(compiled_args, ast_args, 0, &PATH_SLOT, diagnostics);
         }
         // Lowering arm `"loft"`: every argument is a Surface profile.
@@ -1682,6 +1683,53 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // zone_cylinder(axis: Geometry, width: Length) — GD&T Ø-zone cylinder.
+        //
+        // Lowers to Sweep{kind:Pipe} along the axis wire with radius = width/2.
+        // `width` is the DIAMETER of the tolerance zone, so radius = width * 0.5.
+        // The axis wire's length defines the cylinder length (no separate length arg).
+        //
+        // Sub-ops emitted (step_offset N):
+        //   [N+0] Curve(LineSegment/…) — the axis wire from geom_ref(0)
+        //   [N+1] Sweep{Pipe, profiles:[Step(N)], args:[("radius", width*0.5)]}
+        "zone_cylinder" => {
+            if !check_arg_count_exact(
+                "zone_cylinder",
+                compiled_args.len(),
+                2,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let path_ref = resolve_named_geom_arg(
+                0,
+                "zone_cylinder",
+                "axis",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
+            );
+            // width is the Ø-zone DIAMETER; radius = width * 0.5
+            let width = compiled_args.into_iter().nth(1).unwrap();
+            let radius = CompiledExpr::binop(
+                BinOp::Mul,
+                width.clone(),
+                CompiledExpr::literal(
+                    Value::Real(0.5),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+                width.result_type.clone(),
+            );
+            let op = CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref],
+                args: vec![("radius".to_string(), radius)],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
             name,
@@ -1845,6 +1893,7 @@ mod tests {
         "fillet",
         "fillet_all",
         "zone_slab",
+        "zone_cylinder",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1911,7 +1960,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 47;
+    const EXPECTED_DISPATCH_COUNT: usize = 48;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
