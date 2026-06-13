@@ -6782,11 +6782,15 @@ mod tests {
 
     /// Bare `Value::Real` components in a `Value::Point` are NOT a valid
     /// production shape for a `Type::Point<Length>` cell.  The function MUST
-    /// return `None` so the caller falls through to "unsupported arg shape".
-    /// Returning `Some([...])` would silently reinterpret the raw floats as
-    /// SI metres at the kernel boundary — exactly the hazard this tightening
-    /// closes.  All production mocks use `Value::length(...)` components (i.e.
+    /// return `None` (returning `Some([...])` would silently reinterpret the
+    /// raw floats as SI metres at the kernel boundary — exactly the hazard this
+    /// closes).  All production mocks use `Value::length(...)` components (i.e.
     /// `Value::Scalar { dimension: LENGTH, .. }`).
+    ///
+    /// FLIP (task ε, evaluate-then-accept): the resolver now EVALUATES the arg
+    /// and, on this defined-but-wrong shape, ALSO pushes exactly one
+    /// `Severity::Warning` naming the builtin / arg / expected `Point<Length>`,
+    /// instead of the prior silent fall-through to `None`.
     #[test]
     fn resolve_point3_length_arg_bare_real_components_return_none() {
         let cell = reify_core::ValueCellId::new("Bracket", "p");
@@ -6803,16 +6807,162 @@ mod tests {
                 reify_ir::Value::Real(3.0),
             ]),
         );
+        let mut diags: Vec<Diagnostic> = Vec::new();
         assert_eq!(
-            super::resolve_point3_length_arg(&expr, &values),
+            super::resolve_point3_length_arg(&expr, &values, "closest_point", "point", &mut diags),
             None,
             "bare Value::Real components must produce None — production cells \
              carry Type::Point<Length> so components must be \
              Value::Scalar {{ dimension: LENGTH, .. }}; a bare Real slipping \
              through would be silently reinterpreted as metres at the kernel \
-             boundary, hence the function must return None (caller falls \
-             through to 'unsupported arg shape')"
+             boundary, hence the function must return None"
         );
+        // FLIP (task ε): the defined-but-wrong shape now emits exactly one
+        // Severity::Warning, not a silent None.
+        assert_eq!(
+            diags.len(),
+            1,
+            "bare-Real Point must push exactly 1 Warning (FLIP from silent), got: {diags:?}"
+        );
+        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+        let msg = diags[0].message.to_lowercase();
+        assert!(
+            msg.contains("closest_point"),
+            "warning must name the builtin, got: {:?}",
+            diags[0].message
+        );
+        assert!(
+            msg.contains("point<length>"),
+            "warning must name expected Point<Length>, got: {:?}",
+            diags[0].message
+        );
+    }
+
+    /// Task ε (evaluate-then-accept): `resolve_point3_length_arg` now EVALUATES
+    /// the arg expr (gaining a `diagnostics` sink + builtin/arg labels). A
+    /// `Value::Point` of exactly three LENGTH-dimensioned Scalars — whether an
+    /// inline `Literal` or a `ValueRef → Point<Length>` cell — resolves to its
+    /// `[m, m, m]` SI components with 0 diagnostics; a defined-but-wrong value
+    /// (non-Point, or wrong arity) is Rejected with exactly one
+    /// `Severity::Warning` naming the builtin, the arg, and the expected
+    /// `Point<Length>` type (byte-uniform wording with the density / vec3 /
+    /// range paths). A `Value::Undef` (missing cell) degrades quietly.
+    ///
+    ///   (a) inline `Literal(Point[LENGTH×3])` → `Some([..])`, 0 diags.
+    ///   (b) `ValueRef → Point[LENGTH×3]` cell → `Some([..])`, 0 diags.
+    ///   (c) non-Point (`Value::Real`) → `None` + 1 Warning.
+    ///   (d) wrong arity (`Point` of 2) → `None` + 1 Warning.
+    ///   (e) missing-cell `ValueRef` → `Undef` → `None`, 0 diags (quiet).
+    ///
+    /// Compile-RED until step-10 adds the `(builtin, arg, &mut diags)` signature.
+    #[test]
+    fn resolve_point3_length_arg_eval_and_diagnostics() {
+        // (a) inline Literal(Point[LENGTH×3]) → Some([..]), 0 diags.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                point3_length_value(0.01, 0.02, 0.03),
+                reify_core::Type::point3(reify_core::Type::length()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_point3_length_arg(
+                &expr,
+                &values,
+                "closest_point",
+                "point",
+                &mut diags,
+            );
+            assert_eq!(
+                result,
+                Some([0.01, 0.02, 0.03]),
+                "(a) inline Point<Length> literal must be Accepted"
+            );
+            assert!(diags.is_empty(), "(a) Point literal must produce no diags, got: {diags:?}");
+        }
+
+        // (b) ValueRef → Point[LENGTH×3] cell → Some([..]), 0 diags.
+        {
+            let cell = reify_core::ValueCellId::new("Bracket", "p");
+            let expr = reify_ir::CompiledExpr::value_ref(
+                cell.clone(),
+                reify_core::Type::point3(reify_core::Type::length()),
+            );
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, point3_length_value(0.1, 0.2, 0.3));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_point3_length_arg(&expr, &values, "is_on", "point", &mut diags);
+            assert_eq!(
+                result,
+                Some([0.1, 0.2, 0.3]),
+                "(b) ValueRef Point<Length> must be Accepted"
+            );
+            assert!(diags.is_empty(), "(b) ValueRef Point must produce no diags, got: {diags:?}");
+        }
+
+        // (c) non-Point (Value::Real) → None + 1 Warning naming builtin/arg/Point<Length>.
+        {
+            let expr = literal_f64(1.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_point3_length_arg(&expr, &values, "contains", "point", &mut diags);
+            assert_eq!(result, None, "(c) non-Point must return None");
+            assert_eq!(diags.len(), 1, "(c) non-Point must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("contains"), "(c) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("point"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(
+                msg.contains("point<length>"),
+                "(c) names expected Point<Length>, got: {:?}",
+                diags[0].message
+            );
+            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+        }
+
+        // (d) wrong arity (Point of 2 LENGTH scalars) → None + 1 Warning.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Point(vec![
+                    reify_ir::Value::length(0.01),
+                    reify_ir::Value::length(0.02),
+                ]),
+                reify_core::Type::point3(reify_core::Type::length()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_point3_length_arg(&expr, &values, "normal", "point", &mut diags);
+            assert_eq!(result, None, "(d) wrong-arity Point must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) wrong-arity Point must push exactly 1 Warning, got: {diags:?}"
+            );
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("point<length>"),
+                "(d) names expected Point<Length>, got: {:?}",
+                diags[0].message
+            );
+        }
+
+        // (e) missing-cell ValueRef → Undef → None, 0 diags (quiet).
+        {
+            let cell = reify_core::ValueCellId::new("Bracket", "missing_point");
+            let expr = reify_ir::CompiledExpr::value_ref(
+                cell,
+                reify_core::Type::point3(reify_core::Type::length()),
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_point3_length_arg(&expr, &values, "curvature", "point", &mut diags);
+            assert_eq!(result, None, "(e) missing cell must return None");
+            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+        }
     }
 
     /// Tests for `resolve_density_arg`: diagnostic behavior for the NEW
