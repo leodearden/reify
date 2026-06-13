@@ -72,7 +72,7 @@ structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
     param inertia : Matrix<3, 3, MomentOfInertia>
-    param origin : Real // TODO(frame3-type): Frame3 placeholder — see encoding note 3 above
+    param origin : Real // TODO(frame3-type): Frame3 placeholder — see encoding note 3 above // ptodo:allow type-placeholder awaiting future type-system PRD
 
     // Non-negativity guard: mass must be physically valid at construction.
     // The RHS is `0kg` (dimensioned-zero literal per esc-3115 — a bare `0`

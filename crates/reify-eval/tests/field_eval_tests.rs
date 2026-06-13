@@ -198,7 +198,7 @@ fn eval_field_snapshot_consistency() {
 // argument to `sample`. The plan's expected values are preserved by
 // scaling: `scaled(p) = base(p) * 30`, so `sample(scaled, k) = k * 30`.
 //
-// TODO(v0.1 limitation): This test does NOT exercise the step-8
+// TODO(v0.1 limitation): This test does NOT exercise the step-8 // ptodo:allow known v0.1 test coverage gap, no live task
 // re-elaboration loop (`engine_edit.rs::edit_param`'s composed-field
 // rebuild gated on `dirty_cone.contains(field_node)`). The change here is
 // `S.k`, a structure param that is NOT in any field's captured set, so no

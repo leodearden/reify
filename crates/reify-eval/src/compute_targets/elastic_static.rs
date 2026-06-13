@@ -168,7 +168,7 @@
 //! across successive `eval()` calls on the same module (the gate keys on
 //! `Freshness::Final` state, independent of output value shape).
 //!
-//! TODO: thread `StructureRegistry` through the trampoline signature (tracked
+//! TODO: thread `StructureRegistry` through the trampoline signature (tracked // ptodo:allow permanent design note, wiring tracked via elastic_static prose
 //! by task 4552) once ComputeFn/ComputeOutcome are moved into reify-ir.
 
 use std::sync::Arc;

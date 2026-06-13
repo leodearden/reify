@@ -54,7 +54,7 @@ structure BucklingColumnSmoke {
 
     // Buckling solve: @optimized dispatcher routes to solver::buckling trampoline.
     // BucklingOptions() passed explicitly (phase-order limitation; see solver_buckling.ri
-    // TODO(phase-order) comment).
+    // TODO(phase-order) comment). // ptodo:allow phase-order is a permanent compiler limitation note
     let result = solve_buckling(
         mi.material, length, width, height, lc.loads, lc.supports, BucklingOptions()
     )

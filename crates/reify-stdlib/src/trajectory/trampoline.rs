@@ -304,7 +304,7 @@ pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSp
 // unmarshalable / degenerate input — the loud not-computed signal rather than
 // a numeric placeholder.
 //
-// TODO(perf): each call re-fits the spline from scratch (O(n_knots) via
+// TODO(perf): each call re-fits the spline from scratch (O(n_knots) via // ptodo:allow permanent perf note, no live owner task
 // value_to_multijoint_spline). Dense sampling loops pay that cost N times.
 // A future fitted-spline cache keyed on the profile Value (mirroring
 // InputShapeCacheKey) would amortize the fit to once per profile.

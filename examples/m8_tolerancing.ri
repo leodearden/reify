@@ -20,7 +20,7 @@
 // definitions during resolution; the local structure declarations shadow the
 // stdlib ones in the user module's template list without causing errors.
 //
-// TODO: This re-declaration is a WORKAROUND for a product coupling gap.  Every
+// TODO: This re-declaration is a WORKAROUND for a product coupling gap.  Every // ptodo:allow compiler workaround, no specific task
 // consumer of stdlib structures must copy-paste stdlib definitions into their
 // .ri file when they need eval-time sub resolution.  A proper fix requires
 // either:

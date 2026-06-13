@@ -43,7 +43,7 @@ impl SingleKernelHolder {
     }
 }
 
-// FIXME: Every new optional `GeometryKernel` capability method (extract_edges,
+// FIXME: Every new optional `GeometryKernel` capability method (extract_edges, // ptodo:allow interface-tracking note, no specific task
 // make_compound, ingest_mesh, measure_mesh_deviation, attribute_hook, ...) MUST be
 // manually added and delegated here. The trait's default implementation silently
 // masks missing delegation — returning None/not-supported instead of the inner
