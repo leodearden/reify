@@ -7411,4 +7411,138 @@ mod tests {
             diags[0].message
         );
     }
+
+    // ── center_of_mass emit_snapshot_diagnostics wiring (task 4471 step-7) ──
+    //
+    // End-to-end tests that emit_snapshot_diagnostics pushes a
+    // SnapshotCenterOfMassDensityFallback Warning into the runtime sink when
+    // center_of_mass falls back to the legacy density path on a mixed snapshot.
+    // RED until step-8 wires emit_snapshot_diagnostics immediately after
+    // emit_dfm_diagnostics in the FunctionCall post-process.
+
+    /// Build an axis_x unit vector (1,0,0) for test snapshots.
+    fn snap_axis_x() -> Value {
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    }
+
+    /// Build a two-body snapshot where body 0 has `solid0` placed at world
+    /// x=`x0` (metres) and body 1 has `solid1` at world x=`x1`, via
+    /// prismatic-X joints.  Mirrors `make_two_body_explicit_mass_snapshot`
+    /// in reify-stdlib's snapshot.rs tests but is self-contained here to
+    /// avoid a test-only cross-crate dependency on private helpers.
+    fn snap_two_body(solid0: Value, x0: f64, solid1: Value, x1: f64) -> Value {
+        let j0 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x0 - 1.0))),
+                    upper: Some(Box::new(Value::length(x0 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j1 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x1 - 1.0))),
+                    upper: Some(Box::new(Value::length(x1 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let m0 = reify_stdlib::eval_builtin("mechanism", &[]);
+        let m1 = reify_stdlib::eval_builtin("body", &[m0, solid0, j0.clone()]);
+        let m2 = reify_stdlib::eval_builtin("body", &[m1, solid1, j1.clone()]);
+        let bind0 = reify_stdlib::eval_builtin("bind", &[j0, Value::length(x0)]);
+        let bind1 = reify_stdlib::eval_builtin("bind", &[j1, Value::length(x1)]);
+        reify_stdlib::eval_builtin("snapshot", &[m2, Value::List(vec![bind0, bind1])])
+    }
+
+    /// Build a `center_of_mass(snapshot)` FunctionCall CompiledExpr.
+    fn com_call_expr(snapshot: Value, hash_bytes: [u8; 4]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&hash_bytes),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "std::center_of_mass".to_string(),
+                },
+                args: vec![lit(snapshot, Type::dimensionless_scalar())],
+            },
+        }
+    }
+
+    /// `center_of_mass` on a mixed snapshot (one explicit-mass body, one plain
+    /// body) evaluated through `eval_expr` must push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning into the runtime sink.
+    ///
+    /// RED until step-8 wires `emit_snapshot_diagnostics` after
+    /// `emit_dfm_diagnostics` — without that call the sink stays empty even
+    /// though `reify_stdlib::snapshot_diagnose` returns the Warning.
+    #[test]
+    fn center_of_mass_mixed_snapshot_emits_density_fallback_warning_into_sink() {
+        let pm_1 = reify_stdlib::eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let snapshot = snap_two_body(pm_1, 0.0, plain, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x10]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(
+            !result.is_undef(),
+            "mixed snapshot center_of_mass must return a valid Point (legacy fallback), got {:?}",
+            result
+        );
+
+        let diags = sink.borrow();
+        assert!(
+            diags.iter().any(|d| {
+                d.severity == reify_core::Severity::Warning
+                    && d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)
+            }),
+            "expected a SnapshotCenterOfMassDensityFallback Warning in the runtime sink, \
+             got {diags:?}"
+        );
+    }
+
+    /// `center_of_mass` on a pure-legacy snapshot (no explicit-mass bodies)
+    /// evaluated through `eval_expr` must NOT push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning — pure-legacy mechanisms
+    /// stay silent (the mixed-case Warning fires only when >= 1 body resolves
+    /// AND >= 1 body does not).
+    #[test]
+    fn center_of_mass_pure_legacy_snapshot_emits_no_density_fallback_warning() {
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+        let snapshot = snap_two_body(solid_a, 0.0, solid_b, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x11]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        eval_expr(&expr, &ctx);
+
+        let diags = sink.borrow();
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)),
+            "pure-legacy snapshot must NOT emit SnapshotCenterOfMassDensityFallback, \
+             got {diags:?}"
+        );
+    }
 }
