@@ -571,6 +571,129 @@ mod tests {
             "cited file must yield no finding when the DB is absent; findings={findings:?}"
         );
     }
+
+    /// Liveness-lane integration: the 6 SWEPT perf-marker files (real content
+    /// copied into a tempdir) must produce ZERO orphaned #4551 findings after the
+    /// retarget to the live anchor #4590. A synthetic `// TODO(#4551)` positive
+    /// control asserts the fixture DB + orphaned classification are live
+    /// (prevents a vacuously-green result if seeding fails or markers graduate).
+    ///
+    /// RED (step-1): real files still cite the terminal task #4551 → orphaned
+    ///   findings fire → assertion (a) fails.
+    /// GREEN (step-2): cites retargeted to in-progress #4590 → no orphaned
+    ///   finding for the real files; control is still orphaned.
+    #[test]
+    fn perf_anchor_v2_perf_cites_resolve_live() {
+        // Workspace root: CARGO_MANIFEST_DIR = <ws>/crates/reify-audit
+        let ws_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap() // <ws>/crates
+            .parent()
+            .unwrap(); // <ws>
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        // The 6 SWEPT perf-marker files (workspace-relative paths).
+        let swept_paths = [
+            "crates/reify-eval/src/engine_purposes.rs",
+            "crates/reify-eval/src/dispatcher.rs",
+            "crates/reify-eval/src/engine_eval.rs",
+            "crates/reify-kernel-fidget/src/kernel.rs",
+            "crates/reify-expr/src/analysis.rs",
+            "crates/reify-expr/src/calculus.rs",
+        ];
+
+        // Copy real file content into tempdir (skip gracefully if gone).
+        let mut tracked_paths: Vec<String> = Vec::new();
+        for rel_path in &swept_paths {
+            let src = ws_root.join(rel_path);
+            if src.exists() {
+                let content = std::fs::read_to_string(&src)
+                    .unwrap_or_else(|e| panic!("read {}: {}", src.display(), e));
+                write_file(root, rel_path, &content);
+                tracked_paths.push(rel_path.to_string());
+            }
+        }
+
+        // Synthetic positive-control: always orphaned (4551 stays done).
+        write_file(root, "zzz_ptodo_control.rs", "// TODO(#4551): orphan control\n");
+        tracked_paths.push("zzz_ptodo_control.rs".to_string());
+
+        // Guard: assert all 6 real swept files are present + the 1 control file.
+        // Renames/moves cause src.exists() to fail → fewer real files → caught here.
+        // Graduations (file deleted when improvement lands) require updating this count
+        // and swept_paths to reflect the remaining markers.
+        assert!(
+            tracked_paths.len() >= 7,
+            "expected 6 real swept files + 1 control in tracked_paths, got {}; \
+             if a swept file was renamed/moved update swept_paths; \
+             if all 6 have graduated, delete this test",
+            tracked_paths.len()
+        );
+
+        // Seed fixture DB: 4551=done (terminal), 4590=in-progress (live).
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4551, "done"), ("master", 4590, "in-progress")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(tracked_paths);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        // (a) No real swept perf file may produce an orphaned #4551 finding.
+        //     RED: real files cite #4551 (done) → orphaned fires → assertion fails.
+        //     GREEN: after retarget to #4590 (in-progress) → no orphaned finding.
+        //     Match "#4551 " (with trailing space) not bare "#4551" to avoid false
+        //     positives from longer ids such as #45510 (summary format: "… #NNN status=…").
+        for path in &swept_paths {
+            let has_orphaned_4551 = findings.iter().any(|f| {
+                f.summary.starts_with("orphaned:")
+                    && f.summary.contains("#4551 ")
+                    && f.evidence
+                        .iter()
+                        .any(|e| matches!(e, EvidenceRef::File { path: p } if p == *path))
+            });
+            assert!(
+                !has_orphaned_4551,
+                "real perf file {path} must NOT produce an orphaned #4551 finding \
+                 after retarget to #4590; findings={findings:?}"
+            );
+        }
+
+        // (b) The synthetic control file MUST produce an orphaned #4551 finding
+        //     (proves fixture DB is live and orphaned classification fires).
+        //     Match "#4551 " (trailing space) to pin the exact id token, not a prefix.
+        let control_orphaned = findings.iter().any(|f| {
+            f.summary.starts_with("orphaned:")
+                && f.summary.contains("#4551 ")
+                && f.summary.contains("done")
+                && f.evidence.iter().any(|e| {
+                    matches!(e, EvidenceRef::File { path: p } if p == "zzz_ptodo_control.rs")
+                })
+        });
+        assert!(
+            control_orphaned,
+            "zzz_ptodo_control.rs must produce an orphaned #4551 finding (test has teeth); \
+             findings={findings:?}"
+        );
+    }
 }
 
 }
