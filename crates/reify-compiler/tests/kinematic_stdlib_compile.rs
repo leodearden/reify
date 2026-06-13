@@ -387,6 +387,77 @@ fn mechanism_has_three_placeholder_params() {
     );
 }
 
+// ─── task 4579 (family M): JointParent nominal record type ───────────────────
+
+/// `JointParent` is the value side of `Mechanism.joint_parents : Map<BodyId,JointParent>`.
+/// It records a body's spanning-tree parent edge: which body is the parent
+/// (`parent : BodyId`) and the joint connecting child→parent (`joint : Joint`).
+///
+/// Shape: exactly 2 params in canonical order (parent, joint); no trait bound
+/// (plain value record, not a joint kind); no defaults (all caller-supplied);
+/// no structure-level constraints. Introduced by task 4579 (family M).
+///
+/// RED until step-4: JointParent is not yet declared in kinematic.ri.
+#[test]
+fn joint_parent_struct_has_correct_param_shape() {
+    let template = find_structure("JointParent");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) Plain record — no trait bound.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "JointParent should have no trait bounds (plain spanning-tree record, \
+         not a Joint kind); got: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) Exactly 2 params in canonical order.
+    assert_eq!(
+        names,
+        vec!["parent", "joint"],
+        "JointParent should have exactly (parent, joint) in that order; got: {:?}",
+        names
+    );
+
+    let parent = params.iter().find(|p| p.id.member == "parent").unwrap();
+    assert_eq!(
+        parent.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "JointParent.parent should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        parent.cell_type
+    );
+
+    let joint = params.iter().find(|p| p.id.member == "joint").unwrap();
+    assert_eq!(
+        joint.cell_type,
+        Type::TraitObject("Joint".to_string()),
+        "JointParent.joint should be Type::TraitObject(\"Joint\"); got: {:?}",
+        joint.cell_type
+    );
+
+    // (c) No defaults (all caller-supplied at mechanism construction).
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "JointParent.{} should have no default_expr; got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) No structure-level constraints.
+    assert!(
+        template.constraints.is_empty(),
+        "JointParent should declare no structure-level constraints; got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn snapshot_has_correct_params() {
     let template = find_structure("Snapshot");
