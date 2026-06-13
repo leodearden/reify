@@ -387,6 +387,96 @@ fn mechanism_has_three_placeholder_params() {
     );
 }
 
+// ─── task 4579 (family M): LoopClosure nominal record type ───────────────────
+
+/// `LoopClosure` is a closed-chain edge excluded from the spanning tree
+/// (element of `Mechanism.loop_closures : List<LoopClosure>`).
+///
+/// Shape: exactly 4 params in canonical order (parent, child, joint,
+/// residual_dim); no trait bound; no defaults; no structure-level constraints.
+/// Introduced by task 4579 (family M).
+///
+/// RED until step-6: LoopClosure is not yet declared in kinematic.ri.
+#[test]
+fn loop_closure_struct_has_correct_param_shape() {
+    let template = find_structure("LoopClosure");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) Plain record — no trait bound.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "LoopClosure should have no trait bounds (plain closed-chain edge record); \
+         got: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) Exactly 4 params in canonical order.
+    assert_eq!(
+        names,
+        vec!["parent", "child", "joint", "residual_dim"],
+        "LoopClosure should have exactly (parent, child, joint, residual_dim) \
+         in that order; got: {:?}",
+        names
+    );
+
+    let parent = params.iter().find(|p| p.id.member == "parent").unwrap();
+    assert_eq!(
+        parent.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "LoopClosure.parent should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        parent.cell_type
+    );
+
+    let child = params.iter().find(|p| p.id.member == "child").unwrap();
+    assert_eq!(
+        child.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "LoopClosure.child should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        child.cell_type
+    );
+
+    let joint = params.iter().find(|p| p.id.member == "joint").unwrap();
+    assert_eq!(
+        joint.cell_type,
+        Type::TraitObject("Joint".to_string()),
+        "LoopClosure.joint should be Type::TraitObject(\"Joint\"); got: {:?}",
+        joint.cell_type
+    );
+
+    let residual_dim = params
+        .iter()
+        .find(|p| p.id.member == "residual_dim")
+        .unwrap();
+    assert_eq!(
+        residual_dim.cell_type,
+        Type::Int,
+        "LoopClosure.residual_dim should be Type::Int; got: {:?}",
+        residual_dim.cell_type
+    );
+
+    // (c) No defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "LoopClosure.{} should have no default_expr; got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) No structure-level constraints.
+    assert!(
+        template.constraints.is_empty(),
+        "LoopClosure should declare no structure-level constraints; got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
 // ─── task 4579 (family M): JointParent nominal record type ───────────────────
 
 /// `JointParent` is the value side of `Mechanism.joint_parents : Map<BodyId,JointParent>`.
