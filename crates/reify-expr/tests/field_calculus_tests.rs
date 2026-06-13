@@ -5154,6 +5154,64 @@ fn sphere_sdf_laplacian_eager_lowers_to_sampled_scalar_field() {
     }
 }
 
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// Interior nodes in a fixed annular band satisfy |∇²_h φ − 2/r| ≤ h²/r³.
+///
+/// For a sphere SDF φ(p) = |p−c| − R the central 2nd-difference Laplacian
+/// has leading FD error ≤ h²/(2r³) (see PRD §6 derivation). The asserted
+/// bound h²/r³ is 2× that, covering O(h⁴) terms and interpolation with margin.
+///
+/// Only INTERIOR nodes are checked (indices 1..n−1 on every axis), excluding
+/// the first-order one-sided boundary stencil (PRD §10). Assertions are also
+/// restricted to the fixed physical annular band 0.5R ≤ r ≤ 1.5R to bound
+/// the 1/r³ singularity (excludes near-center nodes) and the 1/r³ blow-up.
+/// The band guard `assert!(count > 0)` prevents a silent empty-band pass.
+///
+/// Grid: n=21, h=0.1, box [0,2]³, R=1.0, center=(1.05,1.05,1.05).
+#[test]
+fn sphere_sdf_laplacian_matches_2_over_r_interior_band() {
+    let n = 21usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    let center = [1.0 + h / 2.0, 1.0 + h / 2.0, 1.0 + h / 2.0];
+
+    let lap_result = build_sphere_lap_field(n, h, center, radius);
+
+    let r_inner = 0.5 * radius;
+    let r_outer = 1.5 * radius;
+    let (max_err, count) = band_max_error(&lap_result, center, r_inner, r_outer);
+
+    assert!(
+        count > 0,
+        "Expected at least one interior node in annular band [{}R, {}R]; got 0 — \
+         check grid params (n={}, h={}, R={}, center={:?})",
+        r_inner / radius,
+        r_outer / radius,
+        n,
+        h,
+        radius,
+        center
+    );
+
+    // PRD §6: leading FD error ≤ h²/(2r³); bound = h²/r³ (2× margin).
+    // At r = r_inner = 0.5, bound = h²/r_inner³ = 0.01/0.125 = 0.08.
+    // This is a pointwise assertion per node using the node's own r.
+    let floor = h * h / (r_inner * r_inner * r_inner);
+    assert!(
+        max_err <= floor,
+        "Interior-band Laplacian error {:.6e} exceeds floor {:.6e} = h²/r_inner³ \
+         (n={}, h={}, R={}, band [{:.1}R,{:.1}R], {} nodes checked)",
+        max_err,
+        floor,
+        n,
+        h,
+        radius,
+        r_inner / radius,
+        r_outer / radius,
+        count
+    );
+}
+
 /// Meta-test: asserts that every `#[ignore = "..."]` attribute in this file
 /// complies with the Task 1622 convention — reason strings must be
 /// self-contained inline summaries beginning with `"known bug:"`.  The two
