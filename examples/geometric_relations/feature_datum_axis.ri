@@ -1,0 +1,32 @@
+// Feature → datum projection: `feature.axis : Axis` (geometric-relations ε, task 4385).
+//
+// The "real missing bridge" (PRD §7.2 / design §2.2): a realized geometric
+// FEATURE projects down to a concrete datum. Here a cylinder built by revolving
+// a rectangle a full 360° exposes its central axis via `cyl.axis`.
+//
+// Boundary test B8 (the worked example this file pins): the projection gathers
+// axis candidates from the UNION of
+//   * analytic classification — the two end-arc `GeomAbs_Circle` edges, whose
+//     `.Axis()` is the revolution axis (with OPPOSITE direction sense), and
+//   * construction history — the `Revolve` trait, which restores the axis even
+//     for the non-analytic `GeomAbs_SurfaceOfRevolution` side face,
+// then deduplicates them by geometric equivalence (coaxial, sign-insensitive).
+// All candidates lie on ONE infinite line, so `cyl.axis` refines to exactly one
+// `Axis` — the revolution axis — with no select-a-subfeature ambiguity.
+//
+// rectangle(20mm, 10mm) is centred on the origin in the XY plane (corners at
+// (±10mm, ±5mm)). Revolving it 360° about its LEFT edge — the line through
+// (-10mm, 0, 0) along +Y — sweeps a solid cylinder (radius 20mm, height 10mm)
+// whose central axis IS that revolution line. `cyl.axis` recovers it exactly.
+
+structure Cyl {
+    // 2π rad = 360° (a full revolution). revolve(profile, ox,oy,oz, ax,ay,az, angle).
+    let cyl = revolve(rectangle(20mm, 10mm), -10mm, 0mm, 0mm, 0.0, 1.0, 0.0, 6.283185307179586)
+
+    // Feature → datum: the cylinder's unique central axis.
+    let a : Axis = cyl.axis
+
+    // Exercise the recovered datum with a β datum→datum projection: the axis
+    // direction is the +Y revolution direction.
+    let axis_dir : Direction = a.dir
+}
