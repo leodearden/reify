@@ -3214,7 +3214,11 @@ fn eval_named_leaf_selector_ctor(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     let target = resolve_selector_target(&args[0], values)?;
-    let name = resolve_string_literal_arg(&args[1])?.to_string();
+    // Evaluate-then-accept (task ε): the named-leaf ctor threads the real
+    // `values`, so the tag arg now resolves a `ValueRef → String` cell
+    // (`face(body, label_var)`) in addition to an inline string literal; a
+    // defined-but-wrong tag emits a Warning instead of falling through silently.
+    let name = resolve_string_literal_arg(&args[1], values, function_name, "name", diagnostics)?;
     build_leaf_selector(
         kind,
         target,
@@ -5805,17 +5809,29 @@ pub fn try_eval_ad_hoc_selector(
     //     Layer-1 (eval_expr) already resolved @point from literal coordinates.
     let frame_sub_shape_kind = FrameSubShapeKind::from_selector_kind(selector_kind)?;
 
-    // (3) Extract the base name — must be a string literal.
-    let name = resolve_string_literal_arg(base)?;
+    // (3+4) Extract the base name and the face/edge label via evaluate-then-accept
+    //       (task ε). `try_eval_ad_hoc_selector` carries no `ValueMap` — its callers
+    //       (`post_process_ad_hoc_selectors` in engine_build.rs + the ad_hoc_selector
+    //       smoke tests) are outside task ε's module scope — so base/label evaluate
+    //       against a LOCAL empty context. Ad-hoc base/label compile to string
+    //       literals (reify_compiler expr.rs AdHocSelector), which evaluate
+    //       identically against any context; a stray ValueRef degrades to quiet
+    //       Undef exactly as before (no regression), while a defined-but-wrong value
+    //       now emits a Warning. See resolve_string_literal_arg's doc-comment.
+    let ad_hoc_values = reify_ir::ValueMap::new();
+    let builtin = match &frame_sub_shape_kind {
+        FrameSubShapeKind::Face => "@face",
+        FrameSubShapeKind::Edge => "@edge",
+    };
+    let name = resolve_string_literal_arg(base, &ad_hoc_values, builtin, "base", diagnostics)?;
 
-    // (4) Extract the face/edge label — must be args[0] string literal.
     let label = match args.first() {
-        Some(a) => resolve_string_literal_arg(a)?,
+        Some(a) => resolve_string_literal_arg(a, &ad_hoc_values, builtin, "label", diagnostics)?,
         None => return None,
     };
 
     // (5) Look up the base name in named_steps → GeometryHandleId.
-    let handle = match named_steps.get(name) {
+    let handle = match named_steps.get(name.as_str()) {
         Some(kh) => kh.id,
         None => return None,
     };
@@ -5845,8 +5861,8 @@ pub fn try_eval_ad_hoc_selector(
 
     // (7) Build AttributeQuery with dual user_label + canonical-name role translation.
     let query = crate::topology_attribute_resolver::AttributeQuery {
-        user_label: Some(label.to_string()),
-        role_and_index: cap_kind_translation(label),
+        user_label: Some(label.clone()),
+        role_and_index: cap_kind_translation(&label),
         feature_id: None,
     };
 
@@ -5870,15 +5886,80 @@ pub fn try_eval_ad_hoc_selector(
     }
 }
 
-/// Helper: extract a `&str` from a `CompiledExprKind::Literal(Value::String(s))`
-/// expression.  Returns `None` for any other expression kind or value payload.
+/// Resolve a selector name/label string arg (the `face`/`edge`/`solid_body`
+/// builtin name and the ad-hoc `@face`/`@edge` base/label) to an OWNED
+/// `String`, emitting a `Severity::Warning` when the caller passes a
+/// defined-but-wrong value.
 ///
-/// Used by `try_eval_ad_hoc_selector` to extract the base name and the label
-/// from an `AdHocSelector`'s `base` and `args[0]` respectively.
-fn resolve_string_literal_arg(expr: &reify_ir::CompiledExpr) -> Option<&str> {
-    match &expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(s)) => Some(s.as_str()),
-        _ => None,
+/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
+/// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
+/// Value::String` cell now resolves (the named-leaf `face(body, label_var)`
+/// form), while an inline `Literal(Value::String)` evaluates to itself —
+/// byte-identical to the prior `Literal`-match. The return type changed from
+/// `Option<&str>` to `Option<String>` because the evaluated `Value` is owned by
+/// the local eval, not borrowed from `expr`.
+///
+/// | evaluated arg value                              | return    | diagnostic?     |
+/// |--------------------------------------------------|-----------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`    | no — quiet      |
+/// | `Value::String(s)`                               | `Some(s)` | no              |
+/// | any other defined value (Int, Real, …)           | `None`    | yes — 1 Warning |
+///
+/// NOTE (ad-hoc context): `try_eval_ad_hoc_selector` carries no `ValueMap` in
+/// its signature — it is a public API whose callers (`post_process_ad_hoc_selectors`
+/// in `engine_build.rs` and the `ad_hoc_selector_smoke_tests`) are outside task
+/// ε's module scope — so it evaluates base/label against a LOCAL empty
+/// `ValueMap`. Ad-hoc base/label compile to string literals in practice (see
+/// `reify_compiler` `expr.rs` `AdHocSelector`), which evaluate identically
+/// against any context; a stray `ValueRef` there degrades to quiet `Undef`
+/// exactly as before (no regression). The named-leaf caller
+/// (`eval_named_leaf_selector_ctor`) threads the real `values`, so
+/// `face(body, label_var)` resolves a `ValueRef → String` cell.
+fn resolve_string_literal_arg(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    use crate::arg_acceptance::ArgRejection;
+
+    let value = eval_arg_value(expr, values);
+
+    match value {
+        // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg
+        // the local ctx can't evaluate) returns None with no diagnostic —
+        // byte-identical to the prior non-`Literal(String)` fall-through.
+        reify_ir::Value::Undef => None,
+        reify_ir::Value::String(s) => Some(s),
+        // Defined-but-wrong (non-String): emit exactly one Warning naming
+        // builtin/arg/String/got (byte-uniform wording with the density / point /
+        // vec3 / range / int paths).
+        other => {
+            diagnostics.push(Diagnostic::warning(
+                ArgRejection {
+                    got: string_got_label(&other),
+                    expected: "String",
+                    migration_hint: None,
+                }
+                .message(builtin, arg_name),
+            ));
+            None
+        }
+    }
+}
+
+/// Short human-readable label for a `Value` that failed String classification,
+/// used as the `got` field of the rejection diagnostic (task ε).
+fn string_got_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Int(_) => "Int".to_string(),
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::Vector(_) => "Vector".to_string(),
+        reify_ir::Value::Point(_) => "Point".to_string(),
+        _ => "non-String value".to_string(),
     }
 }
 
