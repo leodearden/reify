@@ -2255,7 +2255,10 @@ fn rewrite_geometry_queries(
 
 /// Issue a scalar-returning kernel query (`Volume` / `SurfaceArea` /
 /// `MaxDeviation`) and wrap the `Value::Real` (or, defensively,
-/// `Value::Scalar`) reply as `Value::Scalar { si_value, dimension }`.
+/// `Value::Scalar`) reply through the `Value::from_real_scalar` chokepoint: a
+/// dimensioned result becomes `Value::Scalar { si_value, dimension }`, while a
+/// dimensionless result collapses to `Value::Real` (Invariant V — no code path
+/// constructs a `Value::Scalar { dimension.is_dimensionless() }`).
 ///
 /// Returns `Some(Value::Undef)` + one Warning on:
 /// - a kernel error,
@@ -2275,10 +2278,7 @@ fn dispatch_scalar_query(
 ) -> Option<reify_ir::Value> {
     match kernel.query(&query) {
         Ok(reify_ir::Value::Real(v)) if v.is_finite() && v >= 0.0 => {
-            Some(reify_ir::Value::Scalar {
-                si_value: v,
-                dimension,
-            })
+            Some(reify_ir::Value::from_real_scalar(v, dimension))
         }
         Ok(reify_ir::Value::Real(v)) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -2287,10 +2287,9 @@ fn dispatch_scalar_query(
             )));
             Some(reify_ir::Value::Undef)
         }
-        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        }),
+        Ok(reify_ir::Value::Scalar { si_value, .. }) => {
+            Some(reify_ir::Value::from_real_scalar(si_value, dimension))
+        }
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{helper_name}(...) kernel reply has unexpected type (expected Real, \
