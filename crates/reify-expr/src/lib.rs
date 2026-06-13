@@ -7458,6 +7458,63 @@ mod tests {
         );
     }
 
+    // ─── β (task 4374): arithmetic producers route through the value-layer ───
+    // chokepoint `Value::from_real_scalar`, collapsing dimension-cancelling
+    // results to Value::Real (Invariant V): no arithmetic op may construct a
+    // `Value::Scalar { dimension }` with `dimension.is_dimensionless()`.
+
+    #[test]
+    fn eval_div_cancelling_dims_collapse_to_real() {
+        // 30mm / 10mm: LENGTH/LENGTH = DIMENSIONLESS → must be Value::Real, not
+        // Value::Scalar{DIMENSIONLESS}. The VARIANT check is load-bearing; value
+        // tolerance is required because 0.03/0.01 is not exactly 3.0 in f64.
+        match eval_div(&mm_val(30.0), &mm_val(10.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+
+        // Headline regression via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0) from 30mm/10mm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_div_noncancelling_dims_stay_scalar() {
+        // AREA / LENGTH = LENGTH: a dimensioned quotient must stay Value::Scalar
+        // (byte-identical to the pre-β behaviour). Guards against over-collapse.
+        let area = Value::Scalar {
+            si_value: 6.0,
+            dimension: DimensionVector::AREA,
+        };
+        match eval_div(&area, &mm_val(2.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "AREA/LENGTH should be LENGTH"
+                );
+                // 6.0 / 0.002 = 3000.0 (mm_val(2.0) is 0.002 m).
+                assert!(
+                    (si_value - 3000.0).abs() < 1e-9,
+                    "expected ~3000.0, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
