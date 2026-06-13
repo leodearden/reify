@@ -30,17 +30,72 @@ pub(crate) enum DatumProjectionResolution {
     Ambiguous { suggestions: Vec<&'static str> },
 }
 
+/// The recognized datum-projection member names, in one place so the
+/// `MemberAccess` gate in `expr.rs` can cheaply decide whether a member access
+/// is a datum projection (and therefore route to [`datum_projection_result_type`])
+/// before falling through to the generic "member access not yet supported" path.
+///
+/// This is the *union* of every member the table below recognizes on any datum
+/// receiver — a member in this set on a datum receiver is resolved by the table
+/// (possibly to `Unavailable`/`Ambiguous`); a member outside this set is not a
+/// datum projection at all.
+#[allow(dead_code)] // consumed by the expr.rs MemberAccess gate in step 10.
+pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
+    &["dir", "normal", "origin", "x", "y", "z", "xy_plane"];
+
 /// Resolve the result type of a datum-projection member access `receiver.member`.
 ///
-/// β stub: returns [`DatumProjectionResolution::Unavailable`] for every
-/// `(receiver, member)` pair. Step 8 fills in the projection table per the
-/// analysis (Axis/Plane/Frame/Direction → Direction/Point3<Length>/Plane/Real).
-#[allow(dead_code)] // β scaffold; the projection table is implemented in step 8.
+/// Implements the geometric-relations β projection table ("implicit projection
+/// iff unique", `docs/prds/v0_6/geometric-relations.md` §9):
+///
+/// - `Axis`      → `.dir`: [`Type::Direction`], `.origin`: `Point3<Length>`
+/// - `Plane`     → `.normal`: [`Type::Direction`], `.origin`: `Point3<Length>`
+///   (`.dir` is *Unavailable* — callers must write `.normal`)
+/// - `Frame(_)`  → `.x`/`.y`/`.z`: [`Type::Direction`], `.origin`: `Point3<Length>`,
+///   `.xy_plane`: [`Type::Plane`]; `.dir`/`.normal` are *Ambiguous* (any of the
+///   three basis directions could be meant — suggest `.x`/`.y`/`.z`)
+/// - `Direction` → `.x`/`.y`/`.z`: `Real` (dimensionless components)
+///
+/// Any other receiver (including `Point { .. }`) or any unrecognized member on a
+/// datum receiver resolves to [`DatumProjectionResolution::Unavailable`] — the
+/// locked nonsense-filter (covers `point.dir`). γ/η extend this table here.
+#[allow(dead_code)] // consumed by the expr.rs MemberAccess lowering in step 10.
 pub(crate) fn datum_projection_result_type(
-    _receiver: &Type,
-    _member: &str,
+    receiver: &Type,
+    member: &str,
 ) -> DatumProjectionResolution {
-    DatumProjectionResolution::Unavailable
+    use DatumProjectionResolution::*;
+    match receiver {
+        Type::Axis => match member {
+            "dir" => Resolved(Type::Direction),
+            "origin" => Resolved(Type::point3(Type::length())),
+            _ => Unavailable,
+        },
+        Type::Plane => match member {
+            "normal" => Resolved(Type::Direction),
+            "origin" => Resolved(Type::point3(Type::length())),
+            // `.dir` on a plane is Unavailable — the unique direction is the normal.
+            _ => Unavailable,
+        },
+        Type::Frame(_) => match member {
+            "x" | "y" | "z" => Resolved(Type::Direction),
+            "origin" => Resolved(Type::point3(Type::length())),
+            "xy_plane" => Resolved(Type::Plane),
+            // A bare directional projection on a frame is ambiguous: it could be
+            // any of the three basis directions. Suggest the disambiguating names.
+            "dir" | "normal" => Ambiguous {
+                suggestions: vec!["x", "y", "z"],
+            },
+            _ => Unavailable,
+        },
+        Type::Direction => match member {
+            // Dimensionless unit-vector components ("Real").
+            "x" | "y" | "z" => Resolved(Type::dimensionless_scalar()),
+            _ => Unavailable,
+        },
+        // Non-datum receivers (incl. Point { .. }) have no datum projections.
+        _ => Unavailable,
+    }
 }
 
 #[cfg(test)]
