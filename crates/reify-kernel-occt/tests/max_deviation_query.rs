@@ -43,13 +43,6 @@ fn box_op(w: f64, h: f64, d: f64) -> GeometryOp {
     }
 }
 
-/// Build a kernel, execute `op`, and return `(kernel, handle_id)`.
-fn make_shape(op: GeometryOp) -> (OcctKernel, GeometryHandleId) {
-    let mut kernel = OcctKernel::new();
-    let handle = kernel.execute(&op).expect("geometry op should succeed");
-    (kernel, handle.id)
-}
-
 // ── S1: signal — translated box deviates by exactly 0.5 mm from nominal ─────
 
 /// S1 (signal test): a unit-box `actual` translated +0.5 mm along X w.r.t.
