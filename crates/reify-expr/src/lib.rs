@@ -3719,6 +3719,22 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
             Value::Real(r),
         ) => Value::from_real_scalar(si_value / r, *dimension),
+        // Bare number / Scalar: a dimensionless numerator ÷ a dimensioned scalar
+        // yields the reciprocal dimension (e.g. `1.0 / 5s → Frequency`). Division
+        // is non-commutative, so these reciprocal arms are distinct from the
+        // (Scalar, Real/Int) scaling arms above. Post-β (task 4374) a
+        // dimension-cancelling product/quotient collapses to Value::Real, so a
+        // chain like AVOGADRO_CONSTANT's `6.022e23 * 1mol / 1mol / 1mol` now
+        // reaches this arm at the final `/ 1mol` — its intermediate, formerly a
+        // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
+        // fully-cancelling reciprocal still collapses to Real (Invariant V).
+        (Value::Real(a), Value::Scalar { si_value, dimension }) => {
+            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+        }
+        (Value::Int(a), Value::Scalar { si_value, dimension }) => {
+            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
+            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+        }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
         // Overflow (e.g. MAX/0.5 → Inf) propagates as an Inf-bearing Complex in the operator path;

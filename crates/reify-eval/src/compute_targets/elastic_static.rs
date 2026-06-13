@@ -1948,14 +1948,13 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
                 _ => ShellForce::Auto, // "Auto" or any unknown variant
             };
         }
-        match data.fields.get("shell_threshold") {
-            Some(Value::Real(r)) => shell_threshold = *r,
-            // `shell_threshold` is a dimensionless ratio, which per Invariant V
-            // always arrives as `Value::Real`. Any `Value::Scalar` is therefore
-            // dimensioned (e.g. PRESSURE) — an upstream type error — and is
-            // ignored, keeping the default rather than silently consuming a
-            // mis-dimensioned magnitude as the ratio (esc-3594 suggestion 2).
-            _ => {}
+        // `shell_threshold` is a dimensionless ratio, which per Invariant V
+        // always arrives as `Value::Real`. Any `Value::Scalar` is therefore
+        // dimensioned (e.g. PRESSURE) — an upstream type error — and is
+        // ignored, keeping the default rather than silently consuming a
+        // mis-dimensioned magnitude as the ratio (esc-3594 suggestion 2).
+        if let Some(Value::Real(r)) = data.fields.get("shell_threshold") {
+            shell_threshold = *r;
         }
     }
     (shell_force, shell_threshold)
