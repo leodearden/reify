@@ -3692,3 +3692,77 @@ fn argmax_vector3_sampled_field_skips_nan_window() {
         "argmax(partial-NaN Vector3 Sampled) should skip NaN window and return coord 2.0 m"
     );
 }
+
+// ── γ step 5: tensor-codomain (stride-9) Frobenius magnitude reduction ───────
+
+/// `max` and `argmax` over a `Point3<Length>`-domain, `Tensor<2,3,Real>`-codomain
+/// Sampled field — the headline `result.gradient` shape.
+///
+/// Grid: Regular3D, axis0=[0.0, 1.0], axis1=[0.0], axis2=[0.0] → grid_count=2.
+/// Flat stride-9 data:
+///   node 0 = (2,3,6, 0,0,0, 0,0,0) → Frobenius = √(4+9+36) = 7.0
+///   node 1 = (1,2,2, 0,0,0, 0,0,0) → √(1+4+4) = 3.0
+/// max → Value::Real(7.0)  (max Frobenius norm — a value, NOT Undef).
+/// argmax → Point([Scalar{0.0,LENGTH}, Scalar{0.0,LENGTH}, Scalar{0.0,LENGTH}])
+///           (coord of node 0: axis0=0.0, axis1=0.0, axis2=0.0).
+///
+/// **RED before step-6**: `magnitude_codomain` does not yet recognise
+/// `Type::Tensor`, so a stride-9 tensor field still hits the `None`/flat-reduce
+/// path (returns max component 6.0, not Frobenius magnitude 7.0).
+#[test]
+fn max_argmax_tensor2x3_sampled_field_reduces_by_frobenius_norm() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // Tensor<2,3,Real> codomain: rank=2, n=3, quantity=Real → stride = 3^2 = 9.
+    let codomain = Type::tensor(2, 3, Type::dimensionless_scalar());
+    // Point3<Length> domain (3 axes, each Length).
+    let domain = Type::point3(length.clone());
+
+    // Regular3D grid: axis0 has 2 nodes (grid_count=2), axis1/axis2 have 1 node.
+    // data: 2 × 9 = 18 floats.
+    let sf = make_sampled_3d(
+        "tensor_grad",
+        vec![0.0, 1.0],   // axis0: 2 nodes
+        vec![0.0],        // axis1: 1 node
+        vec![0.0],        // axis2: 1 node
+        vec![
+            // node 0: (2,3,6, 0,0,0, 0,0,0) → Frobenius = sqrt(4+9+36) = 7.0
+            2.0, 3.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // node 1: (1,2,2, 0,0,0, 0,0,0) → sqrt(1+4+4) = 3.0
+            1.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → Frobenius norm 7.0 at node 0 → Value::Real(7.0).
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(7.0),
+        "max(Tensor<2,3,Real> Sampled) should return max Frobenius norm 7.0"
+    );
+
+    // argmax → node 0 has max Frobenius norm → coord = Point([0.0 m, 0.0 m, 0.0 m]).
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]),
+        "argmax(Tensor<2,3,Real> Sampled) should return coord of node 0 (max Frobenius 7.0)"
+    );
+}
