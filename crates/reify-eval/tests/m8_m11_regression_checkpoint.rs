@@ -405,7 +405,7 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         // Kind-agnostic topology selector (task 4369 / A2)
         Type::AnySelector => true,
         // 3D geometric primitives
-        Type::Plane | Type::Axis | Type::BoundingBox => true,
+        Type::Plane | Type::Axis | Type::Direction | Type::BoundingBox => true,
         // Matrix
         Type::Matrix { .. } => true,
         // Type-inference poison sentinel (task-448)
@@ -468,14 +468,14 @@ fn assert_all_value_variants_listed(v: &reify_ir::Value) {
     };
 }
 
-/// Verify that `assert_all_type_variants_listed` covers all 30 `Type` variants
+/// Verify that `assert_all_type_variants_listed` covers all 31 `Type` variants
 /// by constructing one instance of each and calling the guard.
 ///
 /// If a new variant is ever added to `Type` without being listed in
 /// `assert_all_type_variants_listed`, this file will fail to compile.
 #[test]
 fn checkpoint_type_variant_coverage() {
-    // Build one instance of each of the 30 Type variants.
+    // Build one instance of each of the 31 Type variants.
     let all_types: Vec<Type> = vec![
         // Primitive scalars (4)
         Type::Bool,
@@ -532,9 +532,10 @@ fn checkpoint_type_variant_coverage() {
         Type::Orientation(3),
         Type::Frame(3),
         Type::Transform(3),
-        // 3D geometric primitives (3)
+        // 3D geometric primitives (4)
         Type::Plane,
         Type::Axis,
+        Type::Direction,
         Type::BoundingBox,
         // Matrix (1)
         Type::Matrix {
@@ -555,8 +556,8 @@ fn checkpoint_type_variant_coverage() {
 
     assert_eq!(
         all_types.len(),
-        30,
-        "expected exactly 30 Type variants; update this test if the enum changes"
+        31,
+        "expected exactly 31 Type variants; update this test if the enum changes"
     );
 
     // Drive the exhaustiveness guard with each variant. Compile error here means

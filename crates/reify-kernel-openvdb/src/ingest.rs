@@ -853,6 +853,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Range(_) => "Range",
         Type::Plane => "Plane",
         Type::Axis => "Axis",
+        Type::Direction => "Direction",
         Type::BoundingBox => "BoundingBox",
         Type::Matrix { .. } => "Matrix",
         Type::ScalarParam(_) => "ScalarParam",
@@ -918,7 +919,7 @@ mod tests {
     /// wrong string at runtime.
     #[test]
     fn format_type_repr_returns_variant_identifier_name_for_each_type_variant() {
-        // Unit variants (9)
+        // Unit variants (10)
         assert_eq!(format_type_repr(&Type::Bool), "Bool");
         assert_eq!(format_type_repr(&Type::Int), "Int");
         assert_eq!(format_type_repr(&Type::dimensionless_scalar()), "Real");
@@ -926,6 +927,7 @@ mod tests {
         assert_eq!(format_type_repr(&Type::Geometry), "Geometry");
         assert_eq!(format_type_repr(&Type::Plane), "Plane");
         assert_eq!(format_type_repr(&Type::Axis), "Axis");
+        assert_eq!(format_type_repr(&Type::Direction), "Direction");
         assert_eq!(format_type_repr(&Type::BoundingBox), "BoundingBox");
         assert_eq!(format_type_repr(&Type::Error), "Error");
 

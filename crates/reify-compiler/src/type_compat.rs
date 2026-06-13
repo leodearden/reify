@@ -417,6 +417,7 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -607,6 +608,7 @@ pub(crate) fn unify(
         | (Type::AffineMap(_), _)
         | (Type::Plane, _)
         | (Type::Axis, _)
+        | (Type::Direction, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)

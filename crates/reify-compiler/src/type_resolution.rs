@@ -1313,6 +1313,7 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
