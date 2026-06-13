@@ -585,8 +585,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         exit
     } else {
         // --purpose path: replicates the canonical
-        // eval → activate_purpose → check_constraints_with_values sequence
-        // (see crates/reify-eval/tests/purpose_activation.rs:1151-1177).
+        // eval → activate_purpose → check_constraints_with_values sequence.
         // engine.check() does NOT visit purpose-injected constraints —
         // they live in snapshot.graph.constraints, visited only by
         // check_constraints_with_values.
@@ -704,7 +703,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
         );
 
         // Escalate to FAILURE when a GdtIllegalModifier error is present —
-        // identical to the non-purpose branch escalation at main.rs:574-583.
+        // mirrors the GdtIllegalModifier escalation in the no-purpose branch
+        // of cmd_check (the block that follows `finish_check` there).
         // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
         if diagnostics
             .iter()

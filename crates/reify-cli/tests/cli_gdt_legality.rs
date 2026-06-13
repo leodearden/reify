@@ -119,8 +119,39 @@ fn check_purpose_gdt_legality_rfs_exits_success() {
         "reify check --purpose must exit 0 for an all-legal GDT fixture.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        !stderr.contains("GdtIllegalModifier") && !stderr.contains("RFS-only"),
+        !stderr.contains("error:") && !stderr.contains("RFS-only"),
         "stderr must not contain a GdtIllegalModifier error for an all-legal GDT fixture.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// B7-F (warning non-fatal on `--purpose` path): `reify check --purpose` over a
+/// fixture with a Concentricity callout must exit 0 (warnings are non-fatal) while
+/// still emitting a GdtRemoved2018 warning on stderr.
+///
+/// Mirrors B7-C for the `--purpose` branch, confirming that `run_gdt_check_passes`
+/// wires the full legality pass (including removed-characteristic detection) without
+/// escalating non-error diagnostics to FAILURE.
+#[test]
+fn check_purpose_gdt_removed_2018_warning_nonfatal() {
+    let (status, _stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=ConcentricityPurpose",
+        &common::fixture_path("gdt_removed_2018_purpose.ri"),
+    ]);
+
+    assert!(
+        status.success(),
+        "reify check --purpose must exit 0 for a GdtRemoved2018 warning (warnings are non-fatal).\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("warning:"),
+        "stderr must contain 'warning:' for the GdtRemoved2018 diagnostic.\nstderr: {stderr}"
+    );
+    // The warning must name at least one replacement characteristic, mirroring B7-C.
+    assert!(
+        stderr.contains("Position") || stderr.contains("Profile") || stderr.contains("Runout"),
+        "GdtRemoved2018 warning must name replacement characteristics.\nstderr: {stderr}"
     );
 }
 
