@@ -3982,31 +3982,61 @@ pub(crate) fn expand_constraint_inst(
     // *geometric* Conforms — its predicate never references `actual`, so the
     // binding cannot be recovered from the compiled predicate. Only `ci.args`
     // (explicit args) are recorded; defaulted params are omitted, which is
-    // exactly the "explicitly bound?" signal the pass keys on.
+    // exactly the "explicitly bound?" signal the pass keys on. All explicit
+    // args are stored (not only the predicate-unreferenced ones): the η pass
+    // keys on BOTH an unreferenced arg (`actual`) AND a predicate-referenced
+    // arg (`tolerance`, which it reads as a standalone ValueRef that the
+    // inlined predicate cannot surface) — so a "store only unreferenced"
+    // shortcut would drop `tolerance`.
     //
-    // Each arg expr is compiled in the same `scope` used for predicate
-    // substitution, but its diagnostics go to a throwaway sink: a *used* arg is
-    // already compiled (and any diagnostic reported) via the predicate path
-    // below, and an *unused* arg (the Conforms `actual` case) was previously
-    // not compiled at all — so this keeps the reported diagnostic set
-    // byte-identical while still recovering the CompiledExpr the pass needs.
-    let arg_bindings: Vec<(String, CompiledExpr)> = {
-        let mut arg_diag_sink = Vec::new();
-        ci.args
-            .iter()
-            .map(|(name, expr)| {
-                (
-                    name.clone(),
-                    compile_expr(expr, scope, enum_defs, functions, &mut arg_diag_sink),
-                )
-            })
-            .collect()
-    };
+    // Diagnostics routing (amend — reviewer suggestion: error_handling): an
+    // explicit arg whose param IS referenced by some predicate is ALSO compiled
+    // via the substituted-predicate path below (against the real `diagnostics`
+    // sink), so compiling it again here for the binding routes to a throwaway
+    // sink to avoid DUPLICATE diagnostics. But an explicit arg referenced by NO
+    // predicate (the Conforms `actual` case) is compiled ONLY here — so its
+    // diagnostics MUST reach the real sink, otherwise a typo such as
+    // `Conforms(actual: undefined_ref)` is silently swallowed and only surfaces
+    // later as an opaque Indeterminate from the conformance pass instead of a
+    // compile-time error. `substitute_expr` itself is the "is it referenced?"
+    // oracle, so the notion of reference (including lambda/quantifier shadowing)
+    // can never drift from the substitution path used just below.
+    let mut arg_bindings: Vec<(String, CompiledExpr)> = Vec::with_capacity(ci.args.len());
+    {
+        let mut throwaway_diag_sink = Vec::new();
+        for (name, expr) in &ci.args {
+            // Probe map for this single param — depends only on the param name,
+            // so it is built once per arg (not once per arg×predicate).
+            let mut probe = HashMap::new();
+            probe.insert(
+                name.clone(),
+                reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Undef,
+                    span: expr.span,
+                },
+            );
+            // If substituting this param changes a predicate, the param's arg
+            // expr is inlined into that predicate and compiled (with real
+            // diagnostics) below — so route this binding compile to the
+            // throwaway sink. Otherwise it is compiled ONLY here.
+            let referenced_by_predicate = def
+                .predicates
+                .iter()
+                .any(|predicate| substitute_expr(predicate, &probe) != *predicate);
+            let compiled = if referenced_by_predicate {
+                compile_expr(expr, scope, enum_defs, functions, &mut throwaway_diag_sink)
+            } else {
+                compile_expr(expr, scope, enum_defs, functions, diagnostics)
+            };
+            arg_bindings.push((name.clone(), compiled));
+        }
+    }
 
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
     // `annotations_optimized_target` was cached at def-compile time; clone it
     // directly per predicate rather than creating an extra intermediate clone.
+    let num_predicates = def.predicates.len();
     for (pred_idx, predicate) in def.predicates.iter().enumerate() {
         let substituted = substitute_expr(predicate, &arg_map);
         let compiled_expr = compile_expr(&substituted, scope, enum_defs, functions, diagnostics);
@@ -4017,6 +4047,15 @@ pub(crate) fn expand_constraint_inst(
             Some(suffix) => format!("{}:{}", base_label, suffix),
             None => base_label,
         };
+        // amend (reviewer suggestion: performance) — move `arg_bindings` into
+        // the FINAL predicate's CompiledConstraint instead of cloning it for
+        // every predicate. A single-predicate constraint (the common case)
+        // therefore clones the vec zero times.
+        let pred_arg_bindings = if pred_idx + 1 == num_predicates {
+            std::mem::take(&mut arg_bindings)
+        } else {
+            arg_bindings.clone()
+        };
         let cc = CompiledConstraint {
             id,
             label: Some(label),
@@ -4024,7 +4063,7 @@ pub(crate) fn expand_constraint_inst(
             span: ci.span,
             domain: None,
             optimized_target: def.annotations_optimized_target.clone(),
-            arg_bindings: arg_bindings.clone(),
+            arg_bindings: pred_arg_bindings,
         };
         *constraint_index += 1;
 
