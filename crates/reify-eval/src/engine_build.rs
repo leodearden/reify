@@ -2681,9 +2681,72 @@ impl Engine {
             diagnostics.extend(pass.diagnostics);
         }
 
+        // Task 4229: re-check geometry-derived constraints after the realization
+        // loop. Constraints that reference geometry-derived `let` cells — e.g.
+        // `Rigid`'s positive-definiteness constraint on
+        // `moi_principal = eigenvalues(moment_of_inertia(geometry, …))` — cannot
+        // resolve during the `check()` above: the geometry kernel is only invoked
+        // by the realization loop, so those cells are still `Undef` at the initial
+        // constraint-check time and the constraint comes out `Indeterminate`
+        // ("undefined inputs"). Now that the realization loop has patched the
+        // geometry-derived cells into `values`, re-evaluate the active constraints
+        // against the completed value map and adopt any verdict that resolved from
+        // `Indeterminate` → `Satisfied`/`Violated`. A previously
+        // `Satisfied`/`Violated` constraint cannot regress here, because the
+        // re-check only ADDS now-resolved geometry cells (no prior value changes),
+        // so we deliberately only touch entries that were `Indeterminate`.
+        let mut constraint_results = check_result.constraint_results;
+        if constraint_results
+            .iter()
+            .any(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+        {
+            let determinacy = self.eval_state.as_ref().map(|s| &s.snapshot.values);
+            let (recheck_results, recheck_diags) =
+                self.check_constraints_against_templates(module, &values, determinacy);
+            for entry in constraint_results.iter_mut() {
+                if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
+                    continue;
+                }
+                let Some(new_sat) = recheck_results
+                    .iter()
+                    .find(|r| r.id == entry.id)
+                    .map(|r| r.satisfaction)
+                else {
+                    continue;
+                };
+                if new_sat == reify_ir::Satisfaction::Indeterminate {
+                    continue;
+                }
+                // Match the stale/fresh constraint diagnostics by the same needle
+                // the checker embeds: the constraint label when present (the id is
+                // rewritten to the label by `labeled_diagnostics`), else the raw id.
+                let needle = entry
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| entry.id.to_string());
+                // Drop the stale "indeterminate: undefined inputs" warning emitted
+                // by the first `check()` for this constraint.
+                diagnostics.retain(|d| {
+                    !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+                        && d.message.contains(&needle))
+                });
+                // Carry over any fresh non-indeterminate diagnostic the re-check
+                // produced for this constraint (e.g. a `ConstraintViolated` error
+                // when an indefinite override fails positive-definiteness).
+                for d in &recheck_diags {
+                    if d.code != Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+                        && d.message.contains(&needle)
+                    {
+                        diagnostics.push(d.clone());
+                    }
+                }
+                entry.satisfaction = new_sat;
+            }
+        }
+
         BuildResult {
             values,
-            constraint_results: check_result.constraint_results,
+            constraint_results,
             geometry_output,
             diagnostics,
             resolved_params: check_result.resolved_params,
