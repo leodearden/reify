@@ -53,3 +53,110 @@ const BEARING_UNSAT_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/auto/bearing_unsat.ri"
 );
+
+// ── Imports (populated in step-2 when helpers are defined) ───────────────────
+//
+// These imports are declared up-front so the RED test (step-1) compiles only
+// with the missing helper names as the failure cause, not missing `use` items.
+
+use reify_compiler::compile_with_stdlib_checked;
+use reify_compiler::compile_with_stdlib;
+use reify_compiler::parse_with_stdlib;
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::{DiagnosticCode, ModulePath};
+use reify_ir::{PersistentMap, Value};
+use reify_test_support::{collect_errors, make_simple_engine};
+
+// ── Step-1 RED test ───────────────────────────────────────────────────────────
+
+/// ζ §11.1 row #6 "Value population" — end-to-end on the shipped fixture.
+///
+/// Reads examples/auto/bearing_resolved_value.ri from disk, compiles under the
+/// REAL SimpleConstraintChecker, evals, and asserts:
+///   (a) zero Error diagnostics
+///   (b) BearingResolved.b is StructureInstance whose `seal` field is
+///       StructureInstance(type_name=="GasketSeal") carrying
+///       `thickness` Value::Scalar si_value ≈ 0.002 (2mm, exact-by-construction).
+///
+/// RED until step-2 defines `compile_real`/`eval_real` (compile error).
+/// GREEN after step-2; no production edits needed (α+δ already landed).
+#[test]
+fn resolved_value_eval_populates_gasketseal_2mm() {
+    let src = read_fixture(BEARING_RESOLVED_VALUE_PATH);
+    let compiled = compile_real(&src, "bearing_resolved_value");
+
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "bearing_resolved_value.ri must compile with zero Errors under real checker, got: {:?}",
+        errors
+    );
+
+    let result = eval_real(&compiled);
+
+    let sub_b = result
+        .values
+        .get(&reify_core::ValueCellId::new("BearingResolved", "b"))
+        .unwrap_or_else(|| {
+            let cells: Vec<_> = result.values.iter().map(|(id, _)| id.clone()).collect();
+            panic!(
+                "BearingResolved.b cell missing from eval result. Available: {:?}",
+                cells
+            )
+        });
+
+    match sub_b {
+        Value::StructureInstance(bearing_data) => {
+            let seal_val = field(&bearing_data.fields, "seal").unwrap_or_else(|| {
+                let keys: Vec<_> = bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                panic!(
+                    "Bearing$GasketSeal instance must have a 'seal' field; fields: {:?}",
+                    keys
+                )
+            });
+            match seal_val {
+                Value::StructureInstance(seal_data) => {
+                    assert_eq!(
+                        seal_data.type_name, "GasketSeal",
+                        "seal instance type_name must be 'GasketSeal', got '{}'",
+                        seal_data.type_name
+                    );
+                    let thickness = field(&seal_data.fields, "thickness").unwrap_or_else(|| {
+                        let keys: Vec<_> =
+                            seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                        panic!(
+                            "GasketSeal must have a 'thickness' field; fields: {:?}",
+                            keys
+                        )
+                    });
+                    match thickness {
+                        Value::Scalar { si_value, .. } => {
+                            const EPSILON: f64 = 1e-10;
+                            assert!(
+                                (*si_value - 0.002).abs() < EPSILON,
+                                "GasketSeal.thickness must be 2mm (si_value≈0.002), got {}",
+                                si_value
+                            );
+                        }
+                        other => panic!(
+                            "GasketSeal.thickness must be Value::Scalar, got {:?}",
+                            other
+                        ),
+                    }
+                }
+                Value::Undef => panic!(
+                    "bearing.seal is Value::Undef — δ synthesis not wired or real-checker path broken"
+                ),
+                other => panic!(
+                    "expected Value::StructureInstance for bearing.seal, got {:?}",
+                    other
+                ),
+            }
+        }
+        Value::Undef => panic!("BearingResolved.b is Value::Undef — sub evaluation failed"),
+        other => panic!(
+            "expected Value::StructureInstance for BearingResolved.b, got {:?}",
+            other
+        ),
+    }
+}
