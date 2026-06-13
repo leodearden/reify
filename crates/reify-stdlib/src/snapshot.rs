@@ -3457,4 +3457,183 @@ mod tests {
             );
         }
     }
+
+    // ── center_of_mass: explicit-mass rung (task 4471) ────────────────────
+    //
+    // RED until step-2 wires `explicit_mass_weighted_com` into the
+    // `center_of_mass` arm.
+
+    /// Build a 2-body Snapshot where each body has a custom solid and sits
+    /// at the given world x-coordinate via a prismatic-X joint.
+    ///
+    /// The joint range covers `[x_a.min(x_b) - 1, x_a.max(x_b) + 1]` so
+    /// both bind values are valid.
+    fn make_two_body_explicit_mass_snapshot(
+        solid_a: Value,
+        x_a: f64,
+        solid_b: Value,
+        x_b: f64,
+    ) -> Value {
+        let lo = x_a.min(x_b) - 1.0;
+        let hi = x_a.max(x_b) + 1.0;
+        let j_a = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(lo))),
+                    upper: Some(Box::new(Value::length(hi))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j_b = eval_builtin(
+            "prismatic",
+            &[
+                axis_x_unit(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(lo))),
+                    upper: Some(Box::new(Value::length(hi))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid_a, j_a.clone()]);
+        let m2 = eval_builtin("body", &[m1, solid_b, j_b.clone()]);
+        let bind_a = eval_builtin("bind", &[j_a, Value::length(x_a)]);
+        let bind_b = eval_builtin("bind", &[j_b, Value::length(x_b)]);
+        eval_builtin("snapshot", &[m2, Value::List(vec![bind_a, bind_b])])
+    }
+
+    /// `center_of_mass` on a 2-body snapshot where both bodies carry
+    /// explicit `point_mass` solids must return the mass-weighted COM,
+    /// not the uniform-density midpoint.
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at world x=0;
+    ///        body 1 = point_mass(3 kg) at world x=4 m.
+    /// Mass-weighted COM = (1·0 + 3·4) / (1+3) = 3.0 m (≠ midpoint 2.0 m).
+    /// Result components must carry LENGTH dimension (Value::Scalar).
+    ///
+    /// RED: currently returns 2.0 (legacy density-weighted midpoint).
+    #[test]
+    fn center_of_mass_all_explicit_mass_weights_by_mass() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_3 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 3.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let s = make_two_body_explicit_mass_snapshot(pm_1, 0.0, pm_3, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+
+        // Should be the mass-weighted COM: (1·0 + 3·4) / 4 = 3.0, not midpoint 2.0.
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - 3.0).abs() < 1e-12,
+            "COM.x should be 3.0 (mass-weighted), got {}",
+            cx
+        );
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+
+        // All components must carry LENGTH dimension.
+        let comps = match &result {
+            Value::Point(c) => c,
+            other => panic!("expected Value::Point, got {:?}", other),
+        };
+        for (i, comp) in comps.iter().enumerate() {
+            match comp {
+                Value::Scalar { dimension, .. } => {
+                    assert_eq!(
+                        *dimension,
+                        reify_core::DimensionVector::LENGTH,
+                        "COM component[{}] should carry LENGTH dimension",
+                        i
+                    );
+                }
+                other => panic!(
+                    "COM component[{}] should be Value::Scalar, got {:?}",
+                    i, other
+                ),
+            }
+        }
+    }
+
+    /// `center_of_mass` on a mixed snapshot (one explicit-mass body, one
+    /// plain-solid body) must fall back to the legacy density-weighted
+    /// centroid (all-or-nothing rule), NOT compute a partial mass mean.
+    ///
+    /// Setup: body 0 = point_mass(1 kg) at world x=0;
+    ///        body 1 = Value::String("plain") at world x=4 m.
+    /// Legacy uniform midpoint = (0 + 4) / 2 = 2.0 m (NOT mass-weighted 3.0).
+    ///
+    /// RED: this test already passes for now but will serve as a regression
+    /// guard once the explicit-mass rung is added, ensuring mixed bodies
+    /// stay on the legacy path.
+    #[test]
+    fn center_of_mass_mixed_explicit_and_plain_falls_back() {
+        let pm_1 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let s = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+
+        // Must fall back to legacy uniform midpoint = 2.0, not partial mass-mean.
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            (cx - 2.0).abs() < 1e-12,
+            "mixed-snapshot COM.x should be legacy midpoint 2.0, got {}",
+            cx
+        );
+        assert!(cy.abs() < 1e-12, "COM.y should be 0, got {}", cy);
+        assert!(cz.abs() < 1e-12, "COM.z should be 0, got {}", cz);
+    }
+
+    /// `center_of_mass` on a snapshot where all bodies have zero mass
+    /// (`point_mass(0 kg)`) must return `Value::Undef` — zero-total-mass
+    /// is a degenerate divide-by-zero, mirroring the legacy `total_density==0`
+    /// path.
+    ///
+    /// RED: currently returns a Point (legacy density=1.0 midpoint) because
+    /// the explicit-mass rung hasn't been wired yet.
+    #[test]
+    fn center_of_mass_all_explicit_zero_total_mass_returns_undef() {
+        let pm_0 = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let pm_0b = eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 0.0,
+                dimension: reify_core::DimensionVector::MASS,
+            }],
+        );
+        let s = make_two_body_explicit_mass_snapshot(pm_0, 0.0, pm_0b, 4.0);
+        let result = eval_builtin("center_of_mass", &[s]);
+        assert!(
+            result.is_undef(),
+            "all-zero-mass snapshot center_of_mass should return Undef, got {:?}",
+            result
+        );
+    }
 }
