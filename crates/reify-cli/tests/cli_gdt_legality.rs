@@ -54,6 +54,76 @@ fn check_gdt_legality_rfs_exits_success_with_no_error() {
     );
 }
 
+// ── B7 --purpose path wiring (task 4589 step-3 RED / step-4 GREEN) ───────────
+
+/// B7-D: `reify check --purpose mfg_ready=FlatnessMmcPurpose` over a fixture
+/// with an illegal MMC modifier must exit non-zero, emit an error on stderr,
+/// and still report the purpose constraint as satisfied in stdout.
+///
+/// The purpose constraint is `subject.width > 0mm` (default 80mm → satisfied),
+/// so the ONLY source of a non-zero exit is the GD&T escalation, not a constraint
+/// violation or a purpose-activation failure.
+///
+/// RED: the `--purpose` branch does not call `run_gdt_check_passes` yet, so it
+/// exits 0 with no GdtIllegalModifier diagnostic (task 4589 step-4 fixes this).
+#[test]
+fn check_purpose_gdt_illegal_modifier_exits_failure() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=FlatnessMmcPurpose",
+        &common::fixture_path("gdt_illegal_modifier_purpose.ri"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "reify check --purpose must exit non-zero when a GdtIllegalModifier is present.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("error:"),
+        "stderr must contain 'error:' for the GdtIllegalModifier diagnostic.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("MMC") || stderr.contains("material"),
+        "stderr must reference the illegal material condition modifier.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // The purpose constraint itself is satisfied — the exit is ONLY the GDT escalation.
+    assert!(
+        stdout.contains("purpose:mfg_ready@"),
+        "stdout must contain the purpose-injected constraint id prefix 'purpose:mfg_ready@'.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout must report 'All constraints satisfied.' (the purpose constraint is satisfied).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
+/// B7-E (over-escalation guard): `reify check --purpose mfg_ready=AllLegalGdtPurpose`
+/// over an all-legal GDT fixture must exit 0 with no GdtIllegalModifier error.
+///
+/// Ensures that adding the GDT pass to the `--purpose` branch does not cause
+/// false positives for legal callouts (Position/MMC/Cylindrical, StraightnessOfAxis/MMC).
+///
+/// This test must stay GREEN across step-4.
+#[test]
+fn check_purpose_gdt_legality_rfs_exits_success() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=AllLegalGdtPurpose",
+        &common::fixture_path("gdt_legality_rfs_purpose.ri"),
+    ]);
+
+    assert!(
+        status.success(),
+        "reify check --purpose must exit 0 for an all-legal GDT fixture.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("GdtIllegalModifier") && !stderr.contains("RFS-only"),
+        "stderr must not contain a GdtIllegalModifier error for an all-legal GDT fixture.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
+
 /// B7-C: a `Concentricity(...)` callout must produce a removed-2018 warning on
 /// stderr. The exit code is 0 (warnings are non-fatal).
 ///
