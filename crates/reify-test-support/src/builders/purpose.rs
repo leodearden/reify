@@ -69,6 +69,7 @@ impl CompiledPurposeBuilder {
             span: SourceSpan::new(0, 0),
             domain: None,
             optimized_target: None,
+            arg_bindings: Vec::new(),
         });
         self
     }

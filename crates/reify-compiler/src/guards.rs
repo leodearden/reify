@@ -524,6 +524,7 @@ pub(crate) fn compile_guarded_members(
                     span: constraint.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 });
                 *constraint_index += 1;
             }

@@ -1537,6 +1537,7 @@ pub(crate) fn compile_entity(
                         span: constraint.span,
                         domain: None,
                         optimized_target: None,
+                        arg_bindings: Vec::new(),
                     };
                     constraint_index += 1;
 
@@ -2061,6 +2062,7 @@ pub(crate) fn compile_entity(
                                 span: constraint.span,
                                 domain: None,
                                 optimized_target: None,
+                                arg_bindings: Vec::new(),
                             });
                             constraint_index += 1;
                         }
@@ -3974,6 +3976,33 @@ pub(crate) fn expand_constraint_inst(
         0
     };
 
+    // η/4480: capture the EXPLICIT call-site argument bindings, attached to
+    // every CompiledConstraint emitted for this instantiation. The presence of
+    // a binding (e.g. `"actual"`) is how the GD&T conformance pass detects a
+    // *geometric* Conforms — its predicate never references `actual`, so the
+    // binding cannot be recovered from the compiled predicate. Only `ci.args`
+    // (explicit args) are recorded; defaulted params are omitted, which is
+    // exactly the "explicitly bound?" signal the pass keys on.
+    //
+    // Each arg expr is compiled in the same `scope` used for predicate
+    // substitution, but its diagnostics go to a throwaway sink: a *used* arg is
+    // already compiled (and any diagnostic reported) via the predicate path
+    // below, and an *unused* arg (the Conforms `actual` case) was previously
+    // not compiled at all — so this keeps the reported diagnostic set
+    // byte-identical while still recovering the CompiledExpr the pass needs.
+    let arg_bindings: Vec<(String, CompiledExpr)> = {
+        let mut arg_diag_sink = Vec::new();
+        ci.args
+            .iter()
+            .map(|(name, expr)| {
+                (
+                    name.clone(),
+                    compile_expr(expr, scope, enum_defs, functions, &mut arg_diag_sink),
+                )
+            })
+            .collect()
+    };
+
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
     // `annotations_optimized_target` was cached at def-compile time; clone it
@@ -3995,6 +4024,7 @@ pub(crate) fn expand_constraint_inst(
             span: ci.span,
             domain: None,
             optimized_target: def.annotations_optimized_target.clone(),
+            arg_bindings: arg_bindings.clone(),
         };
         *constraint_index += 1;
 

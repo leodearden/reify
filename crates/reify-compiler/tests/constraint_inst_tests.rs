@@ -744,51 +744,48 @@ fn binding_names(cc: &reify_compiler::CompiledConstraint) -> Vec<&str> {
 
 #[test]
 fn explicit_arg_binding_for_unused_param_survives_to_compiled_constraint() {
+    // Two instantiations of the SAME constraint def in the SAME structure, so
+    // the compiled predicate (`thickness >= 0mm`, qualified by entity "S") is
+    // byte-identical between them — the only difference is whether the UNUSED
+    // geometry param `u` was explicitly bound.
     let source = r#"
 constraint def X {
     param a : Length
     param u : Geometry = nominal()
     a >= 0mm
 }
-structure WithExplicit {
+structure S {
     param thickness : Length
     param g : Geometry
     constraint X(a: thickness, u: g)
-}
-structure WithoutExplicit {
-    param thickness : Length
     constraint X(a: thickness)
 }
 "#;
-    let compiled = compile_source(source);
+    let (tmpl, diags) = compile_template(source, "S");
 
-    let errors = error_diags(&compiled.diagnostics);
+    let errors = error_diags(&diags);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let with_explicit = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "WithExplicit")
-        .expect("WithExplicit template");
-    let without_explicit = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "WithoutExplicit")
-        .expect("WithoutExplicit template");
-
     assert_eq!(
-        with_explicit.constraints.len(),
-        1,
-        "WithExplicit should emit exactly 1 constraint"
-    );
-    assert_eq!(
-        without_explicit.constraints.len(),
-        1,
-        "WithoutExplicit should emit exactly 1 constraint"
+        tmpl.constraints.len(),
+        2,
+        "expected exactly 2 constraints (two X instantiations)"
     );
 
-    // Explicit instantiation: both `a` and the UNUSED `u` are recorded.
-    let explicit_names = binding_names(&with_explicit.constraints[0]);
+    // Partition by whether the UNUSED geometry param `u` was explicitly bound.
+    let explicit = tmpl
+        .constraints
+        .iter()
+        .find(|c| binding_names(c).contains(&"u"))
+        .expect("one instantiation explicitly binds the unused param `u`");
+    let default_only = tmpl
+        .constraints
+        .iter()
+        .find(|c| !binding_names(c).contains(&"u"))
+        .expect("one instantiation omits `u` (falls to its nominal() default)");
+
+    // Explicit instantiation records BOTH the used `a` and the UNUSED `u`.
+    let explicit_names = binding_names(explicit);
     assert!(
         explicit_names.contains(&"a"),
         "explicit binding must record 'a', got {:?}",
@@ -801,8 +798,8 @@ structure WithoutExplicit {
         explicit_names
     );
 
-    // Default-only instantiation: `u` is NOT recorded — it fell to nominal().
-    let default_names = binding_names(&without_explicit.constraints[0]);
+    // Default-only instantiation records `a` only — `u` fell to nominal().
+    let default_names = binding_names(default_only);
     assert!(
         default_names.contains(&"a"),
         "default-only binding must record 'a', got {:?}",
@@ -815,11 +812,11 @@ structure WithoutExplicit {
         default_names
     );
 
-    // B4: the compiled predicate is identical whether or not `u` was bound — the
-    // unused geometry param never touches the scalar predicate expr.
+    // B4: binding the unused param does NOT change the compiled predicate — both
+    // instantiations live in entity "S", so the scalar predicate is byte-identical.
     assert_eq!(
-        format!("{:?}", with_explicit.constraints[0].expr.kind),
-        format!("{:?}", without_explicit.constraints[0].expr.kind),
+        format!("{:?}", explicit.expr.kind),
+        format!("{:?}", default_only.expr.kind),
         "binding the unused param must NOT change the compiled predicate (B4)"
     );
 }

@@ -1756,6 +1756,7 @@ fn compiled_constraint_domain_field() {
         span: SourceSpan::new(0, 0),
         domain: Some(ConstraintDomain::Dimensional),
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
     assert_eq!(manual.domain, Some(ConstraintDomain::Dimensional));
 
@@ -1770,6 +1771,7 @@ fn compiled_constraint_domain_field() {
         span: SourceSpan::new(0, 0),
         domain: None,
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
     assert!(compat.domain.is_none());
 }
