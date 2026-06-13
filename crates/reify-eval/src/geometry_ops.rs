@@ -1952,6 +1952,14 @@ pub(crate) fn try_eval_conformance_query(
 // `docs/prds/v0_3/geometry-handle-runtime.md` §8 Phase 6). Sibling to
 // `try_eval_conformance_query` / `try_eval_topology_selector`, dispatched from
 // `Engine::post_process_geometry_queries`.
+
+/// Tessellation deflection forwarded to `GeometryQuery::MaxDeviation.tolerance`
+/// when the `max_deviation(actual, nominal)` callable is evaluated.
+///
+/// Mirrors `Engine::DEFAULT_TESSELLATION_TOLERANCE` (engine_build.rs). Kept
+/// local to confine ζ's eval footprint to geometry_ops.rs and avoid locking
+/// the hot engine_build.rs for a const reference (ζ / C4, task 4479).
+const MAX_DEVIATION_TESSELLATION_TOLERANCE_M: f64 = 0.0001;
 //
 // `length` / `perimeter` are deliberately NOT handled here: they are already
 // delivered via the edge/face topology-selector path (`dispatch_edge_length` /
@@ -2020,6 +2028,31 @@ pub(crate) fn try_eval_geometry_query(
     kernel: &dyn reify_ir::GeometryKernel,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
+    // ── Case (ζ): DIRECT 2-arg — `max_deviation(actual, nominal)`. Kept
+    //    SEPARATE from the 1-arg `is_geometry_query_call` invariant (ζ / C4,
+    //    task 4479). Returns `None` when either arg is unresolvable (non-
+    //    ValueRef or missing named_steps entry), leaving the cell at its
+    //    compiled default. Scope: direct-call only; nested-arithmetic fold is
+    //    out of scope (matches the min_clearance/kinematic-sibling convention).
+    if let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind {
+        if function.name == "max_deviation" && args.len() == 2 {
+            let actual = resolve_geometry_handle_arg(&args[0], named_steps)?;
+            let nominal = resolve_geometry_handle_arg(&args[1], named_steps)?;
+            let query = reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: MAX_DEVIATION_TESSELLATION_TOLERANCE_M,
+            };
+            return dispatch_scalar_query(
+                kernel,
+                query,
+                reify_core::DimensionVector::LENGTH,
+                "max_deviation",
+                diagnostics,
+            );
+        }
+    }
+
     // ── Case (a): DIRECT — the expr itself is a whole-handle geometry-query
     //    call. Dispatch and return the typed Value. Returns `None` when the
     //    single arg is unresolvable, so the cell keeps its compiled default —
