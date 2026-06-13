@@ -94,6 +94,19 @@ pub use dynamics::eval::resolve_body_mass;
 /// `geometry_diagnose` pattern.
 pub use dynamics::eval::diagnose as dynamics_diagnose;
 
+/// Public re-export of the `center_of_mass` fallback-Warning diagnostic hook
+/// (task 4471).
+///
+/// Called by `crates/reify-expr/src/lib.rs` immediately after
+/// `emit_dfm_diagnostics` (both-path hook at `lib.rs:475`) as
+/// `emit_snapshot_diagnostics`. Fires a `Severity::Warning` with code
+/// `W_SnapshotCenterOfMassDensityFallback` ONLY in the **mixed** case: ≥1
+/// body carries resolvable mass (via `resolve_body_mass`) while ≥1 other
+/// body does not. Pure-legacy snapshots (all unresolved) and all-resolved
+/// snapshots stay silent. Mirrors the `dfm_diagnose` / `flexure_diagnose`
+/// both-path pattern.
+pub use snapshot::diagnose as snapshot_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the

@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 
+use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_ir::Value;
 
 use crate::dynamics::eval::mass_properties_from_value;
@@ -1336,6 +1337,80 @@ pub(crate) fn make_binding(joint: Value, value: Value) -> Value {
     m.insert(Value::String("joint".to_string()), joint);
     m.insert(Value::String("value".to_string()), value);
     Value::Map(m)
+}
+
+// ── Fallback-Warning diagnostic hook (task 4471) ─────────────────────────
+
+/// Fallback-Warning diagnostic hook for `center_of_mass`.
+///
+/// Mirrors the `dfm::diagnose` / `flexure_diagnose` **both-path** pattern:
+/// runs on both the success AND `Value::Undef` result paths (registered as
+/// `emit_snapshot_diagnostics` in `reify-expr`, called immediately after
+/// `emit_dfm_diagnostics` at `lib.rs:475`).
+///
+/// Returns a single `Severity::Warning` with code
+/// [`DiagnosticCode::SnapshotCenterOfMassDensityFallback`] **only** in the
+/// **mixed** case: at least one body resolves via [`resolve_body_mass`] AND at
+/// least one does not.  The message names the first unresolved body's integer
+/// id so authors can identify which body to annotate.
+///
+/// All other cases return an empty `Vec`:
+/// - Any name other than `"center_of_mass"`.
+/// - `result` is `Value::Undef` (arity error, degenerate all-zero-mass path,
+///   etc. — the explicit rung was used correctly or the call was invalid).
+/// - All bodies are unresolved (pure-legacy — stays silent).
+/// - All bodies are resolved (no fallback occurred).
+pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
+    // Scoped to center_of_mass only.
+    if name != "center_of_mass" {
+        return Vec::new();
+    }
+    // Undef result → arity error or degenerate explicit path — no fallback warning.
+    if matches!(result, Value::Undef) {
+        return Vec::new();
+    }
+    // Need at least one argument (the snapshot).
+    let snap = match args.first() {
+        Some(v) => v,
+        None => return Vec::new(),
+    };
+    // Extract bodies — None or empty → nothing to diagnose.
+    let bodies = match snapshot_bodies(snap) {
+        Some(b) if !b.is_empty() => b,
+        _ => return Vec::new(),
+    };
+
+    let mut any_resolved = false;
+    let mut first_unresolved_id: Option<String> = None;
+
+    for body in bodies {
+        if resolve_body_mass(body).is_some() {
+            any_resolved = true;
+        } else if first_unresolved_id.is_none() {
+            // Read the body's integer id for the diagnostic message.
+            let id_str = match body {
+                Value::Map(bm) => match bm.get(&Value::String("id".to_string())) {
+                    Some(Value::Int(k)) => k.to_string(),
+                    _ => "?".to_string(),
+                },
+                _ => "?".to_string(),
+            };
+            first_unresolved_id = Some(id_str);
+        }
+    }
+
+    // Fire only in the mixed case (>=1 resolved AND >=1 unresolved).
+    match (any_resolved, first_unresolved_id) {
+        (true, Some(id)) => vec![
+            Diagnostic::warning(format!(
+                "center_of_mass: body '{id}' has no resolvable mass; falling back to \
+                 legacy density-weighted centroid (explicit point_mass/mass_properties \
+                 on other bodies ignored)"
+            ))
+            .with_code(DiagnosticCode::SnapshotCenterOfMassDensityFallback),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
