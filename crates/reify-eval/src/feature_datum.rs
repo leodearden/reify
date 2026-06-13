@@ -517,3 +517,40 @@ mod dedup_tests {
         assert_eq!(count_planes(&ds), 1);
     }
 }
+
+#[cfg(test)]
+mod dedup_tolerance_tests {
+    use super::*;
+
+    /// The confusion floor the dedup tolerance can never fall below: OCCT's
+    /// `Precision::Confusion()` (~0.1 µm), reused via the kernel-pinned
+    /// `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` constant rather than a
+    /// fresh magic number (design §2.3 coherence — the floor is the same value
+    /// the kernel's `point_on_shape` / `contains` defaults already pin to OCCT).
+    const FLOOR: f64 = reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M;
+
+    #[test]
+    fn clean_model_collapses_to_the_confusion_floor() {
+        // Both sub-shapes carry sub-floor local tolerances (a clean analytic
+        // primitive whose `BRep_Tool::Tolerance` sits at/under the confusion
+        // floor): the dedup tolerance is pinned AT the floor, never below it.
+        assert_eq!(dedup_tolerance(1e-12, 1e-12), FLOOR);
+        assert_eq!(dedup_tolerance(0.0, 0.0), FLOOR);
+    }
+
+    #[test]
+    fn one_large_local_tolerance_dominates() {
+        // A coarse / imprecise sub-shape (large `BRep_Tool::Tolerance`) widens
+        // the dedup tolerance above the floor: `max(floor, a, b)` = the large
+        // one, regardless of argument order.
+        assert_eq!(dedup_tolerance(1e-3, 1e-12), 1e-3);
+        assert_eq!(dedup_tolerance(1e-12, 1e-3), 1e-3);
+    }
+
+    #[test]
+    fn larger_of_two_above_floor_locals_wins() {
+        // When both locals exceed the floor the larger dominates — the formula
+        // is a plain three-way max, not a sum or an average.
+        assert_eq!(dedup_tolerance(5e-4, 2e-3), 2e-3);
+    }
+}

@@ -20,6 +20,7 @@
 
 #![cfg(has_occt)]
 
+use reify_core::dimension::DimensionVector;
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
 
@@ -281,4 +282,55 @@ fn circular_edge_projects_to_axis_through_centre() {
             && (direction[2].abs() - 1.0).abs() < DIR_TOL,
         "circle-edge datum direction must be parallel to Z (±(0,0,1)), got {direction:?}"
     );
+}
+
+// ── ShapeLocalTolerance ──────────────────────────────────────────────────────
+
+/// Assert a `Value` is a small, strictly-positive LENGTH-dimensioned scalar —
+/// the shape of a clean sub-shape's `BRep_Tool::Tolerance` (a positive modelling
+/// tolerance at/near OCCT's `Precision::Confusion()` ~1e-7 m, far below 1 mm).
+/// This feeds the feature-datum dedup tolerance `max(floor, localTol(A), localTol(B))`.
+fn assert_length_small_positive(v: &Value) {
+    match v {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "local tolerance must be a LENGTH-dimensioned scalar, got dimension {dimension:?}"
+            );
+            assert!(
+                *si_value > 0.0 && *si_value < 1e-3,
+                "clean-primitive local tolerance must be small + positive (0 < t < 1 mm), got {si_value}"
+            );
+        }
+        other => panic!("expected a LENGTH Value::Scalar local tolerance, got {other:?}"),
+    }
+}
+
+/// A clean cylinder side face's local modelling tolerance
+/// (`GeometryQuery::ShapeLocalTolerance`) is a small positive `Value` Length.
+#[test]
+fn cylinder_side_face_local_tolerance_is_small_positive_length() {
+    let (mut kernel, cyl) = cylinder_kernel(0.003, 0.010);
+    let side = find_face_of_kind(&mut kernel, cyl, "Cylinder");
+
+    let tol = kernel
+        .query(&GeometryQuery::ShapeLocalTolerance(side))
+        .expect("ShapeLocalTolerance on a clean cylindrical face should succeed");
+
+    assert_length_small_positive(&tol);
+}
+
+/// A clean straight edge's local modelling tolerance is a small positive
+/// `Value` Length too (the query covers faces *and* edges).
+#[test]
+fn straight_edge_local_tolerance_is_small_positive_length() {
+    let mut kernel = OcctKernel::new();
+    let edge = kernel.store_edge_for_test();
+
+    let tol = kernel
+        .query(&GeometryQuery::ShapeLocalTolerance(edge))
+        .expect("ShapeLocalTolerance on a clean straight edge should succeed");
+
+    assert_length_small_positive(&tol);
 }
