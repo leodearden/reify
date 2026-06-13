@@ -299,6 +299,11 @@ const ALLOWLIST_PREFIXES: &[&str] = &[
     "crates/reify-test-support/src/ignore_hygiene.rs",
     // … and that tool's tests, which embed `#[ignore]` attributes as fixtures.
     "crates/reify-test-support/tests/ignore_reason_hygiene.rs",
+    // δ migration sweep (task #4556) confirmed this set is FINAL: the ~198
+    // swept findings from the pre-1 inventory all come from real non-self-
+    // referential code sites. No additional prefix is warranted — scattered
+    // legitimate pattern-string sites across other crates use the inline
+    // `ptodo:allow` escape (§6.8) rather than a broad path-prefix exemption.
 ];
 
 /// §6.8 allowlist check: `true` when `path` (root-relative) starts with any
