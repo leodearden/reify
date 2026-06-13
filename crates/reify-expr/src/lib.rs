@@ -3423,10 +3423,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::Scalar {
-            si_value: a * b,
-            dimension: ad.mul(bd),
-        },
+        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -3441,10 +3438,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
@@ -3458,10 +3452,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * r, *dimension),
         // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
         (
             Value::Complex {
