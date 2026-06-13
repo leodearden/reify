@@ -948,6 +948,109 @@ pub fn seed_candidate_value_map(
     map
 }
 
+// ─── δ: candidate constructibility check + zero-arg ctor synthesis ──────────
+
+/// The result of [`check_candidate_constructible`].
+///
+/// Two arms mirror the two downstream actions in the monomorph-build pass:
+/// - [`CtorSynthesisResult::Ctor`] — all Param cells have `default_expr`; returns
+///   the synthesized zero-arg [`reify_ir::CompiledExpr`].
+/// - [`CtorSynthesisResult::NotConstructible`] — at least one Param cell has
+///   `default_expr = None`; carries the name of the first such required param so
+///   the caller can name it in the diagnostic.
+pub(crate) enum CtorSynthesisResult {
+    /// All Param cells are defaulted; returns the zero-arg StructureInstanceCtor.
+    Ctor(reify_ir::CompiledExpr),
+    /// At least one Param cell is required (no default). The String names the
+    /// first such required param (for inclusion in the diagnostic message).
+    NotConstructible(String),
+}
+
+/// Check whether `candidate` is zero-arg constructible (every `Param` cell has
+/// a `default_expr`) and, if so, synthesize a `CompiledExpr::structure_instance_ctor`
+/// for it.
+///
+/// # Constructibility rule
+///
+/// A candidate is constructible iff every `ValueCellKind::Param` cell in its
+/// `value_cells` carries a `default_expr`.  A required param (one whose
+/// `default_expr` is `None`) cannot be filled by the synthesized zero-arg ctor,
+/// so synthesizing the ctor would produce a silent `Undef` field — a fake-
+/// completion trap (design decision 2 in the plan).
+///
+/// # Synthesized ctor shape
+///
+/// Mirrors the canonical lowering in `crates/reify-compiler/src/expr.rs:1629-1678`:
+/// - `type_id  = StructureTypeId(0)` — ephemeral placeholder, stable at compile time.
+/// - `type_name = candidate.name.clone()`.
+/// - `version  = candidate.version()` — from the `@version(N)` annotation, or 1.
+/// - `ordered_args = []` — zero-arg: the caller supplies no positional args.
+/// - `defaults` = every `ValueCellKind::Param` cell with a `default_expr`.
+/// - `lets`    = every `ValueCellKind::Let` cell (excluding `__count_`-prefixed)
+///   with a `default_expr`.  Mirrors the `__count_` exclusion comment in
+///   `expr.rs:1659`: those are compiler-internal collection-count cells whose
+///   RHS may reference sub-component values unavailable at ctor time.
+/// - `result_type = Type::StructureRef(candidate.name.clone())`.
+///
+/// Used by `auto_type_param_phase.rs` in the monomorph-build pass to fill the
+/// `default_expr` of type-param cells in the monomorphized clone.
+pub(crate) fn check_candidate_constructible(
+    candidate: &TopologyTemplate,
+) -> CtorSynthesisResult {
+    use reify_core::Type;
+    use reify_ir::{CompiledExpr, StructureTypeId};
+
+    use crate::types::ValueCellKind;
+
+    // Constructibility check: the first required Param is the blocking param.
+    let first_required = candidate
+        .value_cells
+        .iter()
+        .find(|cell| cell.kind == ValueCellKind::Param && cell.default_expr.is_none());
+
+    if let Some(required) = first_required {
+        return CtorSynthesisResult::NotConstructible(required.id.member.clone());
+    }
+
+    // All Params are defaulted — synthesize the zero-arg ctor.
+    // Collect defaults: every Param cell (they all have default_expr at this point).
+    let defaults: Vec<(String, CompiledExpr)> = candidate
+        .value_cells
+        .iter()
+        .filter(|cell| cell.kind == ValueCellKind::Param)
+        .filter_map(|cell| {
+            cell.default_expr
+                .as_ref()
+                .map(|e| (cell.id.member.clone(), e.clone()))
+        })
+        .collect();
+
+    // Collect lets: non-`__count_`-prefixed Let cells with a default_expr.
+    // Mirrors the canonical lowering at expr.rs:1654-1669.
+    let lets: Vec<(String, CompiledExpr)> = candidate
+        .value_cells
+        .iter()
+        .filter(|cell| {
+            cell.kind == ValueCellKind::Let && !cell.id.member.starts_with("__count_")
+        })
+        .filter_map(|cell| {
+            cell.default_expr
+                .as_ref()
+                .map(|e| (cell.id.member.clone(), e.clone()))
+        })
+        .collect();
+
+    CtorSynthesisResult::Ctor(CompiledExpr::structure_instance_ctor(
+        StructureTypeId(0),
+        candidate.name.clone(),
+        candidate.version(),
+        vec![], // zero ordered_args
+        defaults,
+        lets,
+        Type::StructureRef(candidate.name.clone()),
+    ))
+}
+
 // ─── Phase C: selection (strict-vs-free dispatch + lexicographic tiebreak) ──
 
 /// The result of [`select_candidate`].

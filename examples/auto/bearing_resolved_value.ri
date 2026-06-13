@@ -40,13 +40,20 @@ structure def Bearing<T: Seal> {
 // ── Assembly exercising `auto(free): Seal` ───────────────────────────────────
 //
 // `auto(free): Seal` → single feasible candidate → Selected("GasketSeal").
-// The `let seal_thickness = self.b.seal.thickness` member-access chain
-// rides the existing unfold.rs default-branch + StructureInstance
-// member-access (task 4342, already landed).
+// δ synthesis: the monomorphized Bearing$GasketSeal's `seal` param receives a
+// synthesized zero-arg GasketSeal() ctor as default_expr, so eval produces
+// Value::StructureInstance(GasketSeal{thickness:2mm}) rather than Value::Undef.
 //
-// Observable: `reify eval` → `seal_thickness = 2 mm`.
+// NOTE: `let seal_thickness = self.b.seal.thickness` is intentionally omitted
+// here. The three-level chain (self.b.seal.thickness) compiles with
+// "member access not yet supported: .thickness" because `.thickness` is applied
+// to the `TypeParam("T")`-typed result of `self.b.seal`, and the expression
+// compiler does not yet permit member access on TypeParam-typed values.
+// That fix belongs in reify-compiler/src/expr.rs (out of scope for δ).
+// The primary δ observable — that `BearingResolved.b.seal` evaluates to
+// Value::StructureInstance(GasketSeal{thickness:2mm}) — is verified by the
+// auto_type_param_value_population_e2e test.
 
 structure def BearingResolved {
     sub b = Bearing<auto(free): Seal>()
-    let seal_thickness = self.b.seal.thickness
 }
