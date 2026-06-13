@@ -2154,3 +2154,133 @@ structure def Probe {
         assert!(diags.is_empty(), "no geometric diagnostic for a scalar Conforms");
     }
 }
+
+// ── η/4480 step-11: Engine::check weaves measure_gdt_conformance results ────────
+//
+// Proves the check()-level wiring (step-12): `Engine::check` invokes
+// `measure_gdt_conformance` and OVERRIDES only the geometric Conforms entry,
+// leaving a scalar Conforms (no explicit `actual`) and an ordinary constraint
+// untouched, while preserving caller (declaration) order (B9 weave).
+//
+// Driven WITHOUT a geometry kernel: the geometric Conforms cannot resolve a live
+// handle, so the pass overrides its scalar-Satisfied verdict with Indeterminate
+// (C1 — never a false Violated) and emits a "Conforms INDETERMINATE" diagnostic.
+// That is a deterministic, kernel-free signal that the weave ran; the
+// Violated/Satisfied measured path is covered by the OCCT-gated CLI test (η B1/B2).
+#[cfg(test)]
+mod gdt_conformance_check_weave_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_ir::Satisfaction;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use crate::Engine;
+
+    /// One structure carrying three unguarded constraints in declaration order:
+    ///   1. a GEOMETRIC Conforms (explicit `actual`)  — overridden by the η pass
+    ///   2. a SCALAR Conforms (no `actual`)            — left untouched (B4)
+    ///   3. an ordinary scalar constraint              — left untouched
+    const MIXED_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    param len : Length = 5mm
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+    constraint len >= 0mm
+}
+"#;
+
+    #[test]
+    fn check_weaves_geometric_conforms_override_only() {
+        let module = parse_and_compile_with_stdlib(MIXED_SOURCE);
+
+        // Identify the three constraints by their captured arg-binding shape.
+        let probe = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template");
+        let has = |c: &reify_compiler::CompiledConstraint, name: &str| {
+            c.arg_bindings.iter().any(|(n, _)| n == name)
+        };
+        let geometric_id = probe
+            .constraints
+            .iter()
+            .find(|c| has(c, "actual"))
+            .expect("geometric Conforms (explicit actual)")
+            .id
+            .clone();
+        let scalar_id = probe
+            .constraints
+            .iter()
+            .find(|c| has(c, "tolerance") && !has(c, "actual"))
+            .expect("scalar Conforms (no actual)")
+            .id
+            .clone();
+        let ordinary_id = probe
+            .constraints
+            .iter()
+            .find(|c| c.arg_bindings.is_empty())
+            .expect("ordinary constraint (no arg bindings)")
+            .id
+            .clone();
+
+        // No geometry kernel → the geometric Conforms cannot measure → Indeterminate.
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let result = engine.check(&module);
+
+        let entry = |id: &reify_core::ConstraintNodeId| {
+            result
+                .constraint_results
+                .iter()
+                .find(|e| &e.id == id)
+                .unwrap_or_else(|| panic!("constraint {id:?} missing from check results"))
+        };
+
+        // (1) geometric Conforms: OVERRIDDEN to Indeterminate (was scalar-Satisfied);
+        //     never a (false) Violated (C1).
+        assert_eq!(
+            entry(&geometric_id).satisfaction,
+            Satisfaction::Indeterminate,
+            "geometric Conforms must be overridden to Indeterminate (no kernel; C1)"
+        );
+        assert_ne!(entry(&geometric_id).satisfaction, Satisfaction::Violated);
+
+        // (2) scalar Conforms (no actual): untouched — keeps its scalar verdict (B4).
+        assert_eq!(
+            entry(&scalar_id).satisfaction,
+            Satisfaction::Satisfied,
+            "scalar Conforms (no actual) must keep its scalar verdict (B4)"
+        );
+
+        // (3) ordinary constraint: untouched by the η pass.
+        assert_eq!(
+            entry(&ordinary_id).satisfaction,
+            Satisfaction::Satisfied,
+            "ordinary constraint must be untouched by the η pass"
+        );
+
+        // The woven pass ran and emitted a geometric-conformance diagnostic.
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Conforms INDETERMINATE")),
+            "expected a 'Conforms INDETERMINATE' diagnostic from the woven pass, got: {:#?}",
+            result.diagnostics
+        );
+
+        // Caller (declaration) order preserved: geometric, then scalar, then ordinary.
+        let pos = |id: &reify_core::ConstraintNodeId| {
+            result
+                .constraint_results
+                .iter()
+                .position(|e| &e.id == id)
+                .expect("id present")
+        };
+        assert!(
+            pos(&geometric_id) < pos(&scalar_id) && pos(&scalar_id) < pos(&ordinary_id),
+            "weave must preserve caller (declaration) order"
+        );
+    }
+}
