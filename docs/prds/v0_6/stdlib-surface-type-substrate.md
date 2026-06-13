@@ -154,15 +154,17 @@ Letters match task-4548's plan labels. **Filed 2026-06-12 (task 4548 step-8)** v
 
 **Filed task IDs (re-citation targets for task 4548 steps 9-14):**
 
-| Leaf | Task ID | Family | Status | Depends on |
+_Status column reflects the 2026-06-13 task-4548 closeout snapshot (step-16). `done` = landed on main with its markers resolved/deleted upstream; `blocked` = non-terminal (LIVE) per `ptodo.rs::is_terminal_status` (terminal = done|cancelled), so a surviving marker citing it is correctly tracked, not orphaned._
+
+| Leaf | Task ID | Family | Status (2026-06-13) | Depends on |
 |---|---|---|---|---|
-| F | **#4574** | stdlib-module-graph foundation | pending | — (spine) |
-| V | **#4575** | vec3-type (routed) | pending | #4574 |
-| R | **#4576** | range-type / range-angle-type (routed) | pending | #4574 |
-| P | **#4577** | pose3-type + location-id-type | pending | #4574, task 4116 (landed) |
-| Pt | **#4578** | part-structdef | pending | — |
-| M | **#4579** | modal-result-type + loop-closure-record-type | pending | #4574 |
-| S | **#4580** | force/velocity/acceleration-scalar sweep | pending | — |
+| F | **#4574** | stdlib-module-graph foundation | **done** | — (spine) |
+| V | **#4575** | vec3-type (routed) | **blocked** (LIVE) | #4574 |
+| R | **#4576** | range-type / range-angle-type (routed) | **done** | #4574 |
+| P | **#4577** | pose3-type + location-id-type | **blocked** (LIVE) | #4574, task 4116 (landed) |
+| Pt | **#4578** | part-structdef | **done** | — |
+| M | **#4579** | modal-result-type + loop-closure-record-type | **done** | #4574 |
+| S | **#4580** | force/velocity/acceleration-scalar sweep | **done** | — |
 
 - **F (#4574) — stdlib module-graph / forward-reference FOUNDATION.** Migrate `stdlib_loader.rs::load_stdlib` off the linear `include_str!` vec onto `module_dag.rs`'s topo sort (add `import std.*` decls) OR add forward-reference name-registration to the growing-prelude compile. Modules: reify-compiler (stdlib_loader.rs, stdlib `.ri` headers). Deps: none (consumes landed `module_dag.rs` + `import` grammar). Signal: a shared real `Vec3` defined once is reachable from both an early- and a late-loaded stdlib module; `load_stdlib()` green. **CRITICAL — spine.**
 - **V (#4575) — Vec3/Vector3 surface type (routed → affine-map / math-linalg / kinematic-offsets).** Tighten `pub type Vec3 = Real` + all `param axis : Vec3` to the real vector type owned by those PRDs; cascade examples. Modules: reify-compiler (stdlib trajectory.ri/kinematic.ri/fea_multi_case.ri/fdm.ri), examples. Deps: **F**. Filed as dependent of the Vec3-owning PRD line. Signal: §8.2 boundary test.
@@ -202,14 +204,18 @@ Dependency edges (filed): #4575→#4574, #4577→#4574, #4579→#4574, #4576→#
 
 Phase B steps 9–14 re-cited every task-4548-listed in-family marker to its owning child task (§10) in the reify-audit canonical `TODO(<label>, #NNNN):` / `FIXME(<label>, #NNNN):` form — the semantic label is preserved for humans, the on-line `#NNNN` satisfies the PTODO structural lane (α), and the cited id resolves to a live non-terminal task (liveness lane β). Line numbers below are the **post-Phase-A** values (drifted from §9's pre-citation estimates; re-cited by content).
 
-| Family | Owning task | Final cited form | Marker sites (file:line) | Step |
-|---|---|---|---|---|
-| `vec3-type` | **#4575** | `TODO(vec3-type, #4575)` | fea_multi_case.ri:305/:433; kinematic.ri:99/:113/:122/:129/:130; trajectory.ri:94; fdm.ri:105 | 9 |
-| `range-type` / `range-angle-type` | **#4576** | `TODO(range-type, #4576)` / `TODO(range-angle-type, #4576)` | kinematic.ri:211/:216; flexures.ri:127/:145 | 10 |
-| `pose3-type` + `location-id-type` | **#4577** | `TODO(pose3-type, #4577)` / `TODO(location-id-type, #4577)` / `FIXME(location-id-type, #4577)` | trajectory.ri:85/:104; modal_analysis.ri:438/:506/:558/:623 | 11 |
-| `force/velocity/acceleration-scalar` | **#4580** | `TODO(force-scalar, #4580)` / `TODO(velocity-scalar, #4580)` / `TODO(acceleration-scalar, #4580)` | trajectory.ri:490/:550/:553 (+ :536 prose) | 12 |
-| `part-structdef` | **#4578** | `FIXME(part-structdef, #4578)` | modal_analysis.ri:216/:682/:754 | 13 |
-| `modal-result-type` + `loop-closure-record-type` / `Map<BodyId,JointParent>` | **#4579** | `TODO(modal-result-type, #4579)` / `TODO(loop-closure-record-type, #4579)` / `TODO(map-bodyid-jointparent, #4579)` | trajectory.ri:322 (continuation :324 de-marked); kinematic.ri:190/:194 (Map), :191/:195 (loop-closure) | 14 |
+**Final disposition (step-16 rebase-reconciliation closeout, 2026-06-13).** Between Phase B (steps 9–14, which re-cited *every* family) and the step-15 rebase, four owning siblings landed on main and went **done**, resolving and **deleting their own markers upstream** — so their Phase-B re-citations became moot (a surviving cite to a terminal task would be an *orphan* finding). The final tree therefore carries citations only for the two **LIVE** (blocked, non-terminal) owners; the done siblings' markers are simply gone (accepted from main). Land-now markers are deleted by 4548 itself.
+
+| Family | Owning task (status) | Final disposition in tree | Marker sites (file:line) |
+|---|---|---|---|
+| `vec3-type` | **#4575** (blocked, LIVE) | **CITED** `TODO(vec3-type, #4575)` — survives | fea_multi_case.ri:305/:433; kinematic.ri:99/:113/:122/:129/:130; trajectory.ri:94 |
+| `pose3-type` + `location-id-type` | **#4577** (blocked, LIVE) | **CITED** `TODO(pose3-type/location-id-type, #4577)` / `FIXME(location-id-type, #4577)` — survives | trajectory.ri:85/:104; modal_analysis.ri:443/:510/:562/:627 |
+| `range-type` / `range-angle-type` | **#4576** (done) | **RESOLVED UPSTREAM** — `Range<JointValue>` / `Range<Angle>` landed; markers deleted on main (not re-cited) | kinematic.ri, flexures.ri (gone) |
+| `part-structdef` | **#4578** (done) | **RESOLVED UPSTREAM** — `structure def Part` + `param part : Part` landed; FIXMEs deleted on main | modal_analysis.ri (gone) |
+| `modal-result-type` + `loop-closure-record-type` / `Map<BodyId,JointParent>` | **#4579** (done) | **RESOLVED UPSTREAM** — nominal `ModalResult` + `JointParent`/`LoopClosure` + `Map<BodyId,JointParent>` landed; markers deleted on main | trajectory.ri, kinematic.ri (gone) |
+| `force/velocity/acceleration-scalar` | **#4580** (done) | **RESOLVED UPSTREAM** — `Scalar<Force/Velocity/Acceleration>` + `RESOLVED(...)` landed (+ `VELOCITY` named dim) | trajectory.ri (gone) |
+
+_fdm.ri:105 `TODO(β-phase)` is **out of 4548's family** (β-phase normalization, beta-3816 line; its vec3 concern is already `build_direction : Vector3<Length>` on main). Step-9's `, #4575` on that line was a mis-cite and was reverted in step-15 — fdm.ri now matches main._
 
 **Land-now markers DELETED (not re-cited):** `FIXME(impulse-dim)` (modal_analysis.ri — resolved by `Impulse` registration + `impulse : Impulse`, steps 1–4); `TODO(frequency-scalar)` ×2 (printer_print_envelope.ri — resolved by `Mode.frequency : Frequency`, step 6). Both confirmed absent from the tree.
 
