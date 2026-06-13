@@ -3235,6 +3235,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             result,
@@ -3259,6 +3260,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             result,
@@ -3281,6 +3283,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             result, None,
@@ -3302,6 +3305,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             result, None,
