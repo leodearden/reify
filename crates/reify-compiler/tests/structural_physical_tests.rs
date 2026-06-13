@@ -414,11 +414,18 @@ structure def Bracket : Physical {
     }
 }
 
-// ─── step-9: Rigid trait refines Physical with moment_of_inertia ─────────────
+// ─── task-4229: Rigid auto-derives moment_of_inertia from geometry ───────────
 
-/// Step 9: Rigid trait refines Physical (refinements contains 'Physical'),
-/// has moment_of_inertia as a required member of type Real.
-/// This is the task's second explicit test case.
+/// task 4229 (Option A): Rigid no longer has `moment_of_inertia` as a required
+/// member. Instead it injects three `DefaultKind::Let` entries:
+///   - `body_density` — let-bound intermediate so `resolve_density_arg` receives
+///     a ValueRef (pre-type-hygiene-ε contract, see design decisions).
+///   - `moment_of_inertia` — auto-derived tensor via `moment_of_inertia(geometry, body_density)`.
+///   - `moi_principal` — eigenvalues (sorted ascending) for the PD constraint.
+///
+/// Mirrors `physical_trait_has_mass_and_centroid_lets` at :327 for the Let-filter
+/// pattern.  RED against base (base has scalar param in required_members, no Let
+/// defaults); GREEN after step-3 impl.
 #[test]
 fn rigid_refines_physical_with_moment_of_inertia() {
     let module = load_stdlib_module();
@@ -429,45 +436,47 @@ fn rigid_refines_physical_with_moment_of_inertia() {
         .find(|t| t.name == "Rigid")
         .expect("expected 'Rigid' trait in compiled module");
 
-    // Refinements should contain "Physical"
+    // Refinements should contain "Physical" (unchanged from before).
     assert!(
         rigid.refinements.contains(&"Physical".to_string()),
         "Rigid should refine Physical, got refinements: {:?}",
         rigid.refinements
     );
 
-    // Required members should include moment_of_inertia
-    let member_names: Vec<&str> = rigid
+    // task 4229: all three auto-derive lets must be present in rigid.defaults.
+    let let_defaults: Vec<_> = rigid
+        .defaults
+        .iter()
+        .filter(|d| matches!(d.kind, DefaultKind::Let { .. }))
+        .collect();
+
+    for expected_let in &["body_density", "moment_of_inertia", "moi_principal"] {
+        assert!(
+            let_defaults
+                .iter()
+                .any(|d| d.name.as_deref() == Some(*expected_let)),
+            "task-4229: Rigid should have a `Let` default named '{}' (auto-derive from \
+             geometry); got defaults: {:?}",
+            expected_let,
+            rigid
+                .defaults
+                .iter()
+                .map(|d| &d.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // task 4229: moment_of_inertia must NOT be a required member (it is now derived).
+    let required_names: Vec<&str> = rigid
         .required_members
         .iter()
         .map(|r| r.name.as_str())
         .collect();
     assert!(
-        member_names.contains(&"moment_of_inertia"),
-        "Rigid should have 'moment_of_inertia' required member, got: {:?}",
-        member_names
+        !required_names.contains(&"moment_of_inertia"),
+        "task-4229: Rigid.moment_of_inertia should be a Let default (auto-derived from \
+         geometry), not a required member; required_members: {required_names:?}"
     );
-
-    // moment_of_inertia should be MomentOfInertia (Scalar{MOMENT_OF_INERTIA})
-    // after task α tightening (was Type::dimensionless_scalar() on main before step-2).
-    let moi = rigid
-        .required_members
-        .iter()
-        .find(|r| r.name == "moment_of_inertia")
-        .expect("expected 'moment_of_inertia' member");
-    match &moi.kind {
-        RequirementKind::Param(ty) => {
-            assert_eq!(
-                *ty,
-                Type::Scalar {
-                    dimension: DimensionVector::MOMENT_OF_INERTIA,
-                },
-                "moment_of_inertia should be Scalar{{MOMENT_OF_INERTIA}} after task-α tightening, got {:?}",
-                ty
-            );
-        }
-        other => panic!("moment_of_inertia should be Param, got {:?}", other),
-    }
 }
 
 // ─── step-11: ElasticallyDeformable same-module refinement ───────────────────
@@ -1327,12 +1336,144 @@ fn electrically_conductive_resistivity_member_is_electric_resistivity_dimension(
     }
 }
 
-/// Task α (supersedes #3114): five dimension-pin tests — each tightened member
-/// must carry the named-dimension alias, not the prior `Real` placeholder.
+/// Task α (supersedes #3114): four remaining dimension-pin tests — each tightened
+/// member must carry the named-dimension alias, not the prior `Real` placeholder.
 /// Uses the shared `assert_member_dimension` helper above.
+/// (Rigid.moment_of_inertia moved out of required_members by task 4229 — see
+/// `rigid_moment_of_inertia_member_is_moment_of_inertia_dimension` below.)
+
+/// task 4229: Rigid.moment_of_inertia is now a geometry-derived `let` whose
+/// `ValueCellDecl.cell_type` is `Type::tensor(2, 3, Scalar{MOMENT_OF_INERTIA})`
+/// (the `moment_of_inertia` builtin's return type per units.rs:286).
+///
+/// Compile a Rigid conformer that OMITS moment_of_inertia (relies purely on
+/// auto-derive); assert compile-clean, then pin the moment_of_inertia cell type.
+///
+/// RED against base: the base has moment_of_inertia as a required member so an
+/// omitting conformer fails conformance (missing required member) → compile is
+/// not clean.  GREEN after step-3 impl.
 #[test]
 fn rigid_moment_of_inertia_member_is_moment_of_inertia_dimension() {
-    assert_member_dimension("Rigid", "moment_of_inertia", DimensionVector::MOMENT_OF_INERTIA);
+    let source = r#"
+structure def AutoRigid : Rigid {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "task-4229: AutoRigid (omitting moment_of_inertia) should compile clean once \
+         the trait auto-derives it; errors: {errors:?}"
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    let moi_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "moment_of_inertia")
+        .unwrap_or_else(|| {
+            panic!(
+                "task-4229: expected 'moment_of_inertia' value cell (injected by Rigid Let \
+                 default); cells: {:?}",
+                template
+                    .value_cells
+                    .iter()
+                    .map(|vc| vc.id.member.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert_eq!(
+        moi_cell.cell_type,
+        Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::MOMENT_OF_INERTIA }),
+        "task-4229: Rigid.moment_of_inertia cell_type should be \
+         Tensor{{rank:2,n:3,Scalar{{MOMENT_OF_INERTIA}}}}, got {:?}",
+        moi_cell.cell_type
+    );
+}
+
+/// task 4229: Rigid injects a `constraint moi_principal[0] > 0.0 * 1kg * 1m * 1m`
+/// (positive-definiteness via smallest eigenvalue index access) and removes the
+/// old scalar `constraint moment_of_inertia > 0`.
+///
+/// Shape assertions on the compiled template (OCCT-free, compile-time only):
+/// (1) A CompiledConstraint exists whose BinOp LHS is
+///     `IndexAccess { object: ValueRef(moi_principal), .. }` with `op == Gt`.
+/// (2) No CompiledConstraint has `ValueRef(moment_of_inertia)` as its direct BinOp LHS.
+///
+/// RED against base: omitting conformer fails compile (conformance error); even
+/// if it compiled the old scalar constraint would be present and the IndexAccess
+/// constraint absent.  GREEN after step-3 impl.
+#[test]
+fn rigid_auto_derives_moi_principal_constraint_shape() {
+    let source = r#"
+structure def AutoRigid2 : Rigid {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "task-4229: AutoRigid2 should compile clean (auto-derive); errors: {errors:?}"
+    );
+
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least 1 template");
+
+    // (1) Assert there IS a constraint over moi_principal[0] (IndexAccess Gt shape).
+    let moi_principal_pd = template.constraints.iter().find(|cc| {
+        matches!(
+            &cc.expr.kind,
+            CompiledExprKind::BinOp { op, left, .. }
+                if *op == BinOp::Gt
+                    && matches!(
+                        &left.kind,
+                        CompiledExprKind::IndexAccess { object, .. }
+                            if matches!(
+                                &object.kind,
+                                CompiledExprKind::ValueRef(id) if id.member == "moi_principal"
+                            )
+                    )
+        )
+    });
+    assert!(
+        moi_principal_pd.is_some(),
+        "task-4229: expected a 'moi_principal[0] > 0' PD constraint (IndexAccess Gt \
+         shape) injected by Rigid; constraints found: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|cc| format!("{:?}", cc.expr.kind))
+            .collect::<Vec<_>>()
+    );
+
+    // (2) Assert there is NO constraint with moment_of_inertia as a direct ValueRef LHS.
+    let old_scalar_constraint = template.constraints.iter().find(|cc| {
+        matches!(
+            &cc.expr.kind,
+            CompiledExprKind::BinOp { left, .. }
+                if matches!(
+                    &left.kind,
+                    CompiledExprKind::ValueRef(id) if id.member == "moment_of_inertia"
+                )
+        )
+    });
+    assert!(
+        old_scalar_constraint.is_none(),
+        "task-4229: the old scalar 'moment_of_inertia > 0' constraint must be gone; \
+         found: {:?}",
+        old_scalar_constraint.map(|cc| format!("{:?}", cc.expr.kind))
+    );
 }
 
 #[test]
