@@ -4643,22 +4643,48 @@ fn resolve_point3_length_arg(
     Some(out)
 }
 
+/// Evaluate an argument `CompiledExpr` against the `ValueMap` with a LOCAL
+/// context (no user-defined functions, no meta block) — the evaluate-then-accept
+/// mechanism shared by the task ε (4492) owned-arg resolvers.
+///
+/// A `ValueRef` resolves via `get_or_undef` (preserving quiet degradation for a
+/// missing or `Value::Undef` cell, byte-identical to the prior `values.get`
+/// path); inline literals, field-access, and range/vector/arithmetic
+/// constructors now EVALUATE rather than falling through to a silent `None`.
+///
+/// User-defined-function-call / meta-block args in these positions evaluate to
+/// `Value::Undef` → quiet `None`, consistent with the degradation contract: the
+/// selector/kinematic/ad-hoc dispatch fns that own these args do not carry
+/// `functions`/`meta_map` (only `compile_geometry_op` does), so the local
+/// `EvalContext::new(values, &[])` is faithful to PRD decision 10's load-bearing
+/// intent ("evaluate the arg expr against the `ValueMap`"). See task ε design
+/// decision 1.
+fn eval_arg_value(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+) -> reify_ir::Value {
+    reify_expr::eval_expr(expr, &reify_expr::EvalContext::new(values, &[]))
+}
+
 /// Resolve the `density` argument of `center_of_mass` and `moment_of_inertia`
 /// to a raw `f64` (SI kg/m³), emitting a `Severity::Warning` when the caller
-/// passes the wrong type.
+/// passes a defined-but-wrong type.
 ///
-/// Contract A (task 4486 γ) — enforced via [`crate::arg_acceptance::accept_arg`]
-/// with [`crate::arg_acceptance::density_spec`]:
+/// Contract A (task 4486 γ) + evaluate-then-accept (task 4492 ε): the arg expr
+/// is EVALUATED against `values` (via [`eval_arg_value`]) and the resulting
+/// `Value` classified by [`crate::arg_acceptance::accept_arg`] with
+/// [`crate::arg_acceptance::density_spec`]. Inline / computed density
+/// expressions (e.g. `moment_of_inertia(b, 7850kg/m^3)`) now WORK — the γ
+/// "must be bound to a let / not yet supported" fall-through is gone.
 ///
-/// | arg expr / resolved value                     | return       | diagnostic pushed?        |
+/// | evaluated arg value                           | return       | diagnostic pushed?        |
 /// |-----------------------------------------------|--------------|---------------------------|
-/// | non-`ValueRef` expr (inline literal/call/…)   | `None`       | yes — `Severity::Warning` |
-/// | `ValueRef` → missing cell                     | `None`       | no                        |
-/// | `ValueRef` → `Value::Undef`                   | `None`       | no                        |
-/// | `ValueRef` → `Value::Scalar{MASS_DENSITY,v}`  | `Some(v)`    | no                        |
-/// | `ValueRef` → bare `Value::Real`               | `None`       | yes — `Severity::Warning` |
-/// |   or dimensionless/wrong-dim `Value::Scalar`  |              | naming `density` +        |
-/// |   or any non-numeric `Value`                  |              | `7850kg/m^3` hint         |
+/// | `Value::Undef` (missing/Undef cell, or a      | `None`       | no — quiet degradation    |
+/// |   user-fn/meta arg the local ctx can't eval)  |              |                           |
+/// | `Value::Scalar{MASS_DENSITY,v}` (inline lit,  | `Some(v)`    | no                        |
+/// |   `ValueRef`, field-access, or arithmetic)    |              |                           |
+/// | bare `Value::Real`, dimensionless/wrong-dim   | `None`       | yes — `Severity::Warning` |
+/// |   `Value::Scalar`, or any non-numeric `Value` |              | naming `density` + hint   |
 fn resolve_density_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -4667,25 +4693,9 @@ fn resolve_density_arg(
 ) -> Option<f64> {
     use crate::arg_acceptance::{accept_arg, density_spec, Acceptance};
 
-    let id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => {
-            // Non-ValueRef shape (inline literal, field-access, call, …).
-            // γ contract: LOUD — warn so the user knows they must bind density
-            // to a let before passing it (task ε will make this WORK).
-            diagnostics.push(Diagnostic::warning(format!(
-                "{helper_name}: density argument must be a dimensioned Density \
-                 value bound to a let (e.g. `let d = 7850kg/m^3`); \
-                 inline or computed density expressions are not yet supported \
-                 — treating as undefined"
-            )));
-            return None;
-        }
-    };
+    let value = eval_arg_value(expr, values);
 
-    let value = values.get(id)?; // missing cell — quiet degradation
-
-    match accept_arg(value, &density_spec()) {
+    match accept_arg(&value, &density_spec()) {
         Acceptance::Accepted(si) => Some(si),
         Acceptance::Undefined => None,
         Acceptance::Rejected(rej) => {
