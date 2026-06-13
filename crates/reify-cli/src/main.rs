@@ -591,11 +591,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // they live in snapshot.graph.constraints, visited only by
         // check_constraints_with_values.
         //
-        // GD&T legality (check_gdt_legality) is only enforced on the non-purpose
-        // path above.  A design with an illegal MMC modifier will not produce a
-        // GdtIllegalModifier diagnostic when checked via --purpose.  This is a
-        // known limitation of task 4475 β scope; a follow-up task should wire
-        // check_gdt_legality (and the same exit-code escalation) into this branch.
+        // GD&T legality is enforced on BOTH paths via `engine.run_gdt_check_passes`
+        // (task 4589): diagnostics are folded in before `report_eval_output` below
+        // and the same GdtIllegalModifier → FAILURE escalation is applied after
+        // `finish_check`.  The former known-limitation comment (task 4475 β scope)
+        // has been resolved.
 
         // Parse all --purpose values up front so a malformed value fails
         // before we touch the engine.
@@ -680,6 +680,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let mut diagnostics = eval_result.diagnostics.clone();
         diagnostics.extend(check_diags);
 
+        // GD&T legality pass (task 4589): runs over post-eval values identically
+        // to the non-purpose branch.  Folded in BEFORE report_eval_output so the
+        // error prints to stderr alongside other diagnostics.
+        diagnostics.extend(engine.run_gdt_check_passes(&compiled, &eval_result.values));
+
         let outcome = report_eval_output(
             &constraint_results,
             &diagnostics,
@@ -690,13 +695,25 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // Same outcome → summary + exit-code mapping as the no-purpose path,
         // so a purpose-injected violation behaves identically to a structure
         // constraint violation in stdout and shell exit semantics.
-        finish_check(
+        let exit = finish_check(
             &outcome,
             &constraint_results,
             strict,
             &mut std::io::stdout(),
             &mut std::io::stderr(),
-        )
+        );
+
+        // Escalate to FAILURE when a GdtIllegalModifier error is present —
+        // identical to the non-purpose branch escalation at main.rs:574-583.
+        // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        if diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        {
+            return ExitCode::FAILURE;
+        }
+
+        exit
     }
 }
 
