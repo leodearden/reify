@@ -7559,6 +7559,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn eval_add_dimensionless_scalars_collapse_to_real() {
+        // DL + DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_add(&dimensionless_val(2.0), &dimensionless_val(3.0)) {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12, "expected ~5.0, got {v}"),
+            other => panic!("expected Value::Real(~5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_sub_dimensionless_scalars_collapse_to_real() {
+        // DL - DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_sub(&dimensionless_val(5.0), &dimensionless_val(2.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_same_dimension_scalars_stay_scalar() {
+        // L + L = L: a dimensioned sum must stay Value::Scalar.
+        match eval_add(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::LENGTH, "L+L should be LENGTH");
+                assert!(
+                    (si_value - 0.005).abs() < 1e-12,
+                    "expected ~0.005, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_length_plus_bare_real_is_undef() {
+        // Additive dimension-safety: cannot add a bare number to a Length.
+        assert!(
+            eval_add(&mm_val(2.0), &Value::Real(3.0)).is_undef(),
+            "Length + Real must be Undef"
+        );
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
