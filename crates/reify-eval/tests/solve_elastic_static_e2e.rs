@@ -498,6 +498,239 @@ fn e2e_cantilever_second_eval_hits_cache() {
     }
 }
 
+// ── step-3 (task 4565): RED — gradient + curl field contract + cross-field ────
+//   identity + determinism
+//
+// Asserts on eval1:
+//   (CONTRACT)  gradient is Value::Field{source:Sampled}, domain=Point3<Length>,
+//               codomain=Tensor<2,3,Real>, data.len()==n_grid*9, all finite.
+//   (CONTRACT)  curl is Value::Field{source:Sampled}, domain=Point3<Length>,
+//               codomain=Vector3<Real>, data.len()==n_grid*3, all finite.
+//   (NUMERIC)   trace(gradient[k]) == divergence[k] to rel-tol 1e-9 (exact
+//               linear functional of the same nodal field, identical weights).
+//   (NUMERIC)   curl[k] == antisym(gradient[k]) to rel-tol 1e-9.
+//   (SANITY)    At least one curl component magnitude > 1e-12 (non-trivial
+//               rotation under tip load).
+// (DETERMINISM) gradient and curl SampledField.data are bit-identical between
+//               eval1 and eval2.
+//
+// Fails (extract_field panics — fields absent) until step-4 wires them up.
+
+/// Gradient + curl: type contract, cross-field identities, determinism.
+#[test]
+fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
+    let source = cantilever_source();
+
+    // Two independent evals for determinism check.
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine1 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine1);
+    let eval1 = engine1.eval(&compiled);
+
+    let mut engine2 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine2);
+    let eval2 = engine2.eval(&compiled);
+
+    // ── Locate result cells ───────────────────────────────────────────────────
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result1 = eval1
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("eval1: cell FeaCantileverSmoke.result not found"))
+        .clone();
+    let result2 = eval2
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("eval2: cell FeaCantileverSmoke.result not found"))
+        .clone();
+
+    // ── (CONTRACT) gradient must be Value::Field{source:Sampled} ─────────────
+    let grad_val = extract_field(&result1, "gradient")
+        .unwrap_or_else(|| panic!("field 'gradient' not found in result"));
+
+    let (grad_domain, grad_codomain) = match &grad_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "gradient source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("gradient must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        grad_domain,
+        Type::point3(Type::length()),
+        "gradient domain must be Point3<Length>"
+    );
+    assert_eq!(
+        grad_codomain,
+        Type::tensor(2, 3, Type::dimensionless_scalar()),
+        "gradient codomain must be Tensor<2,3,Real>"
+    );
+
+    // ── (CONTRACT) curl must be Value::Field{source:Sampled} ─────────────────
+    let curl_val = extract_field(&result1, "curl")
+        .unwrap_or_else(|| panic!("field 'curl' not found in result"));
+
+    let (curl_domain, curl_codomain) = match &curl_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "curl source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("curl must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        curl_domain,
+        Type::point3(Type::length()),
+        "curl domain must be Point3<Length>"
+    );
+    assert_eq!(
+        curl_codomain,
+        Type::vec3(Type::dimensionless_scalar()),
+        "curl codomain must be Vector3<Real>"
+    );
+
+    // ── (CONTRACT) data lengths ───────────────────────────────────────────────
+    let disp_data = extract_sampled_field_data(&result1, "displacement");
+    let n_grid_nodes = disp_data.len() / 3;
+
+    let grad_data = extract_sampled_field_data(&result1, "gradient");
+    assert_eq!(
+        grad_data.len(),
+        n_grid_nodes * 9,
+        "gradient data.len() = {} but expected n_grid_nodes*9 = {}",
+        grad_data.len(),
+        n_grid_nodes * 9
+    );
+
+    let curl_data = extract_sampled_field_data(&result1, "curl");
+    assert_eq!(
+        curl_data.len(),
+        n_grid_nodes * 3,
+        "curl data.len() = {} but expected n_grid_nodes*3 = {}",
+        curl_data.len(),
+        n_grid_nodes * 3
+    );
+
+    // ── (CONTRACT) all samples finite ────────────────────────────────────────
+    for (k, &v) in grad_data.iter().enumerate() {
+        assert!(v.is_finite(), "gradient data[{}] = {} is not finite", k, v);
+    }
+    for (k, &v) in curl_data.iter().enumerate() {
+        assert!(v.is_finite(), "curl data[{}] = {} is not finite", k, v);
+    }
+
+    // ── (NUMERIC) cross-field identities ─────────────────────────────────────
+    //
+    // gradient, curl, and divergence are all exact linear functionals of the
+    // same recovered nodal field resampled with the identical barycentric
+    // weights, so the identities hold to floating-point accumulation.
+    // rel-tol 1e-9 is generous; failure indicates a wiring error.
+
+    let div_data = extract_sampled_field_data(&result1, "divergence");
+    assert_eq!(
+        div_data.len(),
+        n_grid_nodes,
+        "divergence data.len() = {} but expected n_grid_nodes = {}",
+        div_data.len(),
+        n_grid_nodes
+    );
+
+    let mut max_curl_mag = 0.0_f64;
+
+    for k in 0..n_grid_nodes {
+        // trace(gradient[k]) = grad[9k+0] + grad[9k+4] + grad[9k+8]
+        // (row-major 3×3: [0]=∇u_x/∂x, [4]=∇u_y/∂y, [8]=∇u_z/∂z)
+        let trace_grad = grad_data[9 * k] + grad_data[9 * k + 4] + grad_data[9 * k + 8];
+        let div_k = div_data[k];
+        let scale_div = div_k.abs().max(1e-18);
+        assert!(
+            (trace_grad - div_k).abs() < 1e-9 * scale_div,
+            "trace identity at k={}: trace(gradient)={:e}, divergence={:e}, rel-err={:e}",
+            k, trace_grad, div_k,
+            (trace_grad - div_k).abs() / scale_div,
+        );
+
+        // antisym(gradient[k]) == curl[k]
+        // Row-major stride-9: grad[9k+r*3+c] = (∇u)[r][c]
+        // curl[0] = grad[9k+7] - grad[9k+5]  (∂u_z/∂y − ∂u_y/∂z = [2][1] - [1][2])
+        // curl[1] = grad[9k+2] - grad[9k+6]  (∂u_x/∂z − ∂u_z/∂x = [0][2] - [2][0])
+        // curl[2] = grad[9k+3] - grad[9k+1]  (∂u_y/∂x − ∂u_x/∂y = [1][0] - [0][1])
+        let expected_curl = [
+            grad_data[9 * k + 7] - grad_data[9 * k + 5],
+            grad_data[9 * k + 2] - grad_data[9 * k + 6],
+            grad_data[9 * k + 3] - grad_data[9 * k + 1],
+        ];
+        for c in 0..3 {
+            let got = curl_data[3 * k + c];
+            let exp = expected_curl[c];
+            let scale_curl = exp.abs().max(1e-18);
+            assert!(
+                (got - exp).abs() < 1e-9 * scale_curl,
+                "curl antisym identity at k={} c={}: curl={:e}, antisym(grad)={:e}, rel-err={:e}",
+                k, c, got, exp,
+                (got - exp).abs() / scale_curl,
+            );
+        }
+
+        let curl_mag = (curl_data[3 * k] * curl_data[3 * k]
+            + curl_data[3 * k + 1] * curl_data[3 * k + 1]
+            + curl_data[3 * k + 2] * curl_data[3 * k + 2])
+            .sqrt();
+        if curl_mag > max_curl_mag {
+            max_curl_mag = curl_mag;
+        }
+    }
+
+    // ── (SANITY) non-trivial rotation under tip load ──────────────────────────
+    assert!(
+        max_curl_mag > 1e-12,
+        "max|curl| = {:e} is effectively zero — no rotation signal under tip load",
+        max_curl_mag
+    );
+
+    // ── (DETERMINISM) gradient and curl bit-identical between eval1/eval2 ─────
+    let grad2_data = extract_sampled_field_data(&result2, "gradient");
+    assert_eq!(
+        grad_data.len(),
+        grad2_data.len(),
+        "gradient data length differs between eval1 ({}) and eval2 ({})",
+        grad_data.len(),
+        grad2_data.len()
+    );
+    for (i, (v1, v2)) in grad_data.iter().zip(grad2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "gradient data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
+
+    let curl2_data = extract_sampled_field_data(&result2, "curl");
+    assert_eq!(
+        curl_data.len(),
+        curl2_data.len(),
+        "curl data length differs between eval1 ({}) and eval2 ({})",
+        curl_data.len(),
+        curl2_data.len()
+    );
+    for (i, (v1, v2)) in curl_data.iter().zip(curl2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "curl data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
+}
+
 // ── step-5 (task 4564): RED — divergence field contract ──────────────────────
 //
 // Asserts:
