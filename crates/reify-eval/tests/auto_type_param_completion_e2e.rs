@@ -54,18 +54,59 @@ const BEARING_UNSAT_PATH: &str = concat!(
     "/../../examples/auto/bearing_unsat.ri"
 );
 
-// ── Imports (populated in step-2 when helpers are defined) ───────────────────
-//
-// These imports are declared up-front so the RED test (step-1) compiles only
-// with the missing helper names as the failure cause, not missing `use` items.
+// ── Imports ───────────────────────────────────────────────────────────────────
 
-use reify_compiler::compile_with_stdlib_checked;
-use reify_compiler::compile_with_stdlib;
-use reify_compiler::parse_with_stdlib;
+use reify_compiler::{CompiledModule, compile_with_stdlib, compile_with_stdlib_checked, parse_with_stdlib};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, ModulePath};
+use reify_eval::EvalResult;
 use reify_ir::{PersistentMap, Value};
 use reify_test_support::{collect_errors, make_simple_engine};
+
+// ── Shared harness helpers ────────────────────────────────────────────────────
+
+/// Read a fixture file from disk, panicking with a clear error naming the file.
+fn read_fixture(path: &str) -> String {
+    std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!("read_fixture: failed to read '{}': {}", path, e)
+    })
+}
+
+/// Compile `src` under the REAL `SimpleConstraintChecker` — the exact entry
+/// the CLI (`reify-cli/src/main.rs:173`) and GUI (`engine.rs:730`) binaries use.
+///
+/// **Do NOT use** `parse_and_compile_with_stdlib` or `compile_source_with_stdlib`
+/// here: those helpers route through `compile_with_stdlib` (the stub checker)
+/// and panic on any Error diagnostic, which would mask the deliberate Errors
+/// that several ζ fixtures are designed to produce.
+fn compile_real(src: &str, module_name: &str) -> CompiledModule {
+    let parsed = parse_with_stdlib(src, ModulePath::single(module_name));
+    compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)
+}
+
+/// Compile `src` under the STUB `CompileTimeIndeterminateChecker` — the default
+/// path that `compile_with_stdlib` uses. Returns `Indeterminate` for every
+/// constraint; contrast with `compile_real` to demonstrate the stub-vs-real delta.
+fn compile_stub(src: &str, module_name: &str) -> CompiledModule {
+    let parsed = parse_with_stdlib(src, ModulePath::single(module_name));
+    compile_with_stdlib(&parsed)
+}
+
+/// Evaluate a compiled module using the real `SimpleConstraintChecker` engine.
+fn eval_real(compiled: &CompiledModule) -> EvalResult {
+    let mut engine = make_simple_engine();
+    engine.eval(compiled)
+}
+
+/// Return `true` if any diagnostic in `diags` has the given `DiagnosticCode`.
+fn has_error_code(diags: &[reify_core::Diagnostic], code: DiagnosticCode) -> bool {
+    diags.iter().any(|d| d.code == Some(code))
+}
+
+/// Get a field from a `StructureInstance`'s fields map by name.
+fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
+    m.get(&k.to_string())
+}
 
 // ── Step-1 RED test ───────────────────────────────────────────────────────────
 
