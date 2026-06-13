@@ -3124,13 +3124,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // Scalar+Real/Int below returns Real for the mixed case — the asymmetry is
-                // accepted: eval_eq/eval_cmp normalize both forms via as_f64().
-                Value::Scalar {
-                    si_value: a + b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless sum
+                // (DL + DL) collapses to Value::Real (Invariant V, task 4374/β).
+                // Dimensioned sums stay Value::Scalar, byte-identical to before.
+                Value::from_real_scalar(a + b, *ad)
             }
         }
         // Complex + Complex: dimension must match
@@ -3175,6 +3172,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         // because the operand is already a bare number.
         // Note: eval_mul/eval_div have no such guard — scaling a dimensioned quantity
         // by a pure number is always legal and preserves the dimension.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS} (the value layer collapses those to Value::Real
+        // via from_real_scalar), so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
         | (Value::Real(r), Value::Scalar { si_value, dimension })
             if dimension.is_dimensionless() =>
@@ -3226,13 +3227,10 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // See the corresponding eval_add note for why this asymmetry with Scalar-Real
-                // is accepted.
-                Value::Scalar {
-                    si_value: a - b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless
+                // difference (DL - DL) collapses to Value::Real (Invariant V,
+                // task 4374/β). Dimensioned differences stay Value::Scalar.
+                Value::from_real_scalar(a - b, *ad)
             }
         }
         // Complex - Complex: dimension must match
@@ -3284,6 +3282,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         // a separate arm. Note: eval_mul/eval_div scale any-dimension scalars
         // without this guard — scaling preserves dimension; addition/subtraction
         // do not.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS}, so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
             if dimension.is_dimensionless() =>
         {
@@ -3423,10 +3424,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::Scalar {
-            si_value: a * b,
-            dimension: ad.mul(bd),
-        },
+        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -3441,10 +3439,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
@@ -3458,10 +3453,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * r, *dimension),
         // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
         (
             Value::Complex {
@@ -3708,10 +3700,9 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            Value::Scalar {
-                si_value: a / b,
-                dimension: result_dim,
-            }
+            // Route through the value-layer chokepoint: a dimension-cancelling
+            // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
+            Value::from_real_scalar(a / b, result_dim)
         }
         // Scalar / dimensionless
         (
@@ -3720,20 +3711,30 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension,
             },
             Value::Int(n),
-        ) => Value::Scalar {
-            si_value: si_value / *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
                 dimension,
             },
             Value::Real(r),
-        ) => Value::Scalar {
-            si_value: si_value / r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / r, *dimension),
+        // Bare number / Scalar: a dimensionless numerator ÷ a dimensioned scalar
+        // yields the reciprocal dimension (e.g. `1.0 / 5s → Frequency`). Division
+        // is non-commutative, so these reciprocal arms are distinct from the
+        // (Scalar, Real/Int) scaling arms above. Post-β (task 4374) a
+        // dimension-cancelling product/quotient collapses to Value::Real, so a
+        // chain like AVOGADRO_CONSTANT's `6.022e23 * 1mol / 1mol / 1mol` now
+        // reaches this arm at the final `/ 1mol` — its intermediate, formerly a
+        // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
+        // fully-cancelling reciprocal still collapses to Real (Invariant V).
+        (Value::Real(a), Value::Scalar { si_value, dimension }) => {
+            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+        }
+        (Value::Int(a), Value::Scalar { si_value, dimension }) => {
+            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
+            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+        }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
         // Overflow (e.g. MAX/0.5 → Inf) propagates as an Inf-bearing Complex in the operator path;
@@ -3877,10 +3878,10 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
             },
             Value::Int(n),
         ) => match i8::try_from(*n) {
-            Ok(n_i8) => Value::Scalar {
-                si_value: si_value.powi(n_i8 as i32),
-                dimension: dimension.pow(n_i8),
-            },
+            // Route through the value-layer chokepoint: a zero exponent cancels
+            // the dimension (dimension.pow(0) = DIMENSIONLESS) and collapses to
+            // Value::Real (Invariant V). The outer sanitize_value wrap stays.
+            Ok(n_i8) => Value::from_real_scalar(si_value.powi(n_i8 as i32), dimension.pow(n_i8)),
             Err(_) => Value::Undef,
         },
         _ => Value::Undef,
@@ -3929,14 +3930,23 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Dimensioned Scalar vs non-Scalar: not equal
+        // Scalar vs non-Scalar. A *dimensioned* Scalar (e.g. a Length) is never
+        // equal to a bare number, so this is `false`. A *dimensionless* Scalar
+        // is just a plain quantity, though: post-Invariant V (task 4374/β) no
+        // arithmetic op produces one (producers route through from_real_scalar),
+        // but eq operands also come from literals, struct/field defaults, map
+        // values, and deserialized state — non-arithmetic sources that can still
+        // carry a Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below rather than silently flipping it to `false`.
+        // (Scalar-vs-Scalar is handled by the earlier arm.)
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
         {
             Value::Bool(false)
         }
         _ => {
-            // For numeric comparisons (Int/Real/dimensionless Scalar), compare as f64
+            // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -3973,13 +3983,20 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Dimensioned Scalar vs non-Scalar: incomparable
+        // Scalar vs non-Scalar. A *dimensioned* Scalar is incomparable to a bare
+        // number → Undef. A *dimensionless* Scalar is a plain quantity, though:
+        // post-Invariant V (task 4374/β) no arithmetic op produces one, but cmp
+        // operands also come from literals, struct/field defaults, map values,
+        // and deserialized state — non-arithmetic sources that can still carry a
+        // Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below. (Scalar-vs-Scalar is handled by the earlier arm.)
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
         {
             Value::Undef
         }
-        // Fallback: Int/Real/dimensionless Scalar via as_f64
+        // Fallback: Int / Real / dimensionless Scalar numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
             _ => Value::Undef,
@@ -5250,21 +5267,19 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
+        // 80mm / 20mm = 4.0. LENGTH/LENGTH cancels to DIMENSIONLESS, so per
+        // Invariant V (task 4374/β) eval_div routes through the value-layer
+        // chokepoint and the result is the canonical Value::Real(4.0), NOT
+        // Value::Scalar{DIMENSIONLESS}. (Was pinned to Scalar{dimensionless}
+        // before β closed the leak.)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => {
-                assert!((si_value - 4.0).abs() < 1e-12);
-                assert!(dimension.is_dimensionless());
-            }
-            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
+            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12, "expected ~4.0, got {v}"),
+            other => panic!("expected Value::Real(4.0), got {:?}", other),
         }
     }
 
@@ -7455,6 +7470,317 @@ mod tests {
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "expected Undef for dimensioned Scalar - Real"
+        );
+    }
+
+    // ─── β (task 4374): arithmetic producers route through the value-layer ───
+    // chokepoint `Value::from_real_scalar`, collapsing dimension-cancelling
+    // results to Value::Real (Invariant V): no arithmetic op may construct a
+    // `Value::Scalar { dimension }` with `dimension.is_dimensionless()`.
+
+    #[test]
+    fn eval_div_cancelling_dims_collapse_to_real() {
+        // 30mm / 10mm: LENGTH/LENGTH = DIMENSIONLESS → must be Value::Real, not
+        // Value::Scalar{DIMENSIONLESS}. The VARIANT check is load-bearing; value
+        // tolerance is required because 0.03/0.01 is not exactly 3.0 in f64.
+        match eval_div(&mm_val(30.0), &mm_val(10.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+
+        // Headline regression via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0) from 30mm/10mm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_div_noncancelling_dims_stay_scalar() {
+        // AREA / LENGTH = LENGTH: a dimensioned quotient must stay Value::Scalar
+        // (byte-identical to the pre-β behaviour). Guards against over-collapse.
+        let area = Value::Scalar {
+            si_value: 6.0,
+            dimension: DimensionVector::AREA,
+        };
+        match eval_div(&area, &mm_val(2.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "AREA/LENGTH should be LENGTH"
+                );
+                // 6.0 / 0.002 = 3000.0 (mm_val(2.0) is 0.002 m).
+                assert!(
+                    (si_value - 3000.0).abs() < 1e-9,
+                    "expected ~3000.0, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_mul_cancelling_dims_collapse_to_real() {
+        // (1/L) · L = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+        // 4.0 · 0.25 m = 1.0 (dimension cancels). VARIANT check is load-bearing.
+        match eval_mul(&inv_len, &mm_val(250.0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_mul_noncancelling_dims_stay_scalar() {
+        // L · L = AREA: a dimensioned product must stay Value::Scalar.
+        match eval_mul(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L·L should be AREA");
+                // 0.002 · 0.003 = 6e-6.
+                assert!(
+                    (si_value - 6e-6).abs() < 1e-12,
+                    "expected ~6e-6, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_pow_zero_exponent_collapses_to_real() {
+        // L^0 = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        // (0.005^0 = 1.0 exactly; the VARIANT check is the load-bearing point.)
+        match eval_pow(&mm_val(5.0), &Value::Int(0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_pow_nonzero_exponent_stays_scalar() {
+        // L^2 = AREA: a dimensioned power must stay Value::Scalar.
+        match eval_pow(&mm_val(5.0), &Value::Int(2)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L^2 should be AREA");
+                // 0.005^2 = 2.5e-5.
+                assert!(
+                    (si_value - 2.5e-5).abs() < 1e-12,
+                    "expected ~2.5e-5, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_dimensionless_scalars_collapse_to_real() {
+        // DL + DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_add(&dimensionless_val(2.0), &dimensionless_val(3.0)) {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12, "expected ~5.0, got {v}"),
+            other => panic!("expected Value::Real(~5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_sub_dimensionless_scalars_collapse_to_real() {
+        // DL - DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_sub(&dimensionless_val(5.0), &dimensionless_val(2.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_same_dimension_scalars_stay_scalar() {
+        // L + L = L: a dimensioned sum must stay Value::Scalar.
+        match eval_add(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::LENGTH, "L+L should be LENGTH");
+                assert!(
+                    (si_value - 0.005).abs() < 1e-12,
+                    "expected ~0.005, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_length_plus_bare_real_is_undef() {
+        // Additive dimension-safety: cannot add a bare number to a Length.
+        assert!(
+            eval_add(&mm_val(2.0), &Value::Real(3.0)).is_undef(),
+            "Length + Real must be Undef"
+        );
+    }
+
+    /// Invariant V (task 4374/β): no ARITHMETIC op may construct a
+    /// `Value::Scalar { dimension }` with `dimension.is_dimensionless()`. This
+    /// is the consolidated regression lock for the per-op routing (steps
+    /// 2/4/6/8). It asserts only runtime VARIANTS — never docstrings or symbol
+    /// names. Scoped to arithmetic eval_* ops; the geometry_ops producer has
+    /// its own guard in reify-eval.
+    #[test]
+    fn arithmetic_never_produces_dimensionless_scalar() {
+        fn assert_no_dimensionless_scalar(v: &Value) {
+            if let Value::Scalar { dimension, .. } = v {
+                assert!(
+                    !dimension.is_dimensionless(),
+                    "Invariant V violated: arithmetic produced a dimensionless Scalar: {:?}",
+                    v
+                );
+            }
+        }
+
+        // 1/L operand for the dimension-cancelling product case.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+
+        // Direct private-fn calls across the dimension-cancelling matrix.
+        assert_no_dimensionless_scalar(&eval_div(&mm_val(30.0), &mm_val(10.0))); // L / L
+        assert_no_dimensionless_scalar(&eval_mul(&inv_len, &mm_val(250.0))); // (1/L) · L
+        assert_no_dimensionless_scalar(&eval_pow(&mm_val(5.0), &Value::Int(0))); // L ^ 0
+        assert_no_dimensionless_scalar(&eval_add(
+            &dimensionless_val(2.0),
+            &dimensionless_val(3.0),
+        )); // DL + DL
+        assert_no_dimensionless_scalar(&eval_sub(
+            &dimensionless_val(5.0),
+            &dimensionless_val(2.0),
+        )); // DL - DL
+
+        // Headline via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        assert_no_dimensionless_scalar(&eval_expr(&expr, &EvalContext::simple(&values)));
+    }
+
+    /// Characterization (task 4374/β step-10): locks comparison behaviour of
+    /// dimensionless arithmetic RESULTS before the eval_eq/eval_cmp dead-guard
+    /// removal (step-11). `30mm/10mm` now evaluates to Value::Real(3.0)
+    /// (0.03/0.01 == 3.0 exactly in f64); the as_f64 fallback must compare it
+    /// numerically. This stays GREEN across step-11 — it is the regression
+    /// guard for that refactor.
+    #[test]
+    fn dimensionless_division_result_compares_numerically() {
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        // `30mm / 10mm` (yields Real(3.0)) compared against an Int rhs.
+        let make_cmp = |op: BinOp, rhs: i64| {
+            let div = CompiledExpr::binop(
+                BinOp::Div,
+                lit(mm_val(30.0), Type::length()),
+                lit(mm_val(10.0), Type::length()),
+                Type::dimensionless_scalar(),
+            );
+            CompiledExpr::binop(op, div, lit(Value::Int(rhs), Type::Int), Type::Bool)
+        };
+
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Eq, 3), &ctx),
+            Value::Bool(true),
+            "30mm/10mm == 3"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Lt, 4), &ctx),
+            Value::Bool(true),
+            "30mm/10mm < 4"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Gt, 2), &ctx),
+            Value::Bool(true),
+            "30mm/10mm > 2"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Ne, 5), &ctx),
+            Value::Bool(true),
+            "30mm/10mm != 5"
+        );
+
+        // Dimensioned-incompatibility guards — must remain stable across the
+        // step-11 dead-guard removal: a Length is neither equal to nor
+        // comparable with a bare Real.
+        assert_eq!(
+            eval_eq(&mm_val(3.0), &Value::Real(3.0)),
+            Value::Bool(false),
+            "Length == Real must be false"
+        );
+        assert_eq!(
+            eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),
+            Value::Undef,
+            "Length < Real must be Undef"
+        );
+    }
+
+    /// Amendment (task 4374/β, reviewer suggestion 1): a *dimensionless* Scalar
+    /// reaching eval_eq/eval_cmp must still compare numerically via the as_f64
+    /// fallback — NOT silently become `false`/`Undef`. Invariant V keeps
+    /// arithmetic producers from emitting Scalar{DIMENSIONLESS}, but
+    /// non-arithmetic sources (literals, struct/field defaults, deserialized
+    /// state) can, so the `!dimension.is_dimensionless()` guard on the
+    /// Scalar-vs-non-Scalar arm is retained defensively. This locks that
+    /// behaviour against a future re-removal of the guard.
+    #[test]
+    fn dimensionless_scalar_compares_numerically_in_eq_cmp() {
+        // eq: a hand-built Scalar{DIMENSIONLESS} compares numerically with a
+        // bare Real/Int of the same magnitude.
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(3.0)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Real of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Int(3)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Int of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(4.0)),
+            Value::Bool(false),
+            "Scalar{{DIMENSIONLESS}} == Real of differing magnitude must be false"
+        );
+
+        // cmp: ordering against a bare Real/Int flows through as_f64.
+        assert_eq!(
+            eval_cmp(&dimensionless_val(3.0), &Value::Real(4.0), |a, b| a < b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} < Real must compare numerically"
+        );
+        assert_eq!(
+            eval_cmp(&dimensionless_val(5.0), &Value::Int(2), |a, b| a > b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} > Int must compare numerically"
         );
     }
 

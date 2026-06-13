@@ -78,10 +78,10 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// - `args[0]`: A `MultiCaseResult` struct instance
 ///   (`Value::Map { "cases" -> Value::Map<Value::String, ElasticResult-Map> }`).
 /// - `args[1]`: A non-empty `Value::Map<Value::String, numeric>` of (case name,
-///   weight) pairs. Accepted weight types are `Value::Real`, `Value::Int`,
-///   and `Value::Scalar` **with a dimensionless dimension** (i.e.
-///   `dimension.is_dimensionless()` is true). A `Value::Scalar` with a
-///   non-dimensionless dimension (e.g. `1.4 m`) is explicitly rejected to
+///   weight) pairs. Accepted weight types are `Value::Real` and `Value::Int`.
+///   Per Invariant V (real-dimensionless unification) a dimensionless quantity
+///   is always materialized as `Value::Real`, so any `Value::Scalar` reaching
+///   this consumer is dimensioned (e.g. `1.4 m`) and is rejected to
 ///   `Value::Undef` — the contract is stated here in production code rather
 ///   than relying on test coverage alone (Task 2544 convention). Non-finite
 ///   values — NaN, ±Inf — also reject to `Value::Undef`.
@@ -140,9 +140,9 @@ fn is_case_container(case_val: &Value) -> bool {
 ///   `cases` not a Map)
 /// - `args[1]` is not `Value::Map` or is empty
 /// - any weight key is not `Value::String`
-/// - any weight value is not `Value::Real`, `Value::Int`, or a dimensionless
-///   `Value::Scalar` (i.e. `Value::Scalar` with non-dimensionless dimension
-///   such as `1.4 m` is rejected)
+/// - any weight value is not `Value::Real` or `Value::Int` (per Invariant V a
+///   dimensionless quantity arrives as `Value::Real`; any `Value::Scalar` is
+///   dimensioned — such as `1.4 m` — and is rejected)
 /// - any weight value has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
 /// - a case value is not a `Value::Map` or `Value::StructureInstance`
@@ -187,10 +187,8 @@ fn linear_combine(args: &[Value]) -> Value {
         let weight = match weight_val {
             Value::Real(r) => *r,
             Value::Int(i) => *i as f64,
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if dimension.is_dimensionless() => *si_value,
+            // Per Invariant V a dimensionless quantity arrives as Value::Real;
+            // any Value::Scalar reaching here is dimensioned and is rejected.
             _ => return Value::Undef,
         };
         // Non-finite weights (NaN, ±Inf) would poison the accumulator — reject.
@@ -460,10 +458,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
         let weight_ok = match weight_val {
             Value::Real(r) => r.is_finite(),
             Value::Int(_) => true,
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if dimension.is_dimensionless() => si_value.is_finite(),
+            // Per Invariant V a dimensionless quantity arrives as Value::Real;
+            // any Value::Scalar reaching here is dimensioned and is rejected.
             _ => false,
         };
         if !weight_ok {

@@ -907,12 +907,25 @@ fn units_cross_system_arithmetic() {
     );
 
     // ── pressure_ratio: (1psi) / (1Pa) = dimensionless ≈ 6894.757 ────────────
-    assert_scalar_cell(
-        &result,
-        e,
-        "pressure_ratio",
-        PSI_SI,
-        1e-6,
-        DimensionVector::DIMENSIONLESS,
-    );
+    // Pressure / Pressure cancels to a dimensionless ratio. Per Invariant V
+    // (task 4374/β) a dimension-cancelling quotient collapses to Value::Real,
+    // NOT Value::Scalar { DIMENSIONLESS } — so this cell is a bare Real.
+    let pr_id = ValueCellId::new(e, "pressure_ratio");
+    let pr = result
+        .values
+        .get(&pr_id)
+        .unwrap_or_else(|| panic!("{}.pressure_ratio not found in eval result", e));
+    match pr {
+        Value::Real(r) => assert!(
+            (r - PSI_SI).abs() < 1e-6,
+            "{}.pressure_ratio: expected si_value ≈{}, got {}",
+            e,
+            PSI_SI,
+            r
+        ),
+        other => panic!(
+            "{}.pressure_ratio should be Value::Real (dimensionless ratio per Invariant V), got {:?}",
+            e, other
+        ),
+    }
 }
