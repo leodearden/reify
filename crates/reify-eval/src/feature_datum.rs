@@ -311,3 +311,93 @@ mod equivalence_tests {
         assert!(!points_coincident([1.0, 2.0, 3.0], [1.0, 2.0, 4.0], TOL));
     }
 }
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+
+    const TOL: f64 = 1e-6;
+
+    fn ax(origin: [f64; 3], direction: [f64; 3]) -> Datum {
+        Datum::Axis {
+            origin,
+            direction,
+            radius: None,
+        }
+    }
+
+    fn pl(origin: [f64; 3], normal: [f64; 3]) -> Datum {
+        Datum::Plane { origin, normal }
+    }
+
+    fn count_axes(ds: &[Datum]) -> usize {
+        ds.iter().filter(|d| matches!(d, Datum::Axis { .. })).count()
+    }
+
+    fn count_planes(ds: &[Datum]) -> usize {
+        ds.iter()
+            .filter(|d| matches!(d, Datum::Plane { .. }))
+            .count()
+    }
+
+    #[test]
+    fn three_coaxial_axes_collapse_to_one() {
+        // Three rays on the world Z axis — identical sense, opposite sense, and
+        // offset-along-the-line — are one axis. This is B8's dedup in miniature
+        // (the opposite-sense member is the revolved rectangle's far end-arc).
+        let ds = dedup_datums(
+            vec![
+                ax([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                ax([0.0, 0.0, 2.0], [0.0, 0.0, -1.0]),
+                ax([0.0, 0.0, -3.0], [0.0, 0.0, 1.0]),
+            ],
+            TOL,
+        );
+        assert_eq!(ds.len(), 1, "three coaxial axes must collapse to one");
+        assert_eq!(count_axes(&ds), 1);
+    }
+
+    #[test]
+    fn distinct_axes_do_not_merge() {
+        // A genuine disagreement: the Z axis vs an offset, perpendicular X axis.
+        // Dedup must not paper over a real conflict by over-merging.
+        let ds = dedup_datums(
+            vec![
+                ax([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                ax([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            ],
+            TOL,
+        );
+        assert_eq!(ds.len(), 2, "non-coaxial axes must stay distinct");
+    }
+
+    #[test]
+    fn duplicate_coplanar_planes_collapse_to_one() {
+        // Same z = 0 plane, opposite normal sense + different in-plane anchor.
+        let ds = dedup_datums(
+            vec![
+                pl([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                pl([5.0, 7.0, 0.0], [0.0, 0.0, -1.0]),
+            ],
+            TOL,
+        );
+        assert_eq!(ds.len(), 1, "coplanar planes must collapse to one");
+        assert_eq!(count_planes(&ds), 1);
+    }
+
+    #[test]
+    fn axes_and_planes_never_cross_merge() {
+        // An axis and a plane sharing origin + Z geometry are different kinds:
+        // dedup is kind-partitioned, so both survive.
+        let ds = dedup_datums(
+            vec![
+                ax([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+                pl([0.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ],
+            TOL,
+        );
+        assert_eq!(ds.len(), 2, "axis and plane must not cross-merge");
+        assert_eq!(count_axes(&ds), 1);
+        assert_eq!(count_planes(&ds), 1);
+    }
+}
