@@ -3183,6 +3183,18 @@ impl OcctKernel {
                 let dev = self.measure_mesh_deviation(*nominal, &actual_mesh)?;
                 Ok(Value::Real(dev))
             }
+            // ε prerequisites (pre-1): stub arms so the workspace links. Real
+            // get_shape → ffi → compose-datum dispatch lands in steps 2 (face),
+            // 4 (edge), and 10 (tolerance).
+            GeometryQuery::FaceAnalyticDatum(_) => Err(QueryError::QueryFailed(
+                "FaceAnalyticDatum: unimplemented (ε step-2)".to_string(),
+            )),
+            GeometryQuery::EdgeAnalyticDatum(_) => Err(QueryError::QueryFailed(
+                "EdgeAnalyticDatum: unimplemented (ε step-4)".to_string(),
+            )),
+            GeometryQuery::ShapeLocalTolerance(_) => Err(QueryError::QueryFailed(
+                "ShapeLocalTolerance: unimplemented (ε step-10)".to_string(),
+            )),
         }
     }
 

@@ -520,6 +520,12 @@ enum QueryKey {
     FaceSurfaceKind(GeometryHandleId),
     /// EdgeCurveKind keys the (single) edge handle.
     EdgeCurveKind(GeometryHandleId),
+    /// FaceAnalyticDatum keys the (single) face handle (geometric-relations ε).
+    FaceAnalyticDatum(GeometryHandleId),
+    /// EdgeAnalyticDatum keys the (single) edge handle (geometric-relations ε).
+    EdgeAnalyticDatum(GeometryHandleId),
+    /// ShapeLocalTolerance keys the (single) sub-shape handle (geometric-relations ε).
+    ShapeLocalTolerance(GeometryHandleId),
     /// OwnerBody keys the (single) child sub-handle (the `extract_*`
     /// product). The stored `Value` should be a `Value::Int` carrying the
     /// parent body's `GeometryHandleId.0`.
@@ -708,6 +714,12 @@ impl QueryKey {
             // hashed by handle alone (no extra params).
             GeometryQuery::FaceSurfaceKind(id) => QueryKey::FaceSurfaceKind(*id),
             GeometryQuery::EdgeCurveKind(id) => QueryKey::EdgeCurveKind(*id),
+            // ε: analytic-datum + local-tolerance queries hashed by their
+            // single sub-shape handle (no extra params), parallel to the
+            // FaceSurfaceKind / EdgeCurveKind classification arms.
+            GeometryQuery::FaceAnalyticDatum(id) => QueryKey::FaceAnalyticDatum(*id),
+            GeometryQuery::EdgeAnalyticDatum(id) => QueryKey::EdgeAnalyticDatum(*id),
+            GeometryQuery::ShapeLocalTolerance(id) => QueryKey::ShapeLocalTolerance(*id),
             // Owner-body provenance from task 2658 (PRD line 81); hashed by
             // the child sub-handle alone.
             GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
@@ -1609,6 +1621,11 @@ impl GeometryKernel for MockGeometryKernel {
             // ζ / C4: generic fallback uses the `actual` handle as the
             // representative handle (parallel to the Distance `from` arm).
             GeometryQuery::MaxDeviation { actual, .. } => actual,
+            // ε: single-handle analytic-datum + tolerance queries fall back to
+            // their handle, parallel to the FaceSurfaceKind / EdgeCurveKind arms.
+            GeometryQuery::FaceAnalyticDatum(id) => id,
+            GeometryQuery::EdgeAnalyticDatum(id) => id,
+            GeometryQuery::ShapeLocalTolerance(id) => id,
         };
 
         self.queries

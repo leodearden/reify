@@ -94,6 +94,13 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pln.hxx>
+// Analytic surface/curve geometry accessors (geometric-relations ε)
+#include <gp_Cylinder.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Lin.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 
 // OCCT properties + surface adaptor
@@ -3057,6 +3064,33 @@ rust::String edge_curve_kind(const OcctShape& shape) {
             case GeomAbs_OffsetCurve:  return rust::String("OffsetCurve");
             default:                   return rust::String("Other");
         }
+    });
+}
+
+// --- Analytic-datum projection (geometric-relations ε) ---
+//
+// pre-1 scaffolding: declared + linkable stub bodies so the cxx bridge thunks
+// resolve and the kernel crate links. Real `BRepAdaptor_*::GetType()` switch
+// implementations land in steps 2 (face), 4 (edge), and 10 (tolerance).
+
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("face_analytic_datum", [&]() -> AnalyticSurfaceDatum {
+        (void)shape;
+        throw std::runtime_error("face_analytic_datum: unimplemented");
+    });
+}
+
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("edge_analytic_datum", [&]() -> AnalyticCurveDatum {
+        (void)shape;
+        throw std::runtime_error("edge_analytic_datum: unimplemented");
+    });
+}
+
+double shape_local_tolerance(const OcctShape& shape) {
+    return wrap_occt_call("shape_local_tolerance", [&]() -> double {
+        (void)shape;
+        throw std::runtime_error("shape_local_tolerance: unimplemented");
     });
 }
 

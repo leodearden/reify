@@ -110,6 +110,39 @@ pub mod ffi {
         dir_max: Point3,
     }
 
+    /// Analytic datum projected from a face's underlying analytic surface.
+    ///
+    /// Returned by `face_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` surface produced the datum so the Rust
+    /// dispatch can compose the correct projected `Value` (Axis for
+    /// Cylinder/Cone, Plane for Plane, Point for the Sphere centre). `origin`
+    /// and `direction` carry the datum's location + axis direction;
+    /// `scalar1`/`scalar2` carry the analytic parameters (radius / semi-angle;
+    /// apex-distance / —) retained in the bundle's trait record but not
+    /// consumed by the `.axis`/`.plane`/`.point` projections in this task.
+    struct AnalyticSurfaceDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
+    /// Analytic datum projected from an edge's underlying analytic curve.
+    ///
+    /// Returned by `edge_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` curve produced the datum. `origin` and
+    /// `direction` carry the line position + direction or the circle/ellipse
+    /// centre + axis direction; `scalar1`/`scalar2` carry radius / major-radius
+    /// and minor-radius.
+    struct AnalyticCurveDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -956,6 +989,29 @@ pub mod ffi {
         /// `reify_types::EdgeCurveKind::try_from_str` on the Rust side.
         /// Errors if `shape` is not a `TopAbs_EDGE`.
         fn edge_curve_kind(shape: &OcctShape) -> Result<String>;
+
+        /// Project a face's underlying analytic surface to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Surface::GetType()` switch:
+        /// Cylinder/Cone → axis datum (`Axis().Location()`/`.Direction()` +
+        /// radius / semi-angle), Plane → plane datum, Sphere → centre-point
+        /// datum. The `kind` byte in the returned `AnalyticSurfaceDatum`
+        /// records the GeomAbs classification for Rust-side `Value` composition.
+        /// Errors if `shape` is not a `TopAbs_FACE` or the surface is
+        /// non-analytic (e.g. `GeomAbs_SurfaceOfRevolution`, B-spline).
+        fn face_analytic_datum(shape: &OcctShape) -> Result<AnalyticSurfaceDatum>;
+
+        /// Project an edge's underlying analytic curve to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Curve::GetType()` switch:
+        /// Line → axis datum (`Position()`/`.Direction()`), Circle/Ellipse →
+        /// centre + axis datum (`Axis()` + `.Location()` + radius). Errors if
+        /// `shape` is not a `TopAbs_EDGE` or the curve is non-analytic.
+        fn edge_analytic_datum(shape: &OcctShape) -> Result<AnalyticCurveDatum>;
+
+        /// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+        /// (geometric-relations ε). Returns the face/edge/vertex tolerance in
+        /// kernel-native units (metres) — feeds the feature-datum dedup
+        /// tolerance formula `max(confusion_floor, localTol(A), localTol(B))`.
+        fn shape_local_tolerance(shape: &OcctShape) -> Result<f64>;
 
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).

@@ -1376,6 +1376,42 @@ pub enum GeometryQuery {
         /// (= 0.0001 m, mirroring `Engine::DEFAULT_TESSELLATION_TOLERANCE`).
         tolerance: f64,
     },
+    /// Project a face's underlying analytic surface to a datum `Value`
+    /// (geometric-relations ε, PRD §7.2 / design §2.2).
+    ///
+    /// Backed by `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) classification
+    /// → `gp_*::Axis()`/`Location()` extraction. Returns the projected datum
+    /// `Value` selected by GeomAbs kind: `Value::Axis` for Cylinder/Cone,
+    /// `Value::Plane` for Plane, `Value::Point` for the Sphere centre. The
+    /// radius / semi-angle / apex parameters ride in the FFI struct's
+    /// `scalar1`/`scalar2` and are retained in the bundle's trait record but
+    /// are not consumed by the `.axis`/`.plane`/`.point` projections here.
+    ///
+    /// # Capability
+    /// `BRepOnly` — analytic surface classification requires OCCT; mesh /
+    /// voxel representations cannot answer it.
+    FaceAnalyticDatum(GeometryHandleId),
+    /// Project an edge's underlying analytic curve to a datum `Value`
+    /// (geometric-relations ε).
+    ///
+    /// Backed by `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) classification.
+    /// Returns `Value::Axis` for a `GeomAbs_Line` edge (position + direction)
+    /// and for a `GeomAbs_Circle`/`Ellipse` edge (centre + axis direction; the
+    /// radius rides in the FFI struct).
+    ///
+    /// # Capability
+    /// `BRepOnly` — analytic curve classification requires OCCT.
+    EdgeAnalyticDatum(GeometryHandleId),
+    /// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+    /// (geometric-relations ε).
+    ///
+    /// Returns `Value::Real(tol_m)` — the face/edge/vertex tolerance in
+    /// kernel-native units (metres). Feeds the feature-datum dedup tolerance
+    /// formula `max(confusion_floor, localTol(A), localTol(B))` (design §2.3).
+    ///
+    /// # Capability
+    /// `BRepOnly` — `BRep_Tool::Tolerance` is an OCCT B-rep concept.
+    ShapeLocalTolerance(GeometryHandleId),
 }
 
 impl GeometryQuery {
@@ -1418,6 +1454,9 @@ impl GeometryQuery {
             GeometryQuery::CurveCurvatureAt { .. } => "CurveCurvatureAt",
             GeometryQuery::SurfaceCurvatureAt { .. } => "SurfaceCurvatureAt",
             GeometryQuery::MaxDeviation { .. } => "MaxDeviation",
+            GeometryQuery::FaceAnalyticDatum(_) => "FaceAnalyticDatum",
+            GeometryQuery::EdgeAnalyticDatum(_) => "EdgeAnalyticDatum",
+            GeometryQuery::ShapeLocalTolerance(_) => "ShapeLocalTolerance",
         }
     }
 }
@@ -1483,6 +1522,11 @@ impl GeometryQuery {
             // ζ / C4: both operands require OCCT (actual tessellated by OCCT,
             // nominal projected onto exact B-rep) — so MaxDeviation is BRepOnly.
             GeometryQuery::MaxDeviation { .. } => QueryCapability::BRepOnly,
+            // ε: analytic surface/curve classification + BRep_Tool::Tolerance
+            // require OCCT — BRep-only (mesh/voxel reprs cannot answer them).
+            GeometryQuery::FaceAnalyticDatum(_) => QueryCapability::BRepOnly,
+            GeometryQuery::EdgeAnalyticDatum(_) => QueryCapability::BRepOnly,
+            GeometryQuery::ShapeLocalTolerance(_) => QueryCapability::BRepOnly,
 
             // All other extant variants default to BRepAndMesh.
             GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
