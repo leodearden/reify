@@ -3,11 +3,11 @@
 Status: deferred to v0.2 per 2026-04-26 decision.
 Design resolved 2026-04-28 — see "Resolved design decisions" below.
 Completion: the decomposition of `docs/prds/v0_3/auto-type-param-resolution-completion.md`
-has landed — residuals α/β/γ/δ (tasks 4431/4433/4434/4435, covering substitution,
-constraint-aware selection, value population, and BFS-fallback soundness) are merged.
+has landed — residuals α/β/γ/δ (tasks 4431/4433/4434/4435, covering substitution (α),
+constraint-aware selection (β), BFS-fallback soundness (γ), and value population (δ)) are merged.
 v0.2 `auto`-resolution backtracking is DONE. This v0.2 PRD remains the design
 source-of-truth for the search algorithm; the v0.3 completion contract's §4–§8 supply
-the missing apply/evaluate/value-population/soundness contracts and formally supersede
+the missing apply/evaluate/soundness/value-population contracts and formally supersede
 the v0.1 parent (`docs/prds/auto-type-param-resolution.md`).
 
 ## Goal
