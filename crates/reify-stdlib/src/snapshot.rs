@@ -3750,4 +3750,72 @@ mod tests {
             result
         );
     }
+
+    // ── center_of_mass: full world_transform com offset (task 4471 step-3) ──
+    //
+    // RED until step-4 replaces the ORIGIN-only accumulator with
+    // `world_apply_point(world_transform, com)`.
+
+    /// `center_of_mass` must honor the body's com offset under the FULL
+    /// world_transform (rotation included), not just the world origin.
+    ///
+    /// Setup:
+    ///   solid = mass_properties(1 kg, com=(1,0,0) m, zero inertia)
+    ///   joint = revolute(+Z, 0..π) bound to π/2 (90° about Z, t=0)
+    ///   → world_transform = R_z(π/2), translation = (0,0,0)
+    ///
+    /// World-frame COM = R_z(π/2) · (1,0,0) + (0,0,0) = (0,1,0).
+    ///
+    /// Distinguishes three possible computations:
+    ///   - world origin       → (0, 0, 0)  ← step-2 (ORIGIN-only) behaviour — wrong
+    ///   - naïve t + com      → (1, 0, 0)  ← if rotation is ignored — wrong
+    ///   - correct R·com + t  → (0, 1, 0)  ← required (step-4)
+    ///
+    /// RED after step-2: returns (0,0,0).
+    #[test]
+    fn center_of_mass_honors_com_offset_under_full_transform() {
+        // mass_properties(1 kg, com=(1,0,0) m, zero 3×3 inertia)
+        let mass_val = Value::Scalar {
+            si_value: 1.0,
+            dimension: reify_core::DimensionVector::MASS,
+        };
+        let com_val = Value::Point(vec![
+            Value::length(1.0),
+            Value::length(0.0),
+            Value::length(0.0),
+        ]);
+        let zero_inertia = Value::Matrix(vec![vec![Value::Real(0.0); 3]; 3]);
+        let solid = eval_builtin("mass_properties", &[mass_val, com_val, zero_inertia]);
+        assert!(!solid.is_undef(), "mass_properties must not be Undef for valid args");
+
+        // revolute(+Z, 0..π) bound to π/2  →  R_z(90°), translation=(0,0,0)
+        let j_rev = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi()]);
+        let m0 = eval_builtin("mechanism", &[]);
+        let m1 = eval_builtin("body", &[m0, solid, j_rev.clone()]);
+        let binding = eval_builtin(
+            "bind",
+            &[j_rev, Value::angle(std::f64::consts::FRAC_PI_2)],
+        );
+        let snap = eval_builtin("snapshot", &[m1, Value::List(vec![binding])]);
+
+        let result = eval_builtin("center_of_mass", &[snap]);
+
+        // Expected: R_z(90°) · (1,0,0) + (0,0,0) = (0, 1, 0)
+        let [cx, cy, cz] = decompose_point3_length_for_assert(&result);
+        assert!(
+            cx.abs() < 1e-9,
+            "COM.x should be 0.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cx
+        );
+        assert!(
+            (cy - 1.0).abs() < 1e-9,
+            "COM.y should be 1.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cy
+        );
+        assert!(
+            cz.abs() < 1e-9,
+            "COM.z should be 0.0 (R_z(90°)·(1,0,0) = (0,1,0)), got {}",
+            cz
+        );
+    }
 }
