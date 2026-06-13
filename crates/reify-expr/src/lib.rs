@@ -3930,14 +3930,23 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Scalar vs non-Scalar: not equal. Post-Invariant V (task 4374/β) every
-        // Value::Scalar reaching here is dimensioned — no arithmetic op produces
-        // a Scalar{DIMENSIONLESS} — so the old `!dimension.is_dimensionless()`
-        // guard was always-true and is dropped. (Scalar-vs-Scalar is handled by
-        // the earlier arm.)
-        (Value::Scalar { .. }, _) | (_, Value::Scalar { .. }) => Value::Bool(false),
+        // Scalar vs non-Scalar. A *dimensioned* Scalar (e.g. a Length) is never
+        // equal to a bare number, so this is `false`. A *dimensionless* Scalar
+        // is just a plain quantity, though: post-Invariant V (task 4374/β) no
+        // arithmetic op produces one (producers route through from_real_scalar),
+        // but eq operands also come from literals, struct/field defaults, map
+        // values, and deserialized state — non-arithmetic sources that can still
+        // carry a Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below rather than silently flipping it to `false`.
+        // (Scalar-vs-Scalar is handled by the earlier arm.)
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Bool(false)
+        }
         _ => {
-            // Int/Real numeric comparison via as_f64.
+            // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -3974,13 +3983,20 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Scalar vs non-Scalar: incomparable. Post-Invariant V (task 4374/β)
-        // every Value::Scalar reaching here is dimensioned — no arithmetic op
-        // produces a Scalar{DIMENSIONLESS} — so the old
-        // `!dimension.is_dimensionless()` guard was always-true and is dropped.
-        // (Scalar-vs-Scalar is handled by the earlier arm.)
-        (Value::Scalar { .. }, _) | (_, Value::Scalar { .. }) => Value::Undef,
-        // Fallback: Int/Real numeric comparison via as_f64.
+        // Scalar vs non-Scalar. A *dimensioned* Scalar is incomparable to a bare
+        // number → Undef. A *dimensionless* Scalar is a plain quantity, though:
+        // post-Invariant V (task 4374/β) no arithmetic op produces one, but cmp
+        // operands also come from literals, struct/field defaults, map values,
+        // and deserialized state — non-arithmetic sources that can still carry a
+        // Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below. (Scalar-vs-Scalar is handled by the earlier arm.)
+        (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
+            if !dimension.is_dimensionless() =>
+        {
+            Value::Undef
+        }
+        // Fallback: Int / Real / dimensionless Scalar numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
             _ => Value::Undef,
@@ -7724,6 +7740,47 @@ mod tests {
             eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),
             Value::Undef,
             "Length < Real must be Undef"
+        );
+    }
+
+    /// Amendment (task 4374/β, reviewer suggestion 1): a *dimensionless* Scalar
+    /// reaching eval_eq/eval_cmp must still compare numerically via the as_f64
+    /// fallback — NOT silently become `false`/`Undef`. Invariant V keeps
+    /// arithmetic producers from emitting Scalar{DIMENSIONLESS}, but
+    /// non-arithmetic sources (literals, struct/field defaults, deserialized
+    /// state) can, so the `!dimension.is_dimensionless()` guard on the
+    /// Scalar-vs-non-Scalar arm is retained defensively. This locks that
+    /// behaviour against a future re-removal of the guard.
+    #[test]
+    fn dimensionless_scalar_compares_numerically_in_eq_cmp() {
+        // eq: a hand-built Scalar{DIMENSIONLESS} compares numerically with a
+        // bare Real/Int of the same magnitude.
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(3.0)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Real of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Int(3)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Int of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(4.0)),
+            Value::Bool(false),
+            "Scalar{{DIMENSIONLESS}} == Real of differing magnitude must be false"
+        );
+
+        // cmp: ordering against a bare Real/Int flows through as_f64.
+        assert_eq!(
+            eval_cmp(&dimensionless_val(3.0), &Value::Real(4.0), |a, b| a < b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} < Real must compare numerically"
+        );
+        assert_eq!(
+            eval_cmp(&dimensionless_val(5.0), &Value::Int(2), |a, b| a > b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} > Int must compare numerically"
         );
     }
 
