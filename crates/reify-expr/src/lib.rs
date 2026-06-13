@@ -7653,6 +7653,64 @@ mod tests {
         assert_no_dimensionless_scalar(&eval_expr(&expr, &EvalContext::simple(&values)));
     }
 
+    /// Characterization (task 4374/β step-10): locks comparison behaviour of
+    /// dimensionless arithmetic RESULTS before the eval_eq/eval_cmp dead-guard
+    /// removal (step-11). `30mm/10mm` now evaluates to Value::Real(3.0)
+    /// (0.03/0.01 == 3.0 exactly in f64); the as_f64 fallback must compare it
+    /// numerically. This stays GREEN across step-11 — it is the regression
+    /// guard for that refactor.
+    #[test]
+    fn dimensionless_division_result_compares_numerically() {
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        // `30mm / 10mm` (yields Real(3.0)) compared against an Int rhs.
+        let make_cmp = |op: BinOp, rhs: i64| {
+            let div = CompiledExpr::binop(
+                BinOp::Div,
+                lit(mm_val(30.0), Type::length()),
+                lit(mm_val(10.0), Type::length()),
+                Type::dimensionless_scalar(),
+            );
+            CompiledExpr::binop(op, div, lit(Value::Int(rhs), Type::Int), Type::Bool)
+        };
+
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Eq, 3), &ctx),
+            Value::Bool(true),
+            "30mm/10mm == 3"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Lt, 4), &ctx),
+            Value::Bool(true),
+            "30mm/10mm < 4"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Gt, 2), &ctx),
+            Value::Bool(true),
+            "30mm/10mm > 2"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Ne, 5), &ctx),
+            Value::Bool(true),
+            "30mm/10mm != 5"
+        );
+
+        // Dimensioned-incompatibility guards — must remain stable across the
+        // step-11 dead-guard removal: a Length is neither equal to nor
+        // comparable with a bare Real.
+        assert_eq!(
+            eval_eq(&mm_val(3.0), &Value::Real(3.0)),
+            Value::Bool(false),
+            "Length == Real must be false"
+        );
+        assert_eq!(
+            eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),
+            Value::Undef,
+            "Length < Real must be Undef"
+        );
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
