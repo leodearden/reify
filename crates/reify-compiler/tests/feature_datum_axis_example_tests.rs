@@ -21,7 +21,7 @@
 //! file read).
 
 use reify_compiler::CompiledModule;
-use reify_core::Severity;
+use reify_core::{Severity, Type};
 
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -77,10 +77,15 @@ fn feature_datum_axis_example_compiles_under_stdlib_with_zero_errors() {
     );
 }
 
-/// The compiled `Cyl` template must carry an `a` value cell — the
-/// `let a : Axis = cyl.axis` binding. Cell presence is the compile-level proxy
-/// that the feature→datum `.axis` projection typed (`Type::Geometry` receiver →
-/// `Axis`) and lowered to a kernel-backed value cell rather than being dropped.
+/// The compiled `Cyl` template's `a` value cell — the `let a : Axis = cyl.axis`
+/// binding — must carry an initializer that TYPED to `Type::Axis`. Asserting the
+/// initializer's resolved type (rather than mere cell presence, which a *failed*
+/// projection also satisfies — the binding's cell is still created, just with an
+/// `Error` initializer type) directly proves the feature→datum `.axis` projection
+/// typed (`Type::Geometry` receiver → `Axis`) and lowered rather than being
+/// dropped. Mirrors `projection_type` in `datum_projection_tests.rs` (read the
+/// initializer's computed `result_type`, not the `: Axis` annotation — which would
+/// read `Axis` even if the RHS poisoned).
 #[test]
 fn feature_datum_axis_example_lowers_cyl_axis_to_value_cell() {
     let module = compile_example();
@@ -96,13 +101,30 @@ fn feature_datum_axis_example_lowers_cyl_axis_to_value_cell() {
             )
         });
 
-    assert!(
-        cyl.value_cells.iter().any(|c| c.id.member == "a"),
-        "expected Cyl to carry an 'a' value cell (the `let a : Axis = cyl.axis` \
-         feature→datum projection); found cells: {:?}",
-        cyl.value_cells
-            .iter()
-            .map(|c| &c.id.member)
-            .collect::<Vec<_>>()
+    let a_cell = cyl
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "a")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected Cyl to carry an 'a' value cell (the `let a : Axis = cyl.axis` \
+                 feature→datum projection); found cells: {:?}",
+                cyl.value_cells
+                    .iter()
+                    .map(|c| &c.id.member)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let init = a_cell.default_expr.as_ref().expect(
+        "`a` value cell must carry its `cyl.axis` initializer expr (the feature→datum \
+         projection); a missing initializer means the projection was dropped",
+    );
+    assert_eq!(
+        init.result_type,
+        Type::Axis,
+        "`let a : Axis = cyl.axis` initializer must type to Axis (proving the \
+         feature→datum `.axis` projection resolved, not poisoned to Error); got {:?}",
+        init.result_type
     );
 }
