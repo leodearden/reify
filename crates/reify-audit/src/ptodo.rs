@@ -307,9 +307,9 @@ const ALLOWLIST_PREFIXES: &[&str] = &[
 ];
 
 /// §6.8 allowlist check: `true` when `path` (root-relative) starts with any
-/// [`ALLOWLIST_PREFIXES`] entry.
-// G-allow: reused by tests/ptodo_baseline.rs well-formedness test (separate
-// crate — cannot see pub(crate)). Mirrors resolve_liveness/fingerprint pattern.
+/// [`ALLOWLIST_PREFIXES`] entry. Reused by `tests/ptodo_baseline.rs` (separate
+/// crate — cannot use `pub(crate)`). Mirrors `resolve_liveness`/`fingerprint`.
+// G-allow: reused by tests/ptodo_baseline.rs well-formedness test (separate crate; pub(crate) would break it).
 pub fn is_allowlisted(path: &str) -> bool {
     ALLOWLIST_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
@@ -781,9 +781,7 @@ fn liveness_finding(path: &str, summary: String) -> Finding {
 /// baseline (δ step-11) and computes live fingerprints for the ε ratchet
 /// check — keeping the two lock-step and preventing the drift warned about
 /// in PRD §6.6.
-// G-allow: sole callers are tests/ptodo_baseline.rs (separate crate — cannot
-// see pub(crate)) and check() (same module). Mirrors resolve_liveness /
-// resolve_inverse pub-for-integration-test pattern.
+// G-allow: sole callers are tests/ptodo_baseline.rs (separate crate, cannot use pub(crate)) and check(); mirrors resolve_liveness/resolve_inverse pub-for-integration-test pattern.
 pub fn fingerprint(finding: &Finding) -> String {
     let path = &finding.task_id;
     let summary = &finding.summary;

@@ -215,14 +215,14 @@ fn variant_construction_lowers_to_expr_kind() {
 /// annotation) must not panic during lowering.  tree-sitter's error-recovery
 /// may produce a partial or ERROR CST node rather than a well-formed
 /// `variant_field_decl`; in that case `lower_enum_variant` silently elides
-/// the affected fields (see TODO(δ/3942) comments in `ts_parser.rs`).
+/// the affected fields (see TODO(#3942) comments in `ts_parser.rs`).
 ///
 /// This test locks in the "elide on error-recovery, don't panic" contract.
 /// It does not assert on `module.errors` because tree-sitter error-recovery
 /// can succeed at the grammar level without surfacing a top-level ERROR node,
 /// meaning `module.errors` may legitimately be empty here.
 ///
-/// TODO(δ/3942): task δ will add a diagnostic for silently-elided fields.
+/// TODO(#3942): add a diagnostic for silently-elided fields.
 #[test]
 fn malformed_named_field_variant_no_panic() {
     // `field` has no type annotation — tree-sitter attempts error recovery.

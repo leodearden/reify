@@ -10,7 +10,7 @@
 //!
 //! End-to-end negative ("Unbounded source rejected at a `Bounded` slot") is
 //! deferred until a `half_space` / `extrude_infinite` primitive lands — see
-//! the `TODO(geometry-traits-task-4-or-later)` block in
+//! the `TODO(geometry-traits-task-4-or-later)` block in // ptodo:allow — prose xref, no current owner task
 //! `geometry_traits_inference.rs`.
 //!
 //! The trait-decl behaviour (refinements, `required_members`, defaults) is
@@ -328,7 +328,7 @@ fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
 /// Bounded+Connected+Convex. When an Unbounded primitive lands (e.g.
 /// `half_space`, `extrude_infinite`), this test must be updated to
 /// expect `InferredTraits::none()` (or the appropriate subset) for those
-/// variants — see `TODO(geometry-traits-task-4-or-later)` in the inference
+/// variants — see `TODO(geometry-traits-task-4-or-later)` in the inference // ptodo:allow — prose xref
 /// module.
 #[test]
 fn infer_primitive_kind_yields_all_three_traits() {
@@ -685,7 +685,7 @@ fn infer_traits_for_expr_handles_variadic_intersection_all() {
 ///
 /// The negative end-to-end (an Unbounded primitive rejected at this slot)
 /// is deferred until `half_space` / `extrude_infinite` lands — see the
-/// `TODO(geometry-traits-task-4-or-later)` block in
+/// `TODO(geometry-traits-task-4-or-later)` block in // ptodo:allow — prose xref
 /// `geometry_traits_inference.rs`.
 #[test]
 fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {

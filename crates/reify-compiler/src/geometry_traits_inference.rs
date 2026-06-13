@@ -38,7 +38,7 @@
 //!   name. This is the **primary** consumer-facing entry point: the conformance
 //!   walker calls it from `crates/reify-compiler/src/conformance/mod.rs`.
 //!
-//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later)
+//! # TODO(geometry-traits-followup) / TODO(geometry-traits-task-4-or-later) // ptodo:allow — forward-looking doc; update when new Unbounded primitives (half_space, extrude_infinite) land
 //!
 //! The inference table only covers the primitives, combinators, and curve
 //! constructors that exist on this branch. The PRD anticipates additional

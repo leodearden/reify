@@ -151,7 +151,7 @@ pub fn is_long_chain_realization(
 ///
 /// # Integration status
 ///
-/// TODO(task-3445): wire this builder into the realization timing loop
+/// TODO(#3445): wire this builder into the realization timing loop
 /// in `geometry_ops.rs` once the kernel-registry mechanism + OCCT adapter
 /// migration lands. Until then, `long_chain_diagnostic` is scaffolding
 /// — public API with no in-tree caller — exactly mirroring the scope
@@ -286,7 +286,7 @@ pub fn no_kernel_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3443/ο): wire this builder into the `#kernel(...)` pragma
+/// TODO(#3443): wire this builder into the `#kernel(...)` pragma
 /// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
 /// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
 /// API with no in-tree caller — mirroring the `long_chain_diagnostic`
@@ -329,7 +329,7 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller
@@ -365,7 +365,7 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller
@@ -404,7 +404,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller

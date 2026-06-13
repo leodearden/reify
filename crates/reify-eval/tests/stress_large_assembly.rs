@@ -292,9 +292,9 @@ fn mass_propagation_aluminum_plate() {
 /// dependency order so that downstream aggregates like `total_mass` fold after
 /// their per-entity `mass` inputs are resolved.
 #[test]
-#[ignore = "Blocked on task 4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
+#[ignore = "Blocked on #4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
 fn total_mass_computed() {
-    // TODO(task 4358): when unified-dag ε lands, remove #[ignore], call
+    // TODO(#4358): when unified-dag ε lands, remove #[ignore], call
     // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
     // The Undef invariant is regression-pinned by cross_cell_factored_dependent_stays_undef.
 }

@@ -307,7 +307,7 @@ fn canonical_subhandle_ids(
 // the cross-solid membership gate. The full cross-solid resolver is consumed by
 // engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
 // handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(tasks 4360/4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
+// TODO(#4360, #4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
 // driver calls `resolve_subhandle_list` from production code.
 #[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
