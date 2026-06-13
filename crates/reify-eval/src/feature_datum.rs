@@ -362,30 +362,30 @@ pub fn feature_datum_bundle(
     // (1a) Analytic sub-FACE datums.
     if let Ok(faces) = kernel.extract_faces(feature_handle) {
         for f in faces {
-            if let Ok(v) = kernel.query(&GeometryQuery::FaceAnalyticDatum(f)) {
-                if let Some(d) = datum_from_value(&v) {
-                    candidates.push(d);
-                }
+            if let Ok(v) = kernel.query(&GeometryQuery::FaceAnalyticDatum(f))
+                && let Some(d) = datum_from_value(&v)
+            {
+                candidates.push(d);
             }
-            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(f)) {
-                if let Some(tol) = t.as_f64() {
-                    lin_tol = dedup_tolerance(lin_tol, tol);
-                }
+            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(f))
+                && let Some(tol) = t.as_f64()
+            {
+                lin_tol = dedup_tolerance(lin_tol, tol);
             }
         }
     }
     // (1b) Analytic sub-EDGE datums.
     if let Ok(edges) = kernel.extract_edges(feature_handle) {
         for e in edges {
-            if let Ok(v) = kernel.query(&GeometryQuery::EdgeAnalyticDatum(e)) {
-                if let Some(d) = datum_from_value(&v) {
-                    candidates.push(d);
-                }
+            if let Ok(v) = kernel.query(&GeometryQuery::EdgeAnalyticDatum(e))
+                && let Some(d) = datum_from_value(&v)
+            {
+                candidates.push(d);
             }
-            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(e)) {
-                if let Some(tol) = t.as_f64() {
-                    lin_tol = dedup_tolerance(lin_tol, tol);
-                }
+            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(e))
+                && let Some(tol) = t.as_f64()
+            {
+                lin_tol = dedup_tolerance(lin_tol, tol);
             }
         }
     }
