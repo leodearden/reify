@@ -3822,9 +3822,17 @@ pub(crate) fn try_eval_topology_selector(
         // (min_m, max_m); NO kernel filter runs here — deferred to resolve().
         TopologySelectorHelper::EdgesByLength => {
             let target = resolve_selector_target(&args[0], values)?;
-            // args[1]: Range<Length> ValueRef/Literal → (min_m, max_m).
-            let (min_m, max_m) =
-                resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::LENGTH)?;
+            // args[1]: Range<Length> arg → (min_m, max_m). Evaluate-then-accept
+            // (task ε): inline / computed-bound ranges now WORK; a defined-wrong
+            // value emits a Severity::Warning.
+            let (min_m, max_m) = resolve_range_dim_arg(
+                &args[1],
+                values,
+                reify_core::DimensionVector::LENGTH,
+                &function.name,
+                "length_range",
+                diagnostics,
+            )?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Edge,
                 target,
@@ -3838,9 +3846,17 @@ pub(crate) fn try_eval_topology_selector(
         // dimension algebra); the range maps directly to (min_m2, max_m2).
         TopologySelectorHelper::FacesByArea => {
             let target = resolve_selector_target(&args[0], values)?;
-            // args[1]: Range<Area> ValueRef/Literal → (min_m2, max_m2).
-            let (min_m2, max_m2) =
-                resolve_range_dim_arg(&args[1], values, reify_core::DimensionVector::AREA)?;
+            // args[1]: Range<Area> arg → (min_m2, max_m2). Evaluate-then-accept
+            // (task ε): inline / computed-bound ranges now WORK; a defined-wrong
+            // value emits a Severity::Warning.
+            let (min_m2, max_m2) = resolve_range_dim_arg(
+                &args[1],
+                values,
+                reify_core::DimensionVector::AREA,
+                &function.name,
+                "area_range",
+                diagnostics,
+            )?;
             build_leaf_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
@@ -4909,70 +4925,106 @@ fn scalar_si_with_dim(
     }
 }
 
-/// Resolve a single range-bound `CompiledExpr` (the `lower`/`upper` slot of a
-/// `RangeConstructor`) to its SI value, accepting a `Literal(Value::Scalar)`
-/// or a `ValueRef → Value::Scalar`, both dimensioned `expected_dim`.
-fn resolve_scalar_bound_expr(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-    expected_dim: reify_core::DimensionVector,
-) -> Option<f64> {
-    match &expr.kind {
-        reify_ir::CompiledExprKind::Literal(v) => scalar_si_with_dim(v, expected_dim),
-        reify_ir::CompiledExprKind::ValueRef(id) => {
-            scalar_si_with_dim(values.get(id)?, expected_dim)
+/// Human-readable expected-type label for a `Range<dim>` rejection diagnostic
+/// (task ε). The two real callers pin `LENGTH` (`edges_by_length`) and `AREA`
+/// (`faces_by_area`); any other dimension degrades to a bare `"Range"`.
+fn range_expected_label(expected_dim: reify_core::DimensionVector) -> &'static str {
+    if expected_dim == reify_core::DimensionVector::LENGTH {
+        "Range<Length>"
+    } else if expected_dim == reify_core::DimensionVector::AREA {
+        "Range<Area>"
+    } else {
+        "Range"
+    }
+}
+
+/// Short label for a `Value` that failed `Range<dim>` classification, used as
+/// the `got` field of the rejection diagnostic (task ε). A `Value::Range` is
+/// distinguished as half-open (one bound `None`) vs. carrying a wrong-dimension
+/// / non-Scalar bound, so the Warning names what actually went wrong; any other
+/// value is labelled by its kind.
+fn range_got_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Range { lower, upper, .. } if lower.is_none() || upper.is_none() => {
+            "half-open Range".to_string()
         }
-        _ => None,
+        reify_ir::Value::Range { .. } => {
+            "Range with a wrong-dimension or non-Scalar bound".to_string()
+        }
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::Int(_) => "Int".to_string(),
+        reify_ir::Value::Point(_) => "Point".to_string(),
+        reify_ir::Value::Vector(_) => "Vector".to_string(),
+        _ => "non-Range value".to_string(),
     }
 }
 
 /// Resolve a `Range<Quantity>` arg to its `(lower_si, upper_si)` SI bounds,
-/// both dimensioned `expected_dim`. Accepts three arg shapes:
+/// both dimensioned `expected_dim`, emitting a `Severity::Warning` when the
+/// caller passes a defined-but-wrong value.
 ///
-///  (a) `Literal(Value::Range { lower: Some, upper: Some, .. })`,
-///  (b) `ValueRef → Value::Range { lower: Some, upper: Some, .. }` (the
-///      common let-bound `let r = 0mm..50mm` form — the regular eval path
-///      evaluates the `RangeConstructor` RHS into the cell as a
-///      `Value::Range`),
-///  (c) `RangeConstructor { lower: Some, upper: Some, .. }` written inline,
-///      whose bound exprs each resolve via Literal/ValueRef.
+/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
+/// (via [`eval_arg_value`]) and the resulting `Value` classified. `eval_expr`
+/// lowers an inline `RangeConstructor` — including one with computed bounds
+/// such as `0mm..(20mm + 30mm)` — to a `Value::Range`, and a `ValueRef →
+/// Value::Range` (the common let-bound `let r = 0mm..50mm` form) reads the
+/// cell; so the former Literal/ValueRef/RangeConstructor shape-match COLLAPSES
+/// into one `Value::Range` classification, and the γ "inline computed bound →
+/// silent fall-through" behaviour is gone. Both bounds must be present (a
+/// half-open range is rejected — the v0.1 filtered selectors require a closed
+/// `[lo, hi]` window) and dimensioned `expected_dim`.
 ///
-/// Both bounds must be present (a half-open range falls through to `None` —
-/// the v0.1 filtered selectors require a closed `[lo, hi]` window) and
-/// dimensioned `expected_dim`. Returns `None` for any other shape — caller
-/// maps to the "unsupported arg shape → fall through" behaviour.
+/// | evaluated arg value                                 | return       | diagnostic?     |
+/// |-----------------------------------------------------|--------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg)    | `None`       | no — quiet      |
+/// | closed `Value::Range` of two `expected_dim` Scalars | `Some((..))` | no              |
+/// | non-Range, half-open, or wrong-dimension bound      | `None`       | yes — 1 Warning |
 fn resolve_range_dim_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
     expected_dim: reify_core::DimensionVector,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(f64, f64)> {
-    // Range-from-Value: shared by the Literal and ValueRef arms.
-    let from_range_value = |v: &reify_ir::Value| -> Option<(f64, f64)> {
-        match v {
-            reify_ir::Value::Range {
-                lower: Some(lo),
-                upper: Some(hi),
-                ..
-            } => Some((
-                scalar_si_with_dim(lo, expected_dim)?,
-                scalar_si_with_dim(hi, expected_dim)?,
-            )),
-            _ => None,
-        }
-    };
-    match &expr.kind {
-        reify_ir::CompiledExprKind::Literal(v) => from_range_value(v),
-        reify_ir::CompiledExprKind::ValueRef(id) => from_range_value(values.get(id)?),
-        reify_ir::CompiledExprKind::RangeConstructor {
-            lower: Some(lo),
-            upper: Some(hi),
-            ..
-        } => Some((
-            resolve_scalar_bound_expr(lo, values, expected_dim)?,
-            resolve_scalar_bound_expr(hi, values, expected_dim)?,
-        )),
-        _ => None,
+    use crate::arg_acceptance::ArgRejection;
+
+    let value = eval_arg_value(expr, values);
+
+    // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
+    // local ctx can't evaluate) returns None with no diagnostic.
+    if matches!(value, reify_ir::Value::Undef) {
+        return None;
     }
+
+    // A closed Range of two `expected_dim` Scalars resolves to its SI bounds.
+    if let reify_ir::Value::Range {
+        lower: Some(lo),
+        upper: Some(hi),
+        ..
+    } = &value
+        && let (Some(lo_si), Some(hi_si)) = (
+            scalar_si_with_dim(lo, expected_dim),
+            scalar_si_with_dim(hi, expected_dim),
+        )
+    {
+        return Some((lo_si, hi_si));
+    }
+
+    // Defined-but-wrong (non-Range, half-open, or wrong-dimension bound): emit
+    // exactly one Warning naming builtin/arg/Range<dim>/got (byte-uniform
+    // wording with the density / vec3 / scalar-bound paths).
+    diagnostics.push(Diagnostic::warning(
+        ArgRejection {
+            got: range_got_label(&value),
+            expected: range_expected_label(expected_dim),
+            migration_hint: None,
+        }
+        .message(builtin, arg_name),
+    ));
+    None
 }
 
 /// Scan `values` for the `Value::GeometryHandle` whose `kernel_handle ==
