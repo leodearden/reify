@@ -108,7 +108,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
     m.get(&k.to_string())
 }
 
-// ── Step-1 RED test ───────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// ζ §11.1 row #6 "Value population" — end-to-end on the shipped fixture.
 ///
@@ -199,5 +199,190 @@ fn resolved_value_eval_populates_gasketseal_2mm() {
             "expected Value::StructureInstance for BearingResolved.b, got {:?}",
             other
         ),
+    }
+}
+
+// ── Step-3 ─────────────────────────────────────────────────────────────────────
+
+/// ζ §11.1 row #3 "Constraint-aware unique selection" — real→Selected half.
+///
+/// Reads bearing_constraint_select.ri (two Seal candidates: ThinSeal=1mm,
+/// ThickSeal=5mm; constraint `seal.thickness < bore_radius=3mm`), compiles under
+/// the REAL SimpleConstraintChecker, and asserts:
+///   (a) zero Errors (no AutoTypeParamAmbiguous — real checker eliminated ThickSeal)
+///   (b) BearingAssembly.bearing.seal is StructureInstance(ThinSeal{thickness≈0.001})
+///
+/// The β test (`auto_type_param_per_candidate_valuemap_tests.rs`) explicitly
+/// deferred the real→Selected half to ζ (this test).
+/// GREEN binds already-landed α+β+δ; RED here is an integration regression.
+#[test]
+fn constraint_select_real_checker_selects_thinseal() {
+    let src = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let compiled = compile_real(&src, "bearing_constraint_select");
+
+    // (a) No Errors — real checker eliminates ThickSeal, selects ThinSeal.
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "bearing_constraint_select.ri must compile with zero Errors under real checker \
+         (ThickSeal eliminated, ThinSeal selected), got: {:?}",
+        errors
+    );
+    assert!(
+        !has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        "must NOT emit AutoTypeParamAmbiguous under real checker (stub emits it; real selects ThinSeal)"
+    );
+
+    // (b) Eval: BearingAssembly.bearing.seal is StructureInstance(ThinSeal{thickness≈0.001}).
+    let result = eval_real(&compiled);
+
+    let bearing_sub = result
+        .values
+        .get(&reify_core::ValueCellId::new("BearingAssembly", "bearing"))
+        .unwrap_or_else(|| {
+            let cells: Vec<_> = result.values.iter().map(|(id, _)| id.clone()).collect();
+            panic!(
+                "BearingAssembly.bearing cell missing from eval result. Available: {:?}",
+                cells
+            )
+        });
+
+    match bearing_sub {
+        Value::StructureInstance(bearing_data) => {
+            let seal_val = field(&bearing_data.fields, "seal").unwrap_or_else(|| {
+                let keys: Vec<_> = bearing_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                panic!(
+                    "Bearing$ThinSeal must have a 'seal' field; fields: {:?}",
+                    keys
+                )
+            });
+            match seal_val {
+                Value::StructureInstance(seal_data) => {
+                    assert_eq!(
+                        seal_data.type_name, "ThinSeal",
+                        "seal type_name must be 'ThinSeal' (the unique constraint-satisfying survivor), \
+                         got '{}'",
+                        seal_data.type_name
+                    );
+                    let thickness = field(&seal_data.fields, "thickness").unwrap_or_else(|| {
+                        let keys: Vec<_> =
+                            seal_data.fields.iter().map(|(k, _)| k.clone()).collect();
+                        panic!(
+                            "ThinSeal must have a 'thickness' field; fields: {:?}",
+                            keys
+                        )
+                    });
+                    match thickness {
+                        Value::Scalar { si_value, .. } => {
+                            const EPSILON: f64 = 1e-10;
+                            // ThinSeal.thickness = 1mm = 0.001 m in SI
+                            assert!(
+                                (*si_value - 0.001).abs() < EPSILON,
+                                "ThinSeal.thickness must be 1mm (si_value≈0.001), got {}",
+                                si_value
+                            );
+                        }
+                        other => panic!(
+                            "ThinSeal.thickness must be Value::Scalar, got {:?}",
+                            other
+                        ),
+                    }
+                }
+                Value::Undef => panic!(
+                    "bearing.seal is Value::Undef — real-checker selection or δ synthesis broken"
+                ),
+                other => panic!(
+                    "expected Value::StructureInstance for bearing.seal, got {:?}",
+                    other
+                ),
+            }
+        }
+        Value::Undef => panic!(
+            "BearingAssembly.bearing is Value::Undef — sub evaluation failed"
+        ),
+        other => panic!(
+            "expected Value::StructureInstance for BearingAssembly.bearing, got {:?}",
+            other
+        ),
+    }
+}
+
+// ── Step-4 ─────────────────────────────────────────────────────────────────────
+
+/// ζ §11.1 row #3 "Constraint-aware unique selection" stub half; §11.2 row #2
+/// "Stub-path callers unchanged".
+///
+/// The SAME fixture (bearing_constraint_select.ri) compiled under the STUB
+/// checker must produce an AutoTypeParamAmbiguous Error — proving the
+/// stub-vs-real delta is the injected checker, not the fixture.
+///
+/// GREEN binds the already-landed β-inject stub default.
+#[test]
+fn constraint_select_stub_is_ambiguous() {
+    let src = read_fixture(BEARING_CONSTRAINT_SELECT_PATH);
+    let compiled = compile_stub(&src, "bearing_constraint_select");
+
+    assert!(
+        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamAmbiguous),
+        "bearing_constraint_select.ri must emit AutoTypeParamAmbiguous under the stub checker \
+         (both candidates are stub-feasible → ≥2 feasible → Ambiguous); \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Step-5 ─────────────────────────────────────────────────────────────────────
+
+/// ζ §11.1 row #5 "Bounded fallback, jointly infeasible".
+///
+/// Reads bounded_fallback_unsound.ri (7 LayerA params, joint constraint
+/// l1.thickness+…+l7.thickness=14mm > max_stack=10mm) under the REAL checker.
+/// Asserts:
+///   (a) AutoTypeParamBoundedInfeasible Error is present
+///   (b) No successful substitution: StackAssembly.stack is NOT a populated
+///       StructureInstance (must be Undef or absent — γ joint-recheck blocked
+///       the substitution).
+///
+/// GREEN binds already-landed γ; RED here is an integration regression.
+#[test]
+fn bounded_fallback_unsound_emits_bounded_infeasible() {
+    let src = read_fixture(BOUNDED_FALLBACK_UNSOUND_PATH);
+    let compiled = compile_real(&src, "bounded_fallback_unsound");
+
+    // (a) BoundedInfeasible Error must be present.
+    assert!(
+        has_error_code(
+            &compiled.diagnostics,
+            DiagnosticCode::AutoTypeParamBoundedInfeasible
+        ),
+        "bounded_fallback_unsound.ri must emit AutoTypeParamBoundedInfeasible under real checker \
+         (7 LayerA at 2mm each → 14mm > max_stack=10mm → γ joint-recheck Violated); \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // (b) Soundness: no accepted substitution should produce a populated StackAssembly.stack.
+    // eval() on a module with Error diagnostics still runs — verify the stack sub is Undef/absent.
+    let result = eval_real(&compiled);
+    let stack_cell = reify_core::ValueCellId::new("StackAssembly", "stack");
+    match result.values.get(&stack_cell) {
+        None | Some(Value::Undef) => {
+            // Expected: no substitution → no populated StructureInstance.
+        }
+        Some(Value::StructureInstance(data)) => {
+            panic!(
+                "SOUNDNESS VIOLATION: StackAssembly.stack is a populated StructureInstance({}) \
+                 despite BoundedInfeasible Error — γ joint-recheck did not block the substitution!",
+                data.type_name
+            );
+        }
+        Some(other) => {
+            // Other Value variants (Bool, Scalar, etc.) are unexpected here but not unsound.
+            // Report but don't fail — the key soundness check is above.
+            eprintln!(
+                "note: StackAssembly.stack has unexpected value (not StructureInstance or Undef): {:?}",
+                other
+            );
+        }
     }
 }
