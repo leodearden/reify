@@ -1307,6 +1307,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A non-dimension-kinded type parameter is used in a dimension slot
+    /// (`Scalar<T>`, `Vector3<T>`, or `Point3<T>` where `T` is not declared
+    /// with a `Dimension` bound), OR a dimension-kinded type parameter is
+    /// used as an ordinary type (bare `Q` in a non-dimension position).
+    ///
+    /// Both misuse cases produce a single root-cause DimParamKind Error and
+    /// return `Some(Type::Error)` so no competing `FnUnknownTypeParam` or
+    /// `UnresolvedType` Error is emitted (anti-cascade pattern).
+    ///
+    /// Origin site: `crates/reify-compiler/src/type_resolution.rs` —
+    /// `resolve_parameterized_builtin_type` (Scalar/Vector3/Point3 arms via the
+    /// `try_dim_param_slot_or_kind_error` classifier) and
+    /// `resolve_type_expr_with_aliases_kinded` (bare-name path).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIM_PARAM_KIND`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    DimParamKind,
     /// A generic function call binds the same type parameter to two different
     /// concrete types across its arguments (call-site type-argument inference
     /// conflict).

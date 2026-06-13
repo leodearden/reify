@@ -16,7 +16,7 @@
 //! declared return type, so trivial bodies produce no diagnostics and need no stdlib symbol.
 
 use reify_test_support::compile_source;
-use reify_core::{DiagnosticCode, Severity, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-1 / Step-2: CompiledFunction.type_params lowering
@@ -280,5 +280,254 @@ fn nongeneric_unknown_type_keeps_unresolved_type() {
         fn_unknown_diag.is_none(),
         "non-generic fn must not emit FnUnknownTypeParam, got: {:?}",
         fn_unknown_diag
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-3 / Step-4 (task 4234 ε): dimension-kinded params — B10 happy path
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>` — B10 happy path.
+///
+/// RED until step-4: today `Scalar<Q>` routes to `resolve_type_alias_expr_to_dimension`,
+/// which can't resolve `Q` and emits an Error diagnostic.
+///
+/// Pinned back-compat: `fn area(w: Scalar<Length>) -> Scalar<Length>` must still
+/// resolve to the concrete `Type::Scalar{dimension: DimensionVector::LENGTH}` (INV-10).
+#[test]
+fn dim_kinded_param_scalar_q_resolves_to_scalar_param() {
+    // B10 happy path — Q: Dimension bound
+    let source = r#"
+        fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q> { x }
+        fn area(w: Scalar<Length>) -> Scalar<Length> { w }
+    "#;
+    let module = compile_source(source);
+
+    // (i) Zero Error-severity diagnostics
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for dim-kinded fn g<Q: Dimension>, got: {:?}",
+        errors
+    );
+
+    let gf = module
+        .functions
+        .iter()
+        .find(|f| f.name == "g")
+        .expect("function 'g' should be compiled");
+
+    // (ii) param resolves to ScalarParam("Q")
+    assert_eq!(
+        gf.params[0].1,
+        Type::ScalarParam("Q".to_string()),
+        "param x should resolve to Type::ScalarParam(\"Q\")"
+    );
+
+    // (iii) return type resolves to ScalarParam("Q")
+    assert_eq!(
+        gf.return_type,
+        Type::ScalarParam("Q".to_string()),
+        "return type should resolve to Type::ScalarParam(\"Q\")"
+    );
+
+    // (iv) type_params lowers the bound — Q with bound Dimension
+    assert_eq!(gf.type_params.len(), 1, "g should have 1 type param");
+    assert_eq!(gf.type_params[0].name, "Q");
+    assert_eq!(
+        gf.type_params[0].bounds.len(),
+        1,
+        "Q should have 1 bound (Dimension)"
+    );
+    assert_eq!(
+        gf.type_params[0].bounds[0].trait_ref.name,
+        "Dimension",
+        "Q's bound should be 'Dimension'"
+    );
+
+    // Back-compat (INV-10): concrete Scalar<Length> is unaffected
+    let area = module
+        .functions
+        .iter()
+        .find(|f| f.name == "area")
+        .expect("function 'area' should be compiled");
+    assert_eq!(
+        area.params[0].1,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "area param 'w' should still resolve to concrete Scalar[LENGTH]"
+    );
+    assert_eq!(
+        area.return_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "area return type should still resolve to concrete Scalar[LENGTH]"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-7 / Step-8 (ε): kind-misuse case #1 — non-dim-kinded param in dim slot
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A non-dimension-kinded type parameter used in a dimension slot (`Scalar<T>`)
+/// emits exactly one `DimParamKind` Error, with no competing
+/// `FnUnknownTypeParam`/`UnresolvedType` Error (single root-cause diagnostic).
+///
+/// RED until step-8: `DiagnosticCode::DimParamKind` does not exist yet (compile-
+/// error RED); today `Scalar<T>` also emits a generic dimension-resolve Error
+/// instead of a single DimParamKind.
+#[test]
+fn non_dim_kinded_param_in_scalar_slot_emits_dim_param_kind() {
+    // T has no `: Dimension` bound — it is a plain type param.
+    // `-> Real` still resolves to dimensionless_scalar() post-4373.
+    let source = r#"
+        fn h<T>(x: Scalar<T>) -> Real { 1.0 }
+    "#;
+    let module = compile_source(source);
+
+    let dim_kind_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimParamKind))
+        .collect();
+    assert_eq!(
+        dim_kind_errors.len(),
+        1,
+        "expected exactly one DimParamKind Error, got: {:?}",
+        module.diagnostics
+    );
+
+    // No competing FnUnknownTypeParam or UnresolvedType errors — single root-cause.
+    let competing: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.code == Some(DiagnosticCode::FnUnknownTypeParam)
+                    || d.code == Some(DiagnosticCode::UnresolvedType))
+        })
+        .collect();
+    assert!(
+        competing.is_empty(),
+        "expected no FnUnknownTypeParam/UnresolvedType errors alongside DimParamKind, got: {:?}",
+        competing
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-9 / Step-10 (ε): kind-misuse case #2 — dim-kinded param as ordinary type
+// ────────────────────────────────────────────────────────────────────────────
+
+/// A dimension-kinded type parameter used as an ordinary type (bare `Q` in a
+/// non-dimension position) emits exactly one `DimParamKind` Error, with no
+/// competing `FnUnknownTypeParam`/`UnresolvedType` Error.
+///
+/// RED until step-10: today `Q ∈ type_param_names` so bare `Q` resolves to
+/// `Type::TypeParam("Q")` via `resolve_type_with_aliases` with no diagnostic.
+#[test]
+fn dim_kinded_param_used_as_ordinary_type_emits_dim_param_kind() {
+    // Q: Dimension — but x: Q is a bare usage in an ordinary type position.
+    // `-> Real` surface syntax still resolves to dimensionless_scalar() post-4373.
+    let source = r#"
+        fn k<Q: Dimension>(x: Q) -> Real { 1.0 }
+    "#;
+    let module = compile_source(source);
+
+    let dim_kind_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::DimParamKind))
+        .collect();
+    assert_eq!(
+        dim_kind_errors.len(),
+        1,
+        "expected exactly one DimParamKind Error for bare Q in ordinary type position, got: {:?}",
+        module.diagnostics
+    );
+
+    // No competing FnUnknownTypeParam or UnresolvedType errors — single root-cause.
+    let competing: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && (d.code == Some(DiagnosticCode::FnUnknownTypeParam)
+                    || d.code == Some(DiagnosticCode::UnresolvedType))
+        })
+        .collect();
+    assert!(
+        competing.is_empty(),
+        "expected no FnUnknownTypeParam/UnresolvedType errors alongside DimParamKind, got: {:?}",
+        competing
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Step-5 / Step-6 (ε): Vector3<Q> and Point3<Q> with a dimension-kinded param
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Vector3<Q> and Point3<Q> with Q: Dimension resolve their quantity slot to
+/// the dim-param representation (B10 extension).
+///
+/// RED until step-6: only the `Scalar` arm is wired in step-4; `Vector3` and
+/// `Point3` arms still route to `resolve_type_alias_expr_to_dimension`, which
+/// fails on `Q` and emits an Error diagnostic.
+#[test]
+fn dim_kinded_vector3_and_point3_resolve_to_scalar_param_slot() {
+    let source = r#"
+        fn gv<Q: Dimension>(v: Vector3<Q>) -> Vector3<Q> { v }
+        fn gp<Q: Dimension>(p: Point3<Q>) -> Point3<Q> { p }
+    "#;
+    let module = compile_source(source);
+
+    // ── gv: Vector3<Q> ───────────────────────────────────────────────────────
+
+    let errors_gv: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors_gv.is_empty(),
+        "expected no Error diagnostics for gv<Q: Dimension>(v: Vector3<Q>) -> Vector3<Q>, got: {:?}",
+        errors_gv
+    );
+
+    let gv = module
+        .functions
+        .iter()
+        .find(|f| f.name == "gv")
+        .expect("function 'gv' should be compiled");
+
+    assert_eq!(
+        gv.params[0].1,
+        Type::vec3(Type::ScalarParam("Q".to_string())),
+        "gv param v should resolve to Type::vec3(ScalarParam(\"Q\"))"
+    );
+    assert_eq!(
+        gv.return_type,
+        Type::vec3(Type::ScalarParam("Q".to_string())),
+        "gv return type should resolve to Type::vec3(ScalarParam(\"Q\"))"
+    );
+
+    // ── gp: Point3<Q> ────────────────────────────────────────────────────────
+
+    let gp = module
+        .functions
+        .iter()
+        .find(|f| f.name == "gp")
+        .expect("function 'gp' should be compiled");
+
+    assert_eq!(
+        gp.params[0].1,
+        Type::point3(Type::ScalarParam("Q".to_string())),
+        "gp param p should resolve to Type::point3(ScalarParam(\"Q\"))"
+    );
+    assert_eq!(
+        gp.return_type,
+        Type::point3(Type::ScalarParam("Q".to_string())),
+        "gp return type should resolve to Type::point3(ScalarParam(\"Q\"))"
     );
 }

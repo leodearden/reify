@@ -160,6 +160,13 @@ pub enum Type {
     Axis,
     /// 3D axis-aligned bounding box defined by min and max corner points.
     BoundingBox,
+    /// A dimensioned scalar whose dimension is the named dimension-param
+    /// (e.g. `Q` in `fn g<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q>`).
+    ///
+    /// Compile-time/signature-only — erased before eval (D7/D1). No
+    /// `Value::ScalarParam` exists; this variant is only produced inside
+    /// dimension-kinded generic fn signatures by `resolve_parameterized_builtin_type`.
+    ScalarParam(String),
     /// User-facing m×n matrix type (e.g., Matrix3x2<Scalar[m]>).
     ///
     /// Semantically, evaluation treats matrices as rank-2 tensors; `Type::Matrix` preserves
@@ -465,6 +472,7 @@ impl std::fmt::Display for Type {
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
             Type::BoundingBox => write!(f, "BoundingBox"),
+            Type::ScalarParam(name) => write!(f, "Scalar<{}>", name),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
             Type::Selector(kind) => write!(f, "{}", kind),
             Type::AnySelector => write!(f, "Selector"),
@@ -1786,5 +1794,59 @@ mod tests {
     fn dimensioned_scalar_display_unchanged() {
         assert_eq!(format!("{}", Type::length()), "Scalar[m]");
         assert_eq!(format!("{}", Type::angle()), "Scalar[rad]");
+    }
+
+    // ── ScalarParam tests (task 4234 ε: dimension-kinded params) ─────────────
+    // `Type::ScalarParam(String)` — a dimensioned scalar whose dimension is the
+    // named dimension-param; compile-time/signature-only, erased before eval.
+
+    #[test]
+    fn type_scalar_param_display() {
+        // (a) Display renders Scalar<Q>
+        assert_eq!(
+            format!("{}", Type::ScalarParam("Q".into())),
+            "Scalar<Q>"
+        );
+        assert_eq!(
+            format!("{}", Type::ScalarParam("Length".into())),
+            "Scalar<Length>"
+        );
+    }
+
+    #[test]
+    fn type_scalar_param_eq_and_hash() {
+        use std::collections::HashMap;
+
+        // (b) Same name → equal; different name → not equal
+        let sp_q_a = Type::ScalarParam("Q".into());
+        let sp_q_b = Type::ScalarParam("Q".into());
+        let sp_r = Type::ScalarParam("R".into());
+
+        assert_eq!(sp_q_a, sp_q_b);
+        assert_ne!(sp_q_a, sp_r);
+
+        // Hash consistency via HashMap round-trip
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(sp_q_a.clone(), "q_param");
+        assert_eq!(map.get(&sp_q_b), Some(&"q_param"));
+        assert_eq!(map.get(&sp_r), None);
+    }
+
+    #[test]
+    fn type_scalar_param_distinctness() {
+        // (c) ScalarParam("Q") != concrete Scalar variants, != TypeParam("Q")
+        let sp_q = Type::ScalarParam("Q".into());
+        assert_ne!(sp_q, Type::Scalar { dimension: DimensionVector::LENGTH });
+        assert_ne!(sp_q, Type::dimensionless_scalar());
+        assert_ne!(sp_q, Type::TypeParam("Q".into()));
+    }
+
+    #[test]
+    fn type_scalar_param_not_numeric_not_error() {
+        // (d) is_numeric()==false, is_error()==false, as_name()==None
+        let sp_q = Type::ScalarParam("Q".into());
+        assert!(!sp_q.is_numeric());
+        assert!(!sp_q.is_error());
+        assert_eq!(sp_q.as_name(), None);
     }
 }
