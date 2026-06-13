@@ -159,6 +159,122 @@ pub(crate) fn points_coincident(a: [f64; 3], b: [f64; 3], lin_tol: f64) -> bool 
     dist3(a, b) <= lin_tol
 }
 
+/// Two directions are **parallel up to sign** — the equivalence used to dedup
+/// [`Datum::Direction`] candidates (e.g. several sub-faces reporting the same
+/// extrusion direction). Positionless, so the angular tolerance falls back to
+/// the [`ANGULAR_REFERENCE_LENGTH_M`] floor.
+pub(crate) fn directions_parallel(a: [f64; 3], b: [f64; 3], lin_tol: f64) -> bool {
+    let na = normalize3(a);
+    let nb = normalize3(b);
+    norm3(cross3(na, nb)) <= angular_tol(0.0, lin_tol)
+}
+
+/// A datum candidate in a feature's projection bundle (geometric-relations ε),
+/// tagged by projection kind. Carries the pure geometry the equivalence
+/// predicates compare, plus optional analytic scalar metadata threaded through
+/// from the FFI (cylinder / circle `radius`).
+///
+/// Per design decision, `radius` (and, in later tasks, apex / half-angle) is
+/// **retained in the bundle record but not consumed** by the `.axis` / `.plane`
+/// / `.point` / `.dir` projections delivered here; it rides along for future
+/// scalar projections (`cylinder.radius`).
+///
+/// A plane's signed offset is the derived quantity `origin · normal`, computed
+/// on demand rather than stored as a redundant, drift-prone field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Datum {
+    /// Axis / line datum — cylinder, cone, revolute history, or a
+    /// line / circle / ellipse edge.
+    Axis {
+        origin: [f64; 3],
+        direction: [f64; 3],
+        /// Analytic radius (cylinder / circle), retained as bundle metadata;
+        /// not read by any projection in this task — see the type-level note.
+        #[allow(dead_code)]
+        radius: Option<f64>,
+    },
+    /// Plane datum — a planar face.
+    Plane { origin: [f64; 3], normal: [f64; 3] },
+    /// Point datum — a sphere centre or vertex.
+    Point { position: [f64; 3] },
+    /// Direction datum — an extrusion direction.
+    Direction { direction: [f64; 3] },
+}
+
+impl Datum {
+    /// Two datums are equivalent iff they are the **same kind** and their
+    /// geometry coincides under the step-6 equivalence at `lin_tol`. Different
+    /// kinds never merge — dedup is kind-partitioned.
+    fn equivalent_to(&self, other: &Datum, lin_tol: f64) -> bool {
+        match (self, other) {
+            (
+                Datum::Axis {
+                    origin: oa,
+                    direction: da,
+                    ..
+                },
+                Datum::Axis {
+                    origin: ob,
+                    direction: db,
+                    ..
+                },
+            ) => axes_coaxial(
+                AxisGeom {
+                    origin: *oa,
+                    direction: *da,
+                },
+                AxisGeom {
+                    origin: *ob,
+                    direction: *db,
+                },
+                lin_tol,
+            ),
+            (
+                Datum::Plane {
+                    origin: oa,
+                    normal: na,
+                },
+                Datum::Plane {
+                    origin: ob,
+                    normal: nb,
+                },
+            ) => planes_coplanar(
+                PlaneGeom {
+                    origin: *oa,
+                    normal: *na,
+                },
+                PlaneGeom {
+                    origin: *ob,
+                    normal: *nb,
+                },
+                lin_tol,
+            ),
+            (Datum::Point { position: pa }, Datum::Point { position: pb }) => {
+                points_coincident(*pa, *pb, lin_tol)
+            }
+            (Datum::Direction { direction: da }, Datum::Direction { direction: db }) => {
+                directions_parallel(*da, *db, lin_tol)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Deduplicate a datum bundle by geometric equivalence (design §2.3): cross-kind
+/// candidates never merge, and within each kind candidates are canonicalized by
+/// the step-6 equivalence at `lin_tol`, **first-representative-wins** — the
+/// first occurrence is kept and later equivalents are dropped, preserving the
+/// relative order of the survivors.
+pub(crate) fn dedup_datums(datums: Vec<Datum>, lin_tol: f64) -> Vec<Datum> {
+    let mut canonical: Vec<Datum> = Vec::new();
+    for d in datums {
+        if !canonical.iter().any(|c| c.equivalent_to(&d, lin_tol)) {
+            canonical.push(d);
+        }
+    }
+    canonical
+}
+
 #[cfg(test)]
 mod equivalence_tests {
     use super::*;
