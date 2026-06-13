@@ -3167,6 +3167,12 @@ impl OcctKernel {
                 let row1 = Value::List(vec![Value::Real(0.0), Value::Real(c.kappa_min)]);
                 Ok(Value::List(vec![row0, row1]))
             }
+            // ζ / C4 STUB — real impl lands in step-4.
+            // Returns Err so the tree compiles and capability tests pass while
+            // the numeric signal in step-3 remains genuinely RED.
+            GeometryQuery::MaxDeviation { .. } => Err(QueryError::QueryFailed(
+                "max_deviation: kernel arm not yet implemented".into(),
+            )),
         }
     }
 

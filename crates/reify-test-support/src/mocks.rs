@@ -598,6 +598,15 @@ enum QueryKey {
         u_bits: u64,
         v_bits: u64,
     },
+    /// MaxDeviation keys both geometry handles + tessellation tolerance (f64
+    /// bits via `density_bits` for ±0.0 canonicalisation + NaN debug-assert).
+    /// Powers the ζ / C4 `max_deviation(actual, nominal) -> Length` callable
+    /// (task 4479).
+    MaxDeviation {
+        actual: GeometryHandleId,
+        nominal: GeometryHandleId,
+        tolerance_bits: u64,
+    },
 }
 
 /// Normalize a distance pair to canonical (min, max) order so that
@@ -780,6 +789,17 @@ impl QueryKey {
                     v_bits: density_bits(*v),
                 }
             }
+            // ζ / C4: MaxDeviation keys both handles + tolerance (bit-keyed
+            // via density_bits so ±0.0 canonicalises and NaN debug-asserts).
+            GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance,
+            } => QueryKey::MaxDeviation {
+                actual: *actual,
+                nominal: *nominal,
+                tolerance_bits: density_bits(*tolerance),
+            },
         }
     }
 }
@@ -1554,6 +1574,9 @@ impl GeometryKernel for MockGeometryKernel {
             GeometryQuery::FaceNormalAt { handle, .. } => handle,
             GeometryQuery::CurveCurvatureAt { handle, .. } => handle,
             GeometryQuery::SurfaceCurvatureAt { handle, .. } => handle,
+            // ζ / C4: generic fallback uses the `actual` handle as the
+            // representative handle (parallel to the Distance `from` arm).
+            GeometryQuery::MaxDeviation { actual, .. } => actual,
         };
 
         self.queries
