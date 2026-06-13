@@ -1346,6 +1346,53 @@ mod tests {
         assert_eq!(Type::Axis.as_name(), None);
     }
 
+    // ── Direction tests (β: First-class Direction type) ──────────────────────
+
+    #[test]
+    fn type_direction_construction_and_equality() {
+        assert_eq!(Type::Direction, Type::Direction);
+        assert_ne!(Type::Direction, Type::Axis);
+        assert_ne!(Type::Direction, Type::Plane);
+        assert_ne!(Type::Direction, Type::dimensionless_scalar());
+    }
+
+    #[test]
+    fn type_direction_display() {
+        assert_eq!(format!("{}", Type::Direction), "Direction");
+    }
+
+    #[test]
+    fn type_direction_factory() {
+        assert_eq!(Type::direction(), Type::Direction);
+    }
+
+    #[test]
+    fn type_direction_eq_and_hash() {
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Direction, "direction");
+        assert_eq!(map.get(&Type::Direction), Some(&"direction"));
+        assert_eq!(map.get(&Type::Axis), None);
+    }
+
+    #[test]
+    fn type_direction_not_numeric() {
+        assert!(!Type::Direction.is_numeric());
+    }
+
+    #[test]
+    fn type_direction_as_name_none() {
+        assert_eq!(Type::Direction.as_name(), None);
+    }
+
+    /// The locked β property: `Direction` is a DISTINCT type — it is neither a
+    /// `Vector3<Length>` nor an `Orientation(3)`.
+    #[test]
+    fn type_direction_distinct_from_vector3_and_orientation() {
+        assert_ne!(Type::Direction, Type::vec3(Type::length()));
+        assert_ne!(Type::Direction, Type::Orientation(3));
+    }
+
     // ── BoundingBox tests (pre-1) ────────────────────────────────────────────
 
     #[test]
