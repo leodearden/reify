@@ -2758,9 +2758,10 @@ impl KinematicHelper {
 ///
 /// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
 /// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
-/// Value::Int` cell (the common `let id_a = …` form) reads the cell —
-/// byte-identical to the prior `values.get(id)` path — while an inline integer
-/// expression now EVALUATES rather than falling through to a silent `None`. The
+/// Value::Int` cell (the common `let id_a = …` form) reads the cell (now an
+/// owned clone; see [`eval_arg_value`]) — functionally identical to the prior
+/// `values.get(id)` path — while an inline integer expression now EVALUATES
+/// rather than falling through to a silent `None`. The
 /// γ-style "non-`ValueRef` shape → silent fall-through" contract is gone.
 ///
 /// | evaluated arg value                              | return    | diagnostic?     |
@@ -2782,7 +2783,7 @@ fn resolve_int_value_ref(
     match value {
         // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg
         // the local ctx can't evaluate) returns None with no diagnostic —
-        // byte-identical to the prior `values.get(id)` fall-through.
+        // behaviourally identical to the prior `values.get(id)` fall-through.
         reify_ir::Value::Undef => None,
         reify_ir::Value::Int(n) => Some(n),
         // Defined-but-wrong (non-Int): emit exactly one Warning naming
@@ -2802,12 +2803,30 @@ fn resolve_int_value_ref(
     }
 }
 
+/// Dimension-qualified label for a `Value::Scalar`, mirroring
+/// `arg_acceptance::value_short_label` so the `got` payload of task ε's
+/// non-scalar resolvers (int / point / vec3 / range / string) reports the
+/// SAME dimension-qualified Scalar wording as the density / scalar-dim paths
+/// that route through `accept_arg` — e.g. `"MASS_DENSITY Scalar"`,
+/// `"dimensionless Scalar"`, `"dimensioned Scalar"`. `value_short_label` is
+/// module-private to `arg_acceptance` (owned by task δ, not modified here), so
+/// the Scalar arm is replicated rather than shared.
+fn scalar_got_label(dimension: &reify_core::DimensionVector) -> String {
+    if dimension.is_dimensionless() {
+        "dimensionless Scalar".to_string()
+    } else if let Some(name) = dimension.canonical_name() {
+        format!("{name} Scalar")
+    } else {
+        "dimensioned Scalar".to_string()
+    }
+}
+
 /// Short human-readable label for a `Value` that failed Int classification,
 /// used as the `got` field of the rejection diagnostic (task ε).
 fn int_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::String(_) => "String".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -4690,7 +4709,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
             "Point with a non-Length or non-Scalar component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -4705,9 +4724,9 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
 /// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
 /// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
 /// Value::Point` cell (the common let-bound `let p = point3(x, y, z)` form)
-/// reads the cell — byte-identical to the prior `values.get(id)` path — while
-/// an inline point expression now EVALUATES rather than falling through to a
-/// silent `None`. The value must be a `Value::Point` of exactly three
+/// reads the cell (now an owned clone; see [`eval_arg_value`]) — functionally
+/// identical to the prior `values.get(id)` path — while an inline point
+/// expression now EVALUATES rather than falling through to a silent `None`. The value must be a `Value::Point` of exactly three
 /// LENGTH-dimensioned `Value::Scalar` components: the cell type is fixed at
 /// `Type::Point<Length>` by the compile-time wiring in `expr.rs`, so a
 /// well-formed Scalar component MUST carry `DimensionVector::LENGTH` — a
@@ -4733,8 +4752,8 @@ fn resolve_point3_length_arg(
     let value = eval_arg_value(expr, values);
 
     // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
-    // local ctx can't evaluate) returns None with no diagnostic — byte-identical
-    // to the prior `values.get(id)?` fall-through for a missing cell.
+    // local ctx can't evaluate) returns None with no diagnostic — behaviourally
+    // identical to the prior `values.get(id)?` fall-through for a missing cell.
     if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
@@ -4794,10 +4813,15 @@ fn resolve_point3_length_arg(
 /// context (no user-defined functions, no meta block) — the evaluate-then-accept
 /// mechanism shared by the task ε (4492) owned-arg resolvers.
 ///
-/// A `ValueRef` resolves via `get_or_undef` (preserving quiet degradation for a
-/// missing or `Value::Undef` cell, byte-identical to the prior `values.get`
-/// path); inline literals, field-access, and range/vector/arithmetic
-/// constructors now EVALUATE rather than falling through to a silent `None`.
+/// A `ValueRef` resolves via `get_or_undef`, preserving quiet degradation for a
+/// missing or `Value::Undef` cell. The resulting `Value` is *behaviourally*
+/// identical to what the prior `values.get(id)` shape-match produced, with one
+/// nuance: `eval_expr` returns an OWNED `Value` (`get_or_undef` clones the cell)
+/// where the prior path borrowed, so a Point/Vector/Range cell now incurs one
+/// `Vec<Scalar>` clone per resolve. The cost is negligible against the kernel
+/// round-trips these dispatchers perform. Inline literals, field-access, and
+/// range/vector/arithmetic constructors now EVALUATE rather than falling through
+/// to a silent `None`.
 ///
 /// User-defined-function-call / meta-block args in these positions evaluate to
 /// `Value::Undef` → quiet `None`, consistent with the degradation contract: the
@@ -4806,6 +4830,14 @@ fn resolve_point3_length_arg(
 /// `EvalContext::new(values, &[])` is faithful to PRD decision 10's load-bearing
 /// intent ("evaluate the arg expr against the `ValueMap`"). See task ε design
 /// decision 1.
+///
+/// The local `EvalContext` carries no diagnostics sink (`diagnostics: None`), so
+/// any RUNTIME diagnostic `eval_expr` might emit while evaluating an inline arg
+/// expression (e.g. a field-OOB or undef-builtin warning) is intentionally
+/// dropped here — the v0.1 arg shapes these resolvers accept (scalars, points,
+/// vec3, ranges, strings, ints) do not trigger such diagnostics. A future arg
+/// form that did would need a `with_runtime_diagnostics` sink drained into the
+/// caller's `diagnostics` vec.
 fn eval_arg_value(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -4881,7 +4913,7 @@ fn vec3_got_label(value: &reify_ir::Value) -> String {
             "Vector with a dimensioned or non-numeric component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Point(_) => "Point".to_string(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
@@ -4919,8 +4951,8 @@ fn resolve_vec3_arg(
     let value = eval_arg_value(expr, values);
 
     // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
-    // local ctx can't evaluate) returns None with no diagnostic — byte-identical
-    // to the γ fall-through for missing cells.
+    // local ctx can't evaluate) returns None with no diagnostic — behaviourally
+    // identical to the γ fall-through for missing cells.
     if matches!(value, reify_ir::Value::Undef) {
         return None;
     }
@@ -5079,7 +5111,7 @@ fn range_got_label(value: &reify_ir::Value) -> String {
             "Range with a wrong-dimension or non-Scalar bound".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -5895,9 +5927,9 @@ pub fn try_eval_ad_hoc_selector(
 /// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
 /// Value::String` cell now resolves (the named-leaf `face(body, label_var)`
 /// form), while an inline `Literal(Value::String)` evaluates to itself —
-/// byte-identical to the prior `Literal`-match. The return type changed from
-/// `Option<&str>` to `Option<String>` because the evaluated `Value` is owned by
-/// the local eval, not borrowed from `expr`.
+/// functionally identical to the prior `Literal`-match. The return type changed
+/// from `Option<&str>` to `Option<String>` because the evaluated `Value` is
+/// owned by the local eval, not borrowed from `expr`.
 ///
 /// | evaluated arg value                              | return    | diagnostic?     |
 /// |--------------------------------------------------|-----------|-----------------|
@@ -5929,7 +5961,7 @@ fn resolve_string_literal_arg(
     match value {
         // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg
         // the local ctx can't evaluate) returns None with no diagnostic —
-        // byte-identical to the prior non-`Literal(String)` fall-through.
+        // behaviourally identical to the prior non-`Literal(String)` fall-through.
         reify_ir::Value::Undef => None,
         reify_ir::Value::String(s) => Some(s),
         // Defined-but-wrong (non-String): emit exactly one Warning naming
@@ -5955,7 +5987,7 @@ fn string_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -7178,7 +7210,7 @@ mod tests {
     /// exactly one `Severity::Warning` naming the kinematic builtin, the arg,
     /// and the expected `Int` type (byte-uniform wording with the density /
     /// point / vec3 / range paths). A `Value::Undef` (missing cell) degrades
-    /// quietly — byte-identical to the prior `values.get(id)` fall-through.
+    /// quietly — behaviourally identical to the prior `values.get(id)` fall-through.
     ///
     ///   (a) inline `Literal(Int)` → `Some(n)`, 0 diags.
     ///   (b) `ValueRef → Int` cell → `Some(n)`, 0 diags.
