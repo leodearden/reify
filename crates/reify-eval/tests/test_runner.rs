@@ -312,7 +312,7 @@ fn run_tests_fea_constraint_not_indeterminate() {
 // Step 4: @test with multiple sub-structure fixtures — both pass
 #[test]
 fn run_tests_with_multiple_sub_structures_returns_pass() {
-    let source = "structure def Widget { param size : Length = 10mm }\nstructure def Gadget { param weight : Length = 2 }\n@test structure TestAssembly {\n  sub w = Widget()\n  sub g = Gadget()\n  constraint self.w.size > 0mm\n  constraint self.g.weight > 0\n}";
+    let source = "structure def Widget { param size : Length = 10mm }\nstructure def Gadget { param weight : Length = 2mm }\n@test structure TestAssembly {\n  sub w = Widget()\n  sub g = Gadget()\n  constraint self.w.size > 0mm\n  constraint self.g.weight > 0\n}";
     let compiled = parse_and_compile(source);
     let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
     assert_eq!(results.len(), 1);
@@ -320,7 +320,7 @@ fn run_tests_with_multiple_sub_structures_returns_pass() {
     assert_eq!(
         results[0].status,
         reify_eval::TestStatus::Pass,
-        "Widget.size=10mm and Gadget.weight=2 should both satisfy their constraints"
+        "Widget.size=10mm and Gadget.weight=2mm should both satisfy their constraints"
     );
     assert!(
         results[0].constraint_results.len() >= 2,
