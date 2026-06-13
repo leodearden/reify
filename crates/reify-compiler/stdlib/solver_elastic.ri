@@ -379,7 +379,7 @@ structure def ElasticResult {
     //   Value::Undef (PRD §7, honest-absence).
     //   Note for future runtime-type-checking implementors: Value::Undef must
     //   remain accepted for this Field-typed param on shell results.
-    param curl : Field<Point3<Length>, Vector3<Real>>
+    param curl : Field<Point3<Length>, Vector3<Dimensionless>>
     param frame : Field<Point3<Length>, Matrix<3, 3, Real>>
     param shell_channels : ShellStress
     param max_von_mises : Pressure
