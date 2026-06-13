@@ -677,7 +677,8 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         });
         // task-4584: check that StructureRef-typed Param defaults match their
         // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
-        // Geometry/Solid defaults are checked by check_param_geometry_defaults below.
+        // Geometry/Solid defaults are handled by the Type::Geometry arm of
+        // check_param_default_conformance (no separate helper).
         check_param_default_conformance(
             template,
             &template_registry,

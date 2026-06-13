@@ -296,11 +296,19 @@ pub(crate) fn check_fn_arg_conformance(
 /// `template` has a default whose type is compatible with the declared
 /// `cell_type`, for nominal leaf types (task-4584):
 ///
-/// - **`Type::StructureRef`** params: delegate to `walk_param_against_arg` (reuses
-///   the step-2 StructureRef arm in `walk_param_against_arg_type`).  Skips if
-///   `default_expr.result_type` is `Type::Error` (anti-cascade).
+/// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
+///   comment below for rationale — concretely, a `StructureRef` default for a
+///   `StructureRef` param is intentionally not rejected here because nominal-name
+///   mismatch does not imply incompatibility in Reify at eval time) and calls
+///   [`emit_structure_ref_mismatch`] directly for clearly incompatible primitive
+///   types (String, Int, …).  Does **not** delegate to `walk_param_against_arg`.
+///   Skips if `default_expr.result_type` is `Type::Error` (anti-cascade).
 ///
-/// Geometry/Solid defaults are handled separately in `check_param_geometry_defaults`.
+/// - **`Type::Geometry`** params: uses a geometry-function-aware predicate rather
+///   than `type_compatible` — geometry constructors compile to a scalar placeholder
+///   (GHR-γ), so plain `type_compatible(Geometry, result_type)` would falsely reject
+///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
+///
 /// All other cell types (Real, Int, List, …) are out of scope for this pass.
 pub(crate) fn check_param_default_conformance(
     template: &TopologyTemplate,
@@ -374,7 +382,7 @@ pub(crate) fn check_param_default_conformance(
                 if !is_geometry_default {
                     diagnostics.push(
                         Diagnostic::error(format!(
-                            "geometry param '{}' has a non-geometry default of type '{}'",
+                            "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
                             vc.id.member, default.result_type
                         ))
                         .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
@@ -5959,6 +5967,63 @@ mod tests {
              got {}: {:?}",
             diagnostics2.len(),
             diagnostics2,
+        );
+    }
+
+    /// Pin the intentional leniency in `check_param_default_conformance` for the
+    /// `Type::StructureRef` arm: a `StructureRef("Other")` effective type in the
+    /// default expression is conservatively **skipped** (zero diagnostics), even
+    /// though the param's declared cell_type is `StructureRef("Part")`.
+    ///
+    /// ## Why this is intentional
+    ///
+    /// In Reify, a concrete structure type used as a default for a param that is
+    /// declared with a *different* structure name is not necessarily incompatible —
+    /// structural compatibility is assessed at evaluation time, not by a nominal
+    /// name comparison alone (e.g. `param material : Material = Steel_AISI_1045()`
+    /// is a common valid pattern).  The `check_param_default_conformance` arm
+    /// therefore skips StructureRef effective types and only rejects clearly
+    /// incompatible *primitive* types (String, Int, …).
+    ///
+    /// This contrasts with the constructor-arg path (`walk_param_against_arg_type`
+    /// StructureRef arm) which uses `type_compatible` and does reject a
+    /// `StructureRef("Other")` arg for a `StructureRef("Part")` param.  The two
+    /// paths are deliberately asymmetric on this case; this test pins that gap so
+    /// any future tightening is made consciously.
+    #[test]
+    fn structureref_param_default_with_different_structureref_silently_accepted() {
+        // Build a Param cell: `param part : Part = <expr of type Other>`.
+        let param_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "part"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::StructureRef("Part".to_string()),
+            default_expr: Some(CompiledExpr::value_ref(
+                ValueCellId::new("OtherStruct", "instance"),
+                Type::StructureRef("Other".to_string()),
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        };
+        let template = minimal_template("Test", vec![param_cell]);
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "StructureRef default for StructureRef param with different name must emit \
+             ZERO diagnostics (intentional leniency — not a primitive mismatch), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
         );
     }
 }
