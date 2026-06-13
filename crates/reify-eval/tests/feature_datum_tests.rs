@@ -372,3 +372,114 @@ fn box_axis_projection_is_ambiguous_select_a_subfeature() {
          (select-a-subfeature) error; got {diagnostics:?}"
     );
 }
+
+// ─── B8 end-to-end over REAL OCCT geometry (step-17 / step-18) ────────────────
+//
+// The worked-example boundary test (PRD §7.2 / design §2.2): the
+// `examples/geometric_relations/feature_datum_axis.ri` cylinder is built by
+// revolving a rectangle 360° about a known axis through a real OCCT kernel, and
+// `cyl.axis` must refine to EXACTLY ONE `Value::Axis` equal to that revolution
+// axis within dedup tolerance — no select-a-subfeature ambiguity.
+//
+// This is the OCCT-backed half of the example test; the OCCT-free compile-clean
+// half is `crates/reify-compiler/tests/feature_datum_axis_example_tests.rs`. It
+// lives HERE (not the compiler crate) because realizing the revolve needs an
+// OCCT engine and reify-compiler is intentionally not an OCCT-touching crate
+// (scripts/occt-touching-crates.txt); see esc-4385-134.
+
+/// Absolute path to the B8 example, resolved from this crate's manifest dir.
+const FEATURE_DATUM_AXIS_EXAMPLE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/geometric_relations/feature_datum_axis.ri"
+);
+
+/// B8: `cyl.axis` over the realized revolved-rectangle cylinder resolves to
+/// exactly one `Value::Axis` coaxial with the example's revolution axis (the
+/// line through (-10 mm, 0, 0) along +Y), with no `FeatureDatumAmbiguous`
+/// diagnostic. Drives the full source → compile → OCCT build → feature-datum
+/// post-process path; the analytic end-arc circle axes ∪ the `Revolve` history
+/// axis all dedup to the single revolution axis.
+///
+/// RED until step-18 creates the `.ri` fixture (panics on the missing read).
+#[test]
+fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
+    use reify_core::{ModulePath, Severity, ValueCellId};
+    use reify_ir::ExportFormat;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping feature_datum_axis B8: OCCT not available");
+        return;
+    }
+
+    let source = std::fs::read_to_string(FEATURE_DATUM_AXIS_EXAMPLE).expect(
+        "failed to read examples/geometric_relations/feature_datum_axis.ri — \
+         created by step-18",
+    );
+
+    let parsed = reify_syntax::parse(&source, ModulePath::single("feature_datum_axis"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(compile_errors.is_empty(), "compile errors: {:#?}", compile_errors);
+
+    let checker = reify_constraints::SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    // No select-a-subfeature ambiguity for the unambiguous cylinder.
+    let ambiguous: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FeatureDatumAmbiguous))
+        .collect();
+    assert!(
+        ambiguous.is_empty(),
+        "cyl.axis over a revolved cylinder must be unambiguous, got: {ambiguous:?}"
+    );
+
+    // `let a : Axis = cyl.axis` resolves to exactly one Axis = the revolution axis.
+    let cell = ValueCellId::new("Cyl", "a");
+    let axis = result.values.get(&cell).unwrap_or_else(|| {
+        panic!(
+            "Cyl.a must resolve to a value (the projected revolution axis); \
+             build diagnostics: {:?}",
+            result.diagnostics
+        )
+    });
+
+    // Known revolution axis: origin on the line {x = -10 mm, z = 0}, direction ±Y.
+    const TOL: f64 = 1e-6; // 1 µm — within dedup tol; empirical values are exact.
+    match axis {
+        Value::Axis { origin, direction } => {
+            let o = match origin.as_ref() {
+                Value::Point(c) if c.len() == 3 => [
+                    c[0].as_f64().expect("origin x numeric"),
+                    c[1].as_f64().expect("origin y numeric"),
+                    c[2].as_f64().expect("origin z numeric"),
+                ],
+                other => panic!("axis origin must be a 3-component Point, got {other:?}"),
+            };
+            let d = match direction.as_ref() {
+                Value::Direction { x, y, z } => [*x, *y, *z],
+                other => panic!("axis direction must be a Direction, got {other:?}"),
+            };
+            // Direction parallel to ±Y (sign-insensitive coaxiality).
+            assert!(
+                d[0].abs() < TOL && d[2].abs() < TOL && (d[1].abs() - 1.0).abs() < TOL,
+                "projected axis direction must be parallel to ±Y, got {d:?}"
+            );
+            // Origin lies on the revolution line {x = -0.01 m, z = 0} (y free).
+            assert!(
+                (o[0] - (-0.01)).abs() < TOL && o[2].abs() < TOL,
+                "projected axis origin must lie on the line x=-10mm, z=0, got {o:?}"
+            );
+        }
+        other => panic!("Cyl.a must be a Value::Axis, got {other:?}"),
+    }
+}
