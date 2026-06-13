@@ -2015,3 +2015,66 @@ structure PartDefaultSmoke {
         d.code,
     );
 }
+
+// ─── task-4584 step-9: no-false-positive guard tests ─────────────────────────
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// `param part : Part = Part()` — a StructureRef param with a valid StructureRef
+/// default — must produce ZERO Error-severity diagnostics after task 4584 lands.
+///
+/// The `check_param_default_conformance` StructureRef branch calls
+/// `walk_param_against_arg`, which promotes `Part()` (FunctionCall with scalar
+/// placeholder type) to `StructureRef("Part")` and then validates via
+/// `type_compatible(StructureRef("Part"), StructureRef("Part"))` → true → no emit.
+///
+/// Explicitly green-from-add: documents the "reject only genuine nominal mismatches;
+/// NO false positives" acceptance criterion. Fails if the StructureRef check
+/// incorrectly rejects a `Part()` default at a `Part`-typed param.
+#[test]
+fn structureref_param_with_valid_structureref_default_no_error() {
+    let source = r#"
+structure PartDefaultValid {
+    param part : Part = Part()
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "NO-FALSE-POSITIVE: `param part : Part = Part()` should produce ZERO Error-severity \
+         diagnostics (StructureRef identity is valid). Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// A structure with non-StructureRef and non-Geometry param defaults must produce
+/// ZERO Error-severity diagnostics. The `check_param_default_conformance` function
+/// has a `_ => continue` guard for all cell_types other than StructureRef and
+/// Geometry; this test documents that scalar/Int/Bool params are not affected.
+///
+/// Explicitly green-from-add: confirms the StructureRef and Geometry rejection checks
+/// do NOT broaden to other param types.
+#[test]
+fn non_structureref_param_defaults_not_rejected() {
+    let source = r#"
+structure ScalarParamDefaults {
+    param n : Real = 42.0
+    param count : Int = 10
+    param enabled : Bool = true
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "NO-FALSE-POSITIVE: scalar/Int/Bool param defaults should produce ZERO Error-severity \
+         diagnostics (check_param_default_conformance `_ => continue` guard). \
+         Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
