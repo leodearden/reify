@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, Type};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
@@ -329,29 +329,60 @@ pub(crate) fn phase_auto_type_param_resolution(
                         }
                         // Only fill cells whose original type is a TypeParam that was
                         // resolved in sigma (i.e., an auto-resolved type parameter).
-                        let candidate_name =
-                            if let Type::TypeParam(tp_name) = &orig_cell.cell_type {
-                                match sigma.get(tp_name.as_str()) {
-                                    Some(Type::StructureRef(cname)) => cname.clone(),
-                                    _ => continue,
-                                }
-                            } else {
-                                continue;
-                            };
+                        // Keep `tp_name` in scope so the NotConstructible arm can look
+                        // up the use-site span from `params`.
+                        let tp_name =
+                            if let Type::TypeParam(n) = &orig_cell.cell_type { n } else { continue };
+                        let candidate_name = match sigma.get(tp_name.as_str()) {
+                            Some(Type::StructureRef(cname)) => cname.clone(),
+                            _ => continue,
+                        };
                         let candidate =
                             match template_registry.get(candidate_name.as_str()) {
                                 Some(c) => *c,
                                 None => continue,
                             };
                         // Constructible → set synthesized default on the monomorph cell.
-                        // NotConstructible → leave default_expr = None for now;
-                        //   step-6 adds E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE.
-                        if let CtorSynthesisResult::Ctor(ctor) =
-                            check_candidate_constructible(candidate)
-                        {
-                            // mono is a clone of target; value_cells[idx] is the same
-                            // cell with the substituted type — set its default.
-                            mono.value_cells[idx].default_expr = Some(ctor);
+                        // NotConstructible → emit E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE
+                        //   and leave default_expr = None (no partial-Undef instance).
+                        match check_candidate_constructible(candidate) {
+                            CtorSynthesisResult::Ctor(ctor) => {
+                                // mono is a clone of target; value_cells[idx] is the same
+                                // cell with the substituted type — set its default.
+                                mono.value_cells[idx].default_expr = Some(ctor);
+                            }
+                            CtorSynthesisResult::NotConstructible(required_param) => {
+                                // Use-site span: find the AutoTypeParam for this type
+                                // parameter, falling back to the prelude sentinel if
+                                // the parameter is not in the auto-clause list.
+                                let span = params
+                                    .iter()
+                                    .find(|p| p.name.as_str() == tp_name.as_str())
+                                    .map_or(SourceSpan::prelude(), |p| p.use_site_span);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "auto type parameter resolved candidate '{}' is not \
+                                         constructible: required parameter '{}' has no default; \
+                                         cannot synthesize a zero-arg instance for \
+                                         'param {} : {}'",
+                                        candidate_name,
+                                        required_param,
+                                        orig_cell.id.member,
+                                        candidate_name,
+                                    ))
+                                    .with_code(
+                                        DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+                                    )
+                                    .with_label(DiagnosticLabel::new(
+                                        span,
+                                        format!(
+                                            "resolved to '{}', which has required param '{}'",
+                                            candidate_name, required_param
+                                        ),
+                                    )),
+                                );
+                                // Leave default_expr = None — no partial-Undef instance.
+                            }
                         }
                     }
                     // α partial-coverage: the following collections are NOT
