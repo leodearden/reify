@@ -851,23 +851,28 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
-/// exactly six params with the canonical names and types:
+/// exactly eight params with the canonical names and types:
 ///
 ///   - `displacement  : Field<Point3<Length>, Vector3<Length>>`
 ///     (tightened from Real placeholder in task 3117; resolver arm at
 ///     `type_resolution.rs:1313` confirmed to work in `param` positions)
 ///   - `stress        : Field<Point3<Length>, Tensor<2,3,Pressure>>`
 ///     (tightened from Real placeholder in task 3117; same resolver confirmation)
+///   - `divergence    : Field<Point3<Length>, Real>`
+///     (task #4564 α: volumetric strain tr(ε); tet=Sampled, shell=Undef)
 ///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
 ///     (per-element local-to-global rotation; tightened in task #3641 using
 ///     the resolver capability confirmed by task 3117)
+///   - `shell_channels : ShellStress`
+///     (task #4067: through-thickness stress container; tet=Undef, shell=Sampled)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// All three Field-typed slots have been tightened from `Real` placeholders:
+/// The four Field-typed slots have been tightened from `Real` placeholders:
 /// `displacement` and `stress` by task #3117, `frame` by task #3641 — both
-/// using the resolver arm at `type_resolution.rs:1313`.
+/// using the resolver arm at `type_resolution.rs:1313`; `divergence` added
+/// in task #4564 with dimensionless_scalar() codomain (Real = tr(ε)).
 ///
 /// `frame` is the per-element local-to-global rotation:
 ///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
@@ -885,9 +890,9 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        7,
-        "ElasticResult should have exactly 7 param cells \
-         (displacement, stress, frame, shell_channels, max_von_mises, converged, iterations), \
+        8,
+        "ElasticResult should have exactly 8 param cells \
+         (displacement, stress, divergence, frame, shell_channels, max_von_mises, converged, iterations), \
          got: {:?}",
         names
     );
@@ -917,6 +922,17 @@ fn elastic_result_struct_has_correct_param_shape() {
                         dimension: DimensionVector::PRESSURE,
                     },
                 )),
+            },
+        ),
+        // task #4564 α: `param divergence : Field<Point3<Length>, Real>` added here.
+        // Codomain is dimensionless_scalar() (Real = tr(ε) = volumetric strain).
+        (
+            "divergence",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::dimensionless_scalar()),
             },
         ),
         (
