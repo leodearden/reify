@@ -321,6 +321,30 @@ pub(crate) fn check_param_default_conformance(
                 if matches!(default.result_type, Type::Error) {
                     continue;
                 }
+                // Get the effective type, accounting for FunctionCall→StructureRef promotion
+                // (e.g. `Steel_AISI_1045()` may carry a numeric fallback result_type but
+                // its callee IS a known structure template → promote to StructureRef).
+                let promoted =
+                    promote_function_call_to_structure_ref(default, template_registry);
+                let effective_ty = promoted.as_ref().unwrap_or(&default.result_type);
+                // Conservatively skip when the effective type is plausibly structure-
+                // compatible at the eval level:
+                //   • StructureRef(_) — a concrete type used as default for an abstract-like
+                //     param (e.g. `Steel_AISI_1045` default for `Material`) is valid in Reify;
+                //     nominal-name mismatch here does NOT imply incompatibility.
+                //   • TraitObject(_) — may resolve to a conforming struct at evaluation.
+                //   • TypeParam(_) — unresolved generic; conformance decided at instantiation.
+                //   • Geometry — carries no nominal identity to verify here.
+                // Only emit for clearly incompatible primitive types (String, Int, Scalar, …).
+                if matches!(
+                    effective_ty,
+                    Type::StructureRef(_)
+                        | Type::TraitObject(_)
+                        | Type::TypeParam(_)
+                        | Type::Geometry
+                ) {
+                    continue;
+                }
                 let mut ctx = WalkCtx {
                     arg_name: vc.id.member.as_str(),
                     span: vc.span,
@@ -328,7 +352,7 @@ pub(crate) fn check_param_default_conformance(
                     traits: trait_registry,
                     diagnostics,
                 };
-                walk_param_against_arg(&vc.cell_type, default, &mut ctx);
+                emit_structure_ref_mismatch(&vc.cell_type, effective_ty, &mut ctx);
             }
             Type::Geometry => {
                 // Anti-cascade: skip when the default expression itself had an error or
