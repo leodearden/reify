@@ -854,6 +854,19 @@ fn world_apply_point(world_transform: &Value, com: [f64; 3]) -> Option<[f64; 3]>
 
 // ── Explicit-mass rung for center_of_mass (task 4471) ────────────────────
 
+/// Canonical per-body resolution predicate shared by [`explicit_mass_weighted_com`]
+/// and [`diagnose`].
+///
+/// Returns `true` when [`resolve_body_mass`] reports this body as carrying
+/// explicit or build-baked mass (rung a: `MassProperties` solid; rung b:
+/// `derived_mass_props`).  Both the compute helper and the diagnose hook must
+/// agree on what "resolved" means so the mixed-case detection in `diagnose`
+/// exactly mirrors the all-or-nothing gate in the rung — this single function
+/// is the single source of truth for that agreement.
+fn body_mass_resolved(body: &Value) -> bool {
+    resolve_body_mass(body).is_some()
+}
+
 /// Result of attempting to compute a mass-weighted COM from explicit masses.
 ///
 /// Used by [`explicit_mass_weighted_com`] to signal which branch the
@@ -892,10 +905,12 @@ fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
     let mut total = 0.0_f64;
 
     for body in snap_bodies {
-        // Rung resolution — None means the body has no explicit or baked mass.
+        // Rung resolution — uses the same predicate as `diagnose` via
+        // `body_mass_resolved`; here we also need the resolved `Value` so we
+        // call `resolve_body_mass` directly rather than the boolean wrapper.
         let mp = match resolve_body_mass(body) {
             Some(v) => v,
-            None => return MassRung::Fallback,
+            None => return MassRung::Fallback, // !body_mass_resolved(body)
         };
 
         // Extract scalar mass and com offset (SI metres).
@@ -1384,7 +1399,7 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
     let mut first_unresolved_id: Option<String> = None;
 
     for body in bodies {
-        if resolve_body_mass(body).is_some() {
+        if body_mass_resolved(body) {
             any_resolved = true;
         } else if first_unresolved_id.is_none() {
             // Read the body's integer id for the diagnostic message.
