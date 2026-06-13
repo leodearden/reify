@@ -845,7 +845,7 @@ fn check_expr_fn_calls(
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
 /// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>`.
+/// `List<TraitObject(...)>` OR a bare `StructureRef(_)`.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -854,13 +854,18 @@ fn check_expr_fn_calls(
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
 ///
-/// **Scope: `List<TraitObject>` params only.**  Bare `TraitObject` params (e.g.
-/// `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally excluded.
-/// Those params are either already covered by the fn-call/sub-component paths,
+/// **Scope: `List<TraitObject>` and `StructureRef` params.**  Bare `TraitObject`
+/// params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally
+/// excluded — those are either already covered by the fn-call/sub-component paths,
 /// or are deliberate type-coercion escape hatches pending trait-coerce support
 /// (e.g. `ConstitutiveLawInput`, task δ/3780 `TODO(trait-coerce)`).  Extending
 /// to bare `TraitObject` would regress those escape-hatch call sites and is
 /// deferred to a follow-up once the coercion story is settled.
+///
+/// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
+/// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
+/// → `walk_param_against_arg_type` StructureRef arm, which emits
+/// `TypeNotConformingToStructureRef` for concrete type mismatches.
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     template_registry: &HashMap<String, &TopologyTemplate>,
@@ -878,18 +883,18 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject> params only.  Bare TraitObject params
-            // (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are skipped —
-            // see fn doc-comment rationale.
-            let is_list_trait_param = template
+            // Scope to List<TraitObject> and StructureRef params.  Bare TraitObject
+            // params are skipped — see fn doc-comment rationale.
+            let should_check = template
                 .value_cells
                 .iter()
                 .find(|vc| vc.id.member == arg_name.as_str())
                 .is_some_and(|vc| {
                     matches!(&vc.cell_type,
                         Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
+                    || matches!(&vc.cell_type, Type::StructureRef(_))
                 });
-            if !is_list_trait_param {
+            if !should_check {
                 continue;
             }
             check_trait_arg_conformance(
