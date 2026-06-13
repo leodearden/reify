@@ -352,6 +352,12 @@ fn spherical_has_no_params() {
     );
 }
 
+/// `Mechanism` carries three params: `bodies` (still a placeholder),
+/// `joint_parents` (tightened to Map<BodyId,JointParent> by task 4579/M),
+/// and `loop_closures` (tightened to List<LoopClosure> by task 4579/M).
+///
+/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED —
+/// owned by the kinematic-completion/BodyId promotion line.
 #[test]
 fn mechanism_has_three_placeholder_params() {
     let template = find_structure("Mechanism");
@@ -363,27 +369,36 @@ fn mechanism_has_three_placeholder_params() {
         "Mechanism should have exactly (bodies, joint_parents, loop_closures) in that order"
     );
 
+    // bodies: still a List<Real> placeholder (body-type marker — DO NOT change).
     let bodies = params.iter().find(|p| p.id.member == "bodies").unwrap();
     assert_eq!(
         bodies.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
-        "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder)"
+        "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder, \
+         TODO(body-type) owned by kinematic-completion line)"
     );
 
+    // joint_parents: tightened to Map<BodyId, JointParent> by task 4579 (M).
     let jp = params.iter().find(|p| p.id.member == "joint_parents").unwrap();
     assert_eq!(
         jp.cell_type,
-        Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
-        "Mechanism.joint_parents should be Type::Map(String, Real) \
-         (Map<BodyId,JointParent> placeholder)"
+        Type::Map(
+            Box::new(Type::StructureRef("BodyId".to_string())),
+            Box::new(Type::StructureRef("JointParent".to_string())),
+        ),
+        "Mechanism.joint_parents should be Type::Map(StructureRef(\"BodyId\"), \
+         StructureRef(\"JointParent\")); got: {:?}",
+        jp.cell_type
     );
 
+    // loop_closures: tightened to List<LoopClosure> by task 4579 (M).
     let lc = params.iter().find(|p| p.id.member == "loop_closures").unwrap();
     assert_eq!(
         lc.cell_type,
-        Type::List(Box::new(Type::dimensionless_scalar())),
-        "Mechanism.loop_closures should be Type::List(Real) \
-         (List<LoopClosureRecord> placeholder)"
+        Type::List(Box::new(Type::StructureRef("LoopClosure".to_string()))),
+        "Mechanism.loop_closures should be Type::List(StructureRef(\"LoopClosure\")); \
+         got: {:?}",
+        lc.cell_type
     );
 }
 
