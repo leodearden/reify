@@ -1286,9 +1286,24 @@ impl Engine {
         // remains available when dispatch_constraints() reads it for
         // RepresentationWithin interception (type-name-scan fallback path).
         let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-        let (constraint_results, constraint_diags) =
+        let (mut constraint_results, constraint_diags) =
             self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));
         diagnostics.extend(constraint_diags);
+
+        // ── η GD&T geometric-conformance measurement pass (task 4480 η) ──────────
+        // Beside measure_dfm_rules: a check-time measure pass that OVERRIDES the
+        // scalar ConstraintCheckEntry of any explicit-`actual` Conforms with a
+        // geometric verdict (Satisfied/Violated), or Indeterminate when there is no
+        // kernel / the handle is unrealizable (C1 — never a false Violated). It is a
+        // fast no-op for modules with no geometric Conforms, so non-GD&T modules stay
+        // byte-identical (B4). `det_values` is no longer borrowed here (NLL), so the
+        // `&mut self` borrow is free.
+        self.measure_gdt_conformance(
+            module,
+            &eval_result.values,
+            &mut constraint_results,
+            &mut diagnostics,
+        );
 
         // DFM auto-measurement pass (task 4408 γ).
         // eval_result.values is a separate owned ValueMap — collect DFM specs
