@@ -717,7 +717,7 @@ pub fn dispatch(
         // Expansion step: for every kernel-declared conversion
         // (Convert{from: current_repr}, to), enqueue (to, chain + entry).
         //
-        // TODO(#4590): O(K · S) per popped state where K=#kernels, S=avg
+        // TODO(#4592): O(K · S) per popped state where K=#kernels, S=avg
         // supports size. v0.2 has ~50 entries × 4 kernels so this is fine,
         // but if a future kernel grows a large supports table, pre-index
         // conversion edges into a `BTreeMap<ReprKind, Vec<(kernel_name,

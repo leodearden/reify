@@ -634,7 +634,7 @@ impl Engine {
     /// active purposes are typically 1-3 and value_cell iteration is already
     /// used by other Engine paths (see `engine_purposes.rs:147-159`).
     ///
-    /// TODO(#4590): each `propagate_subject_to_descendants` call is an
+    /// TODO(#4592): each `propagate_subject_to_descendants` call is an
     /// O(n_value_cells) linear prefix scan, and we run it once per
     /// (purpose × tolerance binding). For the documented 1-3 active
     /// purposes this is fine, but if the dispatcher (sibling tasks 2649/
