@@ -1011,7 +1011,9 @@ impl Engine {
         diagnostics.extend(dfm_diags);
 
         // ── C2 GD&T legality pass (task 4475 β) ──────────────────────────────
-        diagnostics.extend(self.check_gdt_legality(module, &eval_result.values));
+        // Delegated to `run_gdt_check_passes` so the CLI `--purpose` branch can
+        // call the same shared seam without going through `Engine::check`.
+        diagnostics.extend(self.run_gdt_check_passes(module, &eval_result.values));
 
 
         CheckResult {
@@ -1151,6 +1153,28 @@ impl Engine {
     }
 
     // ── C2 rule table (task 4475 β) ──────────────────────────────────────────
+
+    /// Shared aggregation point for all purpose-independent, kernel-free static
+    /// GD&T check passes (task 4589).
+    ///
+    /// **Both** `Engine::check` and the CLI `--purpose` branch call this method,
+    /// so any static GD&T pass added here is automatically enforced on both paths.
+    /// Future passes to add here:
+    /// - task 4480 η conformance pass
+    /// - kappa DRF seam pass
+    ///
+    /// **Intentionally excluded:** the DFM measurement pass (`measure_dfm_rules`)
+    /// takes `&mut self`, requires a live geometry kernel, and belongs to the
+    /// build/geometry path — not the lightweight static lint path.
+    ///
+    /// Delegates to [`check_gdt_legality`] unchanged; no rule-table edits.
+    pub fn run_gdt_check_passes(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+    ) -> Vec<Diagnostic> {
+        self.check_gdt_legality(module, values)
+    }
 
     /// Apply the GD&T legality rule table to all callouts in `module`.
     ///

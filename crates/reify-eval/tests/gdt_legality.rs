@@ -3,9 +3,10 @@
 //! Integration tests for:
 //! - C1: `Engine::enumerate_gdt_callouts` — the shared callout enumerator
 //! - C2: `Engine::check` + `check_gdt_legality` — the rule-table legality pass
+//! - C3: `Engine::run_gdt_check_passes` — the shared pub aggregation seam (task 4589)
 //!
-//! Tests are added incrementally (steps 1–8); each step adds RED tests that
-//! fail until the corresponding impl step makes them pass.
+//! Tests are added incrementally (steps 1–8 for 4475, step-1/2 for 4589);
+//! each step adds RED tests that fail until the corresponding impl step makes them pass.
 
 #[allow(unused_imports)]
 use reify_core::{DiagnosticCode, Severity};
@@ -586,5 +587,81 @@ structure def CheckConcentricityMmc {
         illegal.is_empty(),
         "Concentricity(MMC) must NOT emit GdtIllegalModifier (removed-2018 takes precedence); got: {:?}",
         illegal
+    );
+}
+
+// ── C3 run_gdt_check_passes pub seam (task 4589 step-1 RED / step-2 GREEN) ───
+
+/// C3-A: `Engine::run_gdt_check_passes` emits exactly one `GdtIllegalModifier`
+/// Error diagnostic for a `Flatness(material_condition: MMC, ...)` module.
+///
+/// This locks the new pub aggregation seam: the CLI `--purpose` branch calls this
+/// method directly (bypassing `Engine::check`), and the test proves it returns
+/// the same diagnostic as the existing C2 tests that exercise `check()`.
+///
+/// Fails to compile until `run_gdt_check_passes` is added (task 4589 step-2 RED).
+#[test]
+fn run_gdt_check_passes_emits_illegal_modifier_for_flatness_mmc() {
+    const SOURCE: &str = r#"
+structure def FlatnessMmcSeam {
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let (module, values) = eval_with_stdlib(SOURCE);
+    let engine = make_simple_engine();
+
+    let diags = engine.run_gdt_check_passes(&module, &values);
+
+    let gdt_errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect();
+
+    assert_eq!(
+        gdt_errors.len(),
+        1,
+        "run_gdt_check_passes must emit exactly 1 GdtIllegalModifier for Flatness(MMC); got {}: {:?}",
+        gdt_errors.len(),
+        gdt_errors
+    );
+    assert_eq!(
+        gdt_errors[0].severity,
+        Severity::Error,
+        "GdtIllegalModifier from run_gdt_check_passes must be Severity::Error"
+    );
+}
+
+/// C3-B: `Engine::run_gdt_check_passes` emits ZERO `GdtIllegalModifier` diagnostics
+/// for an all-RFS Flatness module — confirming no over-escalation.
+///
+/// Fails to compile until `run_gdt_check_passes` is added (task 4589 step-2 RED).
+#[test]
+fn run_gdt_check_passes_silent_for_flatness_rfs() {
+    const SOURCE: &str = r#"
+structure def FlatnessFrsSeam {
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+"#;
+    let (module, values) = eval_with_stdlib(SOURCE);
+    let engine = make_simple_engine();
+
+    let diags = engine.run_gdt_check_passes(&module, &values);
+
+    let gdt_errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
+        .collect();
+
+    assert!(
+        gdt_errors.is_empty(),
+        "run_gdt_check_passes must emit no GdtIllegalModifier for Flatness(RFS); got: {:?}",
+        gdt_errors
     );
 }
