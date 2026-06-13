@@ -3183,12 +3183,17 @@ impl OcctKernel {
                 let dev = self.measure_mesh_deviation(*nominal, &actual_mesh)?;
                 Ok(Value::Real(dev))
             }
-            // ε prerequisites (pre-1): stub arms so the workspace links. Real
-            // get_shape → ffi → compose-datum dispatch lands in steps 2 (face),
-            // 4 (edge), and 10 (tolerance).
-            GeometryQuery::FaceAnalyticDatum(_) => Err(QueryError::QueryFailed(
-                "FaceAnalyticDatum: unimplemented (ε step-2)".to_string(),
-            )),
+            // ε: analytic-datum projection. get_shape → ffi → compose the
+            // projected datum Value per the GeomAbs `kind` byte. Edge +
+            // tolerance dispatch land in steps 4 and 10.
+            GeometryQuery::FaceAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::face_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_surface_datum_to_value(&d)
+            }
             GeometryQuery::EdgeAnalyticDatum(_) => Err(QueryError::QueryFailed(
                 "EdgeAnalyticDatum: unimplemented (ε step-4)".to_string(),
             )),
@@ -3320,6 +3325,45 @@ impl OcctKernel {
 
         ffi::ffi::measure_mesh_deviation(shape, &tess_result)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticSurfaceDatum` FFI
+/// record (geometric-relations ε `FaceAnalyticDatum` dispatch).
+///
+/// The `kind` byte — set in `occt_wrapper.cpp::face_analytic_datum` — selects
+/// the Value variant: `0` Plane → [`Value::Plane`], `1` Cylinder / `2` Cone →
+/// [`Value::Axis`], `3` Sphere → centre [`Value::Point`]. Origin components are
+/// SI-metre lengths ([`Value::length`]); the direction / normal is a
+/// dimensionless unit [`Value::Direction`]. The two encodings MUST agree — see
+/// the kind-byte table in the C++ source.
+#[cfg(has_occt)]
+fn analytic_surface_datum_to_value(
+    d: &ffi::ffi::AnalyticSurfaceDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        0 => Ok(Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(dir),
+        }),
+        1 | 2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        3 => Ok(origin),
+        other => Err(QueryError::QueryFailed(format!(
+            "face_analytic_datum: unknown surface-datum kind byte {other}"
+        ))),
     }
 }
 
