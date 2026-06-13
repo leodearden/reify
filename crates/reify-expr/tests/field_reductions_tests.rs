@@ -3591,3 +3591,104 @@ fn max_scalar_sampled_field_stays_sign_preserving_regression() {
         "max(negative scalar Sampled) should return -1.0 (sign-preserving, NOT abs)"
     );
 }
+
+// ── γ step 3: vector-codomain argmax/argmin ──────────────────────────────────
+
+/// `argmax` / `argmin` over a 1-D `Length`-domain, `Vector3<Real>`-codomain
+/// Sampled field return the domain coord of the window with max/min magnitude.
+///
+/// axis = [0, 1, 2] m; windows: node 0 = (3,4,0) |w|=5, node 1 = (0,0,0)
+/// |w|=0, node 2 = (6,8,0) |w|=10.
+/// argmax → coord of index 2 = Value::Scalar{2.0, LENGTH}.
+/// argmin → coord of index 1 = Value::Scalar{1.0, LENGTH}.
+///
+/// **RED before step-4**: current Sampled argextremum decomposes a flat
+/// per-component index, not a per-window magnitude index.
+#[test]
+fn argmax_argmin_vector3_sampled_field_returns_coord_of_magnitude_extremum() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg",
+        vec![0.0, 1.0, 2.0],
+        vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → window with magnitude 10.0 is at index 2, coord 2.0 m.
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(Vector3 Sampled) should return coord 2.0 m (index 2, max magnitude 10.0)"
+    );
+
+    // argmin → window with magnitude 0.0 is at index 1, coord 1.0 m.
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(Vector3 Sampled) should return coord 1.0 m (index 1, min magnitude 0.0)"
+    );
+}
+
+/// NaN window in a `Vector3<Real>`-codomain field is skipped for argmax too;
+/// only the finite-magnitude windows are candidates.
+///
+/// axis = [0, 1, 2] m; windows: (3,4,0)|(NaN,NaN,NaN)|(6,8,0).
+/// Finite magnitudes: index 0 = 5.0, index 2 = 10.0.
+/// argmax → index 2, coord 2.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_vector3_sampled_field_skips_nan_window() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            3.0,      4.0,      0.0,
+            f64::NAN, f64::NAN, f64::NAN,
+            6.0,      8.0,      0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(partial-NaN Vector3 Sampled) should skip NaN window and return coord 2.0 m"
+    );
+}
