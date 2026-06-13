@@ -591,6 +591,14 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // a relation is a DOF-removal directive (no truth value), distinct from
         // Bool. Evaluates to Value::Undef until ζ supplies the relate-solve.
         "Relation" => Some(Type::Relation),
+        // Rigid-transform type-name surface (task 4577).
+        // Type::Transform(3) is the landed rigid-pose substrate (rotation +
+        // translation) — see crates/reify-core/src/ty.rs:305/462.  Surfacing the
+        // bare "Transform3" name makes `pub type Pose3 = Transform3` and
+        // `param : Transform3` annotations resolvable.  "Frame3" is intentionally
+        // absent (collides with the ports.ri structure def), as are "Orientation"
+        // and "AffineMap3" (out of scope for this task).
+        "Transform3" => Some(Type::Transform(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
