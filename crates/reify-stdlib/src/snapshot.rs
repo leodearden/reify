@@ -20,11 +20,13 @@ use std::collections::BTreeMap;
 
 use reify_ir::Value;
 
+use crate::dynamics::eval::mass_properties_from_value;
 use crate::eval_builtin;
 use crate::joints::{is_driving_joint, is_joint_value, make_nondriving_joint_error};
 use crate::loop_closure::{extract_loop_closure_chains, joint_range_midpoint};
 use crate::loop_closure_solver::{NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure};
 use crate::mechanism::is_world;
+use crate::resolve_body_mass;
 
 /// Evaluate a snapshot/FK stdlib function by name.
 ///
@@ -468,13 +470,23 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             // Validation surface (each guard short-circuits to Undef):
             //   args.len() in {1, 2}                     → arity guard
             //   args[0] is Map with kind="snapshot"      → snapshot guard
-            // v0.1 semantic: density-weighted mean of per-body world-frame
-            // ORIGINS (translation of each body's `world_transform`).
-            // Point-mass approximation — real volumetric centroid needs
-            // OCCT (`BRepGProp::VolumeProperties`), scope of FFI task #2530.
+            //
+            // Rung precedence (task 4471):
+            //   1. Explicit-mass rung — when EVERY body carries resolvable mass
+            //      (via resolve_body_mass: explicit MassProperties solid or
+            //      build-baked derived_mass_props), compute the mass-weighted
+            //      COM honoring each body's full world_transform.  The densities
+            //      arg is ignored entirely on this rung (mass ≠ density).
+            //      All-or-nothing: a single unresolvable body drops to rung 2.
+            //   2. Legacy density-weighted centroid — v0.1 semantic: weighted
+            //      mean of per-body world-frame ORIGINS (translation of each
+            //      body's `world_transform`).  Point-mass approximation — real
+            //      volumetric centroid needs OCCT (`BRepGProp::VolumeProperties`),
+            //      scope of FFI task #2530.
+            //
             // Empty Snapshot → Undef (zero-mass divide-by-zero).
             //
-            // Density resolution (uniform fallback for partial maps):
+            // Density resolution (uniform fallback for partial maps, rung 2):
             //   - args.len() == 1 OR args[1] is Undef OR args[1] is empty Map
             //     → all bodies get density 1.0 (uniform).
             //   - args[1] is non-empty Map → per-body lookup with 1.0
@@ -488,6 +500,19 @@ pub(crate) fn eval_snapshot(name: &str, args: &[Value]) -> Option<Value> {
             };
             if snap_bodies.is_empty() {
                 return Some(Value::Undef);
+            }
+
+            // ── Explicit-mass higher-precedence rung (task 4471) ─────────
+            // When EVERY body carries resolvable mass (explicit MassProperties
+            // or build-baked derived_mass_props), return the mass-weighted COM
+            // honoring the full world_transform.  If any single body is
+            // unresolvable, fall through to the unchanged legacy density path.
+            // The densities argument is intentionally ignored in the
+            // all-resolved case (mass and density are different currencies).
+            match explicit_mass_weighted_com(snap_bodies) {
+                MassRung::Resolved(p) => return Some(p),
+                MassRung::Degenerate => return Some(Value::Undef),
+                MassRung::Fallback => {}
             }
 
             // Density resolution.  When args[1] is absent OR Undef OR an
@@ -783,6 +808,95 @@ fn make_length_point3(xyz: [f64; 3]) -> Value {
         Value::length(xyz[1]),
         Value::length(xyz[2]),
     ])
+}
+
+// ── Explicit-mass rung for center_of_mass (task 4471) ────────────────────
+
+/// Result of attempting to compute a mass-weighted COM from explicit masses.
+///
+/// Used by [`explicit_mass_weighted_com`] to signal which branch the
+/// `center_of_mass` arm should take:
+/// - `Resolved(point)` — every body's mass was resolvable, total mass > 0,
+///   all world_transforms valid → the mass-weighted COM as a `Value::Point`.
+/// - `Degenerate` — every body resolved but total mass ≤ 0 / non-finite, or
+///   a field was malformed → `Value::Undef` (mirrors legacy `total_density==0`).
+/// - `Fallback` — ≥1 body unresolved → drop through to the unchanged legacy
+///   density-weighted centroid path.
+enum MassRung {
+    Resolved(Value),
+    Degenerate,
+    Fallback,
+}
+
+/// Attempt to compute a mass-weighted `center_of_mass` using explicit mass
+/// information on each snapshot body.
+///
+/// For each body:
+/// - Call [`resolve_body_mass`] — `None` ⇒ return [`MassRung::Fallback`]
+///   immediately (all-or-nothing: a single unresolved body drops the whole
+///   call to the legacy density path).
+/// - Extract `(mass, com, _)` via [`mass_properties_from_value`] — failure,
+///   or `!mass.is_finite() || mass < 0.0` ⇒ [`MassRung::Degenerate`].
+/// - Read the body's `"world_transform"` map key and accumulate
+///   `weighted[i] += mass × world_transform_translation(wt)[i]`
+///   (origin only — com offset is wired in step-4); missing/bad
+///   `world_transform` ⇒ [`MassRung::Degenerate`].
+///
+/// After the loop:
+/// - `!total.is_finite() || total <= 0.0` ⇒ [`MassRung::Degenerate`].
+/// - Otherwise ⇒ [`MassRung::Resolved`]`(make_length_point3([weighted[i]/total]))`.
+fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
+    let mut weighted = [0.0_f64; 3];
+    let mut total = 0.0_f64;
+
+    for body in snap_bodies {
+        // Rung resolution — None means the body has no explicit or baked mass.
+        let mp = match resolve_body_mass(body) {
+            Some(v) => v,
+            None => return MassRung::Fallback,
+        };
+
+        // Extract scalar mass and com offset (SI metres).  Discard inertia.
+        let (mass, _com, _) = match mass_properties_from_value(&mp) {
+            Some(t) => t,
+            None => return MassRung::Degenerate,
+        };
+
+        // Guard: mass must be finite and non-negative.
+        if !mass.is_finite() || mass < 0.0 {
+            return MassRung::Degenerate;
+        }
+
+        // Extract the world-frame origin (translation part of world_transform).
+        let body_map = match body {
+            Value::Map(m) => m,
+            _ => return MassRung::Degenerate,
+        };
+        let wt = match body_map.get(&Value::String("world_transform".to_string())) {
+            Some(v) => v,
+            None => return MassRung::Degenerate,
+        };
+        let origin = match world_transform_translation(wt) {
+            Some(xyz) => xyz,
+            None => return MassRung::Degenerate,
+        };
+
+        for i in 0..3 {
+            weighted[i] += mass * origin[i];
+        }
+        total += mass;
+    }
+
+    // Degenerate: zero or invalid total mass.
+    if !total.is_finite() || total <= 0.0 {
+        return MassRung::Degenerate;
+    }
+
+    MassRung::Resolved(make_length_point3([
+        weighted[0] / total,
+        weighted[1] / total,
+        weighted[2] / total,
+    ]))
 }
 
 /// Extract the `bodies` list from a Snapshot Map, validating the
@@ -3466,23 +3580,23 @@ mod tests {
     /// Build a 2-body Snapshot where each body has a custom solid and sits
     /// at the given world x-coordinate via a prismatic-X joint.
     ///
-    /// The joint range covers `[x_a.min(x_b) - 1, x_a.max(x_b) + 1]` so
-    /// both bind values are valid.
+    /// Each joint gets a DISTINCT range `[xi - 1, xi + 1]` so the two
+    /// joints are structurally different values — essential for the snapshot
+    /// binding-resolution map to distinguish them (joint identity is by
+    /// `Value` structural equality, as in all other snapshot test helpers).
     fn make_two_body_explicit_mass_snapshot(
         solid_a: Value,
         x_a: f64,
         solid_b: Value,
         x_b: f64,
     ) -> Value {
-        let lo = x_a.min(x_b) - 1.0;
-        let hi = x_a.max(x_b) + 1.0;
         let j_a = eval_builtin(
             "prismatic",
             &[
                 axis_x_unit(),
                 Value::Range {
-                    lower: Some(Box::new(Value::length(lo))),
-                    upper: Some(Box::new(Value::length(hi))),
+                    lower: Some(Box::new(Value::length(x_a - 1.0))),
+                    upper: Some(Box::new(Value::length(x_a + 1.0))),
                     lower_inclusive: true,
                     upper_inclusive: true,
                 },
@@ -3493,8 +3607,8 @@ mod tests {
             &[
                 axis_x_unit(),
                 Value::Range {
-                    lower: Some(Box::new(Value::length(lo))),
-                    upper: Some(Box::new(Value::length(hi))),
+                    lower: Some(Box::new(Value::length(x_b - 1.0))),
+                    upper: Some(Box::new(Value::length(x_b + 1.0))),
                     lower_inclusive: true,
                     upper_inclusive: true,
                 },
