@@ -3143,10 +3143,63 @@ AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape) {
     });
 }
 
+// Curve-datum `kind` byte (consumed by `analytic_curve_datum_to_value` in
+// lib.rs). All three analytic curve kinds project to an Axis datum:
+//   0 = Line    → Value::Axis (point on line + unit direction)
+//   1 = Circle  → Value::Axis (centre + circle axis; scalar1 = radius)
+//   2 = Ellipse → Value::Axis (centre + ellipse axis; scalar1 = major radius,
+//                              scalar2 = minor radius)
+// A non-analytic curve (B-spline, etc.) throws.
+
 AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape) {
     return wrap_occt_call("edge_analytic_datum", [&]() -> AnalyticCurveDatum {
-        (void)shape;
-        throw std::runtime_error("edge_analytic_datum: unimplemented");
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error("edge_analytic_datum: shape is not an edge");
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("edge_analytic_datum: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        switch (curve.GetType()) {
+            case GeomAbs_Line: {
+                gp_Lin lin = curve.Line();
+                gp_Pnt loc = lin.Location();
+                gp_Dir dir = lin.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    0.0, 0.0, /*kind=*/0,
+                };
+            }
+            case GeomAbs_Circle: {
+                gp_Circ circ = curve.Circle();
+                gp_Ax1 ax = circ.Axis();
+                gp_Pnt loc = circ.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    circ.Radius(), 0.0, /*kind=*/1,
+                };
+            }
+            case GeomAbs_Ellipse: {
+                gp_Elips elips = curve.Ellipse();
+                gp_Ax1 ax = elips.Axis();
+                gp_Pnt loc = elips.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    elips.MajorRadius(), elips.MinorRadius(), /*kind=*/2,
+                };
+            }
+            default:
+                throw std::runtime_error(
+                    "edge_analytic_datum: non-analytic curve "
+                    "(not Line/Circle/Ellipse)"
+                );
+        }
     });
 }
 

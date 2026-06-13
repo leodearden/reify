@@ -3194,9 +3194,14 @@ impl OcctKernel {
                     .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
                 analytic_surface_datum_to_value(&d)
             }
-            GeometryQuery::EdgeAnalyticDatum(_) => Err(QueryError::QueryFailed(
-                "EdgeAnalyticDatum: unimplemented (ε step-4)".to_string(),
-            )),
+            GeometryQuery::EdgeAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::edge_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_curve_datum_to_value(&d)
+            }
             GeometryQuery::ShapeLocalTolerance(_) => Err(QueryError::QueryFailed(
                 "ShapeLocalTolerance: unimplemented (ε step-10)".to_string(),
             )),
@@ -3363,6 +3368,41 @@ fn analytic_surface_datum_to_value(
         3 => Ok(origin),
         other => Err(QueryError::QueryFailed(format!(
             "face_analytic_datum: unknown surface-datum kind byte {other}"
+        ))),
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticCurveDatum` FFI
+/// record (geometric-relations ε `EdgeAnalyticDatum` dispatch).
+///
+/// All three analytic curve kinds — `0` Line, `1` Circle, `2` Ellipse (set in
+/// `occt_wrapper.cpp::edge_analytic_datum`) — project to a [`Value::Axis`]: the
+/// infinite line for a line, the centre + circle/ellipse axis for an arc.
+/// Origin components are SI-metre lengths; the direction is a dimensionless
+/// unit [`Value::Direction`]. Radius / major+minor ride in the FFI scalars and
+/// are not part of the projected Axis.
+#[cfg(has_occt)]
+fn analytic_curve_datum_to_value(
+    d: &ffi::ffi::AnalyticCurveDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
+        0..=2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        other => Err(QueryError::QueryFailed(format!(
+            "edge_analytic_datum: unknown curve-datum kind byte {other}"
         ))),
     }
 }
