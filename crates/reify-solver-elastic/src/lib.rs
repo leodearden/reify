@@ -539,8 +539,8 @@ pub use resample::{
     resample_nodal_to_grid_instrumented,
 };
 pub use result::{
-    GradientElement, StressElement, element_gradient_p1, element_stress_p1, element_stress_p2,
-    recover_nodal_gradient_p1, recover_nodal_stress_p1, tet_volume_p1,
+    GradientElement, StressElement, curl_from_gradient, element_gradient_p1, element_stress_p1,
+    element_stress_p2, recover_nodal_gradient_p1, recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
     ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,

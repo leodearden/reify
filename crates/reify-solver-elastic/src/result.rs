@@ -527,6 +527,39 @@ pub fn recover_nodal_gradient_p1(
     accum
 }
 
+/// Compute the curl (∇×u) of a displacement-gradient tensor.
+///
+/// # Layout
+///
+/// The input `grad` uses the convention `(∇u)[r][c] = ∂u_r / ∂x_c`
+/// — the same layout as [`element_gradient_p1`] and [`recover_nodal_gradient_p1`].
+///
+/// # Formula
+///
+/// For the convention above the curl is the antisymmetric part:
+///
+/// ```text
+/// (∇×u)[0] = ∂u_z/∂y − ∂u_y/∂z = grad[2][1] − grad[1][2]
+/// (∇×u)[1] = ∂u_x/∂z − ∂u_z/∂x = grad[0][2] − grad[2][0]
+/// (∇×u)[2] = ∂u_y/∂x − ∂u_x/∂y = grad[1][0] − grad[0][1]
+/// ```
+///
+/// This equals **twice** the infinitesimal rotation vector ω (PRD differential-
+/// field-operators.md task β).  The result is dimensionless (Length / Length)
+/// for a displacement field over a Length domain — same as volumetric strain.
+///
+/// # See also
+///
+/// [`recover_nodal_gradient_p1`] for the nodal recovery that produces the
+/// per-node `[[f64;3];3]` tensors passed here.
+pub fn curl_from_gradient(grad: &[[f64; 3]; 3]) -> [f64; 3] {
+    [
+        grad[2][1] - grad[1][2], // ∂u_z/∂y − ∂u_y/∂z
+        grad[0][2] - grad[2][0], // ∂u_x/∂z − ∂u_z/∂x
+        grad[1][0] - grad[0][1], // ∂u_y/∂x − ∂u_x/∂y
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
