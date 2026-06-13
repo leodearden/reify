@@ -1452,3 +1452,182 @@ fn e2e_cantilever_divergence_ri_accessor() {
         ),
     }
 }
+
+// ── step-5 (task 4565): RED — .ri accessor `result.gradient` / `result.curl` ─
+//
+// Proves that the `ElasticResult.gradient` / `ElasticResult.curl` params are
+// declared in solver_elastic.ri and that the .ri accessors type-resolve, evaluate
+// to the correct Value::Field shapes, and that `sample(…)` dispatches through the
+// ε stride-n deinterleave path yielding Value::Vector of arity 9 / 3.
+//
+// RED signal: before step-6 adds `param gradient` / `param curl` to ElasticResult,
+// the field projections `result.gradient` and `result.curl` fail to type-check →
+// Error-severity diagnostics are emitted → the `errors.is_empty()` assertion fails.
+//
+// GREEN by step-6 which declares both params in solver_elastic.ri.
+
+/// Self-contained cantilever source binding `result.gradient`, `result.curl`,
+/// their sampled values at an interior point, and `result.stress` for coexistence.
+const CANTILEVER_GRAD_CURL_ACCESSOR_SRC: &str = r#"
+structure FeaCantileverGradCurlAccessor {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions()
+    )
+
+    // gradient and curl accessors — fail to type-check until step-6 adds the params.
+    let gradient = result.gradient
+    let curl     = result.curl
+
+    // sample(field, point) at an interior point (500mm, 50mm, 50mm).
+    let g_at = sample(result.gradient, point3(500mm, 50mm, 50mm))
+    let c_at = sample(result.curl,     point3(500mm, 50mm, 50mm))
+
+    // Coexistence: stress accessor must survive alongside the new params.
+    let stress = result.stress
+}
+"#;
+
+/// `.ri` accessors `result.gradient` and `result.curl` type-resolve; sampled
+/// values are Value::Vector of the correct arity.
+///
+/// Assertions:
+///   (a) No Error-severity diagnostics — proves both accessors type-check against
+///       `param gradient : Field<Point3<Length>, Tensor<2,3,Real>>` and
+///       `param curl : Field<Point3<Length>, Vector3<Real>>`.
+///   (b) `gradient` cell → Value::Field{source:Sampled}.
+///   (c) `curl` cell → Value::Field{source:Sampled}.
+///   (d) `g_at` cell → Value::Vector of arity 9; all components Value::Real + finite
+///       (ε stride-9 deinterleave path).
+///   (e) `c_at` cell → Value::Vector of arity 3; all components Value::Real + finite
+///       (ε stride-3 deinterleave path).
+///   (f) `stress` cell → Value::Field{source:Sampled} (coexistence).
+///
+/// RED until step-6 adds `param gradient` and `param curl` to ElasticResult.
+#[test]
+fn e2e_cantilever_gradient_curl_ri_accessor() {
+    let compiled = parse_and_compile_with_stdlib(CANTILEVER_GRAD_CURL_ACCESSOR_SRC);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // ── (a) No Error-severity diagnostics ────────────────────────────────────
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics — result.gradient and result.curl must \
+         type-check after step-6 adds the params to ElasticResult; got: {:?}",
+        errors
+    );
+
+    // ── (b) `gradient` cell → Value::Field{source:Sampled} ───────────────────
+    let grad_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "gradient");
+    let grad_val = eval_result
+        .values
+        .get(&grad_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.gradient not found"));
+    match grad_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "gradient cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("gradient cell must be Value::Field, got: {:?}", other),
+    }
+
+    // ── (c) `curl` cell → Value::Field{source:Sampled} ───────────────────────
+    let curl_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "curl");
+    let curl_val = eval_result
+        .values
+        .get(&curl_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.curl not found"));
+    match curl_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "curl cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("curl cell must be Value::Field, got: {:?}", other),
+    }
+
+    // ── (d) `g_at` → Value::Vector of arity 9 ────────────────────────────────
+    let g_at_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "g_at");
+    let g_at_val = eval_result
+        .values
+        .get(&g_at_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.g_at not found"));
+    match g_at_val {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(), 9,
+                "g_at must be arity-9 (stride-9 gradient sample), got arity {}",
+                components.len()
+            );
+            for (i, c) in components.iter().enumerate() {
+                match c {
+                    Value::Real(v) => assert!(
+                        v.is_finite(),
+                        "g_at component[{}] = {} is not finite", i, v
+                    ),
+                    other => panic!(
+                        "g_at component[{}] must be Value::Real, got: {:?}", i, other
+                    ),
+                }
+            }
+        }
+        other => panic!("g_at must be Value::Vector, got: {:?}", other),
+    }
+
+    // ── (e) `c_at` → Value::Vector of arity 3 ────────────────────────────────
+    let c_at_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "c_at");
+    let c_at_val = eval_result
+        .values
+        .get(&c_at_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.c_at not found"));
+    match c_at_val {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(), 3,
+                "c_at must be arity-3 (stride-3 curl sample), got arity {}",
+                components.len()
+            );
+            for (i, c) in components.iter().enumerate() {
+                match c {
+                    Value::Real(v) => assert!(
+                        v.is_finite(),
+                        "c_at component[{}] = {} is not finite", i, v
+                    ),
+                    other => panic!(
+                        "c_at component[{}] must be Value::Real, got: {:?}", i, other
+                    ),
+                }
+            }
+        }
+        other => panic!("c_at must be Value::Vector, got: {:?}", other),
+    }
+
+    // ── (f) `stress` cell coexists as Value::Field{source:Sampled} ───────────
+    let stress_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "stress");
+    let stress_val = eval_result
+        .values
+        .get(&stress_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.stress not found"));
+    match stress_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "stress cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("stress cell must be Value::Field, got: {:?}", other),
+    }
+}
