@@ -3396,10 +3396,9 @@ pub struct SweepOpHistoryRecords {
     /// canonical happy-path integration tests. A dedicated test exercising
     /// the non-zero path (e.g. a synthetic input that triggers the
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
-    /// tracked in project memory under
-    /// `"SweepOpHistory silent_drop_count non-zero path test"`.
+    /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **TODO (follow-up — tracked in project memory "SweepOpHistory
+    /// **TODO (follow-up — tracked in project memory "SweepOpHistory // ptodo:allow wiring TODO with in-memory tracking reference
     /// silent_drop_count error reporting"):** wire this counter into error
     /// reporting so that a non-zero count surfaces as a warning log, rather
     /// than being silently recorded. Until that follow-up lands, callers

@@ -1136,7 +1136,7 @@ pub(crate) fn compile_geometry_op(
                     axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
@@ -1172,7 +1172,7 @@ pub(crate) fn compile_geometry_op(
                         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                         // NOTE: bare numeric angle is passed through as-is (radians).
                         // circular_pattern converts bare numbers as degrees; aligning
-                        // rotate/rotate_around/revolve is tracked as a follow-up task.
+                        // rotate/rotate_around/revolve is deferred (no live task assigned).
                         angle_rad: f64_arg("angle")?,
                     })
                 }
@@ -1575,7 +1575,7 @@ pub(crate) fn compile_geometry_op(
                     }
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     let angle_rad = f64_arg("angle")?;
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful

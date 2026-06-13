@@ -45,7 +45,7 @@
 //! kinds") because their f64-per-joint scalar representation is insufficient.
 //! The analytic per-joint twist column is exposed via [`per_joint_jacobian_local`]
 //! for future adjoint-transport composition; that optimisation is out of scope
-//! for this task and tracked as a follow-up design note.
+//! for this task and deferred for future consideration.
 //!
 //! See `docs/prds/v0_2/kinematic-constraints.md` §"Loop-closure solver" for the
 //! design rationale and convergence-tolerance defaults (1 µm position, 1 µrad
