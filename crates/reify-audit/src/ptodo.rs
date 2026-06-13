@@ -754,6 +754,90 @@ fn liveness_finding(path: &str, summary: String) -> Finding {
 }
 
 // -----------------------------------------------------------------------
+// §6.6 baseline fingerprint derivation
+// -----------------------------------------------------------------------
+
+/// §6.6 baseline fingerprint: the canonical one-line representation of a
+/// PTODO finding used to key the committed `ptodo-baseline.txt` ratchet.
+///
+/// Shape: `{path} :: {kind} :: {text}`
+///
+/// - `path` = `finding.task_id` (root-relative file path for all PTODO kinds).
+/// - `kind` = the summary prefix up to the first `':'` (e.g. `"untracked"`,
+///   `"orphaned"`, `"unknown-id"`, `"phantom-tracking"`, …).
+/// - `text` = the remainder of the summary after `"{kind}: "`, with an
+///   optional leading `"line <digits>: "` segment removed, then internal runs
+///   of whitespace folded to a single space and the result trimmed.
+///
+/// This is the SINGLE canonical derivation that both generates the committed
+/// baseline (δ step-11) and computes live fingerprints for the ε ratchet
+/// check — keeping the two lock-step and preventing the drift warned about
+/// in PRD §6.6.
+// G-allow: sole callers are tests/ptodo_baseline.rs (separate crate — cannot
+// see pub(crate)) and check() (same module). Mirrors resolve_liveness /
+// resolve_inverse pub-for-integration-test pattern.
+pub fn fingerprint(finding: &Finding) -> String {
+    let path = &finding.task_id;
+    let summary = &finding.summary;
+
+    // Extract `kind`: everything up to the first ':'.
+    let (kind, after_kind) = match summary.split_once(':') {
+        Some((k, rest)) => (k.trim(), rest),
+        None => {
+            // Malformed summary — return a best-effort fingerprint rather than
+            // panicking; ε's well-formedness test will catch any ill-formed
+            // baseline entry.
+            return format!("{path} :: {summary} :: ");
+        }
+    };
+
+    // Strip a leading space after the ':' separator.
+    let after_kind = after_kind.strip_prefix(' ').unwrap_or(after_kind);
+
+    // Strip an optional "line <digits>: " prefix (present in structural and
+    // liveness findings; absent in inverse `task-cites-deleted-path` findings).
+    let text_raw = if let Some(rest) = after_kind.strip_prefix("line ") {
+        // Consume the digit run and the ": " that follows.
+        let end = rest
+            .bytes()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let after_digits = &rest[end..];
+        after_digits.strip_prefix(": ").unwrap_or(after_digits)
+    } else {
+        after_kind
+    };
+
+    // Fold internal whitespace runs to a single space, then trim.
+    let text = fold_whitespace(text_raw);
+
+    format!("{path} :: {kind} :: {text}")
+}
+
+/// Fold every internal run of ASCII whitespace in `s` to a single space and
+/// trim leading/trailing whitespace. Returns an owned `String`.
+fn fold_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_ws = true; // treat leading whitespace as if preceded by space
+    for c in s.chars() {
+        if c.is_ascii_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(c);
+            in_ws = false;
+        }
+    }
+    // Trim trailing space (produced when `s` ends with whitespace).
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
+// -----------------------------------------------------------------------
 // §5 detector entry point — working-tree sweep
 // -----------------------------------------------------------------------
 
