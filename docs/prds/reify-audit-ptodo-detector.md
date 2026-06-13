@@ -95,11 +95,12 @@ entries name git-deleted paths.
 Leo's invariant is universal; an annotation form (`TODO(perf, until: <trigger>)`)
 would create a sanctioned untracked class whose trigger conditions are mechanically
 unverifiable — exactly the "prose triggers fire silently" rot mode the audit found
-dominant. Task **4551** (perf-backlog registry) is the standing citable owner: it owns
+dominant. Task **4590** (perf-backlog anchor v2) is the standing citable owner: it owns
 being citable, periodically re-checking triggers, and graduating items. Perf TODOs
-write `TODO(#4551): <trigger prose>`; the trigger prose stays human-readable, the
-tracking is machine-checkable. The detector has **zero** perf special-casing. (4551's
-own brief already defers to this PRD for the durable rule.)
+write `TODO(#4590): <trigger prose>`; the trigger prose stays human-readable, the
+tracking is machine-checkable. The detector has **zero** perf special-casing.
+(v1 owner 4551 landed done 2026-06-12, commit 263502544d; 4590 is the v2 holding
+anchor. 4590's own brief already defers to this PRD for the durable rule.)
 
 ### 6.2 Policy: softer vocabularies — **core vocabulary now, expansion gated on FP review (task θ)**
 
@@ -272,7 +273,7 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | Other PRD / surface | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §10 (task 4115 record) | amends | default-sweep membership policy note | **this PRD** (ε) | queued |
-| Task 4551 (perf-backlog registry) | this PRD defines policy; 4551 aligns | trigger-conditioned-TODO citation rule (§6.1) | **this PRD**; 4551 brief already defers to it | wired at decompose (note on 4551) |
+| Task 4590 (perf-backlog anchor v2) | this PRD defines policy; 4590 aligns | trigger-conditioned-TODO citation rule (§6.1) | **this PRD**; 4590 brief defers to it | v1 owner 4551 done 2026-06-12 (263502544d); 4590 is v2 anchor |
 | Task-1622 ignore-hygiene tool (`reify-test-support`) | consumes/extends | pub extraction fns; format-vs-liveness split (§8.3) | **this PRD** (γ) | queued |
 | `/audit` skill (`.claude/skills/audit/`) | consumed-by | default sweep + severity routing docs | **this PRD** (ε) | queued |
 | dark-factory `skills/review-briefing/SKILL.md` checks 5/6 | parallel (process layer) | invariant prose, cross-project | dark-factory (Leo; branch `docs/review-briefing-todo-invariant`, not yet on df main) | informational — no code seam, no dep |
