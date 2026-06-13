@@ -30,6 +30,9 @@
 //! [`FaceAnalyticDatum`]: reify_ir::GeometryQuery::FaceAnalyticDatum
 //! [`EdgeAnalyticDatum`]: reify_ir::GeometryQuery::EdgeAnalyticDatum
 
+use crate::sweep_classifier::SweptKind;
+use reify_ir::{GeometryHandleId, GeometryKernel, GeometryQuery, Value};
+
 /// SI-metre fallback length scale used to convert the linear dedup tolerance
 /// into a scale-aware angular tolerance (design §2.3:
 /// `ang_tol ≈ lin_tol / characteristic_length`, deliberately **not** OCCT's
@@ -190,7 +193,7 @@ pub(crate) fn directions_parallel(a: [f64; 3], b: [f64; 3], lin_tol: f64) -> boo
 /// A plane's signed offset is the derived quantity `origin · normal`, computed
 /// on demand rather than stored as a redundant, drift-prone field.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Datum {
+pub enum Datum {
     /// Axis / line datum — cylinder, cone, revolute history, or a
     /// line / circle / ellipse edge.
     Axis {
@@ -294,6 +297,182 @@ pub(crate) fn dedup_datums(datums: Vec<Datum>, lin_tol: f64) -> Vec<Datum> {
 /// own modelling drift does not spuriously split an otherwise-coincident datum.
 pub(crate) fn dedup_tolerance(local_a: f64, local_b: f64) -> f64 {
     CONFUSION_FLOOR_M.max(local_a).max(local_b)
+}
+
+/// The deduplicated datum bundle a realized feature projects onto, grouped by
+/// projection target (geometric-relations ε, design §2.2 / PRD §7.2).
+///
+/// Each group is already canonicalized by [`dedup_datums`] at the bundle's
+/// dedup tolerance, so a group of length one is the feature's unambiguous datum
+/// for that projection and a group of length ≠ one is the ambiguous /
+/// select-a-subfeature case the `feature.<proj>` eval surfaces as a diagnostic.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FeatureDatumBundle {
+    /// Axis / line datums (cylinder, cone, line/circle/ellipse edge, revolution
+    /// history) → `feature.axis`.
+    pub axes: Vec<Datum>,
+    /// Plane datums (planar face) → `feature.plane`.
+    pub planes: Vec<Datum>,
+    /// Point datums (sphere centre, vertex) → `feature.point`.
+    pub points: Vec<Datum>,
+    /// Direction datums (extrusion direction) → `feature.dir`.
+    pub directions: Vec<Datum>,
+}
+
+/// Build a realized feature's deduplicated datum bundle from the **union** of
+/// analytic classification and construction-history datum-traits (design §2.2):
+///
+///  1. **analytic** — enumerate the feature's sub-faces / sub-edges
+///     (`extract_faces` / `extract_edges`) and project each via the kernel's
+///     [`FaceAnalyticDatum`] / [`EdgeAnalyticDatum`] queries. A non-analytic
+///     sub-shape — e.g. a `GeomAbs_SurfaceOfRevolution` revolved side face —
+///     fails its query and is skipped.
+///  2. **construction history** — the recovered [`SweptKind`] contributes the
+///     revolution **Axis** (`Revolve`) or extrusion **Direction** (`Extrude`),
+///     restoring robustness for the non-analytic tail (PRD §7.2: "analytic ∪
+///     construction-history").
+///
+/// Candidates are partitioned by projection target and each group is
+/// deduplicated by geometric equivalence ([`dedup_datums`]) at
+/// `lin_tol = max(confusion_floor, localTol of every queried sub-shape)` — a
+/// bundle-wide fold of [`dedup_tolerance`] over each sub-shape's
+/// `ShapeLocalTolerance`, with sub-shapes whose tolerance query fails falling
+/// back to the confusion floor.
+///
+/// `history` is the feature's recovered swept-body classification (obtained by
+/// the caller via `Engine::swept_kind_table().lookup(feature_handle)`), or
+/// `None` when the feature is not a recognised swept body. The axis/direction
+/// geometry lives in the `SweptKindTable` rather than the role-only
+/// `TopologyAttributeTable`, so the recovered [`SweptKind`] — not the attribute
+/// table — is ε's construction-history input.
+///
+/// [`FaceAnalyticDatum`]: reify_ir::GeometryQuery::FaceAnalyticDatum
+/// [`EdgeAnalyticDatum`]: reify_ir::GeometryQuery::EdgeAnalyticDatum
+pub fn feature_datum_bundle(
+    feature_handle: GeometryHandleId,
+    kernel: &mut dyn GeometryKernel,
+    history: Option<&SweptKind>,
+) -> FeatureDatumBundle {
+    let mut candidates: Vec<Datum> = Vec::new();
+    // Bundle-wide linear tolerance, folded from each queried sub-shape's local
+    // modelling tolerance; seeded at the confusion floor.
+    let mut lin_tol = dedup_tolerance(0.0, 0.0);
+
+    // (1a) Analytic sub-FACE datums.
+    if let Ok(faces) = kernel.extract_faces(feature_handle) {
+        for f in faces {
+            if let Ok(v) = kernel.query(&GeometryQuery::FaceAnalyticDatum(f)) {
+                if let Some(d) = datum_from_value(&v) {
+                    candidates.push(d);
+                }
+            }
+            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(f)) {
+                if let Some(tol) = t.as_f64() {
+                    lin_tol = dedup_tolerance(lin_tol, tol);
+                }
+            }
+        }
+    }
+    // (1b) Analytic sub-EDGE datums.
+    if let Ok(edges) = kernel.extract_edges(feature_handle) {
+        for e in edges {
+            if let Ok(v) = kernel.query(&GeometryQuery::EdgeAnalyticDatum(e)) {
+                if let Some(d) = datum_from_value(&v) {
+                    candidates.push(d);
+                }
+            }
+            if let Ok(t) = kernel.query(&GeometryQuery::ShapeLocalTolerance(e)) {
+                if let Some(tol) = t.as_f64() {
+                    lin_tol = dedup_tolerance(lin_tol, tol);
+                }
+            }
+        }
+    }
+    // (2) Construction-history datum-traits (Revolve → Axis, Extrude → Direction).
+    if let Some(kind) = history {
+        candidates.extend(swept_kind_datum_traits(kind));
+    }
+
+    // (3) Dedup (kind-partitioned by `dedup_datums`), then group by target.
+    let mut bundle = FeatureDatumBundle::default();
+    for d in dedup_datums(candidates, lin_tol) {
+        match d {
+            Datum::Axis { .. } => bundle.axes.push(d),
+            Datum::Plane { .. } => bundle.planes.push(d),
+            Datum::Point { .. } => bundle.points.push(d),
+            Datum::Direction { .. } => bundle.directions.push(d),
+        }
+    }
+    bundle
+}
+
+/// Convert a kernel-returned analytic-datum [`Value`] (as composed by the OCCT
+/// `FaceAnalyticDatum` / `EdgeAnalyticDatum` dispatch) into a [`Datum`]. Returns
+/// `None` for any value that is not a datum carrier or whose coordinates are not
+/// numeric — defensive, since the analytic dispatch always produces well-formed
+/// Axis / Plane / Point / Direction values.
+fn datum_from_value(v: &Value) -> Option<Datum> {
+    match v {
+        Value::Axis { origin, direction } => Some(Datum::Axis {
+            origin: point3_from_value(origin)?,
+            direction: vec3_from_value(direction)?,
+            radius: None,
+        }),
+        Value::Plane { origin, normal } => Some(Datum::Plane {
+            origin: point3_from_value(origin)?,
+            normal: vec3_from_value(normal)?,
+        }),
+        Value::Point(_) => Some(Datum::Point {
+            position: point3_from_value(v)?,
+        }),
+        Value::Direction { x, y, z } => Some(Datum::Direction {
+            direction: [*x, *y, *z],
+        }),
+        _ => None,
+    }
+}
+
+/// Extract `[f64; 3]` SI-metre coordinates from a 3-component `Value::Point`
+/// (length-dimensioned scalars) or `Value::Vector`.
+fn point3_from_value(v: &Value) -> Option<[f64; 3]> {
+    match v {
+        Value::Point(c) | Value::Vector(c) if c.len() == 3 => {
+            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
+        }
+        _ => None,
+    }
+}
+
+/// Extract `[f64; 3]` components from a `Value::Direction` (inline floats) or,
+/// defensively, a 3-component `Value::Vector` / `Value::Point`.
+fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
+    match v {
+        Value::Direction { x, y, z } => Some([*x, *y, *z]),
+        Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
+            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
+        }
+        _ => None,
+    }
+}
+
+/// The construction-history datum-traits a recovered [`SweptKind`] contributes
+/// to the bundle: a `Revolve` yields its revolution **Axis**; an `Extrude`
+/// yields its extrusion **Direction**. A linear sweep (and any future
+/// `#[non_exhaustive]` variant) contributes no first-class datum trait in ε.
+fn swept_kind_datum_traits(kind: &SweptKind) -> Vec<Datum> {
+    match kind {
+        SweptKind::Revolve {
+            axis_origin,
+            axis_dir,
+            ..
+        } => vec![Datum::Axis {
+            origin: *axis_origin,
+            direction: *axis_dir,
+            radius: None,
+        }],
+        SweptKind::Extrude { axis, .. } => vec![Datum::Direction { direction: *axis }],
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
