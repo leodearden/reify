@@ -1278,4 +1278,74 @@ mod tests {
         ];
         assert_eq!(got, expected);
     }
+
+    // -------------------------------------------------------------------
+    // §6.6 fingerprint() — baseline fingerprint derivation
+    // -------------------------------------------------------------------
+
+    /// (a) Structural finding: line-N stripped, internal whitespace folded.
+    #[test]
+    fn fingerprint_structural_untracked() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "untracked: line 12:    // TODO: wire   this".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/foo/bar.rs :: untracked :: // TODO: wire this",
+        );
+    }
+
+    /// (b) Malformed-cite finding: same stripping/folding rules as structural.
+    #[test]
+    fn fingerprint_structural_malformed_cite() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/dispatcher.rs".to_string(),
+            summary: "malformed-cite: line 5: // TODO(task-3445): some  text".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/dispatcher.rs :: malformed-cite :: // TODO(task-3445): some text",
+        );
+    }
+
+    /// (c) Liveness finding: kind up to first ':', `line N: ` stripped, rest kept verbatim
+    /// modulo whitespace folding. The `orphaned` kind has additional structure
+    /// (`#id status=done: <text>`) that must be preserved.
+    #[test]
+    fn fingerprint_liveness_orphaned() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/engine_purposes.rs".to_string(),
+            summary: "orphaned: line 7: #4551 status=done: // FIXME(#4551): x".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/engine_purposes.rs :: orphaned :: #4551 status=done: // FIXME(#4551): x",
+        );
+    }
+
+    /// Unknown-id liveness finding: `unknown-id` kind, `line N: #id: <text>`.
+    #[test]
+    fn fingerprint_liveness_unknown_id() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-solver/src/lib.rs".to_string(),
+            summary: "unknown-id: line 99: #9999: // TODO(#9999): placeholder".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-solver/src/lib.rs :: unknown-id :: #9999: // TODO(#9999): placeholder",
+        );
+    }
 }
