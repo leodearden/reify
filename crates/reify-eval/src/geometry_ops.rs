@@ -2034,23 +2034,23 @@ pub(crate) fn try_eval_geometry_query(
     //    ValueRef or missing named_steps entry), leaving the cell at its
     //    compiled default. Scope: direct-call only; nested-arithmetic fold is
     //    out of scope (matches the min_clearance/kinematic-sibling convention).
-    if let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind {
-        if function.name == "max_deviation" && args.len() == 2 {
-            let actual = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            let nominal = resolve_geometry_handle_arg(&args[1], named_steps)?;
-            let query = reify_ir::GeometryQuery::MaxDeviation {
-                actual,
-                nominal,
-                tolerance: MAX_DEVIATION_TESSELLATION_TOLERANCE_M,
-            };
-            return dispatch_scalar_query(
-                kernel,
-                query,
-                reify_core::DimensionVector::LENGTH,
-                "max_deviation",
-                diagnostics,
-            );
-        }
+    if let reify_ir::CompiledExprKind::FunctionCall { function, args } = &expr.kind
+        && function.name == "max_deviation" && args.len() == 2
+    {
+        let actual = resolve_geometry_handle_arg(&args[0], named_steps)?;
+        let nominal = resolve_geometry_handle_arg(&args[1], named_steps)?;
+        let query = reify_ir::GeometryQuery::MaxDeviation {
+            actual,
+            nominal,
+            tolerance: MAX_DEVIATION_TESSELLATION_TOLERANCE_M,
+        };
+        return dispatch_scalar_query(
+            kernel,
+            query,
+            reify_core::DimensionVector::LENGTH,
+            "max_deviation",
+            diagnostics,
+        );
     }
 
     // ── Case (a): DIRECT — the expr itself is a whole-handle geometry-query
