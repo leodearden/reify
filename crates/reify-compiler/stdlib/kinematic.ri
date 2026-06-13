@@ -184,6 +184,20 @@ structure def Twist { }
 // reference the type name without introducing a stub in their own modules.
 structure def BodyId { }
 
+// JointParent — spanning-tree parent edge; value side of
+// Map<BodyId,JointParent> in Mechanism.joint_parents.
+//
+//   parent : BodyId  — the parent body in the spanning tree
+//   joint  : Joint   — the joint connecting child→parent
+//
+// Plain record (no trait bound, no defaults, no constraints). Referenced only
+// intra-module by Mechanism. Non-pub (matches BodyId/Mechanism convention).
+// Introduced by task 4579 (family M).
+structure def JointParent {
+    param parent : BodyId
+    param joint  : Joint
+}
+
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
 //   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
