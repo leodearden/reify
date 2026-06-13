@@ -2393,12 +2393,13 @@ pub(crate) fn try_eval_kinematic_query(
     };
     let snapshot_value = values.get(snapshot_cell)?;
 
-    // For the binary forms, args[1] / args[2] must also be ValueRefs
-    // resolving to `Value::Int` body ids. Pulled out as a helper so the
-    // unary `interferes` arm doesn't pay for it.
+    // For the binary forms, args[1] / args[2] are the `Value::Int` body ids
+    // (evaluate-then-accept, task ε: an inline integer literal now works, and a
+    // defined-but-wrong value emits a Warning rather than falling through
+    // silently). Pulled out so the unary `interferes` arm doesn't pay for it.
     let body_id_args = if expected_args == 3 {
-        let a = resolve_int_value_ref(&args[1], values)?;
-        let b = resolve_int_value_ref(&args[2], values)?;
+        let a = resolve_int_value_ref(&args[1], values, &function.name, "body_a", diagnostics)?;
+        let b = resolve_int_value_ref(&args[2], values, &function.name, "body_b", diagnostics)?;
         Some((a, b))
     } else {
         None
@@ -2705,9 +2706,13 @@ fn try_eval_swept_kinematic_query(
         return None;
     }
 
-    // inner_args[1] and [2] must be ValueRefs resolving to Int body ids.
-    let id_a = resolve_int_value_ref(&inner_args[1], values)?;
-    let id_b = resolve_int_value_ref(&inner_args[2], values)?;
+    // inner_args[1] and [2] are the Int body ids (evaluate-then-accept, task ε:
+    // an inline integer literal now works, and a defined-but-wrong value emits a
+    // Warning rather than falling through silently).
+    let id_a =
+        resolve_int_value_ref(&inner_args[1], values, &inner_fn.name, "body_a", diagnostics)?;
+    let id_b =
+        resolve_int_value_ref(&inner_args[2], values, &inner_fn.name, "body_b", diagnostics)?;
     let body_id_args = Some((id_a, id_b));
 
     // For each snapshot in the list run the per-snapshot dispatch core and
@@ -2747,21 +2752,67 @@ impl KinematicHelper {
     }
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` arg to its `Value::Int` body id.
-/// Returns `None` for any non-`ValueRef` shape, missing cell, or non-Int
-/// payload — caller maps this to the "unsupported arg shape → fall through"
-/// behaviour of `try_eval_kinematic_query`.
+/// Resolve a kinematic body-id arg (the `id_a` / `id_b` positionals of
+/// `interferes_with` / `min_clearance`) to its `i64` value, emitting a
+/// `Severity::Warning` when the caller passes a defined-but-wrong value.
+///
+/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
+/// (via [`eval_arg_value`]) and the resulting `Value` classified. A `ValueRef →
+/// Value::Int` cell (the common `let id_a = …` form) reads the cell —
+/// byte-identical to the prior `values.get(id)` path — while an inline integer
+/// expression now EVALUATES rather than falling through to a silent `None`. The
+/// γ-style "non-`ValueRef` shape → silent fall-through" contract is gone.
+///
+/// | evaluated arg value                              | return    | diagnostic?     |
+/// |--------------------------------------------------|-----------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg) | `None`    | no — quiet      |
+/// | `Value::Int(n)`                                  | `Some(n)` | no              |
+/// | any other defined value (Real, Scalar, …)        | `None`    | yes — 1 Warning |
 fn resolve_int_value_ref(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    let id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => return None,
-    };
-    match values.get(id) {
-        Some(reify_ir::Value::Int(n)) => Some(*n),
-        _ => None,
+    use crate::arg_acceptance::ArgRejection;
+
+    let value = eval_arg_value(expr, values);
+
+    match value {
+        // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg
+        // the local ctx can't evaluate) returns None with no diagnostic —
+        // byte-identical to the prior `values.get(id)` fall-through.
+        reify_ir::Value::Undef => None,
+        reify_ir::Value::Int(n) => Some(n),
+        // Defined-but-wrong (non-Int): emit exactly one Warning naming
+        // builtin/arg/Int/got (byte-uniform wording with the density / point /
+        // vec3 / range paths).
+        other => {
+            diagnostics.push(Diagnostic::warning(
+                ArgRejection {
+                    got: int_got_label(&other),
+                    expected: "Int",
+                    migration_hint: None,
+                }
+                .message(builtin, arg_name),
+            ));
+            None
+        }
+    }
+}
+
+/// Short human-readable label for a `Value` that failed Int classification,
+/// used as the `got` field of the rejection diagnostic (task ε).
+fn int_got_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::String(_) => "String".to_string(),
+        reify_ir::Value::Vector(_) => "Vector".to_string(),
+        reify_ir::Value::Point(_) => "Point".to_string(),
+        _ => "non-Int value".to_string(),
     }
 }
 
