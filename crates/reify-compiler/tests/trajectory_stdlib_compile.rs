@@ -212,34 +212,6 @@ fn collect_method_call_chain(expr: &CompiledExpr) -> Vec<(&str, &str)> {
     pairs
 }
 
-/// Returns `true` iff `expr` has the structural shape of a dimensioned-zero
-/// BinOp chain: `0 * <anything>` (optionally followed by `/` or `*` factors).
-///
-/// **Shape-only:** the right operand is NOT inspected — `0 * 5` (dimensionless)
-/// also returns `true`. Callers MUST pair this with an independent `result_type`
-/// check to confirm the actual dimension; see each call site below.
-///
-/// Examples that match (shape only — `result_type` supplies the dimension):
-///   `0 * 1N`            → BinOp(Mul, Int(0), Scalar{..})                  ✓
-///   `0 * 1m / 1s`       → BinOp(Div, BinOp(Mul, Int(0), ..), ..)          ✓
-///   `0 * 1m / (1s*1s)`  → BinOp(Div, BinOp(Mul, Int(0), ..), BinOp(..))   ✓
-///
-/// Used to distinguish the dimensioned-zero RHS of `velocity_limit > 0 * 1m/1s`
-/// (required for Scalar<Velocity> — esc-3115 rule) from the plain
-/// `Literal(Int(0))` RHS of dimensionless constraints like `vibration_tolerance > 0`.
-fn is_dimensioned_zero_binop(expr: &reify_ir::CompiledExpr) -> bool {
-    match &expr.kind {
-        CompiledExprKind::BinOp { op: BinOp::Mul, left, .. } => {
-            matches!(&left.kind, CompiledExprKind::Literal(Value::Int(0)))
-                || matches!(&left.kind, CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0)
-        }
-        CompiledExprKind::BinOp { op: BinOp::Div, left, .. } => {
-            is_dimensioned_zero_binop(left)
-        }
-        _ => false,
-    }
-}
-
 // ─── step-1: module loads with zero error diagnostics ────────────────────────
 
 /// The std/trajectory module must load through the production stdlib path
@@ -1124,14 +1096,14 @@ fn joint_limit_struct_has_correct_param_shape() {
 
 // ─── step-33: JointLimit max_force positivity constraint ─────────────────────
 
-/// `JointLimit` must declare exactly one constraint: `max_force > 0 * 1N`.
+/// `JointLimit` must declare exactly one constraint: `max_force > 0`.
 ///
 /// A "max force" of zero or negative is physically degenerate — only positive
-/// values are meaningful as an actuator limit. The dimensioned-zero RHS
-/// (`0 * 1N`) is required because `max_force : Scalar<Force>` — a bare `0`
-/// would be `Type::dimensionless_scalar()`, dim-incompatible with Force
-/// (esc-3115 rule). Making the contract explicit in production code (task
-/// #2544 convention) rather than relying solely on test coverage.
+/// values are meaningful as an actuator limit. The bare `0` RHS is coerced
+/// to `Scalar<Force>(0.0)` at compile time by the task-4485/β polymorphic-zero
+/// rewrite (esc-3115-112 resolved — a dimensioned `0 * 1N` is no longer
+/// needed). Making the contract explicit in production code (task #2544
+/// convention) rather than relying solely on test coverage.
 ///
 /// Tight count == 1 is a regression gate: `joint : Real` is explicitly NOT
 /// constrained (it is an entity-handle placeholder — no meaningful scalar
@@ -1194,26 +1166,19 @@ fn joint_limit_constrains_max_force_positive() {
         lhs_refs
     );
 
-    // RHS must be dimensioned-zero: `0 * 1N` compiles to
-    // BinOp { op: Mul, left: Literal(Int(0)), right: Literal(Scalar{si:1.0, dim:FORCE}) }.
-    // A bare `0` is Type::dimensionless_scalar() and is dim-incompatible with
-    // Scalar<Force> (esc-3115 rule) — the dimensioned form is required.
-    let rhs_ok = match &right.kind {
-        CompiledExprKind::BinOp { op: rhs_op, left: rhs_left, right: rhs_right } => {
-            *rhs_op == BinOp::Mul
-                && matches!(&rhs_left.kind, CompiledExprKind::Literal(Value::Int(0)))
-                && matches!(
-                    &rhs_right.kind,
-                    CompiledExprKind::Literal(Value::Scalar { dimension, .. })
-                        if *dimension == DimensionVector::FORCE
-                )
-        }
-        _ => false,
-    };
+    // RHS must be a zero Scalar<Force> literal. After task-4485/β polymorphic-zero
+    // rewrite, `constraint max_force > 0` coerces the bare `0` to
+    // Literal(Value::Scalar{si_value:0.0, dimension:FORCE}) at compile time
+    // (esc-3115-112 resolved — the old dimensioned-zero form `0 * 1N` is gone).
+    let rhs_ok = matches!(
+        &right.kind,
+        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+            if *si_value == 0.0 && *dimension == DimensionVector::FORCE
+    );
     assert!(
         rhs_ok,
-        "JointLimit constraint RHS should be dimensioned-zero `0 * 1N` \
-         (BinOp::Mul, left=Literal(Int(0)), right=Literal(Scalar{{dim:FORCE}})); \
+        "JointLimit constraint RHS should be Literal(Scalar{{si_value:0.0, dim:FORCE}}) \
+         (bare `0` coerced by task-4485/β polymorphic-zero rewrite, esc-3115-112 resolved); \
          got: {:?}",
         right.kind
     );
@@ -1408,16 +1373,17 @@ fn tots_shaper_param_defaults_match_spec() {
 
 /// `TOTSShaper` must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
 ///
-///   constraint velocity_limit     > 0 * 1m / 1s        (dimensioned-zero: task 4580)
-///   constraint acceleration_limit > 0 * 1m / (1s * 1s) (dimensioned-zero: task 4580)
-///   constraint vibration_tolerance > 0                  (dimensionless: plain `> 0`)
-///   constraint vibration_tolerance <= 1   (upper bound: (0,1] interval)
+///   constraint velocity_limit      > 0   (bare 0 → Scalar<Velocity>; task-4485/β)
+///   constraint acceleration_limit  > 0   (bare 0 → Scalar<Acceleration>; task-4485/β)
+///   constraint vibration_tolerance > 0   (dimensionless: plain `> 0`)
+///   constraint vibration_tolerance <= 1  (upper bound: (0,1] interval)
 ///   constraint max_iters           > 0
 ///   constraint tol                 > 0
 ///
-/// velocity_limit and acceleration_limit use dimensioned-zero RHS because their
-/// param types are Scalar<Velocity>/Scalar<Acceleration> (esc-3115 rule: a bare
-/// `0` is dimensionless and dim-incompatible with a dimensioned LHS).
+/// velocity_limit and acceleration_limit use bare `0` RHS — coerced to
+/// Scalar<Velocity>(0.0) / Scalar<Acceleration>(0.0) at compile time by the
+/// task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved; the old
+/// dimensioned-zero form `0 * 1m/1s` / `0 * 1m/(1s*1s)` is gone).
 /// vibration_tolerance/max_iters/tol remain plain (dimensionless params).
 ///
 /// The `vibration_tolerance ∈ (0, 1]` interval decomposes into two scalar
@@ -1454,13 +1420,13 @@ fn tots_shaper_constrains_design_param_invariants() {
             .collect::<Vec<_>>()
     );
 
-    // velocity_limit: positivity constraint with dimensioned-zero RHS
-    // (`0 * 1m / 1s` = Scalar<Velocity>). Two-layer check:
-    //   (1) structural shape: is_dimensioned_zero_binop — `0 * <unit>` chain.
-    //   (2) result_type == Scalar{VELOCITY} — catches a wrong-unit regression
-    //       (e.g. `0 * 1N`) that is_dimensioned_zero_binop alone would miss,
-    //       since esc-3115 only fires at module-load time.
-    // Mirrors the FORCE dimension-pin in joint_limit_constrains_max_force_positive.
+    // velocity_limit: positivity constraint. After task-4485/β polymorphic-zero
+    // rewrite, `constraint velocity_limit > 0` coerces the bare `0` to
+    // Literal(Value::Scalar{si_value:0.0, dimension:VELOCITY}) at compile time
+    // (esc-3115-112 resolved — the old dimensioned form `0 * 1m/1s` is gone).
+    // Dimension-pin: check that the coerced literal carries VELOCITY so a
+    // wrong-dimension regression (e.g. accidentally adopting ACCELERATION)
+    // is still caught here.
     let velocity_matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
@@ -1468,10 +1434,10 @@ fn tots_shaper_constrains_design_param_invariants() {
                     && collect_value_ref_members(left)
                         .iter()
                         .any(|m| m.as_str() == "velocity_limit")
-                    && is_dimensioned_zero_binop(right)
                     && matches!(
-                        &right.result_type,
-                        Type::Scalar { dimension } if *dimension == DimensionVector::VELOCITY
+                        &right.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
                     )
             }
             _ => false,
@@ -1479,8 +1445,8 @@ fn tots_shaper_constrains_design_param_invariants() {
     });
     assert!(
         velocity_matched,
-        "TOTSShaper should declare `constraint velocity_limit > 0 * 1m/1s` \
-         (dimensioned-zero BinOp, result_type=Scalar{{VELOCITY}}; task 4580); \
+        "TOTSShaper should declare `constraint velocity_limit > 0` \
+         (bare `0` coerced to Literal(Scalar{{VELOCITY}}) by task-4485/β, esc-3115-112 resolved); \
          got constraints: {:?}",
         template
             .constraints
@@ -1489,9 +1455,8 @@ fn tots_shaper_constrains_design_param_invariants() {
             .collect::<Vec<_>>()
     );
 
-    // acceleration_limit: positivity constraint with dimensioned-zero RHS
-    // (`0 * 1m / (1s * 1s)` = Scalar<Acceleration>). Same two-layer check as
-    // velocity_limit above.
+    // acceleration_limit: same pattern as velocity_limit above.
+    // task-4485/β coerces `> 0` to Literal(Scalar{0.0, ACCELERATION}).
     let accel_matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
@@ -1499,10 +1464,10 @@ fn tots_shaper_constrains_design_param_invariants() {
                     && collect_value_ref_members(left)
                         .iter()
                         .any(|m| m.as_str() == "acceleration_limit")
-                    && is_dimensioned_zero_binop(right)
                     && matches!(
-                        &right.result_type,
-                        Type::Scalar { dimension } if *dimension == DimensionVector::ACCELERATION
+                        &right.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
                     )
             }
             _ => false,
@@ -1510,8 +1475,8 @@ fn tots_shaper_constrains_design_param_invariants() {
     });
     assert!(
         accel_matched,
-        "TOTSShaper should declare `constraint acceleration_limit > 0 * 1m/(1s*1s)` \
-         (dimensioned-zero BinOp, result_type=Scalar{{ACCELERATION}}; task 4580); \
+        "TOTSShaper should declare `constraint acceleration_limit > 0` \
+         (bare `0` coerced to Literal(Scalar{{ACCELERATION}}) by task-4485/β, esc-3115-112 resolved); \
          got constraints: {:?}",
         template
             .constraints

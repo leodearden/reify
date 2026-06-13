@@ -845,6 +845,31 @@ pub(crate) fn modulo_operands_are_int(left: &Type, right: &Type) -> bool {
     matches!(left, Type::Int) && matches!(right, Type::Int)
 }
 
+/// Returns `true` if `expr` is a syntactic literal zero as defined in §7.2:
+///
+/// - `NumberLiteral { value == 0.0 }` — covers both `0` (`is_real:false`) and
+///   `0.0` (`is_real:true`).
+/// - `UnOp { op: "-", operand }` where `operand` is itself a syntactic zero
+///   (recursive) — covers `-0`, `-0.0`, and double-negated forms like `--0`.
+///
+/// HARD BOUND: a constant-folded zero written as `1 - 1` is an
+/// `ExprKind::BinOp`, NOT a `NumberLiteral`, so it returns `false` here.
+/// This preserves the §7.2 contract that coercion applies only to syntactic
+/// literal zeros, not to computed expressions that happen to evaluate to zero.
+///
+/// Colocated with `is_comparison_op` / `modulo_operands_are_int` as a pure,
+/// unit-testable predicate; diagnostic emission / rewrite lives in
+/// `expr.rs::compile_binop` (task-4485/β).
+pub(crate) fn is_syntactic_zero_literal(expr: &reify_ast::Expr) -> bool {
+    match &expr.kind {
+        reify_ast::ExprKind::NumberLiteral { value, .. } => *value == 0.0,
+        reify_ast::ExprKind::UnOp { op, operand } if op == "-" => {
+            is_syntactic_zero_literal(operand)
+        }
+        _ => false,
+    }
+}
+
 /// Parse a string unary operator into a `UnOp`.
 pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
     match op {
@@ -2248,5 +2273,98 @@ mod tests {
             "two wildcard-only candidates must return None (ambiguous padding \
              degrades to NoMatch — see multi-candidate arm of try_default_padding)"
         );
+    }
+
+    // ── is_syntactic_zero_literal predicate (task-4485/β) ────────────────────
+
+    /// Helper: build a bare AST `Expr` with a dummy span for unit-testing predicates.
+    fn make_ast_expr(kind: reify_ast::ExprKind) -> reify_ast::Expr {
+        reify_ast::Expr { kind, span: SourceSpan::new(0, 1) }
+    }
+
+    /// `NumberLiteral{value:0.0, is_real:false}` — the bare `0` integer form — must
+    /// return `true`.
+    #[test]
+    fn syntactic_zero_int_literal_zero_is_true() {
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `NumberLiteral{value:0.0, is_real:true}` — the `0.0` real form — must
+    /// return `true`.
+    #[test]
+    fn syntactic_zero_real_literal_zero_is_true() {
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{op:"-", operand: NumberLiteral{0.0}}` — the `-0` form — must
+    /// return `true` (unary-neg recursion).
+    #[test]
+    fn syntactic_zero_neg_zero_is_true() {
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{"-", UnOp{"-", 0.0}}` — double-neg zero `--0.0` — must return `true`
+    /// (recursive unary-neg chain).
+    #[test]
+    fn syntactic_zero_double_neg_zero_is_true() {
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let neg_inner = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(neg_inner),
+        });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `NumberLiteral{value:1.0, is_real:false}` — non-zero literal — must return `false`.
+    #[test]
+    fn syntactic_zero_nonzero_literal_is_false() {
+        let expr =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `ExprKind::Ident("x")` — identifier reference — must return `false`.
+    #[test]
+    fn syntactic_zero_ident_is_false() {
+        let expr = make_ast_expr(reify_ast::ExprKind::Ident("x".to_string()));
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{"-", Ident("x")}` — negated identifier — must return `false`.
+    #[test]
+    fn syntactic_zero_neg_ident_is_false() {
+        let inner = make_ast_expr(reify_ast::ExprKind::Ident("x".to_string()));
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `BinOp{"-", NumberLiteral{1.0}, NumberLiteral{1.0}}` — constant-folded shape
+    /// `1 - 1` — must return `false` (syntactic-only contract, §7.2 HARD BOUND).
+    #[test]
+    fn syntactic_zero_binop_one_minus_one_is_false() {
+        let one_a =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let one_b =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::BinOp {
+            op: "-".to_string(),
+            left: Box::new(one_a),
+            right: Box::new(one_b),
+        });
+        assert!(!is_syntactic_zero_literal(&expr));
     }
 }
