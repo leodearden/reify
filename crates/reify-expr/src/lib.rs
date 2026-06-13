@@ -3708,10 +3708,9 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            Value::Scalar {
-                si_value: a / b,
-                dimension: result_dim,
-            }
+            // Route through the value-layer chokepoint: a dimension-cancelling
+            // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
+            Value::from_real_scalar(a / b, result_dim)
         }
         // Scalar / dimensionless
         (
@@ -3720,20 +3719,14 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension,
             },
             Value::Int(n),
-        ) => Value::Scalar {
-            si_value: si_value / *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
                 dimension,
             },
             Value::Real(r),
-        ) => Value::Scalar {
-            si_value: si_value / r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / r, *dimension),
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
         // Overflow (e.g. MAX/0.5 → Inf) propagates as an Inf-bearing Complex in the operator path;
@@ -5250,21 +5243,19 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
+        // 80mm / 20mm = 4.0. LENGTH/LENGTH cancels to DIMENSIONLESS, so per
+        // Invariant V (task 4374/β) eval_div routes through the value-layer
+        // chokepoint and the result is the canonical Value::Real(4.0), NOT
+        // Value::Scalar{DIMENSIONLESS}. (Was pinned to Scalar{dimensionless}
+        // before β closed the leak.)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => {
-                assert!((si_value - 4.0).abs() < 1e-12);
-                assert!(dimension.is_dimensionless());
-            }
-            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
+            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12, "expected ~4.0, got {v}"),
+            other => panic!("expected Value::Real(4.0), got {:?}", other),
         }
     }
 
