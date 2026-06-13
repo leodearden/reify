@@ -3124,13 +3124,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // Scalar+Real/Int below returns Real for the mixed case — the asymmetry is
-                // accepted: eval_eq/eval_cmp normalize both forms via as_f64().
-                Value::Scalar {
-                    si_value: a + b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless sum
+                // (DL + DL) collapses to Value::Real (Invariant V, task 4374/β).
+                // Dimensioned sums stay Value::Scalar, byte-identical to before.
+                Value::from_real_scalar(a + b, *ad)
             }
         }
         // Complex + Complex: dimension must match
@@ -3175,6 +3172,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         // because the operand is already a bare number.
         // Note: eval_mul/eval_div have no such guard — scaling a dimensioned quantity
         // by a pure number is always legal and preserves the dimension.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS} (the value layer collapses those to Value::Real
+        // via from_real_scalar), so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
         | (Value::Real(r), Value::Scalar { si_value, dimension })
             if dimension.is_dimensionless() =>
@@ -3226,13 +3227,10 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // See the corresponding eval_add note for why this asymmetry with Scalar-Real
-                // is accepted.
-                Value::Scalar {
-                    si_value: a - b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless
+                // difference (DL - DL) collapses to Value::Real (Invariant V,
+                // task 4374/β). Dimensioned differences stay Value::Scalar.
+                Value::from_real_scalar(a - b, *ad)
             }
         }
         // Complex - Complex: dimension must match
@@ -3284,6 +3282,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         // a separate arm. Note: eval_mul/eval_div scale any-dimension scalars
         // without this guard — scaling preserves dimension; addition/subtraction
         // do not.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS}, so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
             if dimension.is_dimensionless() =>
         {
