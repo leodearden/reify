@@ -16,7 +16,14 @@
 // `Physical` spec-shape trait, GHR-α) for the trait this `Bracket` conforms to,
 // and `materials_fea.ri` for `Steel_AISI_1045` (density 7850 kg·m^-3), whose
 // Density-dimensioned `density` makes `volume * density` fold to `Scalar<Mass>`.
+// Note: `param material : Material` expects the `Material` structure (not a
+// concrete `ElasticMaterial` conformer like `Steel_AISI_1045`). The default
+// mirrors the AISI 1045 properties (task 4584 conformance correction).
 structure def Bracket : Physical {
     param geometry : Solid = box(10mm, 20mm, 30mm)
-    param material : Material = Steel_AISI_1045()
+    param material : Material = Material(
+        name: "Steel AISI 1045",
+        density: 7850kg/m^3,
+        youngs_modulus: 205GPa
+    )
 }
