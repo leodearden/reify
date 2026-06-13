@@ -6,13 +6,14 @@
 //! - Compound-product: MomentOfInertia (kg·m²)
 //! - Compound-quotient: Stiffness (N/m), Velocity (m/s)
 //!
-//! All comparison tests compile without error diagnostics today (infer_binop_type
+//! All comparison tests compile without error diagnostics (infer_binop_type
 //! returns Bool unconditionally for comparisons), so they serve as a regression net.
-//! The eval signal (step-3a in polymorphic_zero_eval.rs) is what is RED today.
+//! The eval signal (polymorphic_zero_eval.rs) proves the coercion fires at runtime
+//! and produces Satisfaction::Satisfied, including for compound dimensions (Stiffness).
 //!
 //! Step-5 tests (additive position + edge/negative cases) are added in the same
-//! file: additive assertions are RED today (the Add/Sub dimension guard at
-//! expr.rs:1131 emits an error for dimensioned + dimensionless).
+//! file: the additive tests confirm the coercion fires before the Add/Sub dimension
+//! guard, so `dimensioned ± 0` compiles without error.
 
 use reify_test_support::{assert_no_error_diagnostics, compile_source_with_stdlib};
 
@@ -110,8 +111,8 @@ structure S {
 
 /// `mass + 0` — additive-position zero coercion (right-is-zero form).
 ///
-/// RED today: the Add/Sub dimension guard at expr.rs:1131 emits an error
-/// "incompatible types in addition: Mass vs Int" before the coercion lands.
+/// The compile-time rewrite promotes `0` to `Scalar<Mass>(0.0)` before the
+/// Add/Sub dimension guard runs, so no "incompatible types" error is emitted.
 #[test]
 fn mass_add_zero_no_error() {
     let compiled = compile_source_with_stdlib(
@@ -127,7 +128,8 @@ structure S {
 
 /// `mass - 0` — additive-position zero coercion (subtract zero form).
 ///
-/// RED today: same dimension guard error as mass + 0.
+/// Zero-coercion promotes `0` to `Scalar<Mass>(0.0)`; the dimension guard sees
+/// matching types on both sides and emits no error.
 #[test]
 fn mass_sub_zero_no_error() {
     let compiled = compile_source_with_stdlib(
@@ -143,9 +145,9 @@ structure S {
 
 /// `constraint mass > -0` — unary-neg zero form in comparison (right-is-zero via UnOp{"-"}).
 ///
-/// `is_syntactic_zero_literal` recurses through `-0` → should coerce like `> 0`.
-/// RED today: same as mass > 0 (the coercion is not yet implemented).
-/// After step-4 impl: no error diagnostic.
+/// `is_syntactic_zero_literal` recurses through the `UnOp{"-"}` wrapper, treating
+/// `-0` as a syntactic zero; the coercion adopts the Mass dimension and no error
+/// diagnostic is emitted.
 #[test]
 fn mass_gt_neg_zero_no_error() {
     let compiled = compile_source_with_stdlib(
