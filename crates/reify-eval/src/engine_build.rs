@@ -5817,6 +5817,11 @@ impl Engine {
             .filter_map(|cell| {
                 cell.default_expr
                     .as_ref()
+                    // Skip expressions that contain a CrossSubGeometryRef — those
+                    // are consumed by entity.rs at the bare-let drop site and must
+                    // never reach `reify_expr::eval_expr`, which `unreachable!()`s
+                    // on them (see reify-expr/src/lib.rs:179, task-3508).
+                    .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
                     .map(|e| (cell.id.clone(), e.clone()))
             })
             .collect();

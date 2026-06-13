@@ -1335,11 +1335,11 @@ fn electrically_conductive_resistivity_member_is_electric_resistivity_dimension(
     }
 }
 
-/// Task α (supersedes #3114): four remaining dimension-pin tests — each tightened
-/// member must carry the named-dimension alias, not the prior `Real` placeholder.
-/// Uses the shared `assert_member_dimension` helper above.
-/// (Rigid.moment_of_inertia moved out of required_members by task 4229 — see
-/// `rigid_moment_of_inertia_member_is_moment_of_inertia_dimension` below.)
+// Task α (supersedes #3114): four remaining dimension-pin tests — each tightened
+// member must carry the named-dimension alias, not the prior `Real` placeholder.
+// Uses the shared `assert_member_dimension` helper above.
+// (Rigid.moment_of_inertia moved out of required_members by task 4229 — see
+// `rigid_moment_of_inertia_member_is_moment_of_inertia_dimension` below.)
 
 /// task 4229: Rigid.moment_of_inertia is now a geometry-derived `let` whose
 /// `ValueCellDecl.cell_type` is `Type::tensor(2, 3, Scalar{MOMENT_OF_INERTIA})`
