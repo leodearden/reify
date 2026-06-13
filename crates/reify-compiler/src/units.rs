@@ -176,6 +176,16 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// `Undef` at runtime until task 2691 wires the dispatch arms.
 ///
 /// Case-sensitive: Reify function names are snake_case.
+///
+/// ## Compile-time arg-type enforcement (task 4493 ζ)
+///
+/// The dimensioned-scalar argument slots for members of this family are
+/// statically enforced by [`crate::builtin_signatures::check_builtin_arg_types`]:
+/// `center_of_mass`/`moment_of_inertia` arg 1 (`density: Density` →
+/// `MASS_DENSITY`); `faces_by_normal`/`edges_parallel_to` arg 2 (`tol: Angle`
+/// → `ANGLE`); `edges_at_height` args 1 and 2 (`h`/`tol: Length` → `LENGTH`).
+/// A [`reify_core::DiagnosticCode::ArgTypeMismatch`] error is emitted for any
+/// definite static dimension mismatch at call-site compile time.
 pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     // Task 2324 — eval dispatch fully implemented
     "closest_point",
