@@ -1194,6 +1194,9 @@ pub(crate) fn solve_cantilever_fea(
     let mut max_von_mises = 0.0f64;
     let mut stress_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
     let mut gradient_elements: Vec<[[f64; 3]; 3]> = Vec::with_capacity(tet_connectivity.len());
+    // Pre-computed per-element volumes: shared by se_refs and ge_refs below,
+    // avoiding a third pass over connectivity and two duplicate tet_volume_p1 calls.
+    let mut element_volumes: Vec<f64> = Vec::with_capacity(tet_connectivity.len());
 
     for conn in &tet_connectivity {
         let phys: [[f64; 3]; 4] = [
@@ -1236,10 +1239,20 @@ pub(crate) fn solve_cantilever_fea(
 
         stress_elements.push(sigma);
         // Kinematic displacement-gradient (task 4564/α): material-independent,
-        // serves both isotropic and anisotropic paths. Stored full 3×3 tensor;
-        // divergence = trace is derived at wrap time (PRD §10 OQ: store tensor,
-        // project at wrap — sets up β reuse for gradient/curl channels).
+        // serves both isotropic and anisotropic paths.
+        //
+        // NOTE (perf, deferred): element_gradient_p1 re-computes the Jacobian
+        // and J⁻ᵀ for the same element already processed by element_stress_p1 /
+        // element_stress_anisotropic. A combined kernel that exposes grads_phys
+        // to both callers would halve the J⁻ᵀ work per element on the hot path.
+        // Deferred: per-element cost is modest and the API change is invasive.
+        // Tag: task-4564/amend, reviewer: reviewer_comprehensive/perf-1.
+        //
+        // Full 3×3 tensor stored; divergence = trace projected at wrap time
+        // (PRD §10 OQ — sets up β reuse for gradient/curl channels).
         gradient_elements.push(element_gradient_p1(&phys, &u_e));
+        // Volume computed once here and reused by se_refs + ge_refs below.
+        element_volumes.push(tet_volume_p1(&phys));
         if vm > max_von_mises {
             max_von_mises = vm;
         }
@@ -1250,21 +1263,15 @@ pub(crate) fn solve_cantilever_fea(
     // Build StressElement for each tet (borrows connectivity slice) and call
     // recover_nodal_stress_p1. The nodal_stress Vec is stored on CantileverFeaSolve
     // and fed stride-9 row-major to resample_nodal_to_grid by the trampoline.
+    // element_volumes is reused here (no second tet_volume_p1 call per element).
     let se_refs: Vec<StressElement<'_>> = tet_connectivity
         .iter()
         .zip(stress_elements.iter())
-        .map(|(conn, sigma)| {
-            let phys4: [[f64; 3]; 4] = [
-                coords[conn[0]],
-                coords[conn[1]],
-                coords[conn[2]],
-                coords[conn[3]],
-            ];
-            StressElement {
-                connectivity: conn.as_slice(),
-                stress: *sigma,
-                volume: tet_volume_p1(&phys4),
-            }
+        .zip(element_volumes.iter())
+        .map(|((conn, sigma), &vol)| StressElement {
+            connectivity: conn.as_slice(),
+            stress: *sigma,
+            volume: vol,
         })
         .collect();
 
@@ -1275,21 +1282,21 @@ pub(crate) fn solve_cantilever_fea(
     // Mirrors the stress recovery: build GradientElement refs (borrowing
     // connectivity) and call recover_nodal_gradient_p1. Stored full 3×3 tensor
     // on CantileverFeaSolve; divergence = trace projected at wrap time.
+    //
+    // NOTE (design trade-off): nodal_gradient stores the full 3×3 ∇u tensor
+    // (9 f64/node) even though only the trace (1 scalar) is consumed by the
+    // current α divergence channel. The extra 8 components are unused until
+    // PRD task β (gradient stride-9 + curl stride-3 channels). For large meshes
+    // this carries non-trivial allocation overhead. Deferred to β per PRD §10 OQ;
+    // see task-4564 design_decisions for rationale. Tag: reviewer_comprehensive/perf-3.
     let ge_refs: Vec<GradientElement<'_>> = tet_connectivity
         .iter()
         .zip(gradient_elements.iter())
-        .map(|(conn, grad)| {
-            let phys4: [[f64; 3]; 4] = [
-                coords[conn[0]],
-                coords[conn[1]],
-                coords[conn[2]],
-                coords[conn[3]],
-            ];
-            GradientElement {
-                connectivity: conn.as_slice(),
-                gradient: *grad,
-                volume: tet_volume_p1(&phys4),
-            }
+        .zip(element_volumes.iter())
+        .map(|((conn, grad), &vol)| GradientElement {
+            connectivity: conn.as_slice(),
+            gradient: *grad,
+            volume: vol,
         })
         .collect();
 

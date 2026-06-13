@@ -596,6 +596,7 @@ fn e2e_cantilever_divergence_field_contract() {
     );
 
     let mut max_div = 0.0_f64;
+    let mut max_tr_sigma = 0.0_f64;
     for k in 0..n_grid_nodes {
         // tr(σ) = σ_xx + σ_yy + σ_zz = stride-9 entries [0], [4], [8].
         let tr_sigma = stress_data[9 * k] + stress_data[9 * k + 4] + stress_data[9 * k + 8];
@@ -612,28 +613,32 @@ fn e2e_cantilever_divergence_field_contract() {
             (got_div - expected_div).abs() / scale,
         );
         if got_div.abs() > max_div { max_div = got_div.abs(); }
+        if tr_sigma.abs() > max_tr_sigma { max_tr_sigma = tr_sigma.abs(); }
     }
 
-    // ── (NUMERIC) PRD G2 magnitude: max|div| ≈ (1−2ν)·σ_max/E within ±100% ──
+    // ── (NUMERIC) PRD G2 magnitude: exact field-sampled companion identity ────
     //
-    // σ_max = 6PL/(bh²) = 6×1000×1/(0.1×0.01) = 6e6 Pa (analytical Euler-Bernoulli).
+    // max|div| = (1−2ν)/E · max|tr(σ)| holds to the same machine-precision as
+    // the per-point trace identity above: both fields are recovered and resampled
+    // from the SAME nodal data with the SAME linear weights.
     //
-    // PRD G2 uses ±50%, but that band was derived from max_von_mises (a smoothed
-    // scalar from NODAL volume-weighted averaging) not from the FIELD-sampled
-    // max|tr(σ)|. The field sampler hits the clamped-root stress concentration
-    // directly — in a coarse P1 mesh with ~6 elements along 1 m, the root singularity
-    // can produce tr(σ) ≈ 1.75×σ_max (observed: ~78% above Euler-Bernoulli).
-    // ±100% (2× upper bound) accommodates this correctly while still providing a
-    // meaningful "in the right order of magnitude" sanity check.
-    // The trace-identity check above (rel-tol 1e-6) is the primary correctness signal.
-    let sigma_max_analytical = 6.0 * 1000.0 * 1.0 / (0.1 * 0.1 * 0.1); // 6e6 Pa
-    let div_max_analytical = factor * sigma_max_analytical;
-    let lo = div_max_analytical * 0.5;
-    let hi = div_max_analytical * 2.0;
+    // This replaces the earlier ±100% Euler-Bernoulli analytical bound (which was
+    // weak: a 2× fudge band would pass even sizeable wiring errors in magnitude).
+    // Anchoring to the actual field-sampled max|tr(σ)| makes the check exact and
+    // avoids the need for a coarse-mesh stress-concentration correction factor.
+    let expected_max_div = factor * max_tr_sigma;
+    let scale = expected_max_div.max(1e-18);
     assert!(
-        max_div >= lo && max_div <= hi,
-        "max|div| = {:e} is outside ±100% of analytic {:e} (expected [{:e}, {:e}])",
-        max_div, div_max_analytical, lo, hi
+        (max_div - expected_max_div).abs() < 1e-6 * scale,
+        "max|div| = {:e} disagrees with field-sampled (1-2ν)/E·max|tr(σ)| = {:e}, \
+         rel-err={:e}",
+        max_div, expected_max_div,
+        (max_div - expected_max_div).abs() / scale,
+    );
+    // Sanity: max|div| must be non-trivially positive (non-zero loading).
+    assert!(
+        max_div > 1e-12,
+        "max|div| = {:e} is effectively zero — no divergence signal", max_div
     );
 }
 
