@@ -527,28 +527,65 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // When the module carries a `RepresentationWithin` assertion (detected
-        // by `module_has_representation_within`), use the kernel-backed path:
-        //   1. `set_capture_repr_tol(true)` — record deviation during tessellation.
-        //   2. `tessellate_realizations(&compiled)` — populate `achieved_repr_tol`.
-        //   3. `engine.check(&compiled)` — `dispatch_constraints` intercepts
-        //      `RepresentationWithin` entries and reads from the populated map
-        //      (type-name-scan fallback resolves the key; absent key → Indeterminate).
+        // Two constraint kinds need live kernel state, and a single module may
+        // carry BOTH:
+        //   * RepresentationWithin (task-4199 γ) — needs
+        //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
+        //     populate `achieved_repr_tol`, which `dispatch_constraints` reads.
+        //   * geometric GD&T `Conforms` (η/4480) — needs
+        //     `build(ExportFormat::Step)` to realize live B-rep handles into
+        //     `realization_handles` (a `MaxDeviation` query is BRepOnly; only
+        //     `build()` — not `tessellate_realizations` — populates that map),
+        //     which `measure_gdt_conformance` reads.
         //
-        // This satisfies C1 ordering (tessellate-before-check) and C1 graceful
-        // degradation (no OCCT kernel → `with_registered_kernel` returns a
-        // None-kernel engine → tessellation skips → map stays empty →
-        // Indeterminate → exit 0).
+        // amend (reviewer suggestion: robustness_routing) — these were
+        // previously two mutually-exclusive `else if` arms with geometric
+        // `Conforms` first, so a module carrying BOTH kinds ran only `build()`;
+        // `set_capture_repr_tol`/`tessellate_realizations` never fired and every
+        // RepresentationWithin silently degraded to Indeterminate. They are now
+        // a single kernel-backed arm that runs EACH kind's side effect when that
+        // kind is present. The side effects touch DISJOINT engine maps and
+        // neither clears the other's (`build()` clears+repopulates
+        // `realization_handles` but never touches `achieved_repr_tol`;
+        // `tessellate_realizations()` is the exact converse), so a combined
+        // module gets a correct verdict for each kind. Each single-kind module
+        // runs the identical sequence it did before (C2 — byte-identical for all
+        // existing inputs).
         //
-        // When the module has NO `RepresentationWithin` constraints, keep the
-        // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
-        // behavior and exit codes for all existing `reify check` inputs).
+        // C1 graceful degradation: with no OCCT kernel,
+        // `with_registered_kernel` returns a None-kernel engine → build /
+        // tessellate realize nothing → both kinds yield Indeterminate (never a
+        // false Violated) → exit 0.
+        //
+        // When the module has NEITHER kind, keep the existing
+        // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
-        let result = if module_has_representation_within(&compiled) {
-            // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
+        let has_geometric_conforms = module_has_geometric_conforms(&compiled);
+        let has_representation_within = module_has_representation_within(&compiled);
+        let result = if has_geometric_conforms || has_representation_within {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-            engine.set_capture_repr_tol(true);
-            engine.tessellate_realizations(&compiled);
+            if has_representation_within {
+                // Record deviation during tessellation.
+                engine.set_capture_repr_tol(true);
+            }
+            if has_geometric_conforms {
+                // Realize live B-rep handles into `realization_handles`. The
+                // build result is discarded; only its handle-population side
+                // effect matters. Run BEFORE `tessellate_realizations` —
+                // `build()` clears+repopulates `realization_handles` but does
+                // not touch `achieved_repr_tol`, so the tessellate pass below
+                // leaves these handles intact.
+                let _ = engine.build(&compiled, ExportFormat::Step);
+            }
+            if has_representation_within {
+                // Populate `achieved_repr_tol`. Does not touch
+                // `realization_handles`, so the build handles above survive.
+                engine.tessellate_realizations(&compiled);
+            }
+            // `check()` runs `measure_gdt_conformance` (overrides the matching
+            // scalar `Conforms` entry with the measured verdict) and
+            // `dispatch_constraints`' RepresentationWithin interception — each
+            // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
@@ -1727,6 +1764,38 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
     })
 }
 
+/// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
+/// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
+/// explicit `actual` binding (η/4480).
+///
+/// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+/// fast-path inside `Engine::measure_gdt_conformance`: both key on the presence
+/// of an `"actual"` arg-binding on a template (or guarded-group) constraint.
+/// `Conforms`'s predicate body never references `actual`, so the binding captured
+/// at instantiation is the only static trace of geometric intent — a *scalar*
+/// `Conforms` (whose `actual` fell to its `nominal()` default) is NOT detected,
+/// so `cmd_check` keeps its scalar verdict byte-identical (B4). The two gates are
+/// deliberately the same predicate so the routing decision cannot drift from the
+/// pass's own no-op check.
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that `realization_handles`
+/// is populated with live B-rep handles for the pass — a `MaxDeviation` query is
+/// `BRepOnly`, and only `build()` (not `tessellate_realizations`) populates that
+/// map. When `false`, the existing RepresentationWithin and lightweight paths are
+/// kept verbatim (C2).
+fn module_has_geometric_conforms(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        let top = t.constraints.iter();
+        let guarded = t
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+        top.chain(guarded)
+            .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+    })
+}
+
 /// Write the terminal summary for `reify check` and return the appropriate
 /// [`ExitCode`].
 ///
@@ -2683,6 +2752,83 @@ structure Plain {
             !module_has_representation_within(&compiled_plain),
             "module without RepresentationWithin constraints must NOT be detected \
              (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod geometric_conforms_gate_tests {
+    use super::module_has_geometric_conforms;
+
+    /// Non-OCCT routing gate test: `module_has_geometric_conforms` must detect a
+    /// *geometric* `Conforms` instance (one carrying an explicit `actual`
+    /// binding) in real compiled IR, and must return `false` for a *scalar*
+    /// `Conforms` (no `actual`) and for a plain module with no `Conforms` at all.
+    ///
+    /// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+    /// fast-path gate (`Engine::measure_gdt_conformance`): both key on the
+    /// presence of an `"actual"` arg-binding on a template (or guarded-group)
+    /// constraint. `Conforms`'s predicate body never references `actual`, so the
+    /// arg-binding — captured at instantiation on `CompiledConstraint` — is the
+    /// only static trace of geometric intent.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the OCCT-gated
+    /// CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `Conforms`, `Flatness`, and
+    /// `Geometry` are stdlib-prelude entities, mirroring the engine GD&T
+    /// conformance fixtures.
+    #[test]
+    fn module_has_geometric_conforms_detects_explicit_actual_vs_scalar_and_plain() {
+        // Geometric module: a `Conforms` instance with an EXPLICIT `actual`
+        // binding — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build-before-check path that populates live
+        // B-rep handles for the η `measure_gdt_conformance` pass.
+        let geometric_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+        let compiled_geometric = reify_test_support::parse_and_compile_with_stdlib(geometric_source);
+        assert!(
+            module_has_geometric_conforms(&compiled_geometric),
+            "module with a Conforms instance binding an explicit `actual` should be \
+             detected (routing gate must return true)"
+        );
+
+        // Scalar module: a `Conforms` instance with NO `actual` (falls to its
+        // `nominal()` default) — must NOT be detected (returns `false`) so that
+        // `cmd_check` keeps the lightweight path and the scalar verdict stays
+        // byte-identical (B4).
+        let scalar_source = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+}
+"#;
+        let compiled_scalar = reify_test_support::parse_and_compile_with_stdlib(scalar_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_scalar),
+            "module with a scalar-only Conforms (no explicit `actual`) must NOT be \
+             detected (routing gate must return false — B4 scalar path preserved)"
+        );
+
+        // Plain module: no `Conforms` constraints anywhere — must NOT be detected.
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_geometric_conforms(&compiled_plain),
+            "module without any Conforms constraints must NOT be detected \
+             (routing gate must return false)"
         );
     }
 }

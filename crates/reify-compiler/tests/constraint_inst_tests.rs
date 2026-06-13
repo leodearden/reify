@@ -719,3 +719,104 @@ structure S {
         labels
     );
 }
+
+// ── η/4480 step-05: explicit arg-binding capture on CompiledConstraint ─────────
+//
+// The η conformance pass (PRD docs/prds/v0_6/gdt-geometric-zones-and-containment.md,
+// contract C3/C5) detects a *geometric* `Conforms` instance by the presence of an
+// EXPLICIT `actual` argument binding on the compiled constraint instance.
+// `Conforms`'s predicate body never references `actual`, so — unlike
+// `RepresentationWithin`, whose args ARE its predicate — the binding cannot be
+// recovered by walking the compiled predicate. It must be captured at
+// instantiation time onto `CompiledConstraint.arg_bindings`.
+//
+// This test pins the general capability with a minimal fixture: a constraint def
+// whose `u : Geometry` param is UNUSED in the predicate. An explicit `u: g`
+// binding must survive to `arg_bindings`, while an instantiation that omits `u`
+// (letting it fall to its `nominal()` default) must NOT record `u`. The compiled
+// predicate must be identical in both cases (B4: scalar path byte-identical).
+
+/// Collect the parameter names captured in a constraint's `arg_bindings` — the
+/// explicit call-site argument bindings recorded on the compiled instance.
+fn binding_names(cc: &reify_compiler::CompiledConstraint) -> Vec<&str> {
+    cc.arg_bindings.iter().map(|(name, _)| name.as_str()).collect()
+}
+
+#[test]
+fn explicit_arg_binding_for_unused_param_survives_to_compiled_constraint() {
+    // Two instantiations of the SAME constraint def in the SAME structure, so
+    // the compiled predicate (`thickness >= 0mm`, qualified by entity "S") is
+    // byte-identical between them — the only difference is whether the UNUSED
+    // geometry param `u` was explicitly bound.
+    let source = r#"
+constraint def X {
+    param a : Length
+    param u : Geometry = nominal()
+    a >= 0mm
+}
+structure S {
+    param thickness : Length
+    param g : Geometry
+    constraint X(a: thickness, u: g)
+    constraint X(a: thickness)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        2,
+        "expected exactly 2 constraints (two X instantiations)"
+    );
+
+    // Partition by whether the UNUSED geometry param `u` was explicitly bound.
+    let explicit = tmpl
+        .constraints
+        .iter()
+        .find(|c| binding_names(c).contains(&"u"))
+        .expect("one instantiation explicitly binds the unused param `u`");
+    let default_only = tmpl
+        .constraints
+        .iter()
+        .find(|c| !binding_names(c).contains(&"u"))
+        .expect("one instantiation omits `u` (falls to its nominal() default)");
+
+    // Explicit instantiation records BOTH the used `a` and the UNUSED `u`.
+    let explicit_names = binding_names(explicit);
+    assert!(
+        explicit_names.contains(&"a"),
+        "explicit binding must record 'a', got {:?}",
+        explicit_names
+    );
+    assert!(
+        explicit_names.contains(&"u"),
+        "explicit binding of the UNUSED geometry param 'u' must survive to \
+         arg_bindings (the η detection signal), got {:?}",
+        explicit_names
+    );
+
+    // Default-only instantiation records `a` only — `u` fell to nominal().
+    let default_names = binding_names(default_only);
+    assert!(
+        default_names.contains(&"a"),
+        "default-only binding must record 'a', got {:?}",
+        default_names
+    );
+    assert!(
+        !default_names.contains(&"u"),
+        "an omitted param (defaulted to nominal()) must NOT appear in arg_bindings, \
+         got {:?}",
+        default_names
+    );
+
+    // B4: binding the unused param does NOT change the compiled predicate — both
+    // instantiations live in entity "S", so the scalar predicate is byte-identical.
+    assert_eq!(
+        format!("{:?}", explicit.expr.kind),
+        format!("{:?}", default_only.expr.kind),
+        "binding the unused param must NOT change the compiled predicate (B4)"
+    );
+}

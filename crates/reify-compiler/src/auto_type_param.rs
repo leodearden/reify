@@ -2858,6 +2858,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 },
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Bearing", 1),
@@ -2866,6 +2867,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 },
             ],
             b"test-bearing",
@@ -3061,6 +3063,7 @@ mod helper_tests {
                 span: SourceSpan::new(0, 0),
                 domain: None,
                 optimized_target: None,
+                arg_bindings: Vec::new(),
             }],
             b"test-coupling-blame",
         );
@@ -3170,6 +3173,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 },
                 crate::CompiledConstraint {
                     id: ConstraintNodeId::new("Coupling", 1),
@@ -3178,6 +3182,7 @@ mod helper_tests {
                     span: SourceSpan::new(0, 0),
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 },
             ],
             b"test-coupling-exclusion",

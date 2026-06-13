@@ -476,6 +476,50 @@ pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_cor
     }
 }
 
+/// Tolerancing **marker** builtins (η/4480, PRD
+/// docs/prds/v0_6/gdt-geometric-zones-and-containment.md task η, contract C3).
+///
+/// `nominal()` is a zero-arg builtin returning an inert `Geometry`-typed marker
+/// — an INVALID-handle `Value::GeometryHandle`, evaluated in
+/// `reify_stdlib::tolerancing::eval_tolerancing`. It is the default for
+/// `Conforms.actual` (`param actual : Geometry = nominal()`): param defaults
+/// compile in a *neutral scope* (functions.rs:106-130), so a
+/// `= tolerance.feature` default cannot evaluate — an inert marker is the only
+/// way to keep the param `Geometry`-typed while the constraint body ignores it.
+///
+/// Single-name family, structurally parallel to the sibling builtin-name
+/// families above ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], etc.). It exists for
+/// call-site classification in `expr.rs` (the `is_tolerancing_marker` arm in
+/// the `NoUserFunctions` ladder, before the zero-arg fallback). Registering it
+/// here replaces the wrong fallback — `nominal()` would otherwise reach the
+/// zero-arg fallback, typed `Real` with a "cannot infer return type of zero-arg
+/// function" warning.
+///
+/// The marker flows nowhere: the Conforms predicate never reads `actual`, and
+/// the η `measure_gdt_conformance` pass keys on an *explicit* `actual` binding,
+/// never this default — so the INVALID-handle sentinel never reaches a kernel.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const TOLERANCING_MARKER_NAMES: &[&str] = &["nominal"];
+
+pub(crate) fn is_tolerancing_marker(name: &str) -> bool {
+    TOLERANCING_MARKER_NAMES.contains(&name)
+}
+
+/// Result type for tolerancing marker builtins: `Type::Geometry`.
+///
+/// Returns `None` for any name not in [`TOLERANCING_MARKER_NAMES`] (caller
+/// falls through to its default type-inference path). Mirrors
+/// [`affine_map_constructor_result_type`] — uniform result type, single
+/// membership check.
+pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::Type> {
+    if is_tolerancing_marker(name) {
+        Some(reify_core::Type::Geometry)
+    } else {
+        None
+    }
+}
+
 /// Return-type inference for the AffineMap **algebra** free-functions (task γ,
 /// PRD §4.3).  Separate from [`affine_map_constructor_result_type`] because
 /// (a) `affine_inverse` returns `Option<AffineMap(3)>` and `determinant`
@@ -2735,6 +2779,73 @@ mod tests {
                 Some(reify_core::Type::AffineMap(3)),
                 "{name} must resolve to Type::AffineMap(3)"
             );
+        }
+    }
+
+    // ─── η/4480: tolerancing marker (`nominal()`) registration ────────────────
+
+    #[test]
+    fn is_tolerancing_marker_recognises_all_marker_names() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert!(
+                is_tolerancing_marker(name),
+                "{name} must be recognised as a tolerancing marker builtin"
+            );
+        }
+    }
+
+    #[test]
+    fn tolerancing_marker_result_type_is_geometry_for_all() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert_eq!(
+                tolerancing_marker_result_type(name),
+                Some(reify_core::Type::Geometry),
+                "{name} must resolve to Type::Geometry (zero-arg inert marker)"
+            );
+        }
+    }
+
+    #[test]
+    fn is_tolerancing_marker_rejects_unrelated_names() {
+        // Geometry constructors / queries are distinct families.
+        assert!(!is_tolerancing_marker("box"));
+        assert!(!is_tolerancing_marker("max_deviation"));
+        assert!(!is_tolerancing_marker("effective_tolerance_zone"));
+        assert!(!is_tolerancing_marker(""));
+        // Case-sensitive: Reify builtin names are snake_case.
+        assert!(!is_tolerancing_marker("Nominal"));
+        // `nominal` is a common *param* name (DimensionalTolerance.nominal,
+        // etc.) — but only the zero-arg call builtin is the marker here.
+        assert_eq!(tolerancing_marker_result_type("nominal_diameter"), None);
+    }
+
+    /// The marker family must be disjoint from the sibling builtin-name
+    /// families so a name cannot satisfy two classification predicates in the
+    /// `expr.rs` `NoUserFunctions` ladder (the same invariant the sibling
+    /// `*_are_disjoint_from_other_families` tests pin).
+    #[test]
+    fn tolerancing_marker_names_are_disjoint_from_other_families() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert!(!is_geometry_function(name), "{name} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!is_geometry_query(name), "{name} in GEOMETRY_QUERY_NAMES");
+            assert!(
+                !is_geometry_query_helper(name),
+                "{name} in GEOMETRY_QUERY_HELPER_NAMES"
+            );
+            assert!(
+                !is_geometry_topology_selector(name),
+                "{name} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+            );
+            assert!(!is_dynamics_query(name), "{name} in DYNAMICS_QUERY_NAMES");
+            assert!(
+                !is_dynamics_constructor(name),
+                "{name} in DYNAMICS_CONSTRUCTOR_NAMES"
+            );
+            assert!(
+                !is_affine_map_constructor(name),
+                "{name} in AFFINE_MAP_CONSTRUCTOR_NAMES"
+            );
+            assert!(!is_field_op(name), "{name} in FIELD_OP_NAMES");
         }
     }
 

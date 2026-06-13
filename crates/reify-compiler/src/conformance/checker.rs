@@ -1966,6 +1966,7 @@ pub(super) fn check_phase_inject_defaults(
                         span: default.span,
                         domain: None,
                         optimized_target: None,
+                        arg_bindings: Vec::new(),
                     });
                 }
             }

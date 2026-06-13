@@ -561,6 +561,7 @@ pub(crate) fn compile_purpose(
                     span: constraint.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 });
                 constraint_index += 1;
             }
@@ -633,6 +634,7 @@ pub(crate) fn compile_purpose(
                             span,
                             domain: None,
                             optimized_target: None,
+                            arg_bindings: Vec::new(),
                         });
                         *idx += 1;
                     };
