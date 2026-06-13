@@ -11640,7 +11640,7 @@ mod tests {
     ///   `InertiaTensor(edge_id, 2000.0)` → nested list inertia
     #[test]
     fn run_post_processes_selector_produced_body_gets_real_mass_props() {
-        use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+        use reify_core::{ContentHash, DimensionVector, RealizationNodeId, Type, ValueCellId};
         use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
         use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
 
@@ -11776,7 +11776,13 @@ mod tests {
             },
         );
         values.insert(sel_body_cell.clone(), Value::Undef);
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
         values.insert(mp_cell.clone(), Value::Undef);
 
         // ── MockGeometryKernel fixture ────────────────────────────────────────
@@ -11944,7 +11950,7 @@ mod tests {
     /// relative to the selector passes.
     #[test]
     fn run_post_processes_direct_body_gets_real_mass_props() {
-        use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
+        use reify_core::{ContentHash, DimensionVector, RealizationNodeId, Type, ValueCellId};
         use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
         use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
 
@@ -12011,7 +12017,13 @@ mod tests {
                 kernel_handle: body_id,
             },
         );
-        values.insert(rho_cell.clone(), Value::Real(2000.0));
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
         values.insert(mp_cell.clone(), Value::Undef);
 
         // Volume = 5.0 m³ → expected mass = 2000.0 × 5.0 = 10000.0 kg
