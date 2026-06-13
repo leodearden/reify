@@ -131,7 +131,22 @@ fn differential_field_ops_integration_gate() {
 
     // ── (c) All constraint_results == Satisfied ───────────────────────────────
     // Re-evaluate via engine.check to obtain constraint satisfaction results.
+    // engine.check() triggers a second evaluation pass because the constraint
+    // satisfaction layer requires a fresh traversal with check-mode semantics
+    // separate from the value-extraction eval above (engine.eval builds
+    // eval_state / the snapshot graph; engine.check drives the
+    // constraint-checker overlay).  The double-solve cost is accepted here
+    // because both passes are required by the API contract: neither returns
+    // the other's results.
     let check_result = engine.check(&compiled);
+    assert_eq!(
+        check_result.constraint_results.len(),
+        8,
+        "expected exactly 8 constraint results (matching the 8 `constraint` \
+         statements in differential_field_ops.ri), got {} — a regression may \
+         have silently dropped constraint registration or evaluation",
+        check_result.constraint_results.len()
+    );
     for entry in &check_result.constraint_results {
         assert_eq!(
             entry.satisfaction,
@@ -219,12 +234,18 @@ fn differential_field_ops_integration_gate() {
         let tr_sigma = stress_data[9 * k] + stress_data[9 * k + 4] + stress_data[9 * k + 8];
         let expected_div = factor * tr_sigma;
         let got_div = div_data[k];
-        let scale = expected_div.abs().max(1e-18);
+        // Mixed tolerance: 1e-6 relative + 1e-12 absolute floor.  A pure-
+        // relative tolerance with a 1e-18 floor produces an effective 1e-24
+        // absolute floor at neutral-axis nodes where expected_div≈0, but
+        // got_div (recovered via a different path — divergence of displacement,
+        // not from stress) can carry ~1e-15..1e-18 of independent FP noise,
+        // which would fail that 1e-24 check.  Proven GREEN today; the floor
+        // makes it robust to future mesh/grid changes.
         assert!(
-            (got_div - expected_div).abs() < 1e-6 * scale,
-            "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, rel-err={:e}",
+            (got_div - expected_div).abs() < 1e-6 * expected_div.abs() + 1e-12,
+            "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, abs-err={:e}",
             k, got_div, expected_div,
-            (got_div - expected_div).abs() / scale,
+            (got_div - expected_div).abs(),
         );
         if got_div.abs() > max_div { max_div = got_div.abs(); }
         if tr_sigma.abs() > max_tr_sigma { max_tr_sigma = tr_sigma.abs(); }
