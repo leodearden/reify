@@ -352,8 +352,26 @@ fn spherical_has_no_params() {
     );
 }
 
+/// `Mechanism` carries three params: `bodies` (still a `List<Real>` placeholder),
+/// `joint_parents` (tightened to `Map<BodyId,JointParent>` by task 4579/M),
+/// and `loop_closures` (tightened to `List<LoopClosure>` by task 4579/M).
+///
+/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED —
+/// owned by the kinematic-completion/BodyId promotion line.
+///
+/// Resolution guards at the top verify that `BodyId` and `JointParent` are
+/// actually declared structures — a string-equality StructureRef assertion
+/// alone would pass even if the referenced name did not exist.
 #[test]
-fn mechanism_has_three_placeholder_params() {
+fn mechanism_has_three_params_with_tightened_collection_types() {
+    // Resolution guards: panic early (with a clear message) if the StructureRef
+    // target names are not actually declared in std/kinematic.
+    // - BodyId: Map key; no standalone find_structure test elsewhere in this file.
+    // - JointParent: Map value; also covered by joint_parent_struct_has_correct_param_shape,
+    //   but co-locating the guard makes the dependency explicit.
+    find_structure("BodyId");
+    find_structure("JointParent");
+
     let template = find_structure("Mechanism");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
@@ -363,27 +381,197 @@ fn mechanism_has_three_placeholder_params() {
         "Mechanism should have exactly (bodies, joint_parents, loop_closures) in that order"
     );
 
+    // bodies: still a List<Real> placeholder (body-type marker — DO NOT change).
     let bodies = params.iter().find(|p| p.id.member == "bodies").unwrap();
     assert_eq!(
         bodies.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
-        "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder)"
+        "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder, \
+         TODO(body-type) owned by kinematic-completion line)"
     );
 
+    // joint_parents: tightened to Map<BodyId, JointParent> by task 4579 (M).
     let jp = params.iter().find(|p| p.id.member == "joint_parents").unwrap();
     assert_eq!(
         jp.cell_type,
-        Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
-        "Mechanism.joint_parents should be Type::Map(String, Real) \
-         (Map<BodyId,JointParent> placeholder)"
+        Type::Map(
+            Box::new(Type::StructureRef("BodyId".to_string())),
+            Box::new(Type::StructureRef("JointParent".to_string())),
+        ),
+        "Mechanism.joint_parents should be Type::Map(StructureRef(\"BodyId\"), \
+         StructureRef(\"JointParent\")); got: {:?}",
+        jp.cell_type
     );
 
+    // loop_closures: tightened to List<LoopClosure> by task 4579 (M).
     let lc = params.iter().find(|p| p.id.member == "loop_closures").unwrap();
     assert_eq!(
         lc.cell_type,
-        Type::List(Box::new(Type::dimensionless_scalar())),
-        "Mechanism.loop_closures should be Type::List(Real) \
-         (List<LoopClosureRecord> placeholder)"
+        Type::List(Box::new(Type::StructureRef("LoopClosure".to_string()))),
+        "Mechanism.loop_closures should be Type::List(StructureRef(\"LoopClosure\")); \
+         got: {:?}",
+        lc.cell_type
+    );
+}
+
+// ─── task 4579 (family M): LoopClosure nominal record type ───────────────────
+
+/// `LoopClosure` is a closed-chain edge excluded from the spanning tree
+/// (element of `Mechanism.loop_closures : List<LoopClosure>`).
+///
+/// Shape: exactly 4 params in canonical order (parent, child, joint,
+/// residual_dim); no trait bound; no defaults; no structure-level constraints.
+/// Introduced by task 4579 (family M).
+///
+/// RED until step-6: LoopClosure is not yet declared in kinematic.ri.
+#[test]
+fn loop_closure_struct_has_correct_param_shape() {
+    let template = find_structure("LoopClosure");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) Plain record — no trait bound.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "LoopClosure should have no trait bounds (plain closed-chain edge record); \
+         got: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) Exactly 4 params in canonical order.
+    assert_eq!(
+        names,
+        vec!["parent", "child", "joint", "residual_dim"],
+        "LoopClosure should have exactly (parent, child, joint, residual_dim) \
+         in that order; got: {:?}",
+        names
+    );
+
+    let parent = params.iter().find(|p| p.id.member == "parent").unwrap();
+    assert_eq!(
+        parent.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "LoopClosure.parent should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        parent.cell_type
+    );
+
+    let child = params.iter().find(|p| p.id.member == "child").unwrap();
+    assert_eq!(
+        child.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "LoopClosure.child should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        child.cell_type
+    );
+
+    let joint = params.iter().find(|p| p.id.member == "joint").unwrap();
+    assert_eq!(
+        joint.cell_type,
+        Type::TraitObject("Joint".to_string()),
+        "LoopClosure.joint should be Type::TraitObject(\"Joint\"); got: {:?}",
+        joint.cell_type
+    );
+
+    let residual_dim = params
+        .iter()
+        .find(|p| p.id.member == "residual_dim")
+        .unwrap();
+    assert_eq!(
+        residual_dim.cell_type,
+        Type::Int,
+        "LoopClosure.residual_dim should be Type::Int; got: {:?}",
+        residual_dim.cell_type
+    );
+
+    // (c) No defaults.
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "LoopClosure.{} should have no default_expr; got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) No structure-level constraints.
+    assert!(
+        template.constraints.is_empty(),
+        "LoopClosure should declare no structure-level constraints; got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ─── task 4579 (family M): JointParent nominal record type ───────────────────
+
+/// `JointParent` is the value side of `Mechanism.joint_parents : Map<BodyId,JointParent>`.
+/// It records a body's spanning-tree parent edge: which body is the parent
+/// (`parent : BodyId`) and the joint connecting child→parent (`joint : Joint`).
+///
+/// Shape: exactly 2 params in canonical order (parent, joint); no trait bound
+/// (plain value record, not a joint kind); no defaults (all caller-supplied);
+/// no structure-level constraints. Introduced by task 4579 (family M).
+///
+/// RED until step-4: JointParent is not yet declared in kinematic.ri.
+#[test]
+fn joint_parent_struct_has_correct_param_shape() {
+    let template = find_structure("JointParent");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) Plain record — no trait bound.
+    assert!(
+        template.trait_bounds.is_empty(),
+        "JointParent should have no trait bounds (plain spanning-tree record, \
+         not a Joint kind); got: {:?}",
+        template.trait_bounds
+    );
+
+    // (b) Exactly 2 params in canonical order.
+    assert_eq!(
+        names,
+        vec!["parent", "joint"],
+        "JointParent should have exactly (parent, joint) in that order; got: {:?}",
+        names
+    );
+
+    let parent = params.iter().find(|p| p.id.member == "parent").unwrap();
+    assert_eq!(
+        parent.cell_type,
+        Type::StructureRef("BodyId".to_string()),
+        "JointParent.parent should be Type::StructureRef(\"BodyId\"); got: {:?}",
+        parent.cell_type
+    );
+
+    let joint = params.iter().find(|p| p.id.member == "joint").unwrap();
+    assert_eq!(
+        joint.cell_type,
+        Type::TraitObject("Joint".to_string()),
+        "JointParent.joint should be Type::TraitObject(\"Joint\"); got: {:?}",
+        joint.cell_type
+    );
+
+    // (c) No defaults (all caller-supplied at mechanism construction).
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "JointParent.{} should have no default_expr; got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+
+    // (d) No structure-level constraints.
+    assert!(
+        template.constraints.is_empty(),
+        "JointParent should declare no structure-level constraints; got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
     );
 }
 

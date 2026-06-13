@@ -290,9 +290,11 @@ structure def PiecewisePolynomialProfile : Profile {
 //
 //   mechanism        : Real          — the kinematic chain being simulated.
 //                                      Currently `Real` placeholder.
-//   modal_result     : Real          — the modal analysis result driving the
-//                                      vibration_offset field. Currently `Real`
-//                                      placeholder.
+//   modal_result     : ModalResult   — the modal analysis result driving the
+//                                      vibration_offset field. Nominal type
+//                                      declared in std.modal.analysis (loaded
+//                                      before std.trajectory via stdlib_loader.rs
+//                                      slot order), tightened by task 4579 (M).
 //   t_samples        : List<Time>    — the sampling instants used by the
 //                                      forward-pass simulator.
 //   nominal_pose     : List<List<Pose3>>    — nominal rigid-body poses:
@@ -319,12 +321,15 @@ structure def PiecewisePolynomialProfile : Profile {
 // completion PRD's `Mechanism` type when that PRD lands. Same shape and
 // rationale as `PiecewisePolynomialProfile.mechanism : Real` above.
 //
-// TODO(modal-result-type): tighten `modal_result : Real` to the modal-
-// analysis PRD's `ModalResult` type when that PRD lands. Same encoding
-// rationale as TODO(mechanism-type) above.
+// modal_result is now the nominal `ModalResult` type (declared in
+// std.modal.analysis), tightened by task 4579 (family M). Cross-module
+// reference resolved via loader slot order (modal before trajectory),
+// mirroring `TOTSShaper.modes : List<Mode>` / `simulate_trajectory(modal:
+// ModalResult)`. The `EndEffectorTrack()` no-arg ctor in trajectory_fns.ri
+// is unaffected (ctor arg checking deferred; coercion shims handle runtime).
 structure def EndEffectorTrack {
     param mechanism        : Real
-    param modal_result     : Real
+    param modal_result     : ModalResult
     param t_samples        : List<Time>
     param nominal_pose     : List<List<Pose3>>
     param vibration_offset : List<List<Vec3>>

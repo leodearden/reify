@@ -2152,7 +2152,7 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 /// end-effector poses across every monitored location:
 ///
 ///   - `mechanism        : Real`                    (TODO(mechanism-type) placeholder)
-///   - `modal_result     : Real`                    (TODO(modal-result-type) placeholder)
+///   - `modal_result     : ModalResult`             (nominal type, tightened by task 4579/M)
 ///   - `t_samples        : List<Time>`              (sampling instants)
 ///   - `nominal_pose     : List<List<Pose3>>`       (outer: time, inner: locations)
 ///   - `vibration_offset : List<List<Vec3>>`        (outer: time, inner: locations)
@@ -2169,6 +2169,21 @@ fn find_function(name: &str) -> &'static CompiledFunction {
 /// (d) no structure-level constraint (simulator output — no caller invariant).
 #[test]
 fn end_effector_track_struct_has_correct_param_shape() {
+    // Resolution guard: verify ModalResult is actually declared in the stdlib.
+    // ModalResult lives in std/modal.analysis (not std/trajectory), so we
+    // search across all stdlib modules. A string-equality StructureRef assertion
+    // alone would pass even if the referenced name did not exist.
+    // (ModalResult shape is also fully verified by modal_options_validation_tests.rs:446.)
+    assert!(
+        stdlib_loader::load_stdlib()
+            .iter()
+            .flat_map(|m| m.templates.iter())
+            .any(|t| t.name == "ModalResult" && t.entity_kind == EntityKind::Structure),
+        "resolution guard: `structure def ModalResult` not found in any stdlib module \
+         (expected in std/modal.analysis) — StructureRef(\"ModalResult\") assertions \
+         in this test would be vacuous without it"
+    );
+
     let template = find_structure("EndEffectorTrack");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
@@ -2191,7 +2206,7 @@ fn end_effector_track_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("mechanism", Type::dimensionless_scalar()),
-        ("modal_result", Type::dimensionless_scalar()),
+        ("modal_result", Type::StructureRef("ModalResult".to_string())),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {
