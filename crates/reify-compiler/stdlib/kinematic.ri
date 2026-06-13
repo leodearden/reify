@@ -198,6 +198,25 @@ structure def JointParent {
     param joint  : Joint
 }
 
+// LoopClosure — a closed-chain edge excluded from the spanning tree; element
+// of List<LoopClosure> in Mechanism.loop_closures.
+//
+//   parent      : BodyId  — one endpoint body
+//   child       : BodyId  — the other endpoint body (the one re-parented)
+//   joint       : Joint   — the closing joint at this edge
+//   residual_dim : Int    — effective loop-residual dimension (PRD
+//                           kinematic-constraints-completion §3)
+//
+// Plain record (no trait bound, no defaults, no constraints). Non-pub.
+// Introduced by task 4579 (family M). Named `LoopClosure` (task description
+// is authoritative; PRD prose uses `LoopClosureRecord`).
+structure def LoopClosure {
+    param parent       : BodyId
+    param child        : BodyId
+    param joint        : Joint
+    param residual_dim : Int
+}
+
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
 //   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
