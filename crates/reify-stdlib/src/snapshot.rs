@@ -3962,7 +3962,7 @@ mod tests {
         let plain = Value::String("plain".to_string());
         let mixed_snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
         // Legacy center_of_mass returns the midpoint (both bodies fall back).
-        let result = eval_builtin("center_of_mass", &[mixed_snap.clone()]);
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&mixed_snap));
         assert!(
             !result.is_undef(),
             "mixed snapshot center_of_mass must return a valid Point, got {:?}",
@@ -4003,7 +4003,7 @@ mod tests {
         let solid_a = Value::String("a".to_string());
         let solid_b = Value::String("b".to_string());
         let snap = make_two_body_explicit_mass_snapshot(solid_a, 0.0, solid_b, 4.0);
-        let result = eval_builtin("center_of_mass", &[snap.clone()]);
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&snap));
         let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
         assert!(
             diags.is_empty(),
@@ -4031,7 +4031,7 @@ mod tests {
             }],
         );
         let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, pm_3, 4.0);
-        let result = eval_builtin("center_of_mass", &[snap.clone()]);
+        let result = eval_builtin("center_of_mass", std::slice::from_ref(&snap));
         let diags = super::diagnose("center_of_mass", std::slice::from_ref(&snap), &result);
         assert!(
             diags.is_empty(),
@@ -4053,7 +4053,7 @@ mod tests {
         );
         let plain = Value::String("plain".to_string());
         let snap = make_two_body_explicit_mass_snapshot(pm_1, 0.0, plain, 4.0);
-        let result = eval_builtin("bounding_box", &[snap.clone()]);
+        let result = eval_builtin("bounding_box", std::slice::from_ref(&snap));
         let diags = super::diagnose("bounding_box", std::slice::from_ref(&snap), &result);
         assert!(
             diags.is_empty(),
