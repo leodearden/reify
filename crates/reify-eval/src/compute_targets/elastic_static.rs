@@ -1923,10 +1923,10 @@ fn assemble_body_force(
 ///
 /// - `shell_force` is a `Value::Enum { type_name: "ShellForce", variant }`
 ///   (`Off` / `Auto` / `On`); any unknown variant is treated as `Auto`.
-/// - `shell_threshold` is a dimensionless `Value::Real` (a `Value::Scalar` is
-///   also accepted, but ONLY when it is `DIMENSIONLESS`; a scalar carrying a
-///   real dimension — e.g. PRESSURE — is treated as an upstream type error and
-///   ignored, falling back to the `0.2` default, per esc-3594 suggestion 2).
+/// - `shell_threshold` is a dimensionless ratio, which per Invariant V always
+///   arrives as `Value::Real`. Any `Value::Scalar` is therefore dimensioned —
+///   e.g. PRESSURE — and is treated as an upstream type error: it is ignored,
+///   falling back to the `0.2` default (per esc-3594 suggestion 2).
 ///
 /// A missing options instance or missing/garbled fields fall back to the stdlib
 /// defaults (`ShellForce::Auto`, `0.2`), so a bare `ElasticOptions()` classifies
@@ -1950,15 +1950,11 @@ pub(crate) fn extract_shell_route_params(options: &Value) -> (ShellForce, f64) {
         }
         match data.fields.get("shell_threshold") {
             Some(Value::Real(r)) => shell_threshold = *r,
-            // `shell_threshold` is a dimensionless ratio: only accept a
-            // `Value::Scalar` that is actually DIMENSIONLESS. A scalar carrying a
-            // real dimension (e.g. PRESSURE) is an upstream type error — ignore
-            // it and keep the default rather than silently consuming a
+            // `shell_threshold` is a dimensionless ratio, which per Invariant V
+            // always arrives as `Value::Real`. Any `Value::Scalar` is therefore
+            // dimensioned (e.g. PRESSURE) — an upstream type error — and is
+            // ignored, keeping the default rather than silently consuming a
             // mis-dimensioned magnitude as the ratio (esc-3594 suggestion 2).
-            Some(Value::Scalar {
-                si_value,
-                dimension,
-            }) if dimension.is_dimensionless() => shell_threshold = *si_value,
             _ => {}
         }
     }
