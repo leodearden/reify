@@ -134,6 +134,81 @@ fn faces_by_normal_angle_tol_gives_no_arg_type_mismatch() {
     );
 }
 
+// ── Case 6a: SIGNAL — edges_at_height with bare-Real h (LENGTH expected) ─────
+
+/// `5.0` (a dimensionless Real) passed as the `h` argument to `edges_at_height`
+/// where a LENGTH is expected is a DEFINITE dimension mismatch.  Once wired,
+/// the compiler must emit an `ArgTypeMismatch` Error naming "Length".
+#[test]
+fn edges_at_height_bare_real_h_gives_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let sel = edges_at_height(b, 5.0, 0.01mm)\n",
+    );
+    let arg_type_mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !arg_type_mismatches.is_empty(),
+        "expected at least 1 ArgTypeMismatch error for bare-Real h arg to edges_at_height, \
+         got no ArgTypeMismatch.\nAll diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+    let d = &arg_type_mismatches[0];
+    assert!(
+        d.message.contains("Length"),
+        "message should name the expected type 'Length': {}",
+        d.message
+    );
+}
+
+// ── Case 6b: BOUNDARY ok — edges_at_height with Length args → no ArgTypeMismatch
+
+/// `5mm` and `0.01mm` (Length scalars) passed to `edges_at_height` are the
+/// correct forms.  Must compile with NO `ArgTypeMismatch` diagnostic.
+#[test]
+fn edges_at_height_length_args_give_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let sel = edges_at_height(b, 5mm, 0.01mm)\n",
+    );
+    let arg_type_mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        arg_type_mismatches.is_empty(),
+        "edges_at_height with dimensioned Length args must emit no ArgTypeMismatch, \
+         got: {:#?}",
+        arg_type_mismatches
+    );
+}
+
+// ── Case 6c: BOUNDARY ok — edges_parallel_to with Angle tol → no ArgTypeMismatch
+
+/// `1deg` (an Angle scalar) passed as the `tol` argument to `edges_parallel_to`
+/// is the correct form.  Must compile with NO `ArgTypeMismatch` diagnostic.
+///
+/// Guards against an arg-position or coercion regression specific to the
+/// `edges_parallel_to` call shape (arg2 ANGLE check at index 2).
+#[test]
+fn edges_parallel_to_angle_tol_gives_no_arg_type_mismatch() {
+    let compiled = compile_struct_body(
+        "    let dir = vec3(0.0, 0.0, 1.0)\n    let sel = edges_parallel_to(b, dir, 1deg)\n",
+    );
+    let arg_type_mismatches: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .collect();
+    assert!(
+        arg_type_mismatches.is_empty(),
+        "edges_parallel_to with 1deg tol must emit no ArgTypeMismatch, got: {:#?}",
+        arg_type_mismatches
+    );
+}
+
 // ── Case 5: STDLIB REGRESSION GUARD — material.density path ──────────────────
 
 /// The stdlib `Rigid` trait (structural_physical.ri) injects

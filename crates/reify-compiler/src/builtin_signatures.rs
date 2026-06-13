@@ -328,20 +328,71 @@ mod tests {
     /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — catching typos and keeping the
     /// arg-slot table consistent with the recognized family even as new
     /// selector names land.
+    ///
+    /// The test probes `builtin_arg_slots` on every name in
+    /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` PLUS a set of known-non-selector
+    /// names, and asserts that every name for which it returns non-empty slots
+    /// is actually in `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`.  This ties the
+    /// invariant to the real match arms (rather than a parallel hardcoded list)
+    /// so a typo'd new key — e.g. `"moment_of_inertta"` — would be caught.
     #[test]
     fn arg_slot_keys_are_subset_of_topology_selector_names() {
-        let checked_names = [
+        // Extra non-selector names that must never map to non-empty slots.
+        let extra_non_selector: &[&str] = &[
+            "box",
+            "cylinder",
+            "vec3",
+            "cross",
+            "dot",
+            "sqrt",
+            "abs",
+            "",
+            "volume",
+            "body",
+            // Deliberate typos of actual checked names — must all return empty.
+            "moment_of_inertta",
+            "center_of_mas",
+            "faces_by_norml",
+        ];
+
+        let mut any_nonempty = false;
+        for &name in GEOMETRY_TOPOLOGY_SELECTOR_NAMES
+            .iter()
+            .chain(extra_non_selector.iter())
+        {
+            let slots = builtin_arg_slots(name);
+            if !slots.is_empty() {
+                any_nonempty = true;
+                assert!(
+                    GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name),
+                    "builtin_arg_slots({:?}) returned non-empty slots, but {:?} \
+                     is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
+                     fix the name or add it to the selector slice",
+                    name,
+                    name
+                );
+            }
+        }
+
+        // Sanity: the table must not be empty.
+        assert!(
+            any_nonempty,
+            "no names returned non-empty slots — the builtin_arg_slots table \
+             appears to be empty or unreachable"
+        );
+
+        // Smoke: the five canonical checked names must individually return non-empty.
+        for &name in &[
             "center_of_mass",
             "moment_of_inertia",
             "faces_by_normal",
             "edges_parallel_to",
             "edges_at_height",
-        ];
-        for name in &checked_names {
+        ] {
             assert!(
-                GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
-                "arg-slot key {:?} is not in GEOMETRY_TOPOLOGY_SELECTOR_NAMES; \
-                 either fix the name or add it to the selector slice",
+                !builtin_arg_slots(name).is_empty(),
+                "expected non-empty slots for {:?}; \
+                 has the name been removed from the table?",
                 name
             );
         }
@@ -366,6 +417,12 @@ mod tests {
 
     /// (a) DEFINITE mismatch: moment_of_inertia arg1 = Scalar{DIMENSIONLESS}
     /// → exactly 1 Error diagnostic with code ArgTypeMismatch naming key parts.
+    ///
+    /// Also pins the `{actual}` rendering: `Type::dimensionless_scalar()` renders
+    /// as `"Real"` via `Type::Display` (ty.rs:432-433 — dimensionless scalars are
+    /// rendered as "Real", not "Scalar[dimensionless]").  The compile-time message
+    /// must say "got Real" so it reads consistently with the runtime
+    /// `ArgRejection::message` wording (PRD §7.3).
     #[test]
     fn moment_of_inertia_dimensionless_arg1_gives_error() {
         let args = vec![
@@ -386,6 +443,15 @@ mod tests {
         assert!(d.message.contains("density"), "message missing arg name: {}", d.message);
         assert!(d.message.contains("Density"), "message missing type name: {}", d.message);
         assert!(d.message.contains("expects"), "message missing 'expects': {}", d.message);
+        // Pin {actual} rendering: Type::dimensionless_scalar() Display = "Real"
+        // (ty.rs — dimensionless scalars write "Real", not "Scalar[dimensionless]").
+        // This ensures compile-time and runtime wordings stay in sync (PRD §7.3).
+        assert!(
+            d.message.contains("got Real"),
+            "message should say 'got Real' for a bare dimensionless scalar; \
+             Type::dimensionless_scalar() Display must render as \"Real\": {}",
+            d.message
+        );
     }
 
     /// (b) CORRECT: moment_of_inertia arg1 = Scalar{MASS_DENSITY} → 0 diagnostics.
