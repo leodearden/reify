@@ -1,0 +1,52 @@
+// bearing_resolved_value.ri — fixture for task 4435 (δ: auto-type-param
+// value population — auto-construct resolved param from candidate defaults →
+// Value::StructureInstance).
+//
+// A SINGLE GasketSeal candidate guarantees deterministic resolution
+// (1 feasible → Selected) under the compile-time stub checker, so the
+// file compiles with ZERO Error diagnostics and needs NO examples_smoke.rs
+// SKIP_SET entry.
+//
+// The `auto(free): Seal` form is used (not strict `auto: Seal`) to
+// guarantee Selected under the stub — free-mode tiebreaks lex-first when
+// ≥2 candidates are feasible, so adding future candidates won't change
+// the outcome to Ambiguous.
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-resolution-completion.md §δ.
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+
+trait Seal {}
+
+// ── Single Seal candidate with a defaulted thickness param ───────────────────
+//
+// Having exactly ONE candidate guarantees a `Selected("GasketSeal")`
+// outcome under either the stub or the real checker.
+
+structure def GasketSeal : Seal {
+    param thickness : Length = 2mm
+}
+
+// ── Parameterized template with a free type-param ────────────────────────────
+//
+// `param seal : T` has no explicit default; δ synthesizes a zero-arg
+// GasketSeal() ctor as the monomorphized clone cell's `default_expr`
+// so eval produces Value::StructureInstance(GasketSeal{thickness:2mm}).
+
+structure def Bearing<T: Seal> {
+    param seal : T
+}
+
+// ── Assembly exercising `auto(free): Seal` ───────────────────────────────────
+//
+// `auto(free): Seal` → single feasible candidate → Selected("GasketSeal").
+// The `let seal_thickness = self.b.seal.thickness` member-access chain
+// rides the existing unfold.rs default-branch + StructureInstance
+// member-access (task 4342, already landed).
+//
+// Observable: `reify eval` → `seal_thickness = 2 mm`.
+
+structure def BearingResolved {
+    sub b = Bearing<auto(free): Seal>()
+    let seal_thickness = self.b.seal.thickness
+}
