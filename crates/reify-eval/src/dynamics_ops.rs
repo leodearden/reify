@@ -369,10 +369,52 @@ pub fn try_eval_body_mass_props(
     // arg returns None (cell left untouched) rather than a malformed instance.
     let body = resolve_arg_value(args.first()?, values)?;
 
-    // (4) Optional explicit density argument (args[1]); an absent or
-    // unresolvable second arg simply lets the ladder fall through to the
-    // Material / default-water rungs.
-    let density_arg = args.get(1).and_then(|e| resolve_arg_value(e, values));
+    // (4) Optional explicit density argument (args[1]).
+    //
+    // We distinguish three cases to close Hole 2 ("explicit arg silently
+    // ignored"):
+    //   - Absent (no args[1])        → density_arg = None  (run the ladder)
+    //   - ValueRef to a present cell → density_arg = Some(value)
+    //   - ValueRef to a MISSING cell → quiet data-indeterminacy degrade (Undef)
+    //   - Literal                    → density_arg = Some(literal_value)
+    //   - Any other expr shape       → loud degrade with a Warning diagnostic
+    //
+    // The early-return path runs BEFORE the kernel-handle/no-handle match so a
+    // doomed density never enters the kernel closure.
+    let density_arg: Option<&Value> = match args.get(1) {
+        None => None, // 1-arg form: run the Material/water ladder
+        Some(e) => match &e.kind {
+            reify_ir::CompiledExprKind::ValueRef(id) => {
+                match values.get(id) {
+                    Some(v) => Some(v),
+                    // Missing cell: quiet data-indeterminacy degrade.
+                    None => {
+                        return Some(assemble_mass_properties(
+                            Value::Undef,
+                            Value::Undef,
+                            Value::Undef,
+                        ))
+                    }
+                }
+            }
+            reify_ir::CompiledExprKind::Literal(v) => Some(v),
+            // Unsupported expr shape: loud degrade with a Warning (never fall
+            // through to the Material/water ladder, which would silently use a
+            // completely different density than what the caller supplied).
+            _ => {
+                diagnostics.push(Diagnostic::warning(
+                    "body_mass_props: density argument could not be resolved \
+                     (unsupported expression shape); mass properties set to Undef"
+                        .to_string(),
+                ));
+                return Some(assemble_mass_properties(
+                    Value::Undef,
+                    Value::Undef,
+                    Value::Undef,
+                ));
+            }
+        },
+    };
 
     // (5)/(6) Kernel seam (task 4237 / KGQ-λ): if the body is a
     // GeometryHandle, build a kernel-backed geom_query closure and route it
