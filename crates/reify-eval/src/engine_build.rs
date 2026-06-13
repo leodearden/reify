@@ -5657,6 +5657,12 @@ impl Engine {
             diagnostics,
         );
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        // task 4229: re-evaluate Let cells whose expressions depend on
+        // topology-selector-derived cells (e.g. `moi_principal =
+        // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
+        // patched above). Must run after `post_process_topology_selectors` so
+        // the patched values are visible.
+        Engine::post_process_derived_lets(template, values, functions, meta_map, diagnostics);
         Engine::post_process_ad_hoc_selectors(
             template,
             named_steps,
@@ -5768,6 +5774,60 @@ impl Engine {
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Re-evaluate `Let` value cells that are still `Undef` after the
+    /// topology-selector post-processing pass (`post_process_topology_selectors`).
+    ///
+    /// Some `Let` cells depend on geometry-derived cells that are patched by
+    /// `post_process_topology_selectors` AFTER the main `evaluate_params_and_lets_unified`
+    /// pass.  During the main pass, the geometry-derived cell is still `Undef`
+    /// (the kernel hasn't been queried yet), so any pure-math let that depends
+    /// on it also evaluates to `Undef`.  Example: task 4229's
+    /// `let moi_principal = eigenvalues(moment_of_inertia)` where
+    /// `moment_of_inertia` is patched by `post_process_topology_selectors`.
+    ///
+    /// This pass iterates over `Let`-kind cells that are currently `Undef`
+    /// and re-evaluates their `default_expr` using the now-updated `values`
+    /// map.  Only cells whose re-evaluation yields a non-`Undef` result are
+    /// updated — cells whose arguments are still `Undef` (missing kernel,
+    /// no geometry) remain `Undef` and are left untouched.
+    ///
+    /// **Ordering contract**: must run after `post_process_topology_selectors`
+    /// (and `post_process_geometry_queries`) so that patched-in geometry-derived
+    /// values are visible; runs before `post_process_body_mass_props` and
+    /// `post_process_mechanism_mass_props` (those passes do not produce `Let`
+    /// cells that downstream pure-math lets could consume).
+    fn post_process_derived_lets(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect candidates first to avoid holding a borrow on `values`
+        // while also inserting into it.
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
+            .filter(|cell| values.get(&cell.id).map_or(true, |v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            let new_val = {
+                let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+                reify_expr::eval_expr(&expr, &ctx)
+            };
+            if !new_val.is_undef() {
+                values.insert(cell_id, new_val);
             }
         }
     }

@@ -11,16 +11,14 @@
 
 // ── (1) Rigid : Physical ─────────────────────────────────────────────────────
 //
-// Exercises: moment_of_inertia : MomentOfInertia (tightened from Real by task α).
-// Constraint from Rigid:   moment_of_inertia > 0.0 * 1kg * 1m * 1m
-// Constraint from Physical: material.density > 0
+// task 4229 (Option A): moment_of_inertia is now auto-derived from geometry as
+// a Tensor<2,3,MomentOfInertia> — no longer a user scalar param.
+// Rigid injects: let body_density; let moment_of_inertia; let moi_principal.
+// Constraint from Rigid:   moi_principal[0] > 0.0 * 1kg * 1m * 1m (PD)
+// Constraint from Physical: material.density > 0kg/m^3
 structure def RigidPost : Rigid {
     param geometry : Solid = box(100mm, 100mm, 300mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-
-    // Rigid.moment_of_inertia — mass moment of inertia (kg·m², MomentOfInertia alias).
-    // 100×100×300 mm steel post, mass ≈ 23.6 kg → I_z = m(a²+b²)/12 ≈ 0.039 kg·m²
-    param moment_of_inertia : MomentOfInertia = 0.04 * 1kg * 1m * 1m
 }
 
 // ── (2) ElasticallyDeformable : Flexible ─────────────────────────────────────

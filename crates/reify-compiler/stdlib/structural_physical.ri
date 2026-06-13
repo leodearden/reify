@@ -51,12 +51,33 @@ trait Physical {
 // ── Rigidity ────────────────────────────────────────────────────────────────
 
 // Rigid refines Physical — a body that does not deform under load.
-// moment_of_inertia is the mass moment of inertia (kg·m², MomentOfInertia alias
-// — tightened from Real by task α; bare `0` coerced to Scalar<MomentOfInertia>
-// at compile time by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved).
+//
+// task 4229 (Option A, RATIFIED 2026-06-10): moment_of_inertia is now a
+// geometry-derived `let` (tensor<2,3,MomentOfInertia>) rather than a user
+// scalar param.  Three auto-derive lets are injected:
+//
+//   - `body_density` — intermediate binding so `resolve_density_arg`
+//     (geometry_ops.rs:4664, Contract A / task 4486 γ) receives a ValueRef
+//     rather than an IndexAccess expr (pre-type-hygiene-ε constraint; see
+//     design decision in plan.json).
+//   - `moment_of_inertia` — the 3×3 centroidal inertia tensor, auto-derived
+//     from the body's solid geometry and material density.
+//   - `moi_principal` — eigenvalues of moment_of_inertia, sorted ascending.
+//     Used only for the positive-definiteness constraint.
+//
+// The PD constraint `moi_principal[0] > 0.0 * 1kg * 1m * 1m` replaces the
+// former scalar `moment_of_inertia > 0` (which would be type-invalid against
+// a tensor member).  The dimensioned RHS `0.0*1kg*1m*1m` (= Scalar<MomentOfInertia>(0))
+// avoids relying on the polymorphic-zero coercion for an IndexAccess operand.
+//
+// Conformers no longer declare `param moment_of_inertia`; the tensor is
+// INDETERMINATE without OCCT (same status as Physical.mass) — compile-only
+// runners see Undef, which is intentional (PRD §1 Phase 1 contract).
 trait Rigid : Physical {
-    param moment_of_inertia : MomentOfInertia
-    constraint moment_of_inertia > 0
+    let body_density = material.density
+    let moment_of_inertia = moment_of_inertia(geometry, body_density)
+    let moi_principal = eigenvalues(moment_of_inertia)
+    constraint moi_principal[0] > 0.0 * 1kg * 1m * 1m
 }
 
 // ── Flexibility ─────────────────────────────────────────────────────────────

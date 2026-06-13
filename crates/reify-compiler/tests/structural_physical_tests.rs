@@ -1103,8 +1103,9 @@ fn load_stdlib_module_uses_production_path() {
 /// because Material is a struct slot now, not a trait edge.
 ///
 /// Assert no errors and verify value cells exist for the inherited members:
-/// `material` (struct-slot param from Physical), `moment_of_inertia` (from
-/// Rigid), and the trait-injected lets `mass` + `centroid` from Physical.
+/// `material` (struct-slot param from Physical), `moment_of_inertia` (Let
+/// default auto-derived from geometry by Rigid — task 4229), and the
+/// trait-injected lets `mass` + `centroid` from Physical.
 /// (`geometry : Solid` lowers to a realization, not a value cell — see
 /// `solid_param_tests.rs`.)
 #[test]
@@ -1114,10 +1115,7 @@ structure def Beam : Rigid {
     // Physical requirements (post-GHR-α: geometry + material struct slot)
     param geometry : Solid = box(10mm, 20mm, 30mm)
     param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
-
-    // Rigid requirement (from structural_physical.ri)
-    // 10×20×30 mm steel block, mass ≈ 0.047 kg → I ≈ m(a²+b²)/12 ≈ 2e-6 kg·m²
-    param moment_of_inertia : MomentOfInertia = 0.000002 * 1kg * 1m * 1m
+    // moment_of_inertia is now auto-derived from geometry (task 4229 Option A).
 }
 "#;
     let compiled = compile_source_with_stdlib(source);
@@ -1160,10 +1158,11 @@ structure def Beam : Rigid {
         cell_names
     );
 
-    // From Rigid (level 2, structural_physical.ri)
+    // From Rigid (level 2, structural_physical.ri) — task 4229: now a Let default
+    // auto-derived from geometry; the cell is still present in value_cells.
     assert!(
         cell_names.contains(&"moment_of_inertia"),
-        "missing 'moment_of_inertia' from Rigid, cells: {:?}",
+        "missing 'moment_of_inertia' Let default from Rigid (task 4229), cells: {:?}",
         cell_names
     );
 
