@@ -3212,6 +3212,73 @@ pub(crate) fn try_eval_resolve_selector(
     }
 }
 
+/// Feature → datum projection member names (geometric-relations ε): the four
+/// projections a realized feature's trait bundle carries. LOCKSTEP with the
+/// compiler typing table (`datum_projection.rs` `Type::Geometry`/`Selector` arm)
+/// — these are exactly the members `datum_projection_result_type` resolves for a
+/// feature receiver. Used to gate [`try_eval_feature_datum_projection`] so it
+/// only intercepts feature→datum projection `MethodCall`s, leaving β's pure
+/// datum→datum projections (and any other method call) to the pure eval path.
+const FEATURE_DATUM_PROJECTION_MEMBERS: [&str; 4] = ["axis", "plane", "point", "dir"];
+
+/// Kernel-backed evaluation of a feature → datum projection (`feature.axis` /
+/// `.plane` / `.point` / `.dir`), geometric-relations ε (design §7.2). The
+/// compiler lowers such a projection to a `MethodCall { object: <feature>,
+/// method: <proj>, args: [] }` whose object is a realized `Value::GeometryHandle`
+/// cell; the pure `eval_datum_projection` cannot evaluate it (it reaches the
+/// kernel, the construction history, and the dedup primitive), so it is resolved
+/// HERE, mirroring the `ResolveSelector` coercion in
+/// [`try_eval_resolve_selector`].
+///
+/// Resolves the receiver to its feature handle, builds the deduplicated
+/// [`feature_datum_bundle`](crate::feature_datum::feature_datum_bundle) from the
+/// analytic ∪ construction-history union (the recovered [`SweptKind`] history is
+/// looked up in `swept_kinds` by the feature handle), and refines it to the
+/// requested projection via
+/// [`feature_datum_projection`](crate::feature_datum::feature_datum_projection):
+/// a unique datum is returned as its `Value`, a zero/many group emits a
+/// select-a-subfeature [`DiagnosticCode::FeatureDatumAmbiguous`] error and yields
+/// `Value::Undef`.
+///
+/// Returns `None` (skip — leave the cell for the pure eval path) when the expr is
+/// not a feature→datum projection `MethodCall`, or when its receiver does not
+/// resolve to a realized `Value::GeometryHandle` (e.g. a β *datum* receiver such
+/// as `axis.dir`, owned by `eval_datum_projection`).
+pub(crate) fn try_eval_feature_datum_projection(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let (object, member) = match &expr.kind {
+        reify_ir::CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } if args.is_empty()
+            && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) =>
+        {
+            (object.as_ref(), method.as_str())
+        }
+        _ => return None,
+    };
+
+    // Resolve the receiver to a realized feature handle. Only a feature receiver
+    // (a `Value::GeometryHandle` cell) is ours; a β datum receiver (`Axis`/…)
+    // does not resolve here, so we return None and the pure `eval_datum_projection`
+    // path handles it.
+    let handle = resolve_selector_target(object, values)?.kernel_handle;
+
+    let history = swept_kinds.lookup(handle);
+    let bundle = crate::feature_datum::feature_datum_bundle(handle, kernel, history);
+    Some(crate::feature_datum::feature_datum_projection(
+        &bundle,
+        member,
+        diagnostics,
+    ))
+}
+
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
 ///
 /// PREFERRED path: inline reconstruction from a nested selector FunctionCall

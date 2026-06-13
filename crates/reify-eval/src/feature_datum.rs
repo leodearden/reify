@@ -31,6 +31,7 @@
 //! [`EdgeAnalyticDatum`]: reify_ir::GeometryQuery::EdgeAnalyticDatum
 
 use crate::sweep_classifier::SweptKind;
+use reify_core::{Diagnostic, DiagnosticCode};
 use reify_ir::{GeometryHandleId, GeometryKernel, GeometryQuery, Value};
 
 /// SI-metre fallback length scale used to convert the linear dedup tolerance
@@ -404,6 +405,105 @@ pub fn feature_datum_bundle(
         }
     }
     bundle
+}
+
+/// Project a realized feature's deduplicated [`FeatureDatumBundle`] to the single
+/// datum named by `member` — the resolve-time refinement the `feature.<proj>`
+/// eval performs (geometric-relations ε, design §7.2). `member` is the projection
+/// name the compiler lowered (`"axis"` / `"plane"` / `"point"` / `"dir"`).
+///
+/// Each bundle group is already canonicalized by geometric equivalence
+/// ([`dedup_datums`]), so the group's length is the refinement's discriminant:
+///
+///   * **exactly one** candidate ⇒ the feature's unambiguous datum for that
+///     projection, returned as its runtime [`Value`] carrier (`Value::Axis` /
+///     `Plane` / `Point` / `Direction`) with NO diagnostic — the unambiguous arm
+///     of the `Axis | Axis?` refinement; or
+///   * **zero or many** ⇒ the ambiguous arm: a
+///     [`DiagnosticCode::FeatureDatumAmbiguous`] `Severity::Error`
+///     select-a-subfeature diagnostic is pushed and the projection evaluates to
+///     [`Value::Undef`] (the runtime analogue of β's compile-time poison literal).
+///
+/// An unrecognised `member` also yields [`Value::Undef`] (no diagnostic): the
+/// typing pass (`datum_projection_result_type`) rejects unknown members at
+/// compile time with [`DiagnosticCode::DatumProjectionUnavailable`], so this arm
+/// is unreachable in a well-typed program and is purely defensive.
+pub fn feature_datum_projection(
+    bundle: &FeatureDatumBundle,
+    member: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Value {
+    let group: &[Datum] = match member {
+        "axis" => &bundle.axes,
+        "plane" => &bundle.planes,
+        "point" => &bundle.points,
+        "dir" => &bundle.directions,
+        // Unrecognised member: rejected at compile time; defensive Undef here.
+        _ => return Value::Undef,
+    };
+
+    match group {
+        [only] => datum_to_value(only),
+        _ => {
+            let detail = if group.is_empty() {
+                format!("no {member} datum")
+            } else {
+                format!("{} candidate {member} datums", group.len())
+            };
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "ambiguous feature datum projection '.{member}': the feature carries \
+                     {detail} — select a sub-feature to disambiguate"
+                ))
+                .with_code(DiagnosticCode::FeatureDatumAmbiguous),
+            );
+            Value::Undef
+        }
+    }
+}
+
+/// Convert a bundle [`Datum`] back into its runtime [`Value`] carrier — the
+/// inverse of [`datum_from_value`], mirroring exactly the Value shapes the OCCT
+/// `FaceAnalyticDatum` / `EdgeAnalyticDatum` dispatch composes (`Value::Axis`
+/// origin = `Value::Point` of three `Length`s, direction = `Value::Direction`).
+///
+/// The projected scalar metadata (`radius`) is not carried by the datum `Value`
+/// variants and is intentionally dropped here — the `.axis` / `.plane` /
+/// `.point` / `.dir` projections consume only the geometry (see the `Datum` type
+/// note); scalar projections (`cylinder.radius`) are a future task.
+fn datum_to_value(d: &Datum) -> Value {
+    match d {
+        Datum::Axis {
+            origin, direction, ..
+        } => Value::Axis {
+            origin: Box::new(point_value(*origin)),
+            direction: Box::new(direction_value(*direction)),
+        },
+        Datum::Plane { origin, normal } => Value::Plane {
+            origin: Box::new(point_value(*origin)),
+            normal: Box::new(direction_value(*normal)),
+        },
+        Datum::Point { position } => point_value(*position),
+        Datum::Direction { direction } => direction_value(*direction),
+    }
+}
+
+/// A 3-component `Value::Point` of `Length`-dimensioned scalars (SI metres).
+fn point_value(p: [f64; 3]) -> Value {
+    Value::Point(vec![
+        Value::length(p[0]),
+        Value::length(p[1]),
+        Value::length(p[2]),
+    ])
+}
+
+/// A `Value::Direction` from inline `[f64; 3]` components.
+fn direction_value(d: [f64; 3]) -> Value {
+    Value::Direction {
+        x: d[0],
+        y: d[1],
+        z: d[2],
+    }
 }
 
 /// Convert a kernel-returned analytic-datum [`Value`] (as composed by the OCCT

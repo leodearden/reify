@@ -2094,6 +2094,7 @@ impl Engine {
                     &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
+                    &self.swept_kind_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -2493,6 +2494,7 @@ impl Engine {
                     &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
+                    &self.swept_kind_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -3703,6 +3705,7 @@ impl Engine {
                 meta_map,
                 default_kernel.as_mut(),
                 topology_attribute_table,
+                &*swept_kind_table,
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -5699,6 +5702,7 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
+        swept_kinds: &SweptKindTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
@@ -5720,6 +5724,18 @@ impl Engine {
             diagnostics,
         );
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        // geometric-relations ε: feature → datum projections (`feature.axis` /
+        // `.plane` / `.point` / `.dir`). Placed AFTER post_process_topology_selectors
+        // so the receiver body handles (`let cyl = revolve(...)`) are populated as
+        // `Value::GeometryHandle` cells, and BEFORE post_process_derived_lets so a
+        // pure let depending on a projected datum sees the patched value.
+        Engine::post_process_feature_datum_projections(
+            template,
+            values,
+            kernel,
+            swept_kinds,
+            diagnostics,
+        );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
         // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
@@ -5837,6 +5853,63 @@ impl Engine {
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Post-process value cells whose initializer is a feature → datum projection
+    /// (`feature.axis` / `.plane` / `.point` / `.dir`), geometric-relations ε
+    /// (design §7.2).
+    ///
+    /// The compiler lowers such a projection to a `MethodCall` whose receiver is
+    /// a realized `Value::GeometryHandle` cell; the pure `eval_expr` path cannot
+    /// reach the kernel, the construction history, or the dedup primitive, so it
+    /// leaves the cell at `Value::Undef`. This pass resolves each still-`Undef`
+    /// cell via [`crate::geometry_ops::try_eval_feature_datum_projection`], which
+    /// builds the feature's deduplicated datum bundle (analytic ∪ the
+    /// `swept_kinds` construction history) and refines it to the requested
+    /// projection — a unique datum ⇒ its `Value`, a zero/many group ⇒ a
+    /// select-a-subfeature `FeatureDatumAmbiguous` error + `Value::Undef`.
+    ///
+    /// Cells whose dispatch returns `None` (non-projection initializer, or a
+    /// receiver that is not a realized geometry handle — e.g. a β datum receiver
+    /// `axis.dir`, owned by the pure projection path) are left untouched.
+    ///
+    /// **Ordering contract**: must run AFTER `post_process_topology_selectors` so
+    /// the receiver body handles are populated, and BEFORE
+    /// `post_process_derived_lets` so a pure let depending on a projected datum
+    /// sees the patched value.
+    fn post_process_feature_datum_projections(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        swept_kinds: &SweptKindTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect (cell id, expr) for still-`Undef` cells first, to avoid holding
+        // a borrow on `values` while also inserting into it (parallels
+        // `post_process_derived_lets`). A projection cell is `Undef` after the
+        // pure eval pass, so the filter is both an optimisation and correct.
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            if let Some(value) = crate::geometry_ops::try_eval_feature_datum_projection(
+                &expr,
+                values,
+                kernel,
+                swept_kinds,
+                diagnostics,
+            ) {
+                values.insert(cell_id, value);
             }
         }
     }
@@ -11986,6 +12059,7 @@ mod tests {
             &meta_map,
             &mut kernel as &mut dyn GeometryKernel,
             &table,
+            &SweptKindTable::default(),
             &mut diagnostics,
         );
 
@@ -12181,6 +12255,7 @@ mod tests {
             &meta_map,
             &mut kernel as &mut dyn GeometryKernel,
             &table,
+            &SweptKindTable::default(),
             &mut diagnostics,
         );
 

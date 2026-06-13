@@ -2242,6 +2242,36 @@ pub enum DiagnosticCode {
     /// One `DiagnosticCode` spans all three sub-cases per the established
     /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
     TypeNotConformingToStructureRef,
+    /// Origin: `crates/reify-eval/src/feature_datum.rs`
+    /// (`feature_datum_projection`, geometric-relations ε).
+    ///
+    /// Emitted as `Severity::Error` at *resolve time* when a feature → datum
+    /// projection (`feature.axis` / `.plane` / `.point` / `.dir`) cannot refine
+    /// to a single datum: the realized feature's deduplicated
+    /// `FeatureDatumBundle` carries either zero or several non-equivalent
+    /// candidates for the requested projection target (e.g. `box.axis` →
+    /// several non-coaxial edge axes). The projection evaluates to `Value::Undef`
+    /// (the runtime analogue of β's poison literal) and the author must select a
+    /// sub-feature to disambiguate.
+    ///
+    /// Canonical message form:
+    /// `"ambiguous feature datum projection '.<member>': the feature carries <n>
+    /// candidate <member> datums — select a sub-feature to disambiguate"`
+    /// (`<n>` is the candidate count; the zero case reads "carries no <member>
+    /// datum").
+    ///
+    /// This is the *resolve-time* (realized-geometry-dependent) sibling of the
+    /// *compile-time* [`DatumProjectionAmbiguous`]: β's ambiguity is a static
+    /// type-level non-uniqueness (`frame.dir`), whereas ε's depends on the dedup
+    /// result of the realized geometry and so cannot be known at type-check time
+    /// (design §7.2 — the ambiguous arm of the `Axis | Axis?` refinement). It is
+    /// surfaced as a select-a-subfeature diagnostic rather than a static error or
+    /// a new optional/union type.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEATURE_DATUM_AMBIGUOUS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 ε).
+    FeatureDatumAmbiguous,
 }
 
 /// A diagnostic message with location and optional labels.
