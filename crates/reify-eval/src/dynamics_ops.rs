@@ -1482,6 +1482,108 @@ mod tests {
         );
     }
 
+    // ── step-3 RED: unsupported density arg shape must not be silently ignored ──
+    //
+    // HOLE 2: Today resolve_arg_value returns None for a FunctionCall arg shape,
+    // causing density_arg to become None and the ladder to silently fall through
+    // to the Material rung (no diagnostic). After step-4, an unsupported shape
+    // emits a Warning (NOT W_DynamicsDefaultDensity) and the result is Undef.
+
+    /// Build a body_mass_props FunctionCall whose args[1] is itself a FunctionCall
+    /// (an unsupported arg shape that resolve_arg_value cannot resolve).
+    fn call_expr_with_fn_arg(
+        fn_name: &str,
+        body_arg: ValueCellId,
+        inner_fn_name: &str,
+        inner_arg: ValueCellId,
+    ) -> CompiledExpr {
+        let body_ref = CompiledExpr::value_ref(body_arg, Type::dimensionless_scalar());
+
+        // Build the inner FunctionCall that will be used as args[1].
+        let inner_arg_ref = CompiledExpr::value_ref(inner_arg.clone(), Type::dimensionless_scalar());
+        let inner_ch = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(ContentHash::of_str(inner_fn_name))
+            .combine(inner_arg_ref.content_hash);
+        let inner_call = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: inner_fn_name.to_string(),
+                    qualified_name: inner_fn_name.to_string(),
+                },
+                args: vec![inner_arg_ref],
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash: inner_ch,
+        };
+
+        // Build the outer body_mass_props(body_ref, inner_call) FunctionCall.
+        let outer_ch = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(ContentHash::of_str(fn_name))
+            .combine(body_ref.content_hash)
+            .combine(inner_call.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: fn_name.to_string(),
+                    qualified_name: fn_name.to_string(),
+                },
+                args: vec![body_ref, inner_call],
+            },
+            result_type: Type::StructureRef("MassProperties".to_string()),
+            content_hash: outer_ch,
+        }
+    }
+
+    /// step-3 RED — unsupported density arg shape (FunctionCall as args[1]).
+    ///
+    /// RED today: resolve_arg_value(FunctionCall) → None → density_arg = None →
+    /// Material-rung ladder runs silently (density=2700, no diagnostic). GREEN
+    /// after step-4: an unsupported shape emits a Warning (NOT DynamicsDefaultDensity)
+    /// and the result's geometric fields are Undef.
+    #[test]
+    fn dispatch_unsupported_density_arg_shape_degrades_to_undef_with_warning() {
+        let body_cell = ValueCellId::new("Design", "body");
+        let other_cell = ValueCellId::new("Design", "x");
+        let mut values = ValueMap::new();
+        // Body has a material density so if the unsupported arg were silently
+        // ignored the ladder would use 2700.0 (no DynamicsDefaultDensity warning).
+        values.insert(body_cell.clone(), body(Some(2700.0)));
+        // other_cell exists but is not used as a density arg directly.
+        values.insert(other_cell.clone(), Value::Real(42.0));
+
+        // The outer body_mass_props call's args[1] is a FunctionCall ("some_fn")
+        // — an unsupported shape that resolve_arg_value cannot resolve.
+        let expr = call_expr_with_fn_arg(
+            "body_mass_props",
+            body_cell,
+            "some_fn",
+            other_cell,
+        );
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("unsupported-shape arg must still return Some(MassProperties) degraded to Undef");
+
+        // All three geometric fields must be Undef.
+        assert_deferred_mass_props(&result);
+
+        // At least one Warning must be emitted, and it must NOT carry
+        // DynamicsDefaultDensity (that code is reserved for the no-arg path).
+        let non_default_warnings: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Warning
+                    && d.code != Some(DiagnosticCode::DynamicsDefaultDensity)
+            })
+            .collect();
+        assert!(
+            !non_default_warnings.is_empty(),
+            "unsupported density arg shape must emit a Warning that is NOT \
+             DynamicsDefaultDensity; got: {diags:?}"
+        );
+    }
+
     /// 1b — Dispatch end-to-end: try_eval_body_mass_props with a Pressure rho cell.
     ///
     /// RED today: resolve_arg_value returns the Pressure scalar; cell_f64 strips
