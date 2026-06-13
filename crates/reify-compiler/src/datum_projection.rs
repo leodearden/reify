@@ -95,6 +95,25 @@ pub(crate) fn datum_projection_result_type(
     }
 }
 
+/// For an *Unavailable* datum projection, an optional redirect hint naming the
+/// member the author most likely meant. `plane.dir` is unavailable because a
+/// plane's unique direction is its `.normal`, so this returns `Some(".normal")`;
+/// the `MemberAccess` arm in `expr.rs` appends the hint to the
+/// `DatumProjectionUnavailable` message (`"Plane has no projection '.dir'; use
+/// .normal"`), matching the documented canonical form. Returns `None` when no
+/// single obvious redirect exists (e.g. `point.dir`). γ/η extend this alongside
+/// the projection table above.
+pub(crate) fn datum_projection_unavailable_hint(
+    receiver: &Type,
+    member: &str,
+) -> Option<&'static str> {
+    match (receiver, member) {
+        // A plane's unique direction is its normal — redirect `.dir` to `.normal`.
+        (Type::Plane, "dir") => Some(".normal"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +198,29 @@ mod tests {
                 suggestions: vec!["x", "y", "z"]
             },
             "frame.normal is ambiguous; suggest .x/.y/.z"
+        );
+    }
+
+    /// The `plane.dir` *Unavailable* case offers a `.normal` redirect hint (a
+    /// plane's unique direction is its normal) so `expr.rs` can emit the
+    /// documented `"Plane has no projection '.dir'; use .normal"` form. Other
+    /// unavailable projections have no single obvious redirect.
+    #[test]
+    fn datum_projection_unavailable_hint_redirects_plane_dir_to_normal() {
+        assert_eq!(
+            datum_projection_unavailable_hint(&Type::Plane, "dir"),
+            Some(".normal"),
+            "plane.dir should redirect to .normal"
+        );
+        assert_eq!(
+            datum_projection_unavailable_hint(&point3_length(), "dir"),
+            None,
+            "point.dir has no obvious redirect"
+        );
+        assert_eq!(
+            datum_projection_unavailable_hint(&Type::Direction, "normal"),
+            None,
+            "direction.normal has no obvious redirect"
         );
     }
 }

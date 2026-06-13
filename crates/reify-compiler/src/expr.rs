@@ -46,7 +46,8 @@
 use super::*;
 
 use crate::datum_projection::{
-    datum_projection_result_type, DatumProjectionResolution, DATUM_PROJECTION_MEMBERS,
+    datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
+    DATUM_PROJECTION_MEMBERS,
 };
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -3042,17 +3043,27 @@ pub(crate) fn compile_expr_guarded(
                         // Typed rejection of a nonsense projection (e.g. `point.dir`,
                         // `plane.dir`). make_poison_literal enforces the anti-cascade
                         // contract (one Severity::Error diagnostic + poison literal).
+                        // Where an obvious redirect exists (plane.dir → .normal),
+                        // append it as a "; use .normal" hint so the message matches
+                        // the documented canonical form.
+                        let mut message = format!(
+                            "{} has no projection '.{}'",
+                            compiled_obj.result_type, member
+                        );
+                        if let Some(hint) = datum_projection_unavailable_hint(
+                            &compiled_obj.result_type,
+                            member,
+                        ) {
+                            message.push_str(&format!("; use {hint}"));
+                        }
                         return make_poison_literal(
                             diagnostics,
-                            Diagnostic::error(format!(
-                                "{} has no projection '.{}'",
-                                compiled_obj.result_type, member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "no such datum projection",
-                            ))
-                            .with_code(DiagnosticCode::DatumProjectionUnavailable),
+                            Diagnostic::error(message)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "no such datum projection",
+                                ))
+                                .with_code(DiagnosticCode::DatumProjectionUnavailable),
                         );
                     }
                     DatumProjectionResolution::Ambiguous { suggestions } => {

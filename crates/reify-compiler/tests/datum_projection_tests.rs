@@ -108,6 +108,27 @@ fn point_dir_is_unavailable() {
     );
 }
 
+// ── (d2) Plane.dir → Unavailable, redirects to .normal ────────────────────
+#[test]
+fn plane_dir_is_unavailable_and_redirects_to_normal() {
+    let m = compile_source("structure S { param pl : Plane  let bad = pl.dir }");
+    assert!(
+        has_error_code(&m, DiagnosticCode::DatumProjectionUnavailable),
+        "plane.dir should be rejected with DatumProjectionUnavailable; got {:#?}",
+        m.diagnostics
+    );
+    let msg = m
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::DatumProjectionUnavailable))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        msg.contains("use .normal"),
+        "plane.dir message should redirect to .normal; got {msg:?}"
+    );
+}
+
 // ── (e) Frame.dir → Ambiguous (suggest .x/.y/.z) ──────────────────────────
 #[test]
 fn frame_dir_is_ambiguous() {

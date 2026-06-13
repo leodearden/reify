@@ -2179,8 +2179,12 @@ pub enum DiagnosticCode {
     /// datum-projection branch, geometric-relations β).
     ///
     /// Canonical message form:
-    /// `"<type> has no projection '.<member>'"` (e.g. `"Point3<Length> has no
-    /// projection '.dir'"`, or `"Plane has no projection '.dir'; use .normal"`).
+    /// `"<type> has no projection '.<member>'"`, optionally followed by a
+    /// `"; use .<member>"` redirect when an obvious alternative exists — e.g.
+    /// `"Point3<Length> has no projection '.dir'"` (no redirect), but
+    /// `"Plane has no projection '.dir'; use .normal"` (a plane's unique
+    /// direction is its normal). The redirect hint is supplied by
+    /// `datum_projection::datum_projection_unavailable_hint`.
     ///
     /// Emitted as a `Severity::Error` when a datum-projection member access
     /// (`.dir`/`.normal`/`.origin`/`.x`/`.y`/`.z`/`.xy_plane`) targets a receiver
@@ -2201,8 +2205,10 @@ pub enum DiagnosticCode {
     /// datum-projection branch, geometric-relations β).
     ///
     /// Canonical message form:
-    /// `"<type> projection '.<member>' is ambiguous; write .x/.y/.z"` (e.g.
-    /// `"Frame projection '.dir' is ambiguous; write frame.z"`).
+    /// `"ambiguous datum projection '.<member>' on <type>: it could be any of
+    /// <members> — write one of those instead (e.g. write .<member>)"` (e.g.
+    /// `"ambiguous datum projection '.dir' on Frame(3): it could be any of .x,
+    /// .y, .z — write one of those instead (e.g. write .z)"`).
     ///
     /// Emitted as a `Severity::Error` when a *bare* datum projection could resolve
     /// to more than one member of the receiver — e.g. `frame.dir`/`frame.normal`
