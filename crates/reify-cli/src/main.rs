@@ -544,7 +544,27 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
         // behavior and exit codes for all existing `reify check` inputs).
         let checker = SimpleConstraintChecker;
-        let result = if module_has_representation_within(&compiled) {
+        let result = if module_has_geometric_conforms(&compiled) {
+            // Kernel-backed build-before-check path for geometric GD&T `Conforms`
+            // (η/4480). `build(ExportFormat::Step)` realizes geometry into
+            // `self.realization_handles` as live B-rep handles (a `MaxDeviation`
+            // query is BRepOnly; only `build()` — not `tessellate_realizations` —
+            // populates that map). `check(&compiled)` then runs the
+            // `measure_gdt_conformance` pass, which reads those handles via the
+            // realization_ref → realization_handles bridge and overrides the
+            // matching scalar `Conforms` entry with the measured Violated/Satisfied
+            // verdict. The build result is discarded; only its handle-population
+            // side effect matters, exactly as the RepresentationWithin path uses
+            // `tessellate_realizations`.
+            //
+            // C1 graceful degradation: with no OCCT kernel,
+            // `with_registered_kernel` returns a None-kernel engine → `build`
+            // realizes no handles → the pass yields Indeterminate (never a false
+            // Violated) → exit 0.
+            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let _ = engine.build(&compiled, ExportFormat::Step);
+            engine.check(&compiled)
+        } else if module_has_representation_within(&compiled) {
             // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             engine.set_capture_repr_tol(true);
@@ -1724,6 +1744,38 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
                         .is_some()
                 })
         })
+    })
+}
+
+/// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
+/// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
+/// explicit `actual` binding (η/4480).
+///
+/// This is the CLI counterpart of the engine's own `has_geometric_conforms`
+/// fast-path inside `Engine::measure_gdt_conformance`: both key on the presence
+/// of an `"actual"` arg-binding on a template (or guarded-group) constraint.
+/// `Conforms`'s predicate body never references `actual`, so the binding captured
+/// at instantiation is the only static trace of geometric intent — a *scalar*
+/// `Conforms` (whose `actual` fell to its `nominal()` default) is NOT detected,
+/// so `cmd_check` keeps its scalar verdict byte-identical (B4). The two gates are
+/// deliberately the same predicate so the routing decision cannot drift from the
+/// pass's own no-op check.
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that `realization_handles`
+/// is populated with live B-rep handles for the pass — a `MaxDeviation` query is
+/// `BRepOnly`, and only `build()` (not `tessellate_realizations`) populates that
+/// map. When `false`, the existing RepresentationWithin and lightweight paths are
+/// kept verbatim (C2).
+fn module_has_geometric_conforms(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        let top = t.constraints.iter();
+        let guarded = t
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+        top.chain(guarded)
+            .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
     })
 }
 
