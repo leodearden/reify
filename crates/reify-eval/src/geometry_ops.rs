@@ -21596,4 +21596,73 @@ mod tests {
             );
         }
     }
+
+    /// β/step-12 — Invariant V at the kernel-reply boundary. A scalar query whose
+    /// caller-supplied dimension is DIMENSIONLESS must collapse the finite,
+    /// non-negative `Value::Real` reply to `Value::Real` (via the
+    /// `from_real_scalar` chokepoint), NOT leak a
+    /// `Value::Scalar { dimension.is_dimensionless() }`. A dimensioned (LENGTH)
+    /// query still yields a `Value::Scalar`.
+    #[test]
+    fn dispatch_scalar_query_dimensionless_collapses_to_real() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(50);
+        let nominal = reify_ir::GeometryHandleId(51);
+        const TOL: f64 = 0.0001;
+
+        let kernel = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            nominal,
+            TOL,
+            reify_ir::Value::Real(2.5),
+        );
+
+        // DIMENSIONLESS caller dimension → result must be Value::Real(2.5),
+        // never Value::Scalar { dimension.is_dimensionless() }.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            },
+            reify_core::DimensionVector::DIMENSIONLESS,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Real(2.5)),
+            "a DIMENSIONLESS dispatch_scalar_query must collapse to Value::Real, \
+             not leak Value::Scalar{{DIMENSIONLESS}}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a finite, non-negative reply must emit no warning; got: {diagnostics:?}"
+        );
+
+        // Guard: a dimensioned (LENGTH) query still yields a Value::Scalar.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            },
+            reify_core::DimensionVector::LENGTH,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Scalar {
+                si_value: 2.5,
+                dimension: reify_core::DimensionVector::LENGTH,
+            }),
+            "a dimensioned (LENGTH) query must still yield Value::Scalar{{LENGTH}}"
+        );
+        assert!(diagnostics.is_empty());
+    }
 }
