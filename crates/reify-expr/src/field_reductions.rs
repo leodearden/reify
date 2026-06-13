@@ -1003,22 +1003,45 @@ fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bo
 /// into per-axis coords via `axis_grids`, and wraps the result per
 /// the field's `domain_type`.
 fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
-    let (domain_type, source, lambda) = match field_val {
+    let (codomain_type, domain_type, source, lambda) = match field_val {
         Value::Field {
+            codomain_type,
             domain_type,
             source,
             lambda,
-            ..
-        } => (domain_type, source, lambda),
+        } => (codomain_type, domain_type, source, lambda),
         _ => return Value::Undef,
     };
 
     match source {
         FieldSourceKind::Sampled => match lambda.as_ref() {
-            Value::SampledField(sf) => match argmax_argmin_index(&sf.data, find_min) {
-                Some(linear) => arg_coord_from_index(sf, linear, domain_type),
-                None => Value::Undef,
-            },
+            Value::SampledField(sf) => {
+                // Vector/tensor codomains: project to per-window magnitude
+                // first, then locate the extremum in the projected buffer.
+                // `project_sampled_windows` clones axis_grids, so
+                // `arg_coord_from_index`'s shape guard holds (data.len() ==
+                // grid_count == prod(axis_grid lengths) after projection).
+                // Mirrors the VonMises/MaxShear arg-reduction arms.
+                match magnitude_codomain(codomain_type) {
+                    Some((stride, _elem)) => {
+                        let l2_norm =
+                            |w: &[f64]| w.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        match project_sampled_windows(sf, stride, l2_norm) {
+                            Some(proj) => match argmax_argmin_index(&proj.data, find_min) {
+                                Some(linear) => {
+                                    arg_coord_from_index(&proj, linear, domain_type)
+                                }
+                                None => Value::Undef,
+                            },
+                            None => Value::Undef,
+                        }
+                    }
+                    None => match argmax_argmin_index(&sf.data, find_min) {
+                        Some(linear) => arg_coord_from_index(sf, linear, domain_type),
+                        None => Value::Undef,
+                    },
+                }
+            }
             // Defensive: see compute_extremum's matching defensive arm.
             _ => Value::Undef,
         },
