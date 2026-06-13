@@ -1123,4 +1123,56 @@ mod tests {
             }
         }
     }
+
+    // ── step-1 (task 4565): RED — curl_from_gradient unit tests ──────────────
+    //
+    // (a) Analytic ∇u patch test: known gradient tensor with general entries,
+    //     verifies the three-component sign convention [g[2][1]-g[1][2],
+    //     g[0][2]-g[2][0], g[1][0]-g[0][1]] to <1e-12.
+    // (b) Zero-gradient guard: zero tensor → zero curl.
+    //
+    // RED until step-2 adds `curl_from_gradient`.
+
+    /// Analytic ∇u patch test: pinning curl sign convention exactly.
+    ///
+    /// g = [[0.01,0.02,0.03],[0.04,0.05,0.06],[0.07,0.08,0.09]]
+    /// Layout: (∇u)[r][c] = ∂u_r/∂x_c
+    /// Expected: [g[2][1]-g[1][2], g[0][2]-g[2][0], g[1][0]-g[0][1]]
+    ///         = [0.08-0.06, 0.03-0.07, 0.04-0.02]
+    ///         = [0.02, -0.04, 0.02]
+    #[test]
+    fn curl_from_gradient_analytic_patch_test_pins_sign_convention() {
+        let g: [[f64; 3]; 3] = [
+            [0.01, 0.02, 0.03],
+            [0.04, 0.05, 0.06],
+            [0.07, 0.08, 0.09],
+        ];
+        let curl = curl_from_gradient(&g);
+        let expected = [
+            g[2][1] - g[1][2],  // 0.08 - 0.06 = 0.02
+            g[0][2] - g[2][0],  // 0.03 - 0.07 = -0.04
+            g[1][0] - g[0][1],  // 0.04 - 0.02 = 0.02
+        ];
+        for i in 0..3 {
+            assert!(
+                (curl[i] - expected[i]).abs() < 1e-12,
+                "curl[{i}] = {} expected {} (diff = {:e})",
+                curl[i], expected[i], (curl[i] - expected[i]).abs(),
+            );
+        }
+    }
+
+    /// Zero-gradient guard: curl of zero ∇u is the zero vector.
+    #[test]
+    fn curl_from_gradient_zero_input_yields_zero_curl() {
+        let g = [[0.0_f64; 3]; 3];
+        let curl = curl_from_gradient(&g);
+        for i in 0..3 {
+            assert!(
+                curl[i].abs() < 1e-15,
+                "curl[{i}] = {} for zero gradient, expected 0",
+                curl[i],
+            );
+        }
+    }
 }
