@@ -149,3 +149,93 @@ fn frame_dir_is_ambiguous() {
         "ambiguous message should suggest .x/.y/.z; got {amb_msg:?}"
     );
 }
+
+// ── ε: feature→datum projections (Geometry / Selector receivers) ──────────
+//
+// geometric-relations ε extends the β projection table downward to *feature*
+// receivers: a `Type::Geometry` (or `Type::Selector(_)`) receiver projects to
+// the datum the feature carries — `.axis : Axis`, `.plane : Plane`,
+// `.point : Point3<Length>`, `.dir : Direction`. These type statically as the
+// datum codomain (the unambiguous arm of the `Axis | Axis?` refinement); the
+// resolve-time ambiguity (e.g. `box.axis` → several non-coaxial candidates) is
+// a runtime select-a-subfeature diagnostic, NOT a static type error, so the
+// typing here is unconditionally the datum type.
+//
+// RED until step-14 extends `datum_projection_result_type` with the
+// `Type::Geometry`/`Type::Selector(_)` receiver arms and the `expr.rs` guard to
+// admit feature receivers. Today a `.member` on a geometry/selector receiver
+// falls through to the generic "member access not yet supported" path (an Error
+// diagnostic with code = None), so the Resolved assertions fail (the cell type
+// is `Error`) and the Unavailable assertion fails (no datum-projection code is
+// attached).
+
+// ── (f) Geometry.axis → Axis ──────────────────────────────────────────────
+#[test]
+fn geometry_axis_projects_to_axis() {
+    let m = compile_source("structure S { param g : Geometry  let ax : Axis = g.axis }");
+    assert_no_errors(&m, "geometry.axis");
+    assert_eq!(
+        projection_type(&m, "ax"),
+        &Type::Axis,
+        "g.axis should have type Axis"
+    );
+}
+
+// ── (g) Geometry.plane → Plane ────────────────────────────────────────────
+#[test]
+fn geometry_plane_projects_to_plane() {
+    let m = compile_source("structure S { param g : Geometry  let pl : Plane = g.plane }");
+    assert_no_errors(&m, "geometry.plane");
+    assert_eq!(
+        projection_type(&m, "pl"),
+        &Type::Plane,
+        "g.plane should have type Plane"
+    );
+}
+
+// ── (h) Geometry.point → Point3<Length> ───────────────────────────────────
+#[test]
+fn geometry_point_projects_to_point3_length() {
+    let m = compile_source("structure S { param g : Geometry  let pt = g.point }");
+    assert_no_errors(&m, "geometry.point");
+    assert_eq!(
+        projection_type(&m, "pt"),
+        &Type::point3(Type::length()),
+        "g.point should have type Point3<Length>"
+    );
+}
+
+// ── (i) Geometry.dir → Direction ──────────────────────────────────────────
+#[test]
+fn geometry_dir_projects_to_direction() {
+    let m = compile_source("structure S { param g : Geometry  let d : Direction = g.dir }");
+    assert_no_errors(&m, "geometry.dir");
+    assert_eq!(
+        projection_type(&m, "d"),
+        &Type::Direction,
+        "g.dir should have type Direction"
+    );
+}
+
+// ── (j) FaceSelector.axis → Axis (Selector receiver) ──────────────────────
+#[test]
+fn selector_axis_projects_to_axis() {
+    let m = compile_source("structure S { param s : FaceSelector  let ax : Axis = s.axis }");
+    assert_no_errors(&m, "selector.axis");
+    assert_eq!(
+        projection_type(&m, "ax"),
+        &Type::Axis,
+        "s.axis (FaceSelector receiver) should have type Axis"
+    );
+}
+
+// ── (k) Geometry.foo → Unavailable ────────────────────────────────────────
+#[test]
+fn geometry_unknown_member_is_unavailable() {
+    let m = compile_source("structure S { param g : Geometry  let bad = g.foo }");
+    assert!(
+        has_error_code(&m, DiagnosticCode::DatumProjectionUnavailable),
+        "geometry.foo should be rejected with DatumProjectionUnavailable; got {:#?}",
+        m.diagnostics
+    );
+}
