@@ -62,12 +62,67 @@ pub(crate) enum ExpectedArg {
 
 /// Return the checkable dimensioned-scalar argument slots for a named builtin.
 ///
-/// Returns an empty `Vec` for unrecognized names and names with no checked
-/// dimensioned-scalar arg.  Step-2 populates the table; the stub returns
-/// empty so step-1 RED tests can be written first.
-pub(crate) fn builtin_arg_slots(_name: &str) -> Vec<CheckableArg> {
-    // Stub: returns empty. Implemented in step-2.
-    vec![]
+/// Returns an empty `Vec` for:
+/// - Unrecognized names.
+/// - Names with no checked dimensioned-scalar arg (e.g. `split`, `face`, `edge`,
+///   `solid_body`, `volume`, `edges`, `faces`, …).
+///
+/// The returned slots correspond exactly to the CHECKED arg positions listed
+/// in the module-level docs.  Mirrors the name-keyed structure of
+/// `math_fn_result_type` (task 4182 result-type precedent).
+pub(crate) fn builtin_arg_slots(name: &str) -> Vec<CheckableArg> {
+    match name {
+        // ── Mass-properties topology selectors ───────────────────────────────
+        // arg0: geometry handle (unchecked — ε=4358's territory)
+        // arg1: density → MASS_DENSITY ("Density")
+        "center_of_mass" | "moment_of_inertia" => vec![CheckableArg {
+            index: 1,
+            name: "density",
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+                type_name: "Density",
+            },
+        }],
+
+        // ── Directional topology selectors ───────────────────────────────────
+        // arg0: geometry handle (unchecked)
+        // arg1: dir Vec3 (unchecked — accepts list literals like [0,0,1])
+        // arg2: tol → ANGLE ("Angle")
+        "faces_by_normal" | "edges_parallel_to" => vec![CheckableArg {
+            index: 2,
+            name: "tol",
+            expected: ExpectedArg::Scalar {
+                dimension: DimensionVector::ANGLE,
+                type_name: "Angle",
+            },
+        }],
+
+        // ── Height-based topology selectors ──────────────────────────────────
+        // arg0: geometry handle (unchecked)
+        // arg1: h → LENGTH ("Length")
+        // arg2: tol → LENGTH ("Length")
+        "edges_at_height" => vec![
+            CheckableArg {
+                index: 1,
+                name: "h",
+                expected: ExpectedArg::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                    type_name: "Length",
+                },
+            },
+            CheckableArg {
+                index: 2,
+                name: "tol",
+                expected: ExpectedArg::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                    type_name: "Length",
+                },
+            },
+        ],
+
+        // All other names: empty (no dimensioned-scalar arg to check).
+        _ => vec![],
+    }
 }
 
 /// Check the compiled arguments of a builtin call against its known type
