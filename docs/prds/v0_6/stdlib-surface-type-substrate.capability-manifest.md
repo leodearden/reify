@@ -1,6 +1,6 @@
 # Capability manifest — stdlib-surface-type-substrate.md (2026-06-12)
 
-Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verified against the working tree 2026-06-12 (post-task-4548 Phase-A: `Impulse`/`Momentum` registered, `ImpulseForce.impulse`→`Impulse`, `Mode.frequency`→`Frequency`). **No FAIL bindings.** Leaf labels match PRD §10. **Filed task IDs (4548 step-8):** F=#4574, V=#4575, R=#4576, P=#4577, Pt=#4578, M=#4579, S=#4580 (all `pending`; V/R/P/M depend on F=#4574).
+Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verified against the working tree 2026-06-12 (post-task-4548 Phase-A: `Impulse`/`Momentum` registered, `ImpulseForce.impulse`→`Impulse`, `Mode.frequency`→`Frequency`). **No FAIL bindings.** Leaf labels match PRD §10. **Filed task IDs (4548 step-8):** F=#4574, V=#4575, R=#4576, P=#4577, Pt=#4578, M=#4579, S=#4580. **Status at 4548 closeout (2026-06-13, step-16):** F/R/Pt/M/S = `done` (landed on main; markers resolved/deleted upstream); V/P = `blocked` (non-terminal/LIVE). V/R/P/M depend on F=#4574. _The per-leaf evidence table below is the authoring-time (2026-06-12) snapshot; the `done`-sibling grep evidences (R/Pt/M/S) have since been resolved upstream — see the closeout section for current disposition._
 
 | Leaf | Capability asserted by signal | Evidence | Verdict |
 |---|---|---|---|
@@ -31,18 +31,18 @@ Per-leaf capability→evidence bindings (G3+G6 mechanized). All bindings verifie
 
 Numeric-floor branch: N/A — no leaf asserts a tuned numeric bound (S's `> 0 * 1N` is a structural positivity contract; all signals are type-resolution / name-resolution / detector-recognition, not tolerance floors).
 
-## Re-citation closeout (task 4548 steps 9–15)
+## Re-citation closeout (task 4548 steps 9–16)
 
-All in-family markers re-cited to their owning child tasks and verified with `reify-audit --pattern PTODO` against the working tree (liveness lane active — ζ inverse-lane findings prove the task DB opened; #4575–#4580 all resolve live/non-terminal). Per-family final-cite verdicts:
+Phase B (steps 9–14) re-cited *every* in-family family to its owning child task. The step-15 rebase onto current main then **superseded most of those re-citations**: four owning siblings (#4576/#4578/#4579/#4580) had landed and gone **`done`**, deleting their own `.ri` markers upstream — so a surviving cite to any of them would be an *orphan* finding. Step-16 re-ran `reify-audit --pattern PTODO` with the **liveness lane active** (real tasks DB via `REIFY_PTODO_TASKS_DB`) and confirmed the final two-bucket disposition. Per-family final state:
 
-| Leaf | Re-cited marker → owner | Detector verdict (post-step-14) |
-|---|---|---|
-| V | `TODO(vec3-type, #4575)` ×9 | PASS — cited + live |
-| R | `TODO(range-type, #4576)` ×2 + `TODO(range-angle-type, #4576)` ×2 | PASS — cited + live |
-| P | `TODO(pose3-type, #4577)` + `TODO(location-id-type, #4577)` + `FIXME(location-id-type, #4577)` ×4 | PASS — cited + live |
-| Pt | `FIXME(part-structdef, #4578)` ×3 | PASS — cited + live (#4578 `blocked` = non-terminal) |
-| M | `TODO(modal-result-type, #4579)` + `TODO(loop-closure-record-type, #4579)` ×2 + `TODO(map-bodyid-jointparent, #4579)` ×2 | PASS — cited + live; :324 continuation de-marked |
-| S | `TODO(force-scalar, #4580)` + `TODO(velocity-scalar, #4580)` + `TODO(acceleration-scalar, #4580)` | PASS — cited + live |
-| (land-now) | `FIXME(impulse-dim)`, `TODO(frequency-scalar)` ×2 | DELETED — absent from tree |
+| Leaf | Owning task (status) | Final state in tree | Detector verdict (step-16, live lane) |
+|---|---|---|---|
+| V | **#4575** (`blocked`, LIVE) | **CITED** `TODO(vec3-type, #4575)` ×8 (kinematic.ri ×5, fea_multi_case.ri ×2, trajectory.ri ×1) | PASS — cited + live, not flagged |
+| P | **#4577** (`blocked`, LIVE) | **CITED** `TODO(pose3-type/location-id-type, #4577)` ×2 + `FIXME(location-id-type, #4577)` ×4 | PASS — cited + live, not flagged |
+| R | **#4576** (`done`) | **RESOLVED UPSTREAM** — `Range<…>` landed; markers deleted on main | n/a — no marker survives to cite (not orphaned) |
+| Pt | **#4578** (`done`) | **RESOLVED UPSTREAM** — `structure def Part` + `param part : Part` landed; FIXMEs deleted | n/a — no marker survives to cite |
+| M | **#4579** (`done`) | **RESOLVED UPSTREAM** — nominal `ModalResult` + `JointParent` + `Map<BodyId,JointParent>` landed; markers deleted | n/a — no marker survives to cite |
+| S | **#4580** (`done`) | **RESOLVED UPSTREAM** — `Scalar<Force/Velocity/Acceleration>` + `VELOCITY` named dim landed; markers now `RESOLVED(...)` | n/a — no marker survives to cite |
+| (land-now) | resolved by 4548 itself | **DELETED** — `FIXME(impulse-dim)`, `TODO(frequency-scalar)` ×2 | absent from tree |
 
-Zero in-family PTODO findings remain in the touched stdlib `.ri` modules; no `orphaned`/`unknown-id`/`malformed-cite` finding cites `#4575`–`#4580`. Residual `TODO(force/velocity/acceleration-scalar)` / `TODO(modal-result-type)` / `TODO(range-angle-type)` doc-comment mirrors in `trajectory_stdlib_compile.rs` + `flexures/common.rs` are out of task-4548's marker scope (and write scope) — they retarget under S/M/R at tightening time. **4548 project invariant satisfied.**
+Step-16 detector run (liveness lane active): **zero in-family findings** across the four touched stdlib `.ri` modules (`modal_analysis.ri`, `trajectory.ri`, `kinematic.ri`, `fea_multi_case.ri`), and **no `orphaned`/`unknown-id` finding cites `#4574`–`#4580`**. The out-of-scope doc-comment mirrors that Phase B had catalogued in `trajectory_stdlib_compile.rs` + `flexures/common.rs` were also removed upstream by the `done` siblings (verified absent on the rebased tree). **4548 project invariant satisfied: every task-listed marker is DELETED/RESOLVED or CITED to a live non-terminal owner.**
