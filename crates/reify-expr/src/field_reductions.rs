@@ -605,6 +605,34 @@ fn reduce_analytical_argextremum_bounded(
     }
 }
 
+/// For vector/tensor codomains that reduce by Euclidean/Frobenius magnitude,
+/// return `Some((stride, element_quantity))` so the caller can project the
+/// flat buffer into per-window magnitudes before scanning for the extremum.
+///
+/// - `Type::Vector { n, quantity }` → `Some((n, quantity.as_ref()))`:
+///   stride = n components per window; element quantity = the vector's
+///   component type (e.g. `Real` for `Vector3<Real>`, `Scalar<PRESSURE>`
+///   for `Vector3<Pressure>`).
+/// - Everything else (scalar, `Type::Tensor` added in step-6, etc.) →
+///   `None`: the caller uses the existing direct `reduce_sampled_extremum`
+///   path, which keeps scalar/divergence sign-preserving.
+///
+/// Branching on **codomain shape** (not arity value) ensures that even a
+/// degenerate `Vector1` field reduces by magnitude, and that `Real` / `Scalar`
+/// codomains (stride-1, e.g. divergence) are never routed through the
+/// magnitude kernel.
+fn magnitude_codomain(codomain_type: &Type) -> Option<(usize, &Type)> {
+    match codomain_type {
+        Type::Vector { n, quantity } => Some((*n, quantity.as_ref())),
+        // Rank-r tensor with n elements per dimension: stride = n^rank.
+        // For the gradient shape Tensor<2,3,Real>: rank=2, n=3 → stride=9.
+        // Frobenius norm = √(Σ wᵢ²) uses the same formula as Euclidean — the
+        // stride-generic `project_sampled_windows` handles any stride uniformly.
+        Type::Tensor { rank, n, quantity } => Some((n.pow(*rank as u32), quantity.as_ref())),
+        _ => None,
+    }
+}
+
 /// Shared body for `compute_max` / `compute_min`. `find_min == true`
 /// selects the minimum, `false` selects the maximum.
 fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
@@ -620,7 +648,23 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 
     match source {
         FieldSourceKind::Sampled => match lambda.as_ref() {
-            Value::SampledField(sf) => reduce_sampled_extremum(sf, codomain_type, find_min),
+            Value::SampledField(sf) => {
+                // Vector/tensor codomains reduce by per-window Euclidean
+                // (Frobenius for tensors) magnitude, not by flat component scan.
+                // Scalar codomains (e.g. divergence, stride-1) stay on the
+                // direct sign-preserving path.
+                match magnitude_codomain(codomain_type) {
+                    Some((stride, elem)) => {
+                        let l2_norm =
+                            |w: &[f64]| w.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        match project_sampled_windows(sf, stride, l2_norm) {
+                            Some(proj) => reduce_sampled_extremum(&proj, elem, find_min),
+                            None => Value::Undef,
+                        }
+                    }
+                    None => reduce_sampled_extremum(sf, codomain_type, find_min),
+                }
+            }
             // Defensive: a Sampled source must carry a SampledField in its
             // lambda slot. Anything else is a malformed runtime value;
             // return Undef rather than panicking.
@@ -690,6 +734,60 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
     }
 }
 
+/// Stride-generic core: project each `stride`-float window in `sf.data` to a
+/// scalar via `project_fn`, returning a fresh stride-1 `SampledField` with the
+/// same grid metadata.
+///
+/// # Stride contract
+///
+/// Computes `grid_count = ∏ axis_grid lengths`, guards that
+/// `sf.axis_grids` is non-empty, `grid_count > 0`, and
+/// `sf.data.len() == grid_count * stride`, then for each `i` in
+/// `0..grid_count` pushes `project_fn(&sf.data[i*stride..i*stride+stride])`
+/// into a new scalar `Vec<f64>`.
+///
+/// Returns `None` when any guard fails (malformed / stride-mismatch).
+///
+/// Note: the `axis_grids.is_empty()` guard is technically redundant given
+/// the `SampledGridKind` invariant (`Regular1D`/`Regular2D`/`Regular3D` all
+/// carry at least one axis), but it prevents the empty-iterator identity
+/// (`product() == 1`) from producing `grid_count == 1` on a structurally
+/// impossible empty-axis field — symmetry with the documented stride
+/// contract.
+///
+/// # Result
+///
+/// Returns a fresh `SampledField` copying `sf`'s grid metadata with
+/// `data = projected_scalars` and `oob_emitted: AtomicBool::new(false)`.
+fn project_sampled_windows(
+    sf: &SampledField,
+    stride: usize,
+    project_fn: impl Fn(&[f64]) -> f64,
+) -> Option<SampledField> {
+    let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+    if sf.axis_grids.is_empty() || grid_count == 0 || sf.data.len() != grid_count * stride {
+        return None;
+    }
+
+    // Project each stride-float window to a scalar value.
+    let mut projected: Vec<f64> = Vec::with_capacity(grid_count);
+    for i in 0..grid_count {
+        projected.push(project_fn(&sf.data[i * stride..i * stride + stride]));
+    }
+
+    Some(SampledField {
+        name: sf.name.clone(),
+        kind: sf.kind,
+        bounds_min: sf.bounds_min.clone(),
+        bounds_max: sf.bounds_max.clone(),
+        spacing: sf.spacing.clone(),
+        axis_grids: sf.axis_grids.clone(),
+        interpolation: sf.interpolation,
+        data: projected,
+        oob_emitted: AtomicBool::new(false),
+    })
+}
+
 /// Generic: project a Sampled tensor field's 9-float windows to a stride-1
 /// scalar `SampledField` via a per-window kernel `project_fn`.
 ///
@@ -705,12 +803,9 @@ fn compute_extremum(field_val: &Value, find_min: bool) -> Value {
 ///
 /// # Stride contract
 ///
-/// Computes `grid_count = ∏ axis_grid lengths`, guards that
-/// `sf.axis_grids` is non-empty, `grid_count > 0`, and
-/// `sf.data.len() == grid_count * 9` (stride-9 contract — mirrors
-/// `fea.rs::extract_per_case_sampled_field`), then for each `i` in
-/// `0..grid_count` pushes `project_fn(&sf.data[i*9..i*9+9])` into a new
-/// scalar `Vec<f64>`.
+/// Delegates to [`project_sampled_windows`] with `stride = 9`. All four
+/// VonMises/MaxShear/SafetyFactor/PrincipalStresses callers continue to call
+/// this wrapper byte-for-byte unchanged — zero seam risk.
 ///
 /// Note: the `axis_grids.is_empty()` guard is technically redundant given
 /// the `SampledGridKind` invariant (`Regular1D`/`Regular2D`/`Regular3D` all
@@ -743,29 +838,8 @@ fn project_sampled_tensor_windows(
         _ => return None,
     };
 
-    // Shape + stride contract.
-    let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
-    if sf.axis_grids.is_empty() || grid_count == 0 || sf.data.len() != grid_count * 9 {
-        return None;
-    }
-
-    // Project each 9-float window to a scalar value.
-    let mut projected: Vec<f64> = Vec::with_capacity(grid_count);
-    for i in 0..grid_count {
-        projected.push(project_fn(&sf.data[i * 9..i * 9 + 9]));
-    }
-
-    Some(SampledField {
-        name: sf.name.clone(),
-        kind: sf.kind,
-        bounds_min: sf.bounds_min.clone(),
-        bounds_max: sf.bounds_max.clone(),
-        spacing: sf.spacing.clone(),
-        axis_grids: sf.axis_grids.clone(),
-        interpolation: sf.interpolation,
-        data: projected,
-        oob_emitted: AtomicBool::new(false),
-    })
+    // Delegate to the stride-generic core with stride = 9.
+    project_sampled_windows(sf, 9, project_fn)
 }
 
 /// Project the backing Sampled tensor field stored in a VonMises field's
@@ -934,22 +1008,45 @@ fn reduce_sampled_extremum(sf: &SampledField, codomain_type: &Type, find_min: bo
 /// into per-axis coords via `axis_grids`, and wraps the result per
 /// the field's `domain_type`.
 fn compute_argextremum(field_val: &Value, find_min: bool) -> Value {
-    let (domain_type, source, lambda) = match field_val {
+    let (codomain_type, domain_type, source, lambda) = match field_val {
         Value::Field {
+            codomain_type,
             domain_type,
             source,
             lambda,
-            ..
-        } => (domain_type, source, lambda),
+        } => (codomain_type, domain_type, source, lambda),
         _ => return Value::Undef,
     };
 
     match source {
         FieldSourceKind::Sampled => match lambda.as_ref() {
-            Value::SampledField(sf) => match argmax_argmin_index(&sf.data, find_min) {
-                Some(linear) => arg_coord_from_index(sf, linear, domain_type),
-                None => Value::Undef,
-            },
+            Value::SampledField(sf) => {
+                // Vector/tensor codomains: project to per-window magnitude
+                // first, then locate the extremum in the projected buffer.
+                // `project_sampled_windows` clones axis_grids, so
+                // `arg_coord_from_index`'s shape guard holds (data.len() ==
+                // grid_count == prod(axis_grid lengths) after projection).
+                // Mirrors the VonMises/MaxShear arg-reduction arms.
+                match magnitude_codomain(codomain_type) {
+                    Some((stride, _elem)) => {
+                        let l2_norm =
+                            |w: &[f64]| w.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        match project_sampled_windows(sf, stride, l2_norm) {
+                            Some(proj) => match argmax_argmin_index(&proj.data, find_min) {
+                                Some(linear) => {
+                                    arg_coord_from_index(&proj, linear, domain_type)
+                                }
+                                None => Value::Undef,
+                            },
+                            None => Value::Undef,
+                        }
+                    }
+                    None => match argmax_argmin_index(&sf.data, find_min) {
+                        Some(linear) => arg_coord_from_index(sf, linear, domain_type),
+                        None => Value::Undef,
+                    },
+                }
+            }
             // Defensive: see compute_extremum's matching defensive arm.
             _ => Value::Undef,
         },

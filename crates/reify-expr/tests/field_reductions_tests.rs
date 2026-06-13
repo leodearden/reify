@@ -3405,3 +3405,451 @@ fn reductions_on_principal_stresses_field_all_nan_windows_return_undef() {
         "PrincipalStresses with all-NaN windows (all-out-of-solid → Undef)",
     );
 }
+
+// ── Task 4566 γ — vector/tensor-magnitude Sampled reduction ──────────────────
+//
+// Steps 1–6: add `max/min/argmax/argmin` over vector/tensor-codomain Sampled
+// fields by pointwise Euclidean (Frobenius for tensors) magnitude.
+
+// ── γ step 1: vector-codomain magnitude max/min ─────────────────────────────
+
+/// `max` / `min` over a 1-D `Length`-domain, `Vector3<Real>`-codomain Sampled
+/// field reduce by pointwise Euclidean magnitude.
+///
+/// Flat stride-3 buffer: node 0 = (3,4,0), node 1 = (0,0,0), node 2 = (6,8,0).
+/// Magnitudes: [5, 0, 10] → max Value::Real(10.0), min Value::Real(0.0).
+///
+/// **RED before step-2**: current Sampled arm flat-reduces the buffer,
+/// returning the max *component* (8.0) instead of max magnitude (10.0).
+#[test]
+fn max_min_vector3_sampled_field_reduces_by_magnitude() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    // Flat stride-3 buffer: nodes 0/1/2 = (3,4,0)|(0,0,0)|(6,8,0).
+    let sf = make_sampled_1d(
+        "vec3",
+        vec![0.0, 1.0, 2.0],
+        vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length, codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(10.0),
+        "max(Vector3 Sampled) should return max Euclidean magnitude 10.0"
+    );
+
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(0.0),
+        "min(Vector3 Sampled) should return min Euclidean magnitude 0.0"
+    );
+}
+
+/// Dimensioned `Vector3<Pressure>` codomain: max magnitude preserves the
+/// element dimension.
+///
+/// Windows: (3e6,4e6,0)|(0,0,0)|(6e6,8e6,0) → magnitudes [5e6, 0, 10e6] Pa.
+/// max → Value::Scalar{si_value:10e6, dimension:PRESSURE}.
+///
+/// **RED before step-2**.
+#[test]
+fn max_vector3_dimensioned_sampled_field_preserves_dimension() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let codomain = Type::vec3(pressure.clone());
+
+    let sf = make_sampled_1d(
+        "vec3_pa",
+        vec![0.0, 1.0, 2.0],
+        vec![3e6, 4e6, 0.0, 0.0, 0.0, 0.0, 6e6, 8e6, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length, codomain);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 10e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(Vector3<Pressure> Sampled) should preserve PRESSURE dimension on magnitude result"
+    );
+}
+
+/// NaN window in a `Vector3<Real>`-codomain field is skipped by the existing
+/// `is_finite()` gate; an all-NaN buffer returns `Value::Undef`.
+///
+/// Partial-NaN: (3,4,0)|(NaN,NaN,NaN)|(6,8,0) → max magnitude = 10.0.
+/// All-NaN: NaN×9 per node → Value::Undef.
+///
+/// **RED before step-2**.
+#[test]
+fn max_vector3_sampled_field_skips_nan_window() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    // Partial NaN: middle window is all-NaN.
+    let sf_partial = make_sampled_1d(
+        "vec3_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            3.0,      4.0,      0.0,
+            f64::NAN, f64::NAN, f64::NAN,
+            6.0,      8.0,      0.0,
+        ],
+    );
+    let (field, field_type) =
+        wrap_sampled_field(sf_partial, length.clone(), codomain.clone());
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Real(10.0),
+        "max(partial-NaN Vector3 Sampled) should skip NaN window and return 10.0"
+    );
+
+    // All-NaN: every element of the flat buffer is NaN.
+    let sf_all_nan = make_sampled_1d(
+        "vec3_all_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            f64::NAN, f64::NAN, f64::NAN,
+            f64::NAN, f64::NAN, f64::NAN,
+            f64::NAN, f64::NAN, f64::NAN,
+        ],
+    );
+    let (field2, field_type2) =
+        wrap_sampled_field(sf_all_nan, length, codomain);
+    let max_expr2 = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field2, field_type2)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr2, &EvalContext::simple(&ValueMap::new())),
+        Value::Undef,
+        "max(all-NaN Vector3 Sampled) should return Value::Undef"
+    );
+}
+
+/// REGRESSION: `Real`-codomain (stride-1) Sampled field stays sign-preserving
+/// after the magnitude-path change. data = [-5, -1, -3] → max = -1.0, NOT 5.0.
+///
+/// Confirms the scalar/divergence path bypasses the magnitude branch.
+/// This test MUST be GREEN even before step-2 (it pins the existing behavior).
+#[test]
+fn max_scalar_sampled_field_stays_sign_preserving_regression() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let sf = make_sampled_1d(
+        "scalar_neg",
+        vec![0.0, 1.0, 2.0],
+        vec![-5.0, -1.0, -3.0],
+    );
+    let (field, field_type) =
+        wrap_sampled_field(sf, length, Type::dimensionless_scalar());
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Real(-1.0),
+        "max(negative scalar Sampled) should return -1.0 (sign-preserving, NOT abs)"
+    );
+}
+
+// ── γ step 3: vector-codomain argmax/argmin ──────────────────────────────────
+
+/// `argmax` / `argmin` over a 1-D `Length`-domain, `Vector3<Real>`-codomain
+/// Sampled field return the domain coord of the window with max/min magnitude.
+///
+/// axis = [0, 1, 2] m; windows: node 0 = (3,4,0) |w|=5, node 1 = (0,0,0)
+/// |w|=0, node 2 = (6,8,0) |w|=10.
+/// argmax → coord of index 2 = Value::Scalar{2.0, LENGTH}.
+/// argmin → coord of index 1 = Value::Scalar{1.0, LENGTH}.
+///
+/// **RED before step-4**: current Sampled argextremum decomposes a flat
+/// per-component index, not a per-window magnitude index.
+#[test]
+fn argmax_argmin_vector3_sampled_field_returns_coord_of_magnitude_extremum() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg",
+        vec![0.0, 1.0, 2.0],
+        vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → window with magnitude 10.0 is at index 2, coord 2.0 m.
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(Vector3 Sampled) should return coord 2.0 m (index 2, max magnitude 10.0)"
+    );
+
+    // argmin → window with magnitude 0.0 is at index 1, coord 1.0 m.
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(Vector3 Sampled) should return coord 1.0 m (index 1, min magnitude 0.0)"
+    );
+}
+
+/// NaN window in a `Vector3<Real>`-codomain field is skipped for argmax too;
+/// only the finite-magnitude windows are candidates.
+///
+/// axis = [0, 1, 2] m; windows: (3,4,0)|(NaN,NaN,NaN)|(6,8,0).
+/// Finite magnitudes: index 0 = 5.0, index 2 = 10.0.
+/// argmax → index 2, coord 2.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_vector3_sampled_field_skips_nan_window() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            3.0,      4.0,      0.0,
+            f64::NAN, f64::NAN, f64::NAN,
+            6.0,      8.0,      0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(partial-NaN Vector3 Sampled) should skip NaN window and return coord 2.0 m"
+    );
+}
+
+// ── γ step 5: tensor-codomain (stride-9) Frobenius magnitude reduction ───────
+
+/// `max`, `min`, `argmax`, and `argmin` over a `Point3<Length>`-domain,
+/// `Tensor<2,3,Real>`-codomain Sampled field, validating the Frobenius-norm
+/// magnitude machinery for tensor codomains.
+///
+/// The fixture uses `source:Sampled` with `Tensor<2,3,Real>` codomain — the
+/// shape that `result.gradient` will eventually carry — but it is a synthetic
+/// Sampled fixture, NOT a real Gradient differential-source field.
+/// A `FieldSourceKind::Gradient` field still returns `Undef`; end-to-end
+/// wiring of `.gradient` through the evaluation pipeline is task θ's gate.
+///
+/// Grid: Regular3D, axis0=[0.0, 1.0], axis1=[0.0], axis2=[0.0] → grid_count=2.
+/// Flat stride-9 data:
+///   node 0 = (2,3,6, 0,0,0, 0,0,0) → Frobenius = √(4+9+36) = 7.0
+///   node 1 = (1,2,2, 0,0,0, 0,0,0) → √(1+4+4) = 3.0
+/// max    → Value::Real(7.0)   (node 0, Frobenius 7.0)
+/// min    → Value::Real(3.0)   (node 1, Frobenius 3.0)
+/// argmax → Point([0.0,0.0,0.0] LENGTH) (coord of node 0: axis0=0.0)
+/// argmin → Point([1.0,0.0,0.0] LENGTH) (coord of node 1: axis0=1.0)
+#[test]
+fn max_argmax_tensor2x3_sampled_field_reduces_by_frobenius_norm() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // Tensor<2,3,Real> codomain: rank=2, n=3, quantity=Real → stride = 3^2 = 9.
+    let codomain = Type::tensor(2, 3, Type::dimensionless_scalar());
+    // Point3<Length> domain (3 axes, each Length).
+    let domain = Type::point3(length.clone());
+
+    // Regular3D grid: axis0 has 2 nodes (grid_count=2), axis1/axis2 have 1 node.
+    // data: 2 × 9 = 18 floats.
+    let sf = make_sampled_3d(
+        "tensor_grad",
+        vec![0.0, 1.0],   // axis0: 2 nodes
+        vec![0.0],        // axis1: 1 node
+        vec![0.0],        // axis2: 1 node
+        vec![
+            // node 0: (2,3,6, 0,0,0, 0,0,0) → Frobenius = sqrt(4+9+36) = 7.0
+            2.0, 3.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // node 1: (1,2,2, 0,0,0, 0,0,0) → sqrt(1+4+4) = 3.0
+            1.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → Frobenius norm 7.0 at node 0 → Value::Real(7.0).
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(7.0),
+        "max(Tensor<2,3,Real> Sampled) should return max Frobenius norm 7.0"
+    );
+
+    // min → Frobenius norm 3.0 at node 1 → Value::Real(3.0).
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(3.0),
+        "min(Tensor<2,3,Real> Sampled) should return min Frobenius norm 3.0"
+    );
+
+    // argmax → node 0 has max Frobenius norm → coord = Point([0.0 m, 0.0 m, 0.0 m]).
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]),
+        "argmax(Tensor<2,3,Real> Sampled) should return coord of node 0 (max Frobenius 7.0)"
+    );
+
+    // argmin → node 1 has min Frobenius norm → coord = Point([1.0 m, 0.0 m, 0.0 m]).
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]),
+        "argmin(Tensor<2,3,Real> Sampled) should return coord of node 1 (min Frobenius 3.0)"
+    );
+}
+
+/// Dimensioned `Tensor<2,3,Pressure>` codomain: `max` returns the Frobenius norm
+/// wrapped in the element dimension (Pressure), mirroring the Vector<Pressure>
+/// test `max_vector3_dimensioned_sampled_field_preserves_dimension`.
+///
+/// Exercises the `magnitude_codomain` → `Type::Tensor` arm returning
+/// `quantity.as_ref()` = Pressure, which is different from the dimensionless
+/// Vector arm tested earlier, confirming both arms reach `reduce_sampled_extremum`
+/// with the correct element-quantity type.
+///
+/// Grid: same 2-node Regular3D shape (axis0=[0,1], axis1=[0], axis2=[0]).
+/// Data scaled to Pa:
+///   node 0 = (2e6, 3e6, 6e6, 0, …) → Frobenius = 7e6 Pa
+///   node 1 = (1e6, 2e6, 2e6, 0, …) → 3e6 Pa
+/// max → Value::Scalar { si_value: 7e6, dimension: PRESSURE }.
+#[test]
+fn max_tensor2x3_dimensioned_sampled_field_preserves_dimension() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // Tensor<2,3,Pressure>: each component is in Pa → stride = 9.
+    let codomain = Type::tensor(2, 3, pressure.clone());
+    let domain = Type::point3(length.clone());
+
+    let sf = make_sampled_3d(
+        "tensor_grad_pa",
+        vec![0.0, 1.0],   // axis0: 2 nodes
+        vec![0.0],        // axis1: 1 node
+        vec![0.0],        // axis2: 1 node
+        vec![
+            // node 0: Frobenius = sqrt(4e12 + 9e12 + 36e12) = 7e6 Pa
+            2e6, 3e6, 6e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // node 1: Frobenius = sqrt(1e12 + 4e12 + 4e12) = 3e6 Pa
+            1e6, 2e6, 2e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain, codomain);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 7e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(Tensor<2,3,Pressure> Sampled) should preserve PRESSURE dimension on Frobenius result"
+    );
+}
