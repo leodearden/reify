@@ -6570,6 +6570,25 @@ mod tests {
         )
     }
 
+    /// Helper: build an inline `CompiledExpr` literal from a `Value::Scalar`
+    /// with an arbitrary `DimensionVector`. Used by task ε's inline-arg tests
+    /// (the converted resolvers `eval_expr` the arg, so a `Literal` cell now
+    /// flows through exactly like a `ValueRef → Scalar`). The `Type` carried by
+    /// the literal is irrelevant to `eval_expr` (which clones the `Value`), so
+    /// the dimension on the `Type::Scalar` simply mirrors the value's.
+    fn literal_scalar(
+        si_value: f64,
+        dimension: reify_core::DimensionVector,
+    ) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
+                si_value,
+                dimension,
+            },
+            reify_core::Type::Scalar { dimension },
+        )
+    }
+
     /// Helper: wrap a bare `GeometryHandleId` in a `KernelHandle` with the
     /// default test kernel (`KernelId::Occt`).
     ///
@@ -6814,6 +6833,94 @@ mod tests {
                 diags[0].severity,
                 reify_core::Severity::Warning,
                 "(f) diagnostic must be Warning severity"
+            );
+        }
+    }
+
+    /// Task ε (evaluate-then-accept): `resolve_density_arg` now EVALUATES an
+    /// inline (non-`ValueRef`) arg expression instead of warning "not yet
+    /// supported". The headline `moment_of_inertia(b, 7850kg/m^3)` inline form
+    /// must be ACCEPTED; an inline bare `Real` / wrong-dimension `Scalar` must
+    /// be REJECTED with exactly one Warning carrying the same wording as the
+    /// `ValueRef` path.
+    ///
+    ///   (a) inline `Literal(Scalar{MASS_DENSITY, 7850})` → `Some(7850.0)`,
+    ///       0 diagnostics [RED before ε: the non-`ValueRef` branch warned + None].
+    ///   (b) inline `Literal(Real(7850.0))` → `None` + 1 Warning naming
+    ///       `density` + `7850kg/m^3`.
+    ///   (c) inline `Literal(Scalar{PRESSURE})` → `None` + 1 Warning
+    ///       (Pressure-as-density hole stays closed for the inline shape too).
+    #[test]
+    fn resolve_density_arg_inline_evaluates() {
+        // (a) inline MASS_DENSITY literal → Some(7850.0), 0 diagnostics.
+        {
+            let expr = literal_scalar(7850.0, reify_core::DimensionVector::MASS_DENSITY);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(
+                result,
+                Some(7850.0),
+                "(a) inline MASS_DENSITY literal must evaluate + be Accepted"
+            );
+            assert!(
+                diags.is_empty(),
+                "(a) inline MASS_DENSITY literal must produce no diagnostics, got: {:?}",
+                diags
+            );
+        }
+
+        // (b) inline bare Real literal → None + 1 Warning naming density + hint.
+        {
+            let expr = literal_f64(7850.0);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(b) inline bare Real must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(b) inline bare Real must push exactly 1 Warning, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(b) diagnostic must be Warning severity"
+            );
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("density"),
+                "(b) warning must name 'density', got: {:?}",
+                diags[0].message
+            );
+            assert!(
+                msg.contains("7850kg/m^3"),
+                "(b) warning must contain '7850kg/m^3' migration hint, got: {:?}",
+                diags[0].message
+            );
+        }
+
+        // (c) inline Pressure Scalar literal → None + 1 Warning [closed hole].
+        {
+            let expr = literal_scalar(2.0e11, reify_core::DimensionVector::PRESSURE);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(c) inline Pressure Scalar must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) inline Pressure Scalar must push exactly 1 Warning, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(c) diagnostic must be Warning severity"
             );
         }
     }

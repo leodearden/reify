@@ -34,7 +34,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib, MockGeometryKernel};
 
 const MOMENT_OF_INERTIA_BOX_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -307,4 +307,161 @@ structure def MoiViaMaterial {
             "MoiViaMaterial off-diagonal [{label}]: expected 0, got {v:.3e} (tol {tol:.0e})"
         );
     }
+}
+
+/// Shared analytic-tensor assertion for the 50 mm × 30 mm × 10 mm steel box at
+/// 7850 kg/m³ (m = 0.11775 kg). Validates `actual` is a rank-2 3×3
+/// `MOMENT_OF_INERTIA` tensor whose diagonal matches the analytic centroidal
+/// moments within 1e-9 kg·m² and whose off-diagonals are below 1e-9 kg·m².
+/// Used by the task ε inline-density test to assert the same validated values
+/// the let-bound fixtures above assert, without inventing new reference data.
+fn assert_moi_box_analytic_tensor(actual: Option<&Value>, label: &str) {
+    let w = 0.05_f64;
+    let h = 0.03_f64;
+    let d = 0.01_f64;
+    let mass = 7850.0 * w * h * d;
+    let i_xx = (1.0 / 12.0) * mass * (h * h + d * d);
+    let i_yy = (1.0 / 12.0) * mass * (w * w + d * d);
+    let i_zz = (1.0 / 12.0) * mass * (w * w + h * h);
+    let tol = 1e-9_f64;
+
+    let rows = match actual {
+        Some(Value::Tensor(rows))
+            if rows.len() == 3
+                && rows
+                    .iter()
+                    .all(|r| matches!(r, Value::Tensor(cols) if cols.len() == 3)) =>
+        {
+            rows
+        }
+        other => panic!(
+            "{label}.i should be a rank-2 Value::Tensor (3 rows × 3 cols) of \
+             MOMENT_OF_INERTIA-dimensioned scalars, got: {other:?}"
+        ),
+    };
+
+    fn extract(v: &Value, label: &str) -> f64 {
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } if *dimension == DimensionVector::MOMENT_OF_INERTIA => *si_value,
+            other => panic!(
+                "entry [{label}] should be Value::Scalar {{ dimension: \
+                 MOMENT_OF_INERTIA, .. }}, got: {other:?}"
+            ),
+        }
+    }
+
+    fn get_row(row: &Value) -> &Vec<Value> {
+        match row {
+            Value::Tensor(cols) => cols,
+            _ => unreachable!("already validated rank-2 shape above"),
+        }
+    }
+
+    let r0 = get_row(&rows[0]);
+    let r1 = get_row(&rows[1]);
+    let r2 = get_row(&rows[2]);
+
+    let v00 = extract(&r0[0], "0,0");
+    let v11 = extract(&r1[1], "1,1");
+    let v22 = extract(&r2[2], "2,2");
+
+    assert!(
+        (v00 - i_xx).abs() < tol,
+        "{label} I_xx=[0,0]: expected {i_xx:.3e}, got {v00:.3e} (tol {tol:.0e})"
+    );
+    assert!(
+        (v11 - i_yy).abs() < tol,
+        "{label} I_yy=[1,1]: expected {i_yy:.3e}, got {v11:.3e} (tol {tol:.0e})"
+    );
+    assert!(
+        (v22 - i_zz).abs() < tol,
+        "{label} I_zz=[2,2]: expected {i_zz:.3e}, got {v22:.3e} (tol {tol:.0e})"
+    );
+
+    let off_diag_entries = [
+        (extract(&r0[1], "0,1"), "0,1"),
+        (extract(&r0[2], "0,2"), "0,2"),
+        (extract(&r1[0], "1,0"), "1,0"),
+        (extract(&r1[2], "1,2"), "1,2"),
+        (extract(&r2[0], "2,0"), "2,0"),
+        (extract(&r2[1], "2,1"), "2,1"),
+    ];
+    for (v, lbl) in &off_diag_entries {
+        assert!(
+            v.abs() < tol,
+            "{label} off-diagonal [{lbl}]: expected 0, got {v:.3e} (tol {tol:.0e})"
+        );
+    }
+}
+
+/// Task ε (type-hygiene, evaluate-then-accept): the INLINE density form
+/// `moment_of_inertia(b, 7850kg/m^3)` — with NO intermediate `let` binding the
+/// density — must
+///   (1) compile clean (no error-severity diagnostics),
+///   (2) build WITHOUT emitting the γ "density argument … not yet supported /
+///       must be bound to a let" Warning (the eval-upgrade flips that silent
+///       fall-through), and
+///   (3) under real OCCT evaluate `i` to the SAME validated analytic 3×3
+///       `MOMENT_OF_INERTIA` tensor as the let-bound
+///       `moment_of_inertia_box_evals_to_analytic_tensor` fixture
+///       (m = 0.11775 kg for a 50 × 30 × 10 mm box at 7850 kg/m³).
+///
+/// Assertion (2) runs on EVERY runner via a `MockGeometryKernel`: the
+/// density-arg resolution (and its potential Warning) happens in the
+/// `try_eval_topology_selector` post-process BEFORE any kernel query, so it is
+/// independent of OCCT. Before ε this fixture emitted the "density argument"
+/// Warning → RED; after ε the accepted inline density emits none → GREEN.
+#[test]
+fn moment_of_inertia_inline_density_evals_to_analytic_tensor() {
+    const SOURCE: &str = r#"
+structure def MomentOfInertiaInline {
+    let b = box(50mm, 30mm, 10mm)
+    let i = moment_of_inertia(b, 7850kg/m^3)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "MomentOfInertiaInline should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // (2) No density-arg Warning on ANY runner — build with a MockGeometryKernel
+    //     so the post-process density resolution runs without OCCT.
+    {
+        let checker = SimpleConstraintChecker;
+        let mut engine =
+            reify_eval::Engine::new(Box::new(checker), Some(Box::new(MockGeometryKernel::new())));
+        let result = engine.build(&compiled, ExportFormat::Step);
+        let density_warnings: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("density argument"))
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            density_warnings.is_empty(),
+            "inline `moment_of_inertia(b, 7850kg/m^3)` must NOT emit a density-arg Warning \
+             (task ε flips γ's 'not yet supported' fall-through); got: {density_warnings:#?}"
+        );
+    }
+
+    // (3) Analytic tensor under real OCCT.
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return;
+    }
+
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("MomentOfInertiaInline", "i");
+    assert_moi_box_analytic_tensor(result.values.get(&cell), "MomentOfInertiaInline");
 }
