@@ -624,6 +624,11 @@ fn reduce_analytical_argextremum_bounded(
 fn magnitude_codomain(codomain_type: &Type) -> Option<(usize, &Type)> {
     match codomain_type {
         Type::Vector { n, quantity } => Some((*n, quantity.as_ref())),
+        // Rank-r tensor with n elements per dimension: stride = n^rank.
+        // For the gradient shape Tensor<2,3,Real>: rank=2, n=3 → stride=9.
+        // Frobenius norm = √(Σ wᵢ²) uses the same formula as Euclidean — the
+        // stride-generic `project_sampled_windows` handles any stride uniformly.
+        Type::Tensor { rank, n, quantity } => Some((n.pow(*rank as u32), quantity.as_ref())),
         _ => None,
     }
 }
