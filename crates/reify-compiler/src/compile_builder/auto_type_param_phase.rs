@@ -26,7 +26,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type};
+use reify_core::{ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
