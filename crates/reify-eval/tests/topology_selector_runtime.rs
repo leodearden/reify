@@ -640,6 +640,41 @@ fn edges_at_height_let_constructs_typed_edge_by_height_selector() {
     );
 }
 
+/// Task ε (evaluate-then-accept): the INLINE tolerance form
+/// `edges_at_height(body, 2mm + 3mm, 0.1mm)` — with the z argument written as a
+/// non-folding arithmetic expression (a `CompiledExprKind::BinOp`, NOT a
+/// `Literal`) instead of a `let`-bound cell — must construct the same
+/// `ByHeight { z_m: 0.005, tol_m: 1e-4 }` leaf. Before ε the BinOp z-arg hit
+/// `resolve_scalar_bound_expr`'s `_ => None` arm → the whole selector fell
+/// through → the cell stayed `Value::Undef` → RED. After ε the resolver
+/// evaluates `2mm + 3mm` to a `Scalar{LENGTH, 0.005}` → GREEN. Construction is
+/// kernel-FREE (UNSTAGED mock kernel, K2/BT7).
+#[test]
+fn edges_at_height_inline_scalar_expr_constructs_by_height_selector() {
+    let source = "structure def Bracket {\n    \
+        let body = box(10mm, 10mm, 10mm)\n    \
+        let es = edges_at_height(body, 2mm + 3mm, 0.1mm)\n}";
+    let compiled = compile_no_errors(source);
+    let mut engine = engine_with_mock_kernel(|k| k);
+
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let cell = ValueCellId::new("Bracket", "es");
+    assert_selector_leaf(
+        result.values.get(&cell),
+        "Bracket.es",
+        SelectorKind::Edge,
+        GeometryHandleId(1),
+        |q| match q {
+            LeafQuery::ByHeight { z_m, tol_m } => {
+                assert!((*z_m - 0.005).abs() < 1e-9, "z_m must be 5mm (2mm+3mm), got {z_m}");
+                assert!((*tol_m - 1e-4).abs() < 1e-12, "tol_m must be 0.1mm, got {tol_m}");
+            }
+            other => panic!("edges_at_height → ByHeight leaf, got {other:?}"),
+        },
+    );
+}
+
 /// `let neighbors = adjacent_faces(body, body)` must resolve to a
 /// `Value::List` of one `Value::GeometryHandle` sub-handle (kernel_handle
 /// GHId(1)) via `selector_vocabulary_v2::adjacent_to_face` and

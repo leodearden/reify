@@ -6935,6 +6935,111 @@ mod tests {
         }
     }
 
+    /// Helper: build a `CompiledExpr` literal from a `Value::Bool`.
+    fn literal_bool(b: bool) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Bool(b), reify_core::Type::Bool)
+    }
+
+    /// Task ε (evaluate-then-accept): the scalar-bound wrappers
+    /// `resolve_angle_scalar_arg` / `resolve_length_scalar_arg` now EVALUATE the
+    /// arg expr and route the result through `accept_arg`, gaining a
+    /// `diagnostics` sink + builtin/arg labels. An inline dimensioned literal of
+    /// the expected dimension is Accepted (0 diags); a defined-but-wrong value
+    /// (wrong dimension, dimensionless, or non-Scalar) is Rejected with exactly
+    /// one Warning naming the builtin, the arg, and the expected type.
+    #[test]
+    fn resolve_scalar_bound_arg_eval_and_diagnostics() {
+        // (a) inline ANGLE literal → Some(rad), 0 diagnostics.
+        {
+            let expr = literal_scalar(0.25, reify_core::DimensionVector::ANGLE);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_angle_scalar_arg(
+                &expr,
+                &values,
+                "faces_by_normal",
+                "tol",
+                &mut diags,
+            );
+            assert_eq!(result, Some(0.25), "(a) inline ANGLE literal must be Accepted");
+            assert!(diags.is_empty(), "(a) ANGLE literal must produce no diags, got: {diags:?}");
+        }
+
+        // (b) inline LENGTH literal → Some(m), 0 diagnostics.
+        {
+            let expr = literal_scalar(0.005, reify_core::DimensionVector::LENGTH);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_length_scalar_arg(
+                &expr,
+                &values,
+                "edges_at_height",
+                "z",
+                &mut diags,
+            );
+            assert_eq!(result, Some(0.005), "(b) inline LENGTH literal must be Accepted");
+            assert!(diags.is_empty(), "(b) LENGTH literal must produce no diags, got: {diags:?}");
+        }
+
+        // (c) wrong dimension (ANGLE where LENGTH expected) → None + 1 Warning.
+        {
+            let expr = literal_scalar(0.25, reify_core::DimensionVector::ANGLE);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_length_scalar_arg(
+                &expr,
+                &values,
+                "edges_at_height",
+                "z",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(c) ANGLE where LENGTH expected must return None");
+            assert_eq!(diags.len(), 1, "(c) must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("edges_at_height"), "(c) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("z"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("length"), "(c) names expected Length, got: {:?}", diags[0].message);
+        }
+
+        // (d) non-Scalar (Bool) where ANGLE expected → None + 1 Warning.
+        {
+            let expr = literal_bool(true);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_angle_scalar_arg(
+                &expr,
+                &values,
+                "faces_by_normal",
+                "tol",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(d) Bool where ANGLE expected must return None");
+            assert_eq!(diags.len(), 1, "(d) must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("faces_by_normal"), "(d) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("angle"), "(d) names expected Angle, got: {:?}", diags[0].message);
+        }
+
+        // (e) Undef (missing cell ValueRef) → None, 0 diagnostics (quiet).
+        {
+            let cell = reify_core::ValueCellId::new("Bracket", "missing");
+            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::length());
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result = super::resolve_length_scalar_arg(
+                &expr,
+                &values,
+                "edges_at_height",
+                "z",
+                &mut diags,
+            );
+            assert_eq!(result, None, "(e) missing cell must return None");
+            assert!(diags.is_empty(), "(e) missing cell must be quiet, got: {diags:?}");
+        }
+    }
+
     // Constants `DEGENERATE_LENGTH_M`, `DEGENERATE_ANGLE_RAD`, and
     // `GEOMETRY_EPSILON` (top of file) are not pinned by a standalone unit
     // test — that would just restate the `const` definitions. Their behavior
