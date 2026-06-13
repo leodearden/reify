@@ -693,4 +693,56 @@ mod tests {
         let d = super::diagnose("iso_it_tolerance", &[Value::Int(7), len(0.018)]);
         assert!(d.is_none(), "wrong arity should return None (not a diagnosable error)");
     }
+
+    // ─── η/4480 step-1: RED tests for the nominal() inert geometry marker ─────
+
+    /// `nominal()` is a zero-arg builtin returning a deterministic, non-Undef
+    /// inert marker usable as a `Geometry` default: an INVALID-handle
+    /// `Value::GeometryHandle` sentinel. The marker flows nowhere — the Conforms
+    /// body never reads `actual`, and the η pass keys on the explicit binding,
+    /// never the default — so an inert sentinel is exactly the right shape.
+    #[test]
+    fn nominal_returns_inert_invalid_geometry_marker() {
+        use reify_ir::GeometryHandleId;
+        let result = crate::eval_builtin("nominal", &[]);
+        assert!(!result.is_undef(), "nominal() should return a non-Undef marker");
+        match &result {
+            Value::GeometryHandle { kernel_handle, .. } => {
+                assert_eq!(
+                    *kernel_handle,
+                    GeometryHandleId::INVALID,
+                    "nominal() marker must carry the INVALID-handle sentinel"
+                );
+            }
+            other => panic!("expected Value::GeometryHandle marker, got {:?}", other),
+        }
+        // Geometry-typed so `param actual : Geometry = nominal()` type-checks.
+        assert_eq!(
+            result.try_infer_type(),
+            Some(reify_core::ty::Type::Geometry),
+            "nominal() marker must be Geometry-typed"
+        );
+    }
+
+    /// The marker must be deterministic across calls — no session/RNG state —
+    /// so a compiled default is stable.
+    #[test]
+    fn nominal_is_deterministic() {
+        let a = crate::eval_builtin("nominal", &[]);
+        let b = crate::eval_builtin("nominal", &[]);
+        assert_eq!(a, b, "nominal() must be deterministic across calls");
+    }
+
+    /// `nominal()` is strictly zero-arity: any argument yields `Undef`.
+    #[test]
+    fn nominal_rejects_args() {
+        assert!(
+            crate::eval_builtin("nominal", &[len(1e-4)]).is_undef(),
+            "nominal() with 1 arg should return Undef"
+        );
+        assert!(
+            crate::eval_builtin("nominal", &[len(1e-4), len(2e-5)]).is_undef(),
+            "nominal() with 2 args should return Undef"
+        );
+    }
 }
