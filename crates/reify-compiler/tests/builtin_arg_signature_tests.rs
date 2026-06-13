@@ -9,7 +9,7 @@
 //! wiring.
 
 use reify_core::{DiagnosticCode, Severity};
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helper ────────────────────────────────────────────────────────────────────
 
