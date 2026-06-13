@@ -1944,6 +1944,23 @@ pub(crate) fn compile_expr_guarded(
                     // rule as sites #1/#3 (centralized in `coerce.rs`).
                     let compiled_args = coerce::coerce_list_helper_args(name, compiled_args);
 
+                    // ζ (task 4493): compile-time per-arg type check for
+                    // geometry topology-selector builtins.  Pure side-effect
+                    // on `diagnostics`; result-type inference is unchanged
+                    // (anti-cascade).  Emits ArgTypeMismatch for DEFINITE
+                    // static dimension mismatches only — Type::Error (poison)
+                    // and Type::TypeParam (unresolved) are silently skipped
+                    // (PRD decision 6 gradualism).  Wired here — after
+                    // coerce_list_helper_args so the coerced types are checked,
+                    // before the result-type ladder so it remains a pure
+                    // diagnostic side-effect.
+                    builtin_signatures::check_builtin_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),

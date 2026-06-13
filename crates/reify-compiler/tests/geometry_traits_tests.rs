@@ -347,12 +347,12 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
         ),
         (
             "centroid",
-            "center_of_mass(body, 7850.0)",
+            "center_of_mass(body, 7850kg/m^3)",
             Type::point3(Type::length()),
         ),
         (
             "inertia_tensor",
-            "moment_of_inertia(body, 7850.0)",
+            "moment_of_inertia(body, 7850kg/m^3)",
             Type::tensor(
                 2,
                 3,
