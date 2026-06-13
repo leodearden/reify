@@ -895,6 +895,38 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a MaxDeviation query result for specific `actual` + `nominal`
+    /// handles and tessellation `tolerance`.
+    ///
+    /// Matches `GeometryQuery::MaxDeviation { actual, nominal, tolerance }` where
+    /// `tolerance` must be exactly bits-equal to the value supplied here.
+    ///
+    /// # Panics (debug)
+    /// Panics if `tolerance` is NaN — NaN `to_bits()` does not roundtrip and
+    /// HashMap lookup would silently miss.
+    pub fn with_max_deviation_result(
+        mut self,
+        actual: GeometryHandleId,
+        nominal: GeometryHandleId,
+        tolerance: f64,
+        value: Value,
+    ) -> Self {
+        debug_assert!(
+            !tolerance.is_nan(),
+            "MaxDeviation tolerance is NaN — to_bits would not roundtrip and \
+             HashMap lookup would silently miss"
+        );
+        self.typed_queries.insert(
+            QueryKey::MaxDeviation {
+                actual,
+                nominal,
+                tolerance_bits: density_bits(tolerance),
+            },
+            value,
+        );
+        self
+    }
+
     /// Configure a MomentOfInertia query result for a specific handle and axis.
     ///
     /// # Panics (debug)

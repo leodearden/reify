@@ -21358,4 +21358,116 @@ mod tests {
              anti-zero-edges guard lives in the eval arm, not the resolver"
         );
     }
+
+    // ── MaxDeviation via try_eval_geometry_query (ζ / C4) ───────────────────
+
+    /// ζ / C4 (step-7 RED → step-8 GREEN): `max_deviation(actual, nominal)`
+    /// direct call folds to `Value::Scalar<LENGTH>` via
+    /// `try_eval_geometry_query`. The seeded kernel returns `Value::Real(5e-4)`
+    /// (0.5 mm); the dispatch wraps it as
+    /// `Scalar { dimension: LENGTH, si_value: 5e-4 }`.
+    ///
+    /// RED until step-8 wires the 2-arg `max_deviation` recognizer into
+    /// `try_eval_geometry_query` (the current 1-arg gate returns `None` for a
+    /// 2-arg `max_deviation` call).
+    #[test]
+    fn try_eval_geometry_query_max_deviation_direct_happy_path() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(20);
+        let nominal = reify_ir::GeometryHandleId(21);
+        // Tolerance matches the `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` const
+        // that step-8 will define in geometry_ops.rs.
+        const TOL: f64 = 0.0001;
+        let kernel = MockGeometryKernel::new()
+            .with_max_deviation_result(actual, nominal, TOL, reify_ir::Value::Real(5e-4));
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("a".to_string(), kh(actual));
+        named_steps.insert("b".to_string(), kh(nominal));
+
+        let values = reify_ir::ValueMap::new();
+        let functions: Vec<reify_ir::CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+        // max_deviation(a, b): 2-arg call, both args resolved from named_steps.
+        let expr = topology_selector_call_two_value_refs(
+            "max_deviation",
+            "MaxDevTest",
+            "a",
+            reify_core::Type::Geometry,
+            "b",
+            reify_core::Type::Geometry,
+            reify_core::Type::length(),
+        );
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_geometry_query(
+            &expr,
+            &named_steps,
+            &values,
+            &functions,
+            &meta_map,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        match result {
+            Some(reify_ir::Value::Scalar { si_value, dimension })
+                if dimension == reify_core::DimensionVector::LENGTH =>
+            {
+                let expected = 5e-4_f64;
+                let epsilon = 1e-12_f64;
+                assert!(
+                    (si_value - expected).abs() < epsilon,
+                    "max_deviation direct call must produce si_value ≈ 5e-4; \
+                     got {si_value:.15} (delta {delta:.3e})",
+                    delta = (si_value - expected).abs()
+                );
+            }
+            other => panic!(
+                "max_deviation(actual, nominal) must return \
+                 Some(Value::Scalar{{LENGTH, ≈5e-4}}); got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "happy-path max_deviation must emit zero diagnostics; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ζ / C4: `max_deviation` with non-ValueRef (literal) args returns `None`
+    /// — the cell stays at its compiled default (Value::Undef). Mirrors the
+    /// defensive fall-through contract of the other 2-arg selectors.
+    #[test]
+    fn try_eval_geometry_query_max_deviation_literal_args_returns_none() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let kernel = MockGeometryKernel::new();
+        let named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        let values = reify_ir::ValueMap::new();
+        let functions: Vec<reify_ir::CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+        // literal args (non-ValueRef) — dispatch must return None
+        let expr = topology_selector_call_literal_args("max_deviation");
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_geometry_query(
+            &expr,
+            &named_steps,
+            &values,
+            &functions,
+            &meta_map,
+            &kernel,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "max_deviation with literal (non-ValueRef) args must return None; \
+             got {:?}",
+            result
+        );
+    }
 }
