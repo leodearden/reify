@@ -30,6 +30,135 @@
 //! [`FaceAnalyticDatum`]: reify_ir::GeometryQuery::FaceAnalyticDatum
 //! [`EdgeAnalyticDatum`]: reify_ir::GeometryQuery::EdgeAnalyticDatum
 
+/// SI-metre fallback length scale used to convert the linear dedup tolerance
+/// into a scale-aware angular tolerance (design §2.3:
+/// `ang_tol ≈ lin_tol / characteristic_length`, deliberately **not** OCCT's
+/// `Precision::Angular`).
+///
+/// The characteristic length is the separation of the two datums' reference
+/// points: an angular misalignment `θ` between two would-be-coincident datums
+/// produces a linear drift of about `separation · θ` at those points, so
+/// allowing `lin_tol` of drift permits `θ ≤ lin_tol / separation`. When the
+/// reference points are (near-)coincident the separation cannot supply the
+/// scale, so it is floored at this value (1 m, the SI unit) instead of dividing
+/// by zero. The companion point-on-line / point-on-plane *linear* check is the
+/// precise positional arbiter; this angular term is the parallelism gate that
+/// rejects datums meeting at a point but oriented differently.
+const ANGULAR_REFERENCE_LENGTH_M: f64 = 1.0;
+
+/// Pure geometric core of an axis datum (an infinite line): a reference point
+/// and a direction, both in SI-metre kernel coordinates. The direction is a
+/// *line orientation* — compared up to sign — not an oriented ray.
+///
+/// Distinct from the richer `Datum` carrier (step-8), which also retains the
+/// projected radius / provenance; this is just the geometry the equivalence
+/// predicates compute over.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct AxisGeom {
+    pub(crate) origin: [f64; 3],
+    pub(crate) direction: [f64; 3],
+}
+
+/// Pure geometric core of a plane datum: a reference point and a normal, both
+/// in SI-metre kernel coordinates. The normal is compared up to sign (an
+/// *unsigned* plane), so a plane and its flip are coplanar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PlaneGeom {
+    pub(crate) origin: [f64; 3],
+    pub(crate) normal: [f64; 3],
+}
+
+#[inline]
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+#[inline]
+fn norm3(a: [f64; 3]) -> f64 {
+    dot3(a, a).sqrt()
+}
+
+#[inline]
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    norm3(sub3(a, b))
+}
+
+/// Normalize to unit length; a (near-)zero vector is returned unchanged so the
+/// downstream checks degrade predictably rather than producing NaNs. Datum
+/// directions arriving from the analytic FFI are already unit, so this is
+/// defensive.
+#[inline]
+fn normalize3(a: [f64; 3]) -> [f64; 3] {
+    let m = norm3(a);
+    if m < f64::EPSILON {
+        a
+    } else {
+        [a[0] / m, a[1] / m, a[2] / m]
+    }
+}
+
+/// Scale-aware angular tolerance for a comparison whose reference points are
+/// `separation` apart — see [`ANGULAR_REFERENCE_LENGTH_M`].
+#[inline]
+fn angular_tol(separation: f64, lin_tol: f64) -> f64 {
+    lin_tol / separation.max(ANGULAR_REFERENCE_LENGTH_M)
+}
+
+/// Two axes are **coaxial** iff they lie on the same infinite line: their
+/// directions are parallel *up to sign* (within the scale-aware angular tol)
+/// AND each reference point lies on the other's line within `lin_tol`.
+///
+/// Sign-insensitive by construction — `|da × db|` ignores the relative sense —
+/// which is the property B8 relies on (a revolved rectangle's two end-arc
+/// circles carry opposite-sense axis directions on one shared line).
+pub(crate) fn axes_coaxial(a: AxisGeom, b: AxisGeom, lin_tol: f64) -> bool {
+    let da = normalize3(a.direction);
+    let db = normalize3(b.direction);
+    // (1) Directions parallel up to sign: |da × db| = sin(angle) for unit dirs.
+    let separation = dist3(a.origin, b.origin);
+    if norm3(cross3(da, db)) > angular_tol(separation, lin_tol) {
+        return false;
+    }
+    // (2) Each reference point lies on the other's infinite line: the
+    //     perpendicular distance |Δ × dir| (dir unit) is within the linear tol.
+    let perp_b = norm3(cross3(sub3(b.origin, a.origin), da));
+    let perp_a = norm3(cross3(sub3(a.origin, b.origin), db));
+    perp_b <= lin_tol && perp_a <= lin_tol
+}
+
+/// Two planes are **coplanar** iff they are the same unsigned plane: their
+/// normals are parallel *up to sign* (within the scale-aware angular tol) AND a
+/// reference point of one lies on the other within `lin_tol` (the perpendicular
+/// point-to-plane distance `|Δ · n|`, itself sign-insensitive).
+pub(crate) fn planes_coplanar(a: PlaneGeom, b: PlaneGeom, lin_tol: f64) -> bool {
+    let na = normalize3(a.normal);
+    let nb = normalize3(b.normal);
+    let separation = dist3(a.origin, b.origin);
+    if norm3(cross3(na, nb)) > angular_tol(separation, lin_tol) {
+        return false;
+    }
+    dot3(sub3(b.origin, a.origin), na).abs() <= lin_tol
+}
+
+/// Two points are **coincident** iff their separation is within `lin_tol`.
+pub(crate) fn points_coincident(a: [f64; 3], b: [f64; 3], lin_tol: f64) -> bool {
+    dist3(a, b) <= lin_tol
+}
+
 #[cfg(test)]
 mod equivalence_tests {
     use super::*;
