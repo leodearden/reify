@@ -16,7 +16,6 @@
 use super::*;
 
 /// Outcome of resolving a datum-projection member access `receiver.member`.
-#[allow(dead_code)] // β scaffold; resolver + variants are consumed in steps 8/10.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DatumProjectionResolution {
     /// The projection is valid; the member resolves to this codomain type.
@@ -39,7 +38,6 @@ pub(crate) enum DatumProjectionResolution {
 /// receiver — a member in this set on a datum receiver is resolved by the table
 /// (possibly to `Unavailable`/`Ambiguous`); a member outside this set is not a
 /// datum projection at all.
-#[allow(dead_code)] // consumed by the expr.rs MemberAccess gate in step 10.
 pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
     &["dir", "normal", "origin", "x", "y", "z", "xy_plane"];
 
@@ -59,7 +57,6 @@ pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] =
 /// Any other receiver (including `Point { .. }`) or any unrecognized member on a
 /// datum receiver resolves to [`DatumProjectionResolution::Unavailable`] — the
 /// locked nonsense-filter (covers `point.dir`). γ/η extend this table here.
-#[allow(dead_code)] // consumed by the expr.rs MemberAccess lowering in step 10.
 pub(crate) fn datum_projection_result_type(
     receiver: &Type,
     member: &str,
