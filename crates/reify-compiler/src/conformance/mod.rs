@@ -576,6 +576,30 @@ fn emit_leaf_conformance_for_arg_type(
     }
 }
 
+/// Emit a single `Diagnostic::error` with
+/// [`DiagnosticCode::TypeNotConformingToStructureRef`] when an arg type does not
+/// match a `Type::StructureRef` param (task-4584).
+///
+/// Modelled on [`emit_leaf_conformance_for_arg_type`]: one diagnostic, one label
+/// at `ctx.span`, message names the required structure and the offending type.
+fn emit_structure_ref_mismatch(
+    param_type: &Type,
+    arg_type: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -667,6 +691,22 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 );
             }
         },
+        // Leaf: param type is a StructureRef (nominal structure type, task-4584).
+        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
+        // generic — conformance decided at instantiation), Geometry (carries no
+        // nominal identity to verify here), or TraitObject (may resolve to a conforming
+        // struct). For all other concrete arg types, reject when type_compatible returns
+        // false (String/Int/different-StructureRef are genuine nominal mismatches).
+        (Type::StructureRef(_), arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !type_compatible(param_type, arg_ty) {
+                emit_structure_ref_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
         // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
         // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,
