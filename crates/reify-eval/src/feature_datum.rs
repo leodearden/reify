@@ -296,6 +296,21 @@ pub(crate) fn dedup_datums(datums: Vec<Datum>, lin_tol: f64) -> Vec<Datum> {
 /// collapses to the floor, so machine-precision agreement still merges. A coarse
 /// or imprecise sub-shape (large local tolerance) widens the comparison so its
 /// own modelling drift does not spuriously split an otherwise-coincident datum.
+///
+/// **Pairwise primitive vs. bundle-wide application.** This is the *pairwise*
+/// formula design §2.3 specifies — the tolerance for comparing one datum `A`
+/// against one datum `B`. [`feature_datum_bundle`], however, deliberately folds it
+/// into a single **bundle-wide** `lin_tol = max over every queried sub-shape` and
+/// reuses that one value for all pairwise comparisons: a conservative v1
+/// simplification, not an oversight. The [`Datum`] carrier does not retain its
+/// source sub-shape's local tolerance, so a genuine per-pair tol is not
+/// reconstructable at dedup time; the accepted trade-off is that a single coarse
+/// sub-shape can widen the merge tolerance for otherwise-precise pairs (a bounded
+/// over-merge). Tightening this to a true per-pair tol — by threading each datum's
+/// source tolerance onto the carrier — is a future refinement; for the clean
+/// analytic primitives ε targets (B8 included) every local tol sits at the floor,
+/// so the bundle-wide max equals the per-pair max and the distinction is currently
+/// moot.
 pub(crate) fn dedup_tolerance(local_a: f64, local_b: f64) -> f64 {
     CONFUSION_FLOOR_M.max(local_a).max(local_b)
 }
@@ -336,9 +351,14 @@ pub struct FeatureDatumBundle {
 /// Candidates are partitioned by projection target and each group is
 /// deduplicated by geometric equivalence ([`dedup_datums`]) at
 /// `lin_tol = max(confusion_floor, localTol of every queried sub-shape)` — a
-/// bundle-wide fold of [`dedup_tolerance`] over each sub-shape's
-/// `ShapeLocalTolerance`, with sub-shapes whose tolerance query fails falling
-/// back to the confusion floor.
+/// **deliberately conservative bundle-wide** fold of [`dedup_tolerance`] over each
+/// sub-shape's `ShapeLocalTolerance` (sub-shapes whose tolerance query fails fall
+/// back to the confusion floor). This is a v1 simplification of design §2.3's
+/// *per-pair* `max(floor, localTol(A), localTol(B))`: the [`Datum`] carrier does
+/// not retain its source tolerance, so one coarse sub-shape widens the merge
+/// tolerance for all pairs (a bounded over-merge accepted for now — see
+/// [`dedup_tolerance`]). For the clean analytic primitives ε targets every local
+/// tol sits at the floor, so the two schemes coincide.
 ///
 /// `history` is the feature's recovered swept-body classification (obtained by
 /// the caller via `Engine::swept_kind_table().lookup(feature_handle)`), or
