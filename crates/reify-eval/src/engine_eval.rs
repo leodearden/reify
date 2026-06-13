@@ -110,6 +110,7 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Range(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists

@@ -577,6 +577,15 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         // exact-kind checking.  resolve_type_with_aliases inherits this arm
         // automatically since it delegates to resolve_type_name for builtin names.
         "Selector" => Some(Type::AnySelector),
+        // Datum-receiver type names (task 4382 / β; see esc-4382-157). β owns
+        // `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+        // vocabulary (adjacent to the geometry-transforms PRD) so default-less
+        // params like `param a : Axis` type-check without a value constructor.
+        // `Frame` resolves to the 3D frame `Type::Frame(3)`.
+        "Direction" => Some(Type::Direction),
+        "Axis" => Some(Type::Axis),
+        "Plane" => Some(Type::Plane),
+        "Frame" => Some(Type::Frame(3)),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
@@ -1313,6 +1322,7 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -2708,6 +2718,52 @@ mod tests {
             resolve_type_name("BodySelector"),
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "\"BodySelector\" should resolve to Type::Selector(Body)"
+        );
+    }
+
+    // ── Datum-receiver type names (task 4382 / β; see esc-4382-157) ───────────
+    //
+    // β owns `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+    // vocabulary so default-less params (`param a : Axis`) type-check without a
+    // value constructor. RED until step-6 adds the arms (all return None today).
+
+    /// `resolve_type_name("Direction")` must return `Type::Direction`.
+    #[test]
+    fn resolve_type_name_recognises_direction() {
+        assert_eq!(
+            resolve_type_name("Direction"),
+            Some(Type::Direction),
+            "\"Direction\" should resolve to Type::Direction"
+        );
+    }
+
+    /// `resolve_type_name("Axis")` must return `Type::Axis`.
+    #[test]
+    fn resolve_type_name_recognises_axis() {
+        assert_eq!(
+            resolve_type_name("Axis"),
+            Some(Type::Axis),
+            "\"Axis\" should resolve to Type::Axis"
+        );
+    }
+
+    /// `resolve_type_name("Plane")` must return `Type::Plane`.
+    #[test]
+    fn resolve_type_name_recognises_plane() {
+        assert_eq!(
+            resolve_type_name("Plane"),
+            Some(Type::Plane),
+            "\"Plane\" should resolve to Type::Plane"
+        );
+    }
+
+    /// `resolve_type_name("Frame")` must return `Type::Frame(3)`.
+    #[test]
+    fn resolve_type_name_recognises_frame() {
+        assert_eq!(
+            resolve_type_name("Frame"),
+            Some(Type::Frame(3)),
+            "\"Frame\" should resolve to Type::Frame(3)"
         );
     }
 

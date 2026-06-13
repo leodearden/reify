@@ -45,6 +45,11 @@
 
 use super::*;
 
+use crate::datum_projection::{
+    datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
+    DATUM_PROJECTION_MEMBERS,
+};
+
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
 /// use at any producer site that emits a `Severity::Error` diagnostic.
 ///
@@ -2996,6 +3001,101 @@ pub(crate) fn compile_expr_guarded(
                     .unwrap_or(Type::dimensionless_scalar());
                 let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
+            }
+
+            // ── Datum-projection member access (geometric-relations β) ─────────
+            //
+            // `<datum>.<member>` where the receiver is a datum type
+            // (Axis/Plane/Frame/Direction) — or a `Point`, which has no datum
+            // projections — and `<member>` is a recognized datum-projection
+            // member name (`DATUM_PROJECTION_MEMBERS`). Consults the projection
+            // table (`datum_projection.rs`, the single source of truth) to
+            // type-check and lower the projection per the "implicit projection
+            // iff unique" rule.
+            //
+            // Placement: AFTER the StructureRef/TraitObject field-projection
+            // branch above (a datum is neither) and BEFORE the collection-
+            // aggregation / generic "member access not yet supported" fallthrough
+            // below, so datum projections are resolved rather than rejected as
+            // unsupported.  The receiver-type guard excludes `Type::Error`, so an
+            // already-poisoned object falls through to the poison short-circuits
+            // in the branches below (no double diagnostic).
+            //
+            // Lowering mirrors the collection-aggregation arm: a valid projection
+            // becomes a `MethodCall` (method = projection name, no args); eval
+            // dispatches the datum-projection method names on datum Values
+            // (the projection member names are disjoint from count/sum/keys/values).
+            if matches!(
+                &compiled_obj.result_type,
+                Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
+            ) && DATUM_PROJECTION_MEMBERS.contains(&member.as_str())
+            {
+                match datum_projection_result_type(&compiled_obj.result_type, member) {
+                    DatumProjectionResolution::Resolved(result_type) => {
+                        return CompiledExpr::method_call(
+                            compiled_obj,
+                            member.clone(),
+                            vec![],
+                            result_type,
+                        );
+                    }
+                    DatumProjectionResolution::Unavailable => {
+                        // Typed rejection of a nonsense projection (e.g. `point.dir`,
+                        // `plane.dir`). make_poison_literal enforces the anti-cascade
+                        // contract (one Severity::Error diagnostic + poison literal).
+                        // Where an obvious redirect exists (plane.dir → .normal),
+                        // append it as a "; use .normal" hint so the message matches
+                        // the documented canonical form.
+                        let mut message = format!(
+                            "{} has no projection '.{}'",
+                            compiled_obj.result_type, member
+                        );
+                        if let Some(hint) = datum_projection_unavailable_hint(
+                            &compiled_obj.result_type,
+                            member,
+                        ) {
+                            message.push_str(&format!("; use {hint}"));
+                        }
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(message)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "no such datum projection",
+                                ))
+                                .with_code(DiagnosticCode::DatumProjectionUnavailable),
+                        );
+                    }
+                    DatumProjectionResolution::Ambiguous { suggestions } => {
+                        // A bare directional projection that could mean several
+                        // members (e.g. `frame.dir`): suggest the disambiguating
+                        // members to write instead ("write frame.z").
+                        let suggested = suggestions
+                            .iter()
+                            .map(|s| format!(".{s}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "ambiguous datum projection '.{}' on {}: it could be any of \
+                                 {} — write one of those instead (e.g. write {})",
+                                member,
+                                compiled_obj.result_type,
+                                suggested,
+                                suggestions
+                                    .last()
+                                    .map(|s| format!(".{s}"))
+                                    .unwrap_or_default(),
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "ambiguous datum projection",
+                            ))
+                            .with_code(DiagnosticCode::DatumProjectionAmbiguous),
+                        );
+                    }
+                }
             }
 
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {

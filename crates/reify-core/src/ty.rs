@@ -158,6 +158,14 @@ pub enum Type {
     Plane,
     /// 3D axis (ray): an origin point and a unit direction vector.
     Axis,
+    /// Dimensionless 3D unit vector; distinct from `Vector3<Length>` and `Orientation`.
+    ///
+    /// A pure direction (assumed unit-normalized) carrying no length dimension and
+    /// no chirality/handedness — unlike `Orientation(3)` (a full rotation) or a
+    /// `Vector3<Length>` (a dimensioned displacement). Produced by datum
+    /// projections such as `axis.dir`, `plane.normal`, and `frame.x/.y/.z`
+    /// (geometric-relations β).
+    Direction,
     /// 3D axis-aligned bounding box defined by min and max corner points.
     BoundingBox,
     /// A dimensioned scalar whose dimension is the named dimension-param
@@ -332,6 +340,11 @@ impl Type {
         Type::Axis
     }
 
+    /// Shorthand for a dimensionless 3D unit-vector (direction) type.
+    pub fn direction() -> Self {
+        Type::Direction
+    }
+
     /// Shorthand for a 3D bounding box type.
     pub fn bounding_box() -> Self {
         Type::BoundingBox
@@ -471,6 +484,7 @@ impl std::fmt::Display for Type {
             Type::Range(inner) => write!(f, "Range<{}>", inner),
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
+            Type::Direction => write!(f, "Direction"),
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::ScalarParam(name) => write!(f, "Scalar<{}>", name),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),
@@ -1344,6 +1358,53 @@ mod tests {
     #[test]
     fn type_axis_as_name_none() {
         assert_eq!(Type::Axis.as_name(), None);
+    }
+
+    // ── Direction tests (β: First-class Direction type) ──────────────────────
+
+    #[test]
+    fn type_direction_construction_and_equality() {
+        assert_eq!(Type::Direction, Type::Direction);
+        assert_ne!(Type::Direction, Type::Axis);
+        assert_ne!(Type::Direction, Type::Plane);
+        assert_ne!(Type::Direction, Type::dimensionless_scalar());
+    }
+
+    #[test]
+    fn type_direction_display() {
+        assert_eq!(format!("{}", Type::Direction), "Direction");
+    }
+
+    #[test]
+    fn type_direction_factory() {
+        assert_eq!(Type::direction(), Type::Direction);
+    }
+
+    #[test]
+    fn type_direction_eq_and_hash() {
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Direction, "direction");
+        assert_eq!(map.get(&Type::Direction), Some(&"direction"));
+        assert_eq!(map.get(&Type::Axis), None);
+    }
+
+    #[test]
+    fn type_direction_not_numeric() {
+        assert!(!Type::Direction.is_numeric());
+    }
+
+    #[test]
+    fn type_direction_as_name_none() {
+        assert_eq!(Type::Direction.as_name(), None);
+    }
+
+    /// The locked β property: `Direction` is a DISTINCT type — it is neither a
+    /// `Vector3<Length>` nor an `Orientation(3)`.
+    #[test]
+    fn type_direction_distinct_from_vector3_and_orientation() {
+        assert_ne!(Type::Direction, Type::vec3(Type::length()));
+        assert_ne!(Type::Direction, Type::Orientation(3));
     }
 
     // ── BoundingBox tests (pre-1) ────────────────────────────────────────────
