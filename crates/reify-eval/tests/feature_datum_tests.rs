@@ -28,8 +28,9 @@
 //! faithful realization of the plan's "Revolve→Axis / Extrude→Direction"
 //! contract via the table that genuinely holds that geometry.
 
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::SweptKind;
-use reify_eval::feature_datum::{Datum, feature_datum_bundle};
+use reify_eval::feature_datum::{Datum, feature_datum_bundle, feature_datum_projection};
 use reify_ir::{GeometryHandleId, Value};
 use reify_test_support::MockGeometryKernel;
 
@@ -214,5 +215,160 @@ fn extruded_solid_bundle_includes_extrude_direction_trait() {
         bundle.axes,
         bundle.planes,
         bundle.points
+    );
+}
+
+// ─── Feature → datum PROJECTION (step-15) ─────────────────────────────────────
+//
+// `feature_datum_projection(bundle, member, diags)` is the resolve-time refinement
+// step the `feature.<proj>` eval performs over a realized feature's deduplicated
+// [`FeatureDatumBundle`] (geometric-relations ε, design §7.2): it selects the
+// projection group named by `member` (`axis` / `plane` / `point` / `dir`) and
+//
+//   * **exactly one** datum in the group ⇒ returns that datum as its runtime
+//     `Value` (the unambiguous arm of the `Axis | Axis?` refinement), with NO
+//     diagnostic; or
+//   * **zero or many** ⇒ the ambiguous arm: pushes a select-a-subfeature
+//     diagnostic (`DiagnosticCode::FeatureDatumAmbiguous`, `Severity::Error` —
+//     a user-actionable resolve-time ambiguity, mirroring the fillet
+//     empty-selection precedent) and returns `Value::Undef`.
+//
+// These tests drive the projection directly over bundles built by
+// `feature_datum_bundle` with a staged [`MockGeometryKernel`] (+ optional
+// [`SweptKind`] history), exercising BOTH arms of the refinement. The
+// receiver-resolution wiring (`feature.axis` member-access → feature handle →
+// bundle) is the concern of the end-to-end `.ri` example step (17 / 18); here we
+// pin the select-one-or-diagnose core the eval depends on.
+
+/// Assert a `Value::Axis` lies on the world Z line: origin x ≈ y ≈ 0 and
+/// direction parallel to ±Z (|z| ≈ 1, x ≈ y ≈ 0) — the runtime-`Value` analogue
+/// of [`assert_axis_is_z_line`].
+fn assert_value_axis_is_z_line(v: &Value) {
+    match v {
+        Value::Axis { origin, direction } => {
+            let o = match origin.as_ref() {
+                Value::Point(c) if c.len() == 3 => [
+                    c[0].as_f64().expect("axis origin x is numeric"),
+                    c[1].as_f64().expect("axis origin y is numeric"),
+                    c[2].as_f64().expect("axis origin z is numeric"),
+                ],
+                other => panic!("axis origin must be a 3-component Point, got {other:?}"),
+            };
+            let d = match direction.as_ref() {
+                Value::Direction { x, y, z } => [*x, *y, *z],
+                other => panic!("axis direction must be a Direction, got {other:?}"),
+            };
+            assert!(
+                o[0].abs() < 1e-9 && o[1].abs() < 1e-9,
+                "projected axis origin must lie on the world Z line, got {o:?}"
+            );
+            assert!(
+                d[0].abs() < 1e-9 && d[1].abs() < 1e-9 && (d[2].abs() - 1.0).abs() < 1e-9,
+                "projected axis direction must be parallel to ±Z, got {d:?}"
+            );
+        }
+        other => panic!("expected Value::Axis, got {other:?}"),
+    }
+}
+
+/// Build the revolved-rectangle cylinder's feature → datum bundle (the staging of
+/// `revolved_cylinder_bundle_unions_analytic_and_history_to_one_axis`): the
+/// analytic end-arc axes (±Z) ∪ the `Revolve`-history axis dedup to exactly ONE
+/// coaxial Z axis. Factored so the projection test reuses the same realized-feature
+/// fixture the bundle test pins.
+fn revolved_cylinder_bundle() -> reify_eval::feature_datum::FeatureDatumBundle {
+    let feature = GeometryHandleId(1);
+    let side_face = GeometryHandleId(10);
+    let cap_top = GeometryHandleId(11);
+    let cap_bottom = GeometryHandleId(12);
+    let arc_top = GeometryHandleId(20);
+    let arc_bottom = GeometryHandleId(21);
+
+    let h = 0.005; // 5 mm half-height
+
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(feature, vec![side_face, cap_top, cap_bottom])
+        .with_extracted_edges(feature, vec![arc_top, arc_bottom])
+        .with_face_analytic_datum_result(cap_top, plane_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
+        .with_face_analytic_datum_result(cap_bottom, plane_value([0.0, 0.0, -h], [0.0, 0.0, 1.0]))
+        .with_edge_analytic_datum_result(arc_top, axis_value([0.0, 0.0, h], [0.0, 0.0, 1.0]))
+        .with_edge_analytic_datum_result(arc_bottom, axis_value([0.0, 0.0, -h], [0.0, 0.0, -1.0]));
+
+    let history = SweptKind::Revolve {
+        axis_origin: [0.0, 0.0, 0.0],
+        axis_dir: [0.0, 0.0, 1.0],
+        angle_rad: 2.0 * std::f64::consts::PI,
+    };
+
+    feature_datum_bundle(feature, &mut kernel, Some(&history))
+}
+
+/// The unambiguous arm: a realized revolved cylinder's bundle carries exactly one
+/// axis datum, so `cyl.axis` projects to that single `Value::Axis` (≈ the
+/// revolution axis) with no diagnostic. This is B8's refinement in miniature.
+#[test]
+fn cylinder_axis_projection_resolves_to_single_axis() {
+    let bundle = revolved_cylinder_bundle();
+    // Precondition the projection relies on (already pinned by the bundle test).
+    assert_eq!(bundle.axes.len(), 1, "fixture must dedup to one axis");
+
+    let mut diagnostics = Vec::new();
+    let projected = feature_datum_projection(&bundle, "axis", &mut diagnostics);
+
+    assert_value_axis_is_z_line(&projected);
+    assert!(
+        diagnostics.is_empty(),
+        "an unambiguous feature.axis must emit no diagnostic; got {diagnostics:?}"
+    );
+}
+
+/// The ambiguous arm: a box-like feature exposes several non-coaxial straight
+/// edges, so its bundle carries multiple axis candidates. `plate.axis` cannot
+/// refine to a single `Axis`, so the projection emits a select-a-subfeature
+/// diagnostic (`FeatureDatumAmbiguous`, `Severity::Error`) and evaluates to
+/// `Value::Undef`.
+#[test]
+fn box_axis_projection_is_ambiguous_select_a_subfeature() {
+    let feature = GeometryHandleId(3);
+    let edge_x = GeometryHandleId(30);
+    let edge_y = GeometryHandleId(31);
+
+    // Two genuinely non-coaxial straight edges (an X-axis edge and an offset
+    // Y-axis edge): a box's many parallel-but-offset / perpendicular edges, in
+    // miniature. No construction history (a box is a primitive, not a swept body).
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(feature, vec![])
+        .with_extracted_edges(feature, vec![edge_x, edge_y])
+        .with_edge_analytic_datum_result(edge_x, axis_value([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]))
+        .with_edge_analytic_datum_result(edge_y, axis_value([0.0, 1.0, 0.0], [0.0, 1.0, 0.0]));
+
+    let bundle = feature_datum_bundle(feature, &mut kernel, None);
+    // Precondition: the two edges are distinct axes (no over-merge).
+    assert_eq!(
+        bundle.axes.len(),
+        2,
+        "fixture must expose two non-coaxial axis candidates; got {:?}",
+        bundle.axes
+    );
+
+    let mut diagnostics = Vec::new();
+    let projected = feature_datum_projection(&bundle, "axis", &mut diagnostics);
+
+    assert_eq!(
+        projected,
+        Value::Undef,
+        "an ambiguous feature.axis must evaluate to Undef"
+    );
+    let ambiguous: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+        })
+        .collect();
+    assert_eq!(
+        ambiguous.len(),
+        1,
+        "an ambiguous feature.axis must emit exactly one FeatureDatumAmbiguous \
+         (select-a-subfeature) error; got {diagnostics:?}"
     );
 }
