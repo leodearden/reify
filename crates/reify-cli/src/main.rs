@@ -527,48 +527,65 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // When the module carries a `RepresentationWithin` assertion (detected
-        // by `module_has_representation_within`), use the kernel-backed path:
-        //   1. `set_capture_repr_tol(true)` — record deviation during tessellation.
-        //   2. `tessellate_realizations(&compiled)` — populate `achieved_repr_tol`.
-        //   3. `engine.check(&compiled)` — `dispatch_constraints` intercepts
-        //      `RepresentationWithin` entries and reads from the populated map
-        //      (type-name-scan fallback resolves the key; absent key → Indeterminate).
+        // Two constraint kinds need live kernel state, and a single module may
+        // carry BOTH:
+        //   * RepresentationWithin (task-4199 γ) — needs
+        //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
+        //     populate `achieved_repr_tol`, which `dispatch_constraints` reads.
+        //   * geometric GD&T `Conforms` (η/4480) — needs
+        //     `build(ExportFormat::Step)` to realize live B-rep handles into
+        //     `realization_handles` (a `MaxDeviation` query is BRepOnly; only
+        //     `build()` — not `tessellate_realizations` — populates that map),
+        //     which `measure_gdt_conformance` reads.
         //
-        // This satisfies C1 ordering (tessellate-before-check) and C1 graceful
-        // degradation (no OCCT kernel → `with_registered_kernel` returns a
-        // None-kernel engine → tessellation skips → map stays empty →
-        // Indeterminate → exit 0).
+        // amend (reviewer suggestion: robustness_routing) — these were
+        // previously two mutually-exclusive `else if` arms with geometric
+        // `Conforms` first, so a module carrying BOTH kinds ran only `build()`;
+        // `set_capture_repr_tol`/`tessellate_realizations` never fired and every
+        // RepresentationWithin silently degraded to Indeterminate. They are now
+        // a single kernel-backed arm that runs EACH kind's side effect when that
+        // kind is present. The side effects touch DISJOINT engine maps and
+        // neither clears the other's (`build()` clears+repopulates
+        // `realization_handles` but never touches `achieved_repr_tol`;
+        // `tessellate_realizations()` is the exact converse), so a combined
+        // module gets a correct verdict for each kind. Each single-kind module
+        // runs the identical sequence it did before (C2 — byte-identical for all
+        // existing inputs).
         //
-        // When the module has NO `RepresentationWithin` constraints, keep the
-        // existing `Engine::new(None)+check()` path verbatim (C2 — byte-identical
-        // behavior and exit codes for all existing `reify check` inputs).
+        // C1 graceful degradation: with no OCCT kernel,
+        // `with_registered_kernel` returns a None-kernel engine → build /
+        // tessellate realize nothing → both kinds yield Indeterminate (never a
+        // false Violated) → exit 0.
+        //
+        // When the module has NEITHER kind, keep the existing
+        // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
-        let result = if module_has_geometric_conforms(&compiled) {
-            // Kernel-backed build-before-check path for geometric GD&T `Conforms`
-            // (η/4480). `build(ExportFormat::Step)` realizes geometry into
-            // `self.realization_handles` as live B-rep handles (a `MaxDeviation`
-            // query is BRepOnly; only `build()` — not `tessellate_realizations` —
-            // populates that map). `check(&compiled)` then runs the
-            // `measure_gdt_conformance` pass, which reads those handles via the
-            // realization_ref → realization_handles bridge and overrides the
-            // matching scalar `Conforms` entry with the measured Violated/Satisfied
-            // verdict. The build result is discarded; only its handle-population
-            // side effect matters, exactly as the RepresentationWithin path uses
-            // `tessellate_realizations`.
-            //
-            // C1 graceful degradation: with no OCCT kernel,
-            // `with_registered_kernel` returns a None-kernel engine → `build`
-            // realizes no handles → the pass yields Indeterminate (never a false
-            // Violated) → exit 0.
+        let has_geometric_conforms = module_has_geometric_conforms(&compiled);
+        let has_representation_within = module_has_representation_within(&compiled);
+        let result = if has_geometric_conforms || has_representation_within {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-            let _ = engine.build(&compiled, ExportFormat::Step);
-            engine.check(&compiled)
-        } else if module_has_representation_within(&compiled) {
-            // Kernel-backed path for RepresentationWithin assertions (task-4199 γ).
-            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-            engine.set_capture_repr_tol(true);
-            engine.tessellate_realizations(&compiled);
+            if has_representation_within {
+                // Record deviation during tessellation.
+                engine.set_capture_repr_tol(true);
+            }
+            if has_geometric_conforms {
+                // Realize live B-rep handles into `realization_handles`. The
+                // build result is discarded; only its handle-population side
+                // effect matters. Run BEFORE `tessellate_realizations` —
+                // `build()` clears+repopulates `realization_handles` but does
+                // not touch `achieved_repr_tol`, so the tessellate pass below
+                // leaves these handles intact.
+                let _ = engine.build(&compiled, ExportFormat::Step);
+            }
+            if has_representation_within {
+                // Populate `achieved_repr_tol`. Does not touch
+                // `realization_handles`, so the build handles above survive.
+                engine.tessellate_realizations(&compiled);
+            }
+            // `check()` runs `measure_gdt_conformance` (overrides the matching
+            // scalar `Conforms` entry with the measured verdict) and
+            // `dispatch_constraints`' RepresentationWithin interception — each
+            // reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
