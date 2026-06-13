@@ -810,6 +810,47 @@ fn make_length_point3(xyz: [f64; 3]) -> Value {
     ])
 }
 
+/// Apply a body's full world_transform (rotation + translation) to a
+/// com offset given in the body's local frame, returning the world-frame
+/// position of the centre of mass.
+///
+/// Computation: `R_world · com + t_world`.
+///
+/// Reuses the existing `transform_compose` builtin (geometry.rs:810) to
+/// avoid duplicating quaternion-rotate math.  `transform_compose(A, B)`
+/// returns `(R_A · R_B, R_A · t_B + t_A)`.  Composing `world_transform`
+/// with a pure-translation transform whose translation = LENGTH-vector(com)
+/// yields a transform whose translation equals `R_world · com + t_world`.
+/// We then extract that translation via `world_transform_translation`.
+///
+/// Returns `None` when:
+/// - `world_transform` is not a valid `Value::Transform`, or
+/// - `transform_compose` returns `Value::Undef` (malformed inputs), or
+/// - the composed translation contains non-finite components.
+fn world_apply_point(world_transform: &Value, com: [f64; 3]) -> Option<[f64; 3]> {
+    // Build a pure-translation transform: identity rotation + com-as-LENGTH-Vector.
+    let com_xform = Value::Transform {
+        rotation: Box::new(Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }),
+        translation: Box::new(Value::Vector(vec![
+            Value::length(com[0]),
+            Value::length(com[1]),
+            Value::length(com[2]),
+        ])),
+    };
+    // compose: (R_world·I, R_world·com + t_world) = (R_world, R_world·com + t_world)
+    let composed = eval_builtin("transform_compose", &[world_transform.clone(), com_xform]);
+    if composed.is_undef() {
+        return None;
+    }
+    // Extract the translation = R_world·com + t_world.
+    world_transform_translation(&composed)
+}
+
 // ── Explicit-mass rung for center_of_mass (task 4471) ────────────────────
 
 /// Result of attempting to compute a mass-weighted COM from explicit masses.
@@ -838,9 +879,9 @@ enum MassRung {
 /// - Extract `(mass, com, _)` via [`mass_properties_from_value`] — failure,
 ///   or `!mass.is_finite() || mass < 0.0` ⇒ [`MassRung::Degenerate`].
 /// - Read the body's `"world_transform"` map key and accumulate
-///   `weighted[i] += mass × world_transform_translation(wt)[i]`
-///   (origin only — com offset is wired in step-4); missing/bad
-///   `world_transform` ⇒ [`MassRung::Degenerate`].
+///   `weighted[i] += mass × world_apply_point(wt, com)[i]`
+///   (full R·com + t — honors rotation); missing/bad
+///   `world_transform` or failed compose ⇒ [`MassRung::Degenerate`].
 ///
 /// After the loop:
 /// - `!total.is_finite() || total <= 0.0` ⇒ [`MassRung::Degenerate`].
@@ -856,8 +897,8 @@ fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
             None => return MassRung::Fallback,
         };
 
-        // Extract scalar mass and com offset (SI metres).  Discard inertia.
-        let (mass, _com, _) = match mass_properties_from_value(&mp) {
+        // Extract scalar mass and com offset (SI metres).
+        let (mass, com, _) = match mass_properties_from_value(&mp) {
             Some(t) => t,
             None => return MassRung::Degenerate,
         };
@@ -867,7 +908,8 @@ fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
             return MassRung::Degenerate;
         }
 
-        // Extract the world-frame origin (translation part of world_transform).
+        // Apply the FULL world_transform (rotation + translation) to the
+        // body's com offset: world_pos = R_world · com + t_world.
         let body_map = match body {
             Value::Map(m) => m,
             _ => return MassRung::Degenerate,
@@ -876,7 +918,7 @@ fn explicit_mass_weighted_com(snap_bodies: &[Value]) -> MassRung {
             Some(v) => v,
             None => return MassRung::Degenerate,
         };
-        let origin = match world_transform_translation(wt) {
+        let origin = match world_apply_point(wt, com) {
             Some(xyz) => xyz,
             None => return MassRung::Degenerate,
         };
