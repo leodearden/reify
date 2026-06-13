@@ -7506,6 +7506,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn eval_mul_cancelling_dims_collapse_to_real() {
+        // (1/L) · L = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+        // 4.0 · 0.25 m = 1.0 (dimension cancels). VARIANT check is load-bearing.
+        match eval_mul(&inv_len, &mm_val(250.0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_mul_noncancelling_dims_stay_scalar() {
+        // L · L = AREA: a dimensioned product must stay Value::Scalar.
+        match eval_mul(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L·L should be AREA");
+                // 0.002 · 0.003 = 6e-6.
+                assert!(
+                    (si_value - 6e-6).abs() < 1e-12,
+                    "expected ~6e-6, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
     // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
 
     /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
