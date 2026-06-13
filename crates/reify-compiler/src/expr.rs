@@ -2047,6 +2047,21 @@ pub(crate) fn compile_expr_guarded(
                         // Returns None for non-selector operands so CSG
                         // union/difference fall through to `is_geometry_function`.
                         t
+                    } else if is_tolerancing_marker(name) {
+                        // η/4480 (C3): `nominal()` — a zero-arg inert Geometry
+                        // marker (eval in `reify_stdlib::tolerancing`). Typed
+                        // `Geometry` so `param actual : Geometry = nominal()`
+                        // type-checks; without this arm the zero-arg fallback
+                        // below would type it `Real` (first-arg → none → default)
+                        // and emit the "cannot infer return type of zero-arg
+                        // function" warning. The marker flows nowhere — the η
+                        // `measure_gdt_conformance` pass keys on an explicit
+                        // `actual` binding, never this default — so the
+                        // INVALID-handle sentinel is inert. Pinned disjoint from
+                        // the sibling families by the units.rs marker tests, so
+                        // this arm's position in the ladder is unobservable.
+                        tolerancing_marker_result_type(name)
+                            .expect("is_tolerancing_marker implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
