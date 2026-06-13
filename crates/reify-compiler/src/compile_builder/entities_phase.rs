@@ -31,7 +31,7 @@ use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_trait_arg_conformance};
+use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance, check_trait_arg_conformance};
 use crate::type_compat::{
     type_carries_trait_object, type_carries_type_param, unify,
     resolve_function_overload, OverloadResolution,
@@ -675,6 +675,15 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         for_each_template_root_expr(template, &mut |expr, span| {
             walk(expr, span, &mut new_diagnostics);
         });
+        // task-4584: check that StructureRef-typed Param defaults match their
+        // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
+        // Geometry/Solid defaults are checked by check_param_geometry_defaults below.
+        check_param_default_conformance(
+            template,
+            &template_registry,
+            &trait_registry,
+            &mut new_diagnostics,
+        );
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.

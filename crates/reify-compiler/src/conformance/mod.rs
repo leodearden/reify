@@ -292,6 +292,47 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
+/// Check that each `Param`-kind value cell with a default expression in
+/// `template` has a default whose type is compatible with the declared
+/// `cell_type`, for nominal leaf types (task-4584):
+///
+/// - **`Type::StructureRef`** params: delegate to `walk_param_against_arg` (reuses
+///   the step-2 StructureRef arm in `walk_param_against_arg_type`).  Skips if
+///   `default_expr.result_type` is `Type::Error` (anti-cascade).
+///
+/// Geometry/Solid defaults are handled separately in `check_param_geometry_defaults`.
+/// All other cell types (Real, Int, List, …) are out of scope for this pass.
+pub(crate) fn check_param_default_conformance(
+    template: &TopologyTemplate,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for vc in &template.value_cells {
+        if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        let Some(default) = &vc.default_expr else {
+            continue;
+        };
+        if !matches!(&vc.cell_type, Type::StructureRef(_)) {
+            continue;
+        }
+        // Anti-cascade: skip when the default expression itself had a compile error.
+        if matches!(default.result_type, Type::Error) {
+            continue;
+        }
+        let mut ctx = WalkCtx {
+            arg_name: vc.id.member.as_str(),
+            span: vc.span,
+            templates: template_registry,
+            traits: trait_registry,
+            diagnostics,
+        };
+        walk_param_against_arg(&vc.cell_type, default, &mut ctx);
+    }
+}
+
 /// Context bundle threaded through the four recursive walker helpers.
 ///
 /// Collects the five fields that were previously repeated as trailing arguments
