@@ -1992,22 +1992,20 @@ pub(crate) fn try_eval_conformance_query(
 //       frozen Physical spec shape (GHR-α) computes `mass` this way, so the
 //       nested fold is what produces the terminal user-observable.
 //
-// NOT handled — CROSS-CELL factoring. The nested fold (b) fires only when the
-// geometry-query call is lexically WITHIN the cell's own `default_expr`. If a
-// user factors the query into its own cell and consumes it from a SECOND cell:
+// Cross-cell factoring: `try_eval_geometry_query` itself does NOT re-evaluate
+// dependent cells. If the geometry-query call is NOT lexically in the cell's
+// own `default_expr` — e.g.:
 //       let v = volume(geometry)       // (a) DIRECT — folds to Scalar<Volume>
 //       let m = v * material.density   // BinOp of ValueRef(v) — NO query leaf
 // then `m`'s expr contains no geometry-query `FunctionCall`, so
-// `expr_contains_geometry_query` is `false`, this pass returns `None` for `m`,
-// and `m` keeps the `Undef` the pure eval pass produced (that pass evaluated
-// `m` while `v` was still `Undef` — the query builtins have no pure-eval rule).
-// This post-process inserts ONLY into geometry-query cells; it does NOT
-// re-evaluate dependent cells, so `m` silently stays `Undef`. The frozen
-// Physical spec shape writes `mass` inline (case b), so the terminal observable
-// is unaffected; the cross-cell shape is regression-pinned by
-// `cross_cell_factored_dependent_stays_undef`
-// (tests/geometry_query_kernel_dispatch.rs). Resolving it would require a
-// fixpoint re-eval of cells transitively depending on a geometry-query cell.
+// `expr_contains_geometry_query` is `false`, this pass returns `None` for `m`.
+// This post-process inserts ONLY into geometry-query cells. However, the
+// subsequent `post_process_derived_lets` pass in `engine_build.rs` (task 4229)
+// performs a fixpoint re-eval of Undef Let cells, which resolves cross-cell
+// factoring: after `v` folds to `Scalar<Volume>`, `post_process_derived_lets`
+// re-evaluates `m` and folds it to the correct value. This is pinned by
+// `cross_cell_factored_dependent_folds_via_fixpoint`
+// (tests/geometry_query_kernel_dispatch.rs).
 //
 // GHR-ζ does NOT route through `gate_query_capability` (task 3623): consistent
 // with the existing selector-dispatch siblings, and all GHR-ζ fixtures realize
