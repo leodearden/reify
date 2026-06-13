@@ -7595,4 +7595,27 @@ mod tests {
             _ => panic!("expected GeometryOp::Fillet"),
         }
     }
+
+    /// ζ / contract C4: `MaxDeviation` is repr-gate-classified `BRepOnly` and
+    /// has the canonical kind label "MaxDeviation".
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn max_deviation_query_has_brep_only_capability_and_kind_name() {
+        let q = GeometryQuery::MaxDeviation {
+            actual: GeometryHandleId(1),
+            nominal: GeometryHandleId(2),
+            tolerance: 1e-4,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "MaxDeviation must be BRepOnly: both operands require an exact B-rep (OCCT)"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "MaxDeviation",
+            "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
+        );
+    }
 }
