@@ -3482,8 +3482,8 @@ pub(crate) fn try_eval_topology_selector(
             // degenerate-input semantics here ever diverge from linalg.rs's
             // `magnitude`/`dot` handling, align them explicitly.  See also the
             // unit tests for `angle` in this module (task 3614, KGQ-ε).
-            let a = resolve_vec3_arg(&args[0], values)?;
-            let b = resolve_vec3_arg(&args[1], values)?;
+            let a = resolve_vec3_arg(&args[0], values, &function.name, "a", diagnostics)?;
+            let b = resolve_vec3_arg(&args[1], values, &function.name, "b", diagnostics)?;
             let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
             let na = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
             let nb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
@@ -3854,7 +3854,7 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::FacesByNormal => {
             let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 direction ValueRef → values map → [f64; 3].
-            let dir = resolve_vec3_arg(&args[1], values)?;
+            let dir = resolve_vec3_arg(&args[1], values, &function.name, "dir", diagnostics)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
@@ -3871,7 +3871,7 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::EdgesParallelTo => {
             let target = resolve_selector_target(&args[0], values)?;
             // args[1]: Vec3 axis ValueRef → values map → [f64; 3].
-            let axis = resolve_vec3_arg(&args[1], values)?;
+            let axis = resolve_vec3_arg(&args[1], values, &function.name, "axis", diagnostics)?;
             // args[2]: angular tolerance ValueRef → values map → ANGLE Scalar (SI rad).
             let tol_rad =
                 resolve_angle_scalar_arg(&args[2], values, &function.name, "tol", diagnostics)?;
@@ -4724,20 +4724,65 @@ fn vec3_component_si(value: &reify_ir::Value) -> Option<f64> {
     }
 }
 
-/// Resolve a 3-component vector arg to its `[f64; 3]` SI components. Accepts
-/// `Literal(Value::Vector(items))` (rare — inline vector literals) or the
-/// common `ValueRef → Value::Vector` (let-bound `let dir = vec3(0,0,1)`).
-/// Each component must be a `Value::Real` or a dimensionless `Value::Scalar`
-/// (per `vec3_component_si`); the vector must have exactly three components.
-/// Returns `None` for any other shape — caller maps to the "unsupported arg
-/// shape → fall through" behaviour. Inline `vec3(...)` FunctionCall args fall
-/// through (the dispatcher has no recursive eval context); test fixtures
-/// let-bind the direction so it lands in `values` as a `Value::Vector`.
+/// Short human-readable label for a `Value` that failed Vec3 classification,
+/// used as the `got` field of the rejection diagnostic (task ε). Vec3-aware: a
+/// `Value::Vector` of the wrong arity or carrying a dimensioned / non-numeric
+/// component is distinguished from a plainly non-Vector value, so the Warning
+/// names what actually went wrong.
+fn vec3_got_label(value: &reify_ir::Value) -> String {
+    match value {
+        reify_ir::Value::Vector(items) if items.len() != 3 => {
+            format!("Vector of {} components", items.len())
+        }
+        reify_ir::Value::Vector(_) => {
+            "Vector with a dimensioned or non-numeric component".to_string()
+        }
+        reify_ir::Value::Real(_) => "Real".to_string(),
+        reify_ir::Value::Scalar { .. } => "Scalar".to_string(),
+        reify_ir::Value::Point(_) => "Point".to_string(),
+        reify_ir::Value::Bool(_) => "Bool".to_string(),
+        reify_ir::Value::Int(_) => "Int".to_string(),
+        _ => "non-Vec3 value".to_string(),
+    }
+}
+
+/// Resolve a 3-component vector arg to its `[f64; 3]` SI components, emitting a
+/// `Severity::Warning` when the caller passes a defined-but-wrong value.
+///
+/// Evaluate-then-accept (task ε): the arg expr is EVALUATED against `values`
+/// (via [`eval_arg_value`]) and the resulting `Value` classified. Inline
+/// `vec3(...)` constructor calls now WORK — `eval_expr` lowers the `vec3(...)`
+/// `FunctionCall` to a `Value::Vector` via `reify_stdlib::eval_builtin`, so the
+/// γ "Literal/`ValueRef` shape-match only → silent fall-through" behaviour is
+/// gone. Each component must still be a `Value::Real` or a dimensionless
+/// `Value::Scalar` (per [`vec3_component_si`]); the vector must have exactly
+/// three components — the direction/axis args of `faces_by_normal` /
+/// `edges_parallel_to` / `angle` are pure unit-vector numerics in v0.1.
+///
+/// | evaluated arg value                                | return       | diagnostic?     |
+/// |----------------------------------------------------|--------------|-----------------|
+/// | `Value::Undef` (missing/Undef cell, user-fn arg)   | `None`       | no — quiet      |
+/// | `Value::Vector` of 3 `Real`/dimensionless `Scalar` | `Some([..])` | no              |
+/// | non-Vector, wrong length, or dimensioned component | `None`       | yes — 1 Warning |
 fn resolve_vec3_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
+    builtin: &str,
+    arg_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<[f64; 3]> {
-    let from_vector_value = |v: &reify_ir::Value| -> Option<[f64; 3]> {
+    use crate::arg_acceptance::ArgRejection;
+
+    let value = eval_arg_value(expr, values);
+
+    // Quiet degradation: an Undef value (missing cell, or a user-fn/meta arg the
+    // local ctx can't evaluate) returns None with no diagnostic — byte-identical
+    // to the γ fall-through for missing cells.
+    if matches!(value, reify_ir::Value::Undef) {
+        return None;
+    }
+
+    let as_vec3 = |v: &reify_ir::Value| -> Option<[f64; 3]> {
         match v {
             reify_ir::Value::Vector(items) if items.len() == 3 => Some([
                 vec3_component_si(&items[0])?,
@@ -4747,11 +4792,21 @@ fn resolve_vec3_arg(
             _ => None,
         }
     };
-    match &expr.kind {
-        reify_ir::CompiledExprKind::Literal(v) => from_vector_value(v),
-        reify_ir::CompiledExprKind::ValueRef(id) => from_vector_value(values.get(id)?),
-        _ => None,
+    if let Some(components) = as_vec3(&value) {
+        return Some(components);
     }
+
+    // Defined-but-wrong: emit exactly one Warning naming builtin/arg/Vec3/got
+    // (byte-uniform wording with the density / scalar-bound paths).
+    diagnostics.push(Diagnostic::warning(
+        ArgRejection {
+            got: vec3_got_label(&value),
+            expected: "Vec3",
+            migration_hint: None,
+        }
+        .message(builtin, arg_name),
+    ));
+    None
 }
 
 /// Shared evaluate-then-accept core for the SCALAR-dimension owned args
@@ -13428,14 +13483,16 @@ mod tests {
 
     #[test]
     fn try_eval_topology_selector_angle_nonvec3_scalar_literal_args_falls_through_to_none() {
-        // angle(<literal_real>, <literal_real>) — scalar Real literals (not
-        // Value::Vector), so resolve_vec3_arg returns None for both args and
-        // the dispatcher falls through to None.  Note: resolve_vec3_arg DOES
-        // accept Literal(Value::Vector) (see line ~2490), so a literal *vec3*
-        // would NOT fall through — it would resolve and compute an angle.
-        // This test pins the non-Vec3 scalar literal case only.  See
-        // `try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle`
-        // for the literal-Vec3 case.
+        // angle(<literal_real>, <literal_real>) — scalar Real literals evaluate
+        // (task ε) to Value::Real, which resolve_vec3_arg rejects as
+        // defined-but-wrong: it pushes a Warning and returns None for args[0],
+        // so the `?` short-circuits and the dispatcher returns None WITHOUT
+        // consulting the kernel.  Note: an inline expr that EVALUATES to a
+        // Value::Vector (e.g. a vec3(...) constructor or a Value::Vector literal)
+        // DOES resolve and compute an angle — see
+        // `try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle`.
+        // This test pins the non-Vec3 scalar literal case (result None; kernel
+        // untouched).
         use reify_test_support::mocks::CountingMockKernel;
         let inner = reify_test_support::mocks::MockGeometryKernel::new();
         let mut kernel = CountingMockKernel::new(inner);
@@ -13469,10 +13526,10 @@ mod tests {
     #[test]
     fn try_eval_topology_selector_angle_literal_vec3_args_resolves_and_returns_angle() {
         // angle(Literal(vec3(1,0,0)), Literal(vec3(0,1,0))) — resolve_vec3_arg
-        // accepts CompiledExprKind::Literal(Value::Vector) directly (line ~2490),
-        // so literal vec3 args DO resolve and produce an angle, unlike the
-        // scalar-literal case above.  Pins the actually-distinct contract for
-        // literal-typed Vec3 args.
+        // EVALUATES the arg (task ε); a Literal(Value::Vector) evaluates to that
+        // Value::Vector and is accepted, so literal vec3 args DO resolve and
+        // produce an angle, unlike the scalar-literal case above.  Pins the
+        // actually-distinct contract for literal-typed Vec3 args.
         use reify_test_support::mocks::MockGeometryKernel;
         let mut kernel = MockGeometryKernel::new();
 
