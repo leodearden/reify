@@ -39,10 +39,16 @@ use std::sync::Arc;
 use reify_core::DimensionVector;
 use reify_ir::{FieldSourceKind, SampledField, Value};
 
-/// Flatten per-node stress tensors `[[f64;3];3]` into a stride-9 row-major
+/// Flatten per-node 3×3 tensors `[[f64;3];3]` into a stride-9 row-major
 /// `Vec<f64>`.
 ///
-/// Layout per node: `σ_xx, σ_xy, σ_xz, σ_yx, σ_yy, σ_yz, σ_zx, σ_zy, σ_zz`.
+/// This is a **generic 3×3 row-major flatten** with no stress-specific logic;
+/// the name reflects its first use site but the operation is domain-neutral.
+/// It is reused for both the nodal stress tensor (σ, symmetric) and the nodal
+/// displacement-gradient tensor (∇u, generally asymmetric).
+///
+/// Layout per node: `[0][0], [0][1], [0][2], [1][0], [1][1], [1][2], [2][0],
+/// [2][1], [2][2]` (i.e. `r` is the outer index, `c` the inner).
 /// Shared by the elastic-static and buckling trampolines so the packing
 /// convention is defined in exactly one place.
 pub(crate) fn flatten_nodal_stress(nodal_stress: &[[[f64; 3]; 3]]) -> Vec<f64> {
