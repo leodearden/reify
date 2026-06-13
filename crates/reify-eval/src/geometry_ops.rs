@@ -12526,6 +12526,132 @@ mod tests {
         );
     }
 
+    // ── rewrite_geometry_queries FunctionCall-args recursion (task 4358 ε) ───
+    //
+    // Pins that `rewrite_geometry_queries` recurses into the ARGUMENTS of a
+    // non-query outer FunctionCall, folding each inner geometry-query leaf to a
+    // `Literal` while leaving the outer call's identity (function name + arity +
+    // result type) intact. Before step-2 the `_ => expr.clone()` fallthrough
+    // returns the outer call verbatim, so the inner `bounding_box(...)` leaves
+    // never fold — the bug behind `fits_build_volume(bounding_box(..),
+    // bounding_box(..))` constraints folding to Undef.
+
+    /// Build a single-arg geometry-query call `<name>(<entity>.<member>)` whose
+    /// sole arg is a `ValueRef`. Mirrors `conformance_call`'s manual
+    /// `FunctionCall` construction (no public `function_call` constructor).
+    fn geom_query_call(
+        name: &str,
+        entity: &str,
+        member: &str,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build an N-arg outer FunctionCall `<name>(args...)`.
+    fn outer_function_call(
+        name: &str,
+        args: Vec<reify_ir::CompiledExpr>,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        for a in &args {
+            content_hash = content_hash.combine(a.content_hash);
+        }
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// RED until step-2: `rewrite_geometry_queries` over a NON-query outer call
+    /// `fits_build_volume(bounding_box(S.part), bounding_box(S.envelope))` must
+    /// preserve the outer call (name + arity) but fold each inner
+    /// `bounding_box(..)` leaf to a `Literal(Value::BoundingBox{..})`. Today the
+    /// `_ => expr.clone()` arm returns the outer call verbatim (args still
+    /// `FunctionCall` query nodes), so the per-arg `Literal(BoundingBox)`
+    /// assertion fails.
+    #[test]
+    fn rewrite_geometry_queries_folds_function_call_args() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two handles, each answered with a valid bbox JSON wire reply
+        // (`dispatch_bounding_box` → `parse_bbox_axis_extents` expects a
+        // `Value::String` of `{"xmin":..,..,"zmax":..}`).
+        let h1 = reify_ir::GeometryHandleId(11);
+        let h2 = reify_ir::GeometryHandleId(22);
+        let bbox_json_1 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.01,\"ymax\":0.02,\"zmax\":0.03}"
+                .to_string(),
+        );
+        let bbox_json_2 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.1,\"ymax\":0.2,\"zmax\":0.3}"
+                .to_string(),
+        );
+        let kernel = MockGeometryKernel::new()
+            .with_bbox_result(h1, bbox_json_1)
+            .with_bbox_result(h2, bbox_json_2);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("part".to_string(), kh(h1));
+        named_steps.insert("envelope".to_string(), kh(h2));
+
+        // Outer NON-query call: fits_build_volume(bounding_box(S.part),
+        // bounding_box(S.envelope)).
+        let arg1 = geom_query_call("bounding_box", "S", "part", reify_core::Type::Geometry);
+        let arg2 = geom_query_call("bounding_box", "S", "envelope", reify_core::Type::Geometry);
+        let outer = outer_function_call("fits_build_volume", vec![arg1, arg2], reify_core::Type::Bool);
+
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rewritten = rewrite_geometry_queries(&outer, &named_steps, &kernel, &mut diags);
+
+        match &rewritten.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+                assert_eq!(
+                    function.name, "fits_build_volume",
+                    "outer non-query call name must be preserved"
+                );
+                assert_eq!(args.len(), 2, "outer call arity must be preserved");
+                for (i, arg) in args.iter().enumerate() {
+                    match &arg.kind {
+                        reify_ir::CompiledExprKind::Literal(reify_ir::Value::BoundingBox {
+                            ..
+                        }) => {}
+                        other => panic!(
+                            "arg {i} must fold to Literal(Value::BoundingBox); got {other:?}"
+                        ),
+                    }
+                }
+            }
+            other => panic!("expected outer FunctionCall preserved, got {other:?}"),
+        }
+    }
+
     // ── try_eval_conformance_query unit tests (task 2320) ────────────────────
     //
     // These tests pin the contract of `try_eval_conformance_query`, the
