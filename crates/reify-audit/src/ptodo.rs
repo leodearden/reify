@@ -1177,6 +1177,20 @@ mod tests {
         ));
         // An ordinary crate source path is NOT allowlisted.
         assert!(!is_allowlisted("crates/reify-ast/src/decl.rs"));
+
+        // δ migration sweep (pre-1) confirmed: no new ALLOWLIST_PREFIXES entries
+        // are needed. All 198 swept findings come from real non-self-referential
+        // code sites (stdlib/*.ri type-placeholders, legacy-cite Rust files,
+        // phantom-tracking prose, uncited markers) — none carry the detector's
+        // own pattern-strings programmatically in a way that would self-match.
+        // Scattered legitimate sites use `ptodo:allow` inline (§6.8 escape) rather
+        // than a broad path-prefix exemption. Regression pin: representative real
+        // swept files below the migration surface are NOT allowlisted (they must
+        // appear in detector findings, not be silently skipped).
+        assert!(!is_allowlisted("crates/reify-compiler/stdlib/dynamics.ri"));
+        assert!(!is_allowlisted("crates/reify-eval/src/dispatcher.rs"));
+        assert!(!is_allowlisted("crates/reify-eval/src/geometry_ops.rs"));
+        assert!(!is_allowlisted("gui/src-tauri/src/tests/engine_tests.rs"));
     }
 
     // -------------------------------------------------------------------
