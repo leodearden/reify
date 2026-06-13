@@ -592,6 +592,11 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     // omitted `normal` (it fell through the gap between the two PRDs). KGQ-ζ
     // absorbs the registration since 3603 is already done.
     "normal",
+    // ζ / C4 (task 4479): max deviation between actual and nominal geometries.
+    // max_deviation(actual: Geometry, nominal: Geometry) -> Scalar<Length>
+    // 2-arg Length-returning query; mirrors `distance`. BRepOnly capability
+    // (both operands require OCCT) registered in GeometryQuery::capability_kind().
+    "max_deviation",
 ];
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {
@@ -968,6 +973,12 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
         // Type::dimensionless_scalar() (not a Scalar dimension) is the quantity so that the
         // dispatched Value::Vector(vec![Value::Real(_);3]).infer_type() == this.
         "normal" => Type::vec3(Type::dimensionless_scalar()),
+        // ζ / C4 (task 4479): max deviation between actual and nominal.
+        // max_deviation(actual: Geometry, nominal: Geometry) -> Scalar<Length>
+        // Mirrors the `distance` arm: 2-arg geometry query, Length result.
+        "max_deviation" => Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        },
         _ => return None,
     })
 }
