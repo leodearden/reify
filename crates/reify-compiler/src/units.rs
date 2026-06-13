@@ -3912,4 +3912,39 @@ mod tests {
             "fn_field with empty args must return None"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4479 — ζ / C4: `max_deviation` compiler registration
+    // -----------------------------------------------------------------------
+
+    /// `is_geometry_query("max_deviation")` must return true once the ζ
+    /// registration lands in step-6. Fails until then.
+    ///
+    /// RED until step-6 adds "max_deviation" to GEOMETRY_QUERY_NAMES.
+    #[test]
+    fn is_geometry_query_recognises_max_deviation() {
+        assert!(
+            is_geometry_query("max_deviation"),
+            "is_geometry_query(\"max_deviation\") must be true after ζ step-6 registration"
+        );
+    }
+
+    /// `geometry_query_result_type("max_deviation")` must return
+    /// `Some(Type::Scalar { dimension: DimensionVector::LENGTH })` — mirroring
+    /// the `distance` arm (2-arg Length-returning query, ζ / C4).
+    ///
+    /// RED until step-6 adds the arm.
+    #[test]
+    fn geometry_query_result_type_for_max_deviation_is_scalar_length() {
+        use reify_core::{DimensionVector, Type};
+        let expected = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            geometry_query_result_type("max_deviation"),
+            Some(expected),
+            "geometry_query_result_type(\"max_deviation\") must return \
+             Some(Scalar<LENGTH>), mirroring the `distance` arm (ζ / C4)"
+        );
+    }
 }
