@@ -7210,6 +7210,101 @@ mod tests {
         }
     }
 
+    /// Task ε (evaluate-then-accept): `resolve_string_literal_arg` (the selector
+    /// name/label resolver for `face`/`edge`/`solid_body` and the ad-hoc
+    /// `@face`/`@edge` base/label) now EVALUATES the arg expr (gaining a
+    /// `diagnostics` sink + builtin/arg labels) and returns an OWNED `String`
+    /// (was `Option<&str>` matching only `Literal(Value::String)`). A
+    /// `Value::String` — whether an inline `Literal` or a `ValueRef → String`
+    /// cell — resolves to its owned `String` with 0 diagnostics; a
+    /// defined-but-wrong value (non-String) is Rejected with exactly one
+    /// `Severity::Warning` naming the builtin, the arg, and the expected
+    /// `String` type (byte-uniform wording with the density / point / vec3 /
+    /// range / int paths). A `Value::Undef` (missing cell) degrades quietly.
+    ///
+    /// Both call contexts are covered via the builtin/arg labels: the named
+    /// leaf selector (`face(body,"top")` → builtin `face`, arg `name`) and the
+    /// ad-hoc selector (`@face("top")` → builtin `@face`, arg `label`).
+    ///
+    ///   (a) inline `Literal(String)` → `Some("top")`, 0 diags.
+    ///   (b) `ValueRef → String` cell → `Some("side")`, 0 diags.
+    ///   (c) non-String (`Value::Int`) → `None` + 1 Warning naming builtin/arg/String/got.
+    ///   (d) missing-cell `ValueRef` → `Undef` → `None`, 0 diags (quiet).
+    ///
+    /// Compile-RED until step-14 changes the signature to
+    /// `(expr, values, builtin, arg, &mut diags) -> Option<String>` (today
+    /// `resolve_string_literal_arg(expr) -> Option<&str>` matches only an inline
+    /// `Literal(Value::String)` and silently returns `None` otherwise).
+    #[test]
+    fn resolve_string_literal_arg_eval_and_diagnostics() {
+        // (a) inline Literal(String) → Some("top"), 0 diags (named-leaf context).
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::String("top".to_string()),
+                reify_core::Type::String,
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_string_literal_arg(&expr, &values, "face", "name", &mut diags);
+            assert_eq!(
+                result,
+                Some("top".to_string()),
+                "(a) inline String literal must be Accepted as an owned String"
+            );
+            assert!(diags.is_empty(), "(a) String literal must produce no diags, got: {diags:?}");
+        }
+
+        // (b) ValueRef → String cell → Some("side"), 0 diags (ad-hoc label context).
+        {
+            let cell = reify_core::ValueCellId::new("Part", "label");
+            let expr = reify_ir::CompiledExpr::value_ref(cell.clone(), reify_core::Type::String);
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::String("side".to_string()));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_string_literal_arg(&expr, &values, "@face", "label", &mut diags);
+            assert_eq!(
+                result,
+                Some("side".to_string()),
+                "(b) ValueRef String must be Accepted"
+            );
+            assert!(diags.is_empty(), "(b) ValueRef String must produce no diags, got: {diags:?}");
+        }
+
+        // (c) non-String (Value::Int) → None + 1 Warning naming builtin/arg/String/got.
+        {
+            let expr = reify_ir::CompiledExpr::literal(
+                reify_ir::Value::Int(5),
+                reify_core::Type::Int,
+            );
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_string_literal_arg(&expr, &values, "edge", "name", &mut diags);
+            assert_eq!(result, None, "(c) non-String must return None");
+            assert_eq!(diags.len(), 1, "(c) non-String must push exactly 1 Warning, got: {diags:?}");
+            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            let msg = diags[0].message.to_lowercase();
+            assert!(msg.contains("edge"), "(c) names builtin, got: {:?}", diags[0].message);
+            assert!(msg.contains("name"), "(c) names arg, got: {:?}", diags[0].message);
+            assert!(msg.contains("string"), "(c) names expected String, got: {:?}", diags[0].message);
+            assert!(msg.contains("got"), "(c) names what it got, got: {:?}", diags[0].message);
+        }
+
+        // (d) missing-cell ValueRef → Undef → None, 0 diags (quiet).
+        {
+            let cell = reify_core::ValueCellId::new("Part", "missing_label");
+            let expr = reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::String);
+            let values = reify_ir::ValueMap::new();
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_string_literal_arg(&expr, &values, "@edge", "label", &mut diags);
+            assert_eq!(result, None, "(d) missing cell must return None");
+            assert!(diags.is_empty(), "(d) missing cell must be quiet, got: {diags:?}");
+        }
+    }
+
     /// Tests for `resolve_density_arg`: diagnostic behavior for the NEW
     /// Density-only contract (γ, task 4486).
     ///
