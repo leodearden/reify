@@ -159,8 +159,8 @@ pub(crate) fn kinematic_query_result_type(name: &str) -> Option<reify_core::Type
 /// fn edges_at_height(solid: Solid, h: Length, tol: Length) -> List<Geometry>
 /// fn adjacent_faces(solid: Solid, face: Geometry) -> List<Geometry>
 /// fn shared_edges(face1: Geometry, face2: Geometry) -> List<Geometry>
-/// fn center_of_mass(solid: Solid, density: Real) -> Point3<Length>
-/// fn moment_of_inertia(solid: Solid, density: Real) -> Tensor<2, 3, MomentOfInertia>
+/// fn center_of_mass(solid: Solid, density: Density) -> Point3<Length>
+/// fn moment_of_inertia(solid: Solid, density: Density) -> Tensor<2, 3, MomentOfInertia>
 /// ```
 ///
 /// Like the kinematic-query helpers, these names share this list only for

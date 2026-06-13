@@ -210,7 +210,7 @@ pub fn eval_body_mass_props_core(
 /// `ValueRef` is looked up in `values`; an inline `Literal` yields its baked
 /// value. Any other expr shape (or a `ValueRef` to an absent cell) yields
 /// `None` — mirroring the "unsupported arg shape → fall through" contract of
-/// `geometry_ops::resolve_real_scalar_arg` / `resolve_int_value_ref`.
+/// `geometry_ops::resolve_density_arg` / `resolve_int_value_ref`.
 fn resolve_arg_value<'a>(
     expr: &'a reify_ir::CompiledExpr,
     values: &'a reify_ir::ValueMap,

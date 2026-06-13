@@ -3799,11 +3799,10 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::CenterOfMass => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
-            // Uses resolve_density_arg (same as MomentOfInertia) so a dimensioned
-            // density arg emits a Severity::Warning instead of silently resolving
-            // to undefined — consistent diagnostic experience for both density-taking
-            // queries.
+            // args[1]: density ValueRef → values map → Value::Scalar{MASS_DENSITY}.
+            // Uses resolve_density_arg (same as MomentOfInertia) — Contract A
+            // (task 4486 γ): only a dimensioned Density is accepted; bare Real
+            // and dimensionless Scalar now emit a Severity::Warning.
             let density = resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::CenterOfMass { handle, density };
             dispatch_point3_length_reply(kernel, &query, &function.name, diagnostics)
@@ -3811,11 +3810,10 @@ pub(crate) fn try_eval_topology_selector(
         TopologySelectorHelper::MomentOfInertia => {
             // args[0]: geometry ValueRef → named_steps map → GeometryHandleId.
             let handle = resolve_geometry_handle_arg(&args[0], named_steps)?;
-            // args[1]: density ValueRef → values map → Real / dimensionless Scalar.
-            // Uses resolve_density_arg (not resolve_real_scalar_arg) to emit a
-            // Severity::Warning when the caller passes a dimensioned value
-            // (e.g. kg/m³ literal) — the v0.3 grammar does not yet support
-            // compound-unit density literals, so bare-numeric Real is required.
+            // args[1]: density ValueRef → values map → Value::Scalar{MASS_DENSITY}.
+            // Uses resolve_density_arg — Contract A (task 4486 γ): only a
+            // dimensioned Density is accepted; bare Real and dimensionless
+            // Scalar now emit a Severity::Warning.
             let density = resolve_density_arg(&args[1], values, &function.name, diagnostics)?;
             let query = reify_ir::GeometryQuery::InertiaTensor { handle, density };
             dispatch_inertia_tensor(kernel, &query, &function.name, diagnostics)
@@ -4648,73 +4646,54 @@ fn resolve_point3_length_arg(
 }
 
 /// Resolve the `density` argument of `center_of_mass` and `moment_of_inertia`
-/// to a raw `f64`, emitting a `Severity::Warning` when the caller passes a
-/// dimensioned or non-numeric `Value`.
+/// to a raw `f64` (SI kg/m³), emitting a `Severity::Warning` when the caller
+/// passes the wrong type.
 ///
-/// Delegates the accept-logic (Real / dimensionless Scalar) to
-/// [`resolve_real_scalar_arg`] and only owns the diagnostic-on-wrong-type
-/// behavior, keeping the type-acceptance contract in a single place:
+/// Contract A (task 4486 γ) — enforced via [`crate::arg_acceptance::accept_arg`]
+/// with [`crate::arg_acceptance::density_spec`]:
 ///
-/// | arg expr / resolved value        | return       | diagnostic pushed?           |
-/// |----------------------------------|--------------|------------------------------|
-/// | non-`ValueRef` expr              | `None`       | no (silent fall-through)     |
-/// | `ValueRef` → missing cell        | `None`       | no                           |
-/// | `ValueRef` → `Value::Real(v)`    | `Some(v)`    | no                           |
-/// | `ValueRef` → dimensionless       | `Some(si_v)` | no                           |
-/// |   `Value::Scalar`                |              |                              |
-/// | `ValueRef` → dimensioned Scalar  | `None`       | yes — `Severity::Warning`    |
-/// |   or any non-numeric `Value`     |              | naming `helper_name` +       |
-/// |                                  |              | "density" + "dimensionless"  |
+/// | arg expr / resolved value                     | return       | diagnostic pushed?        |
+/// |-----------------------------------------------|--------------|---------------------------|
+/// | non-`ValueRef` expr (inline literal/call/…)   | `None`       | yes — `Severity::Warning` |
+/// | `ValueRef` → missing cell                     | `None`       | no                        |
+/// | `ValueRef` → `Value::Undef`                   | `None`       | no                        |
+/// | `ValueRef` → `Value::Scalar{MASS_DENSITY,v}`  | `Some(v)`    | no                        |
+/// | `ValueRef` → bare `Value::Real`               | `None`       | yes — `Severity::Warning` |
+/// |   or dimensionless/wrong-dim `Value::Scalar`  |              | naming `density` +        |
+/// |   or any non-numeric `Value`                  |              | `7850kg/m^3` hint         |
 fn resolve_density_arg(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
     helper_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<f64> {
-    // Delegate accept-logic to the shared resolver (Real / dimensionless Scalar).
-    if let Some(v) = resolve_real_scalar_arg(expr, values) {
-        return Some(v);
-    }
-    // resolve_real_scalar_arg returned None. Emit a diagnostic only when expr
-    // is a ValueRef pointing to a *present* value of the wrong type —
-    // a non-ValueRef shape or a missing cell falls through silently
-    // (the established "unsupported arg shape → silent" contract).
-    let id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => return None,
-    };
-    if let Some(other) = values.get(id) {
-        diagnostics.push(Diagnostic::warning(format!(
-            "{helper_name}: density argument must be a bare numeric Real or \
-             dimensionless value in v0.3 (compound-unit literals are not yet \
-             supported as a density arg); got {other:?} — treating as undefined"
-        )));
-    }
-    None
-}
+    use crate::arg_acceptance::{accept_arg, density_spec, Acceptance};
 
-/// Shared accept-logic for a density-style argument: resolves a
-/// `CompiledExprKind::ValueRef` to a raw `f64` from a `Value::Real` or a
-/// dimensionless `Value::Scalar`. Called internally by [`resolve_density_arg`]
-/// — not invoked directly from dispatch arms. Returns `None` (no diagnostic)
-/// for any non-`ValueRef` shape, a missing cell, or a dimensioned Scalar;
-/// callers that need a `Severity::Warning` for the wrong-type case should use
-/// [`resolve_density_arg`] instead.
-fn resolve_real_scalar_arg(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-) -> Option<f64> {
     let id = match &expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => id,
-        _ => return None,
+        _ => {
+            // Non-ValueRef shape (inline literal, field-access, call, …).
+            // γ contract: LOUD — warn so the user knows they must bind density
+            // to a let before passing it (task ε will make this WORK).
+            diagnostics.push(Diagnostic::warning(format!(
+                "{helper_name}: density argument must be a dimensioned Density \
+                 value bound to a let (e.g. `let d = 7850kg/m^3`); \
+                 inline or computed density expressions are not yet supported \
+                 — treating as undefined"
+            )));
+            return None;
+        }
     };
-    match values.get(id)? {
-        reify_ir::Value::Real(v) => Some(*v),
-        reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        } if *dimension == reify_core::DimensionVector::DIMENSIONLESS => Some(*si_value),
-        _ => None,
+
+    let value = values.get(id)?; // missing cell — quiet degradation
+
+    match accept_arg(value, &density_spec()) {
+        Acceptance::Accepted(si) => Some(si),
+        Acceptance::Undefined => None,
+        Acceptance::Rejected(rej) => {
+            diagnostics.push(Diagnostic::warning(rej.message(helper_name, "density")));
+            None
+        }
     }
 }
 
@@ -6641,21 +6620,23 @@ mod tests {
         );
     }
 
-    /// Tests for `resolve_density_arg`: diagnostic behavior for wrong-typed density
-    /// arguments to `moment_of_inertia`.
+    /// Tests for `resolve_density_arg`: diagnostic behavior for the NEW
+    /// Density-only contract (γ, task 4486).
     ///
-    /// Contract under test:
-    ///   (a) ValueRef → LENGTH-dimensioned Scalar → None + exactly 1 Warning whose
-    ///       message names "density" and "real" or "dimensionless" (case-insensitive).
-    ///   (b) ValueRef → non-numeric Value (e.g. `Value::Bool`) → None + 1 Warning.
-    ///   (c) ValueRef → `Value::Real(7850.0)` → Some(7850.0), empty diagnostics.
-    ///       ValueRef → dimensionless `Value::Scalar` → Some(si_value), empty diagnostics.
-    ///   (d) Non-ValueRef expr (Literal) → None, empty diagnostics (silent fall-through,
-    ///       matching the established "unsupported arg shape → silent fall-through"
-    ///       contract that every sibling resolver follows).
+    /// NEW contract under test:
+    ///   (a) ValueRef → Scalar{MASS_DENSITY, 7850.0} → Some(7850.0), 0 diagnostics
+    ///       [NEW accept — was Warning+None under the old contract].
+    ///   (b) ValueRef → Value::Real(7850.0) → None + exactly 1 Severity::Warning
+    ///       whose lowercased message contains "density" AND "7850kg/m^3"
+    ///       [FLIP — was accepted silently].
+    ///   (c) ValueRef → dimensionless Scalar → None + 1 Warning [FLIP — was accepted].
+    ///   (d) ValueRef → Scalar{LENGTH} → None + 1 Warning [keep reject].
+    ///   (e) ValueRef → Value::Bool(true) → None + 1 Warning [keep reject].
+    ///   (f) Non-ValueRef expr (literal_f64) → None + exactly 1 Warning
+    ///       [LOUD — was 0/silent under old "unsupported arg shape → silent" contract].
     ///
     /// Modelled on `resolve_point3_length_arg_bare_real_components_return_none` above
-    /// (line 3254) — build a `value_ref` expr + a `ValueMap`, call the helper directly,
+    /// — build a `value_ref` expr + a `ValueMap`, call the helper directly,
     /// assert the return value and diagnostic side-effect, compiler-independently.
     #[test]
     fn resolve_density_arg_diagnostics() {
@@ -6663,7 +6644,7 @@ mod tests {
             reify_ir::CompiledExpr::value_ref(cell, reify_core::Type::dimensionless_scalar())
         }
 
-        // (a) ValueRef → LENGTH Scalar → None + 1 Warning
+        // (a) ValueRef → MASS_DENSITY Scalar → Some(7850.0), 0 diagnostics [NEW accept]
         {
             let cell = reify_core::ValueCellId::new("TestDef", "rho");
             let expr = make_value_ref(cell.clone());
@@ -6671,52 +6652,39 @@ mod tests {
             values.insert(
                 cell,
                 reify_ir::Value::Scalar {
-                    si_value: 1.0,
-                    dimension: reify_core::DimensionVector::LENGTH,
+                    si_value: 7850.0,
+                    dimension: reify_core::DimensionVector::MASS_DENSITY,
                 },
             );
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result =
                 super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
-            assert_eq!(result, None, "(a) LENGTH Scalar must return None");
             assert_eq!(
-                diags.len(),
-                1,
-                "(a) LENGTH Scalar must push exactly 1 diagnostic, got: {:?}",
+                result,
+                Some(7850.0),
+                "(a) MASS_DENSITY Scalar must return Some(7850.0)"
+            );
+            assert!(
+                diags.is_empty(),
+                "(a) MASS_DENSITY Scalar must produce no diagnostics, got: {:?}",
                 diags
-            );
-            assert_eq!(
-                diags[0].severity,
-                reify_core::Severity::Warning,
-                "(a) diagnostic must be Warning severity"
-            );
-            let msg = diags[0].message.to_lowercase();
-            assert!(
-                msg.contains("density"),
-                "(a) warning must name 'density', got: {:?}",
-                diags[0].message
-            );
-            assert!(
-                msg.contains("real") || msg.contains("dimensionless"),
-                "(a) warning must mention 'real' or 'dimensionless', got: {:?}",
-                diags[0].message
             );
         }
 
-        // (b) ValueRef → Value::Bool(true) → None + 1 Warning
+        // (b) ValueRef → Value::Real(7850.0) → None + 1 Warning with "density" + "7850kg/m^3" [FLIP]
         {
             let cell = reify_core::ValueCellId::new("TestDef", "rho2");
             let expr = make_value_ref(cell.clone());
             let mut values = reify_ir::ValueMap::new();
-            values.insert(cell, reify_ir::Value::Bool(true));
+            values.insert(cell, reify_ir::Value::Real(7850.0));
             let mut diags: Vec<Diagnostic> = Vec::new();
             let result =
                 super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
-            assert_eq!(result, None, "(b) Bool must return None");
+            assert_eq!(result, None, "(b) Value::Real must return None");
             assert_eq!(
                 diags.len(),
                 1,
-                "(b) Bool must push exactly 1 diagnostic, got: {:?}",
+                "(b) Value::Real must push exactly 1 diagnostic, got: {:?}",
                 diags
             );
             assert_eq!(
@@ -6724,32 +6692,22 @@ mod tests {
                 reify_core::Severity::Warning,
                 "(b) diagnostic must be Warning severity"
             );
-        }
-
-        // (c-i) ValueRef → Value::Real(7850.0) → Some(7850.0), empty diagnostics
-        {
-            let cell = reify_core::ValueCellId::new("TestDef", "rho3");
-            let expr = make_value_ref(cell.clone());
-            let mut values = reify_ir::ValueMap::new();
-            values.insert(cell, reify_ir::Value::Real(7850.0));
-            let mut diags: Vec<Diagnostic> = Vec::new();
-            let result =
-                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
-            assert_eq!(
-                result,
-                Some(7850.0),
-                "(c-i) Value::Real(7850.0) must return Some(7850.0)"
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("density"),
+                "(b) warning must name 'density', got: {:?}",
+                diags[0].message
             );
             assert!(
-                diags.is_empty(),
-                "(c-i) Value::Real must produce no diagnostics, got: {:?}",
-                diags
+                msg.contains("7850kg/m^3"),
+                "(b) warning must contain '7850kg/m^3' migration hint, got: {:?}",
+                diags[0].message
             );
         }
 
-        // (c-ii) ValueRef → dimensionless Scalar → Some(si_value), empty diagnostics
+        // (c) ValueRef → dimensionless Scalar → None + 1 Warning [FLIP]
         {
-            let cell = reify_core::ValueCellId::new("TestDef", "rho4");
+            let cell = reify_core::ValueCellId::new("TestDef", "rho3");
             let expr = make_value_ref(cell.clone());
             let mut values = reify_ir::ValueMap::new();
             values.insert(
@@ -6763,18 +6721,81 @@ mod tests {
             let result =
                 super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
             assert_eq!(
-                result,
-                Some(7850.0),
-                "(c-ii) dimensionless Scalar must return Some(si_value)"
+                result, None,
+                "(c) dimensionless Scalar must return None (no longer accepted)"
             );
-            assert!(
-                diags.is_empty(),
-                "(c-ii) dimensionless Scalar must produce no diagnostics, got: {:?}",
+            assert_eq!(
+                diags.len(),
+                1,
+                "(c) dimensionless Scalar must push exactly 1 diagnostic, got: {:?}",
                 diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(c) diagnostic must be Warning severity"
             );
         }
 
-        // (d) Non-ValueRef (literal_f64) → None, empty diagnostics (silent fall-through)
+        // (d) ValueRef → Scalar{LENGTH} → None + 1 Warning [keep reject]
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho4");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(
+                cell,
+                reify_ir::Value::Scalar {
+                    si_value: 1.0,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(d) LENGTH Scalar must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(d) LENGTH Scalar must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(d) diagnostic must be Warning severity"
+            );
+            let msg = diags[0].message.to_lowercase();
+            assert!(
+                msg.contains("density"),
+                "(d) warning must name 'density', got: {:?}",
+                diags[0].message
+            );
+        }
+
+        // (e) ValueRef → Value::Bool(true) → None + 1 Warning [keep reject]
+        {
+            let cell = reify_core::ValueCellId::new("TestDef", "rho5");
+            let expr = make_value_ref(cell.clone());
+            let mut values = reify_ir::ValueMap::new();
+            values.insert(cell, reify_ir::Value::Bool(true));
+            let mut diags: Vec<Diagnostic> = Vec::new();
+            let result =
+                super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
+            assert_eq!(result, None, "(e) Bool must return None");
+            assert_eq!(
+                diags.len(),
+                1,
+                "(e) Bool must push exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(e) diagnostic must be Warning severity"
+            );
+        }
+
+        // (f) Non-ValueRef (literal_f64) → None + 1 Warning [LOUD — was silent]
         {
             let expr = literal_f64(7850.0);
             let values = reify_ir::ValueMap::new();
@@ -6783,12 +6804,18 @@ mod tests {
                 super::resolve_density_arg(&expr, &values, "moment_of_inertia", &mut diags);
             assert_eq!(
                 result, None,
-                "(d) Literal expr must return None (silent fall-through)"
+                "(f) Literal expr must return None"
             );
-            assert!(
-                diags.is_empty(),
-                "(d) Literal expr must produce no diagnostics, got: {:?}",
+            assert_eq!(
+                diags.len(),
+                1,
+                "(f) Non-ValueRef literal must push exactly 1 Warning (γ=LOUD), got: {:?}",
                 diags
+            );
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(f) diagnostic must be Warning severity"
             );
         }
     }

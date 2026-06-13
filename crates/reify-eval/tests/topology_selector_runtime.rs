@@ -388,17 +388,17 @@ fn faces_let_constructs_typed_face_all_selector() {
 }
 
 /// `let com = center_of_mass(body, density)` on a structure containing
-/// `let body = box(10mm, 10mm, 10mm)` and `let density = 7850.0` must resolve
-/// to `Value::Point(vec![length(0), length(0), length(0)])` when the mock
-/// kernel pre-stages a JSON-Point3 reply for `CenterOfMass(handle=1,
+/// `let body = box(10mm, 10mm, 10mm)` and `let density = 7850kg/m^3` must
+/// resolve to `Value::Point(vec![length(0), length(0), length(0)])` when the
+/// mock kernel pre-stages a JSON-Point3 reply for `CenterOfMass(handle=1,
 /// density=7850.0)`. Pins the JSON-decode → `Value::Point<Length>` round-trip
-/// for the physical-property selector (density routed via the new
-/// `resolve_real_scalar_arg`).
+/// for the physical-property selector (density routed via `resolve_density_arg`
+/// + `accept_arg`, Contract A task 4486 γ).
 #[test]
 fn center_of_mass_let_resolves_to_point3_length_via_kernel_reply() {
     let source = "structure def Bracket {\n    \
         let body = box(10mm, 10mm, 10mm)\n    \
-        let density = 7850.0\n    \
+        let density = 7850kg/m^3\n    \
         let com = center_of_mass(body, density)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| {
@@ -426,17 +426,17 @@ fn center_of_mass_let_resolves_to_point3_length_via_kernel_reply() {
 }
 
 /// `let i = moment_of_inertia(body, density)` on a structure containing
-/// `let body = box(50mm, 30mm, 10mm)` and `let density = 7850.0` must resolve
-/// to a rank-2 `Value::Tensor` (3 rows × 3 cols) of MomentOfInertia-dimensioned
-/// scalars when the mock kernel pre-stages the OCCT row-of-row `Value::List`
-/// reply for `InertiaTensor(handle=1, density=7850.0)`. Pins the
+/// `let body = box(50mm, 30mm, 10mm)` and `let density = 7850kg/m^3` must
+/// resolve to a rank-2 `Value::Tensor` (3 rows × 3 cols) of MomentOfInertia-
+/// dimensioned scalars when the mock kernel pre-stages the OCCT row-of-row
+/// `Value::List` reply for `InertiaTensor(handle=1, density=7850.0)`. Pins the
 /// raw-Real-rows → nested-Tensor-of-MI-Scalars re-wrap (the eval-side owns the
 /// dimension tagging; the kernel reply is dimensionless `Value::Real`).
 #[test]
 fn moment_of_inertia_let_resolves_to_rank2_tensor_via_kernel_reply() {
     let source = "structure def Bracket {\n    \
         let body = box(50mm, 30mm, 10mm)\n    \
-        let density = 7850.0\n    \
+        let density = 7850kg/m^3\n    \
         let i = moment_of_inertia(body, density)\n}";
     let compiled = compile_no_errors(source);
     let mut engine = engine_with_mock_kernel(|k| {
