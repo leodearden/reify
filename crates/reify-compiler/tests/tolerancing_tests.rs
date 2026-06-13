@@ -2478,10 +2478,18 @@ fn binding_names(cc: &CompiledConstraint) -> Vec<&str> {
 
 #[test]
 fn conforms_actual_param_captures_explicit_binding_via_prelude() {
-    // Two Conforms instantiations in ONE structure, both binding `tolerance: self.t`
-    // (and defaulting measured_deviation/feature_departure), so their compiled
+    // Two Conforms instantiations in ONE structure, binding `tolerance`,
+    // `measured_deviation`, and `feature_departure` IDENTICALLY, so their compiled
     // predicates are byte-identical; the ONLY difference is whether the geometric
     // `actual` arg is explicitly bound.
+    //
+    // The scalar args are bound explicitly (not left to their `= 0mm` defaults)
+    // because `expand_constraint_inst` does NOT fold an omitted param's default
+    // into the predicate — only EXPLICIT call-site args are substituted, so a
+    // predicate-referenced param that is omitted leaks its bare name and fails to
+    // resolve. `actual` is the exception: the predicate never references it, so
+    // omitting it (letting it default to `nominal()`) is harmless — exactly why
+    // the η pass keys on the EXPLICIT binding rather than the default.
     let source = r#"
 structure def TestTol : GeometricTolerance {
     param tolerance_value : Length = 0.1mm
@@ -2491,8 +2499,8 @@ structure def TestTol : GeometricTolerance {
 structure def Probe {
     sub t = TestTol()
     param g : Geometry = box(1mm, 1mm, 1mm)
-    constraint Conforms(tolerance: self.t, actual: g)
-    constraint Conforms(tolerance: self.t)
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.05mm, feature_departure: 0mm, actual: g)
+    constraint Conforms(tolerance: self.t, measured_deviation: 0.05mm, feature_departure: 0mm)
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(source);

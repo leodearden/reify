@@ -295,6 +295,16 @@ pub constraint def Conforms {
     param tolerance : GeometricTolerance
     param measured_deviation : Length = 0mm
     param feature_departure : Length = 0mm
+    // Optional realized geometry whose deviation from the nominal feature the η
+    // GD&T conformance pass MEASURES at check time (PRD v0_6 task η, C3/C5).
+    // The default is an inert `nominal()` marker: param defaults compile in a
+    // neutral scope, so a `= tolerance.feature` default cannot evaluate — and the
+    // marker flows nowhere, since the predicate below NEVER references `actual`.
+    // When `actual` is EXPLICITLY bound at a call site, that binding (captured on
+    // CompiledConstraint.arg_bindings) is the signal Engine::measure_gdt_conformance
+    // keys on to run GeometryQuery::MaxDeviation and override this scalar verdict
+    // with a geometric one; an unbound `actual` leaves the scalar path untouched (B4).
+    param actual : Geometry = nominal()
     effective_tolerance_zone(tolerance.tolerance_value, tolerance.material_condition, feature_departure) >= measured_deviation
 }
 
