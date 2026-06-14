@@ -22,20 +22,6 @@
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn assert_no_dfm_diagnostic(result: &reify_eval::CheckResult, substr: &str) {
-    let matching: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains(substr))
-        .collect();
-    assert!(
-        matching.is_empty(),
-        "expected no diagnostic containing {:?}, but got: {:#?}",
-        substr,
-        matching
-    );
-}
-
 fn assert_dfm_diagnostic_count(result: &reify_eval::CheckResult, substr: &str, count: usize) {
     let matching: Vec<_> = result
         .diagnostics
