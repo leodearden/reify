@@ -276,4 +276,98 @@ mod tests {
         assert_eq!(kinds, DofKinds::new(1, 0));
         assert_eq!(unclassified, vec![Type::dimensionless_scalar()]);
     }
+
+    // ── check_joint_dof (step-9 RED / step-10 GREEN) ─────────────────────────
+
+    use reify_core::{Severity, SourceSpan};
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(0, 10)
+    }
+
+    /// B1 — a revolute (`concentric` + `on`) leaves residual (1 rot, 0 trans) and
+    /// declares `angle: Angle` = (1, 0). Exact match → no diagnostic.
+    #[test]
+    fn check_joint_dof_b1_revolute_matches() {
+        assert!(
+            check_joint_dof("revolute", DofKinds::new(1, 0), DofKinds::new(1, 0), span())
+                .is_none(),
+            "matching (1,0)==(1,0) must produce no diagnostic"
+        );
+    }
+
+    /// B4 — a cylindrical pair (`concentric`) leaves residual (1 rot, 1 trans) and
+    /// declares `{ angle: Angle, travel: Length }` = (1, 1). Exact match → None.
+    #[test]
+    fn check_joint_dof_b4_cylindrical_matches() {
+        assert!(
+            check_joint_dof("cylindrical", DofKinds::new(1, 1), DofKinds::new(1, 1), span())
+                .is_none(),
+            "matching (1,1)==(1,1) must produce no diagnostic"
+        );
+    }
+
+    /// B2 — COUNT mismatch: declares `angle: Angle` = (1, 0) but the body
+    /// (`concentric` only) leaves (1 rot, 1 trans). The uncovered translational
+    /// freedom must surface a `JointDofMismatch` error naming the declared count,
+    /// the residual, and a remedy ("declare … Length").
+    #[test]
+    fn check_joint_dof_b2_count_mismatch() {
+        let d = check_joint_dof("bad", DofKinds::new(1, 0), DofKinds::new(1, 1), span())
+            .expect("count mismatch must produce a diagnostic");
+        assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(
+            d.message.contains("declared 1 rotational"),
+            "message must state the declared kinds: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("leaves 1 rot + 1 trans"),
+            "message must state the geometric residual: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("declare") && d.message.contains("Length"),
+            "message must offer a remedy naming the uncovered translational DOF: {}",
+            d.message
+        );
+    }
+
+    /// B3 — KIND mismatch: declares `travel: Length` = (0, 1) but the body leaves
+    /// (1 rot, 0 trans). Counts agree (1 == 1) but the KINDS disagree — a
+    /// translational declaration cannot absorb a rotational residual. The message
+    /// must name the rotational-vs-translational disagreement.
+    #[test]
+    fn check_joint_dof_b3_kind_mismatch() {
+        let d = check_joint_dof("kindbad", DofKinds::new(0, 1), DofKinds::new(1, 0), span())
+            .expect("kind mismatch must produce a diagnostic");
+        assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
+        assert_eq!(d.severity, Severity::Error);
+        assert!(
+            d.message.contains("translational"),
+            "message must name the declared translational kind: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("1 rot"),
+            "message must name the rotational residual it disagrees with: {}",
+            d.message
+        );
+    }
+
+    /// An empty body yields residual (3, 3); any sane declared multiset (here a
+    /// lone `angle: Angle` = (1, 0)) mismatches it → `JointDofMismatch`. This is
+    /// how β catches an empty `joint … = { }` body.
+    #[test]
+    fn check_joint_dof_empty_body_residual_mismatches() {
+        let d = check_joint_dof("empty", DofKinds::new(1, 0), DofKinds::new(3, 3), span())
+            .expect("residual (3,3) cannot match a 1-DOF declaration");
+        assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
+        assert!(
+            d.message.contains("leaves 3 rot + 3 trans"),
+            "empty-body residual must read as the full nominal 6 DOF: {}",
+            d.message
+        );
+    }
 }
