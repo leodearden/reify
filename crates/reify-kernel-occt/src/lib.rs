@@ -10071,4 +10071,170 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    // --- FFI face builders: polygon + ellipse (task-4161 step-1) ---
+    // RED until step-2 adds make_polygon_face / make_ellipse_face to ffi.rs + occt_wrapper.
+
+    /// (a) Square polygon face → extrude → volume ≈ 1e-4 m² × 0.005 m = 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// prism volume = base_area × height = 1e-4 × 0.005 = 5e-7 m³ (exact for rectilinear mesh).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_square_extrude_volume() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 4, 0.0)
+            .expect("make_polygon_face(4-vertex square) should succeed");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 0.005)
+            .expect("make_prism should succeed for polygon square face");
+        let vol = ffi::ffi::query_volume(&prism)
+            .expect("query_volume should work for extruded polygon square");
+        let expected = 1e-4_f64 * 0.005; // area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon square extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) Triangle polygon face → surface area ≈ shoelace = 0.5 × 0.02 × 0.01 = 1e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_triangle_surface_area() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.02, 0.0, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 3, 0.0)
+            .expect("make_polygon_face(triangle) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for polygon triangle face");
+        let expected = 0.5_f64 * 0.02 * 0.01; // shoelace = 1e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon triangle area: expected ≈ {expected:.3e}, got {area:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Degenerate: n_points < 3 must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_too_few_points_returns_err() {
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 2, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with n_points=2 should return Err, got Ok"
+        );
+    }
+
+    /// (c-ii) Degenerate: coords.len() != 2 × n_points must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_wrong_coords_len_returns_err() {
+        // 3 points claimed but only 4 coords (should be 6)
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with coords.len()=4 but n_points=3 should return Err, got Ok"
+        );
+    }
+
+    /// (c-iii) Degenerate: 3 collinear points produce a degenerate polygon that
+    /// BRepBuilderAPI_MakeFace rejects (IsDone() = false → Err).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_collinear_points_returns_err() {
+        // All three points on the X-axis → zero area → degenerate face
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.02, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with 3 collinear points should return Err (degenerate face), got Ok"
+        );
+    }
+
+    /// (d) Ellipse face → surface area ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_surface_area() {
+        let face = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for ellipse face");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-3,
+            "ellipse face area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.6})"
+        );
+    }
+
+    /// (e) Swapped semi-axes → identical area (π·a·b is orientation-invariant).
+    ///
+    /// make_ellipse_face(0.005, 0.010) must normalize major/minor internally and
+    /// produce the same area as make_ellipse_face(0.010, 0.005).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_same_area() {
+        let face_ab = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area_ab = ffi::ffi::query_area(&face_ab)
+            .expect("query_area for ellipse(a,b) should work");
+
+        let face_ba = ffi::ffi::make_ellipse_face(0.005, 0.010, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let area_ba = ffi::ffi::query_area(&face_ba)
+            .expect("query_area for ellipse(b,a) should work");
+
+        let rel_diff = (area_ab - area_ba).abs() / area_ab;
+        assert!(
+            rel_diff < 1e-9,
+            "swapped ellipse axes should give same area: a,b={area_ab:.6e} vs b,a={area_ba:.6e} (rel_diff={rel_diff:.2e})"
+        );
+    }
+
+    /// (f-i) Non-positive semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_zero_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(0.0, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=0 should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, 0.0, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=0 should return Err, got Ok"
+        );
+    }
+
+    /// (f-ii) Non-finite semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(f64::INFINITY, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=Inf should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, f64::NAN, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=NaN should return Err, got Ok"
+        );
+    }
 }
