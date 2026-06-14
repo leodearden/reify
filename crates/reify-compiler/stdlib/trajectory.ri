@@ -99,15 +99,21 @@ pub type Pose3 = Transform3
 // irrelevant for normalized directions, but Length is required syntactically).
 pub type Vec3 = Vector3<Length>
 
-// LocationId: identifier for a named monitoring location on a mechanism
-// link (indexes into the per-location inner lists on EndEffectorTrack).
-// Currently aliased to `Real` as the geometry/pose PRD (which owns the
-// proper LocationId type) has not landed yet. Same placeholder convention
-// as `pub type JointValue = Real` above.
+// LocationId: a topology selector for a monitoring location on a mechanism
+// link (which face/edge/body of the end-effector to read the deviation at).
+// Resolved (task 4577): aliased to the core `Selector` (Type::AnySelector —
+// accepts a Face/Edge/Body selector), routing to the landed topology-selector
+// substrate (task 4116) rather than a `Real` placeholder. This makes a
+// `Pose3` (= Transform3) passed where a `LocationId` is expected a compile
+// error (Transform ≠ AnySelector), where both were silently interchangeable
+// Reals before.
 //
-// TODO(location-id-type, #4577): retarget to the geometry/pose PRD's `LocationId`
-// type when that PRD lands.
-pub type LocationId = Real
+// Resolved: TODO(location-id-type) — the runtime resolution of a selector to a
+// mesh node (so `peak_deviation`/`deviation_from_nominal` return a non-empty
+// series at the selected location) is owned by task 4122; until it lands the
+// trajectory accessors return an empty series / 0 Length for any selector
+// (read_scalar_si returns None for a non-numeric location).
+pub type LocationId = Selector
 
 // ── Marker traits ─────────────────────────────────────────────────────────
 
@@ -409,10 +415,13 @@ pub fn profile_duration(p: Profile) -> Time { profile_duration_at(p) }
 // named location from an EndEffectorTrack (PRD §6.2).
 //
 // `track : EndEffectorTrack` — the simulator output record.
-// `location : LocationId`    — the location index (LocationId = Real alias)
-//                              selecting the inner slice at each time step.
+// `location : LocationId`    — the topology selector (LocationId = Selector,
+//                              task 4577) for the location whose inner slice is
+//                              read at each time step. Runtime selector→mesh-node
+//                              resolution is task 4122; until then a selector
+//                              location yields an empty series.
 //
-// Returns `List<Pose3>` (= List<Real> via the Pose3 alias) — one pose per
+// Returns `List<Pose3>` (= List<Transform3> via the Pose3 alias) — one pose per
 // time sample in `track.t_samples` (the combined_pose Z column at `location`).
 //
 // Body delegates to the `end_effector_track_at` intrinsic (task π); see the

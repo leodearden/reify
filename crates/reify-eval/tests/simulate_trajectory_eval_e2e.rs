@@ -127,7 +127,10 @@ fn trajectory_accessor_bodies_delegate_to_intrinsics() {
 
 /// A profile + ZVShaper through the `ProfileInput` / `ShaperInput` shims into
 /// `input_shape`, plus the three accessor call sites over a default
-/// `EndEffectorTrack()` (its ctor defaults were added in prereq-2).
+/// `EndEffectorTrack()` (its ctor defaults were added in prereq-2). The
+/// `location` arg is now a kernel-free topology selector (LocationId = Selector,
+/// task 4577) rather than a `0.0` Real; runtime selector→mesh-node resolution
+/// is task 4122, until which the accessors return an empty series / 0 Length.
 const SURFACE_SNIPPET: &str = r#"
 structure def TrajPiSurface {
     let wp0 = Waypoint(t: 0.0s, values: [0.0], vels: none, accels: none)
@@ -146,10 +149,15 @@ structure def TrajPiSurface {
     let si = ShaperInput(shaper: shaper)
     let shaped = input_shape(pi.profile, si.shaper)
 
+    let b = box(10mm, 10mm, 10mm)
+    let dir = vec3(1.0, 0.0, 0.0)
+    let tol = 1deg
+    let loc = faces_by_normal(b, dir, tol)
+
     let track = EndEffectorTrack()
-    let series = end_effector_track(track, 0.0)
-    let dev = deviation_from_nominal(track, 0.0)
-    let peak = peak_deviation(track, 0.0)
+    let series = end_effector_track(track, loc)
+    let dev = deviation_from_nominal(track, loc)
+    let peak = peak_deviation(track, loc)
 
     constraint shaper.damping_ratio >= 0.0
 }

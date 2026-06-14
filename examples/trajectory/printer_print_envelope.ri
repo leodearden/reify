@@ -37,7 +37,8 @@
 //   fundamental, a different value, so wiring it would silently change the
 //   ZVShaper's calibration.  The tuned 40Hz literal is kept deliberately.
 // simulate_trajectory(p, mech, modal): mech : Real ⇒ pass bare 1.0 placeholder.
-// peak_deviation(track, location): location : LocationId (=Real) ⇒ pass 0.0.
+// peak_deviation(track, location): location : LocationId (= Selector, task 4577) ⇒
+//   pass a kernel-free face selector; runtime resolution is task 4122 (interim peak → 0).
 //
 // ── no report() / no read_file() ─────────────────────────────────────────────────
 // There is no report() builtin and no read_file() .ri builtin; numeric reduction
@@ -179,13 +180,19 @@ structure def PrinterPrintEnvelope {
     // ── (e) peak_deviation for each track ────────────────────────────────────────
     //
     // peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length
-    //   location : LocationId (=Real placeholder) ⇒ pass 0.0.
-    //   Returns the maximum Euclidean deviation from nominal across all time samples
-    //   for the given location index — always >= 0.
+    //   location : LocationId (= Selector, task 4577) ⇒ pass a kernel-free face
+    //   selector (box + faces_by_normal, never realized against a mesh, so it
+    //   stays geometry-free). Runtime selector→mesh-node resolution is task 4122;
+    //   until then peak_deviation returns 0 for any selector. Always >= 0 either way.
 
-    let peak_unshaped = peak_deviation(track_unshaped, 0.0)
-    let peak_impulse  = peak_deviation(track_impulse, 0.0)
-    let peak_tots     = peak_deviation(track_tots, 0.0)
+    let loc_box = box(100mm, 100mm, 100mm)
+    let loc_dir = vec3(0.0, 0.0, 1.0)
+    let loc_tol = 1deg
+    let loc = faces_by_normal(loc_box, loc_dir, loc_tol)
+
+    let peak_unshaped = peak_deviation(track_unshaped, loc)
+    let peak_impulse  = peak_deviation(track_impulse, loc)
+    let peak_tots     = peak_deviation(track_tots, loc)
 
     // ── (f) Error budget ──────────────────────────────────────────────────────────
     //
