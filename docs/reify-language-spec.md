@@ -584,6 +584,28 @@ fn keep<T: Solid>(x: T) -> T { x }   // concrete arg must satisfy Solid
 
 **Permissive generic body checking:** Inside a generic function body, a value whose type is a type parameter (`Type::TypeParam`) acts as a **resolution wildcard** -- builtin and operator calls on it are not eagerly rejected at compile time, mirroring how trait-object-typed values are handled. This is necessary for field-compositing generics such as `constant_field` (where `fn_field(|p| value)` is called with `value : C`, a type-param-typed value). Full bounded-operation licensing (where-clauses that license specific operations on a bounded type parameter) is out of scope (§11).
 
+**Dimension-kinded type parameters:** The identifier `Dimension` may appear as a **built-in kind-bound** on a function type parameter: `Q: Dimension`. This is not a user trait (it does not live in the trait registry); it marks `Q` as *dimension-kinded*, meaning `Q` may appear in a **dimension slot** -- `Scalar<Q>`, `Vector3<Q>`, or `Point3<Q>`. Call-site inference binds `Q` to the concrete dimension of the supplied scalar argument's quantity and substitutes it into the return type, so the same generic function applies at any dimension.
+
+```
+fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }
+
+scale_q(10mm, 3.0)   // infers Q = LENGTH;   result type Scalar<LENGTH>   →  30 mm
+scale_q(5MPa, 2.0)   // infers Q = PRESSURE; result type Scalar<PRESSURE>  →  10 MPa
+```
+
+Ordinary type params and dimension-kinded params may appear together:
+
+```
+// D is an ordinary type param; Q is dimension-kinded
+fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>)
+    -> Field<D, Scalar<Q>>
+{
+    fn_field(|p| clamp(sample(f, p), lo, hi))
+}
+```
+
+Using a non-dimension-kinded type parameter in a dimension slot (`Scalar<T>` where `T` has no `Dimension` bound), or using a dimension-kinded parameter as an ordinary type (bare `Q` in a non-dimension position), is a kind misuse and emits `E_DIM_PARAM_KIND`. Dimension-param type arguments are resolved at compile time and erased before evaluation, following the same erasure rule as ordinary type parameters.
+
 ### 3.10 Determinacy and Types
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are written as plain `Length`, `Force`, etc. Determinacy (`undef` / constrained / `auto` / determined) is a property of the parameter tracked by the design system, not part of the type.
