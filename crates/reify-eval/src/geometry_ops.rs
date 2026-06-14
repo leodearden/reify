@@ -10161,6 +10161,331 @@ mod tests {
         );
     }
 
+    // ── Draft eval-arm: faces resolution + anti-zero + 3-arg back-compat ──
+
+    /// Helper: build a `Value::GeometryHandle` sub-handle with the given
+    /// kernel handle id, using a fixed test realization_ref and hash.
+    fn geometry_handle_value(kernel_handle: GeometryHandleId) -> reify_ir::Value {
+        reify_ir::Value::GeometryHandle {
+            realization_ref: reify_core::identity::RealizationNodeId::new("test-solid", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle,
+        }
+    }
+
+    /// Helper: build a `CompiledExpr` literal that evaluates to a
+    /// `Value::List` of `Value::GeometryHandle` sub-handles.
+    fn geometry_handle_list_literal(handles: Vec<GeometryHandleId>) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(handles.into_iter().map(geometry_handle_value).collect()),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        )
+    }
+
+    /// (a) 4-arg draft: a "faces" selector that evaluates to a List of
+    /// `Value::GeometryHandle` sub-handles threads the canonical face ids
+    /// (ascending kernel_handle order, deduped) onto
+    /// `GeometryOp::Draft.faces`. Supplies two handles in REVERSE order so
+    /// the canonical-sort is observable (h7 < h42 → sorted [7, 42]).
+    #[test]
+    fn compile_geometry_op_draft_4arg_faces_threads_canonical_handles() {
+        // step_handles[0] = target solid; step_handles.last() = plane
+        // (the Draft eval arm resolves the plane via step_handles.last()).
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                (
+                    "faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Draft { target, faces, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert_eq!(
+                    faces,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "faces must be canonically sorted (ascending kernel_handle id), \
+                     got {:?}",
+                    faces
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Draft) for 4-arg draft with curated faces, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-faces draft must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) ANTI-ZERO-FACES: a 4-arg Draft whose "faces" selector is PRESENT
+    /// but evaluates to an empty List must NOT silently fall through to the
+    /// all-faces path. `compile_geometry_op` returns `Err` and pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`.
+    /// Closes the task-3295 fake-done trap for Draft.
+    #[test]
+    fn compile_geometry_op_draft_empty_face_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), empty_list_literal()),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present face selector resolving to zero faces must Err (never \
+             fall through to all-faces), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (c) 3-arg back-compat: a Draft with NO "faces" arg lowers to
+    /// `GeometryOp::Draft{faces: vec![], ..}` (the all-faces path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately
+    /// all-draftable-faces, distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_draft_3arg_no_faces_arg_is_all_faces_back_compat() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Draft { target, faces, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    faces.is_empty(),
+                    "3-arg draft (no faces arg) must lower to empty faces \
+                     (all-faces back-compat), got {:?}",
+                    faces
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Draft) for 3-arg draft, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "3-arg draft must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) MALFORMED ELEMENT: a 4-arg Draft whose "faces" selector resolves
+    /// to a List containing a NON-handle element must `Err` on the bad
+    /// element rather than silently drafting only the surviving handle
+    /// subset. A malformed element is distinct from an empty selection, so
+    /// it must NOT trip EmptyEdgeSelection.
+    #[test]
+    fn compile_geometry_op_draft_malformed_element_errors_not_empty_selection() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        // "faces" resolves to a List with a non-handle element (a bare Real)
+        let malformed_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), malformed_selector),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a selector with a non-handle element must Err (never silently \
+                 draft the surviving subset), got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("not a Geometry sub-handle"),
+            "diagnostic must flag the non-handle element, got: {msg:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a malformed-element selector must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (e) NON-LIST SELECTOR: a 4-arg Draft whose "faces" selector evaluates
+    /// to a non-List value (e.g., `Value::Undef` on the legacy pipeline)
+    /// must return a user-actionable `Err` and must NOT emit
+    /// `EmptyEdgeSelection` (that would false-positive on every legacy miss).
+    #[test]
+    fn compile_geometry_op_draft_legacy_selector_unresolved_is_user_actionable() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        // "faces" evaluates to `Value::Undef` — the legacy-pipeline state
+        // where the selector has not yet resolved.
+        let unresolved_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), unresolved_selector),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "an unresolved (non-List) faces selector must Err (stays \
+                 Undef for future in-loop resolution), got Ok({:?})",
+                other
+            ),
+        };
+        // User-actionable: names the 4-arg call form and points at the
+        // 3-arg all-faces fallback.
+        assert!(
+            msg.contains("draft(solid, faces, angle, neutral_plane)"),
+            "diagnostic must name the 4-arg call form, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("3-arg draft(solid, angle, neutral_plane)"),
+            "diagnostic must point the user at the 3-arg all-faces fallback, \
+             got: {msg:?}"
+        );
+        // A non-List is NOT an empty selection — must never trip anti-zero
+        // guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "an unresolved (non-List) selector must NOT emit EmptyEdgeSelection, \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
         let step_handles = vec![GeometryHandleId(1)];
