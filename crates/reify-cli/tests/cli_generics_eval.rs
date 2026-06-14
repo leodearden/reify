@@ -76,6 +76,52 @@ fn eval_container_example_b2() {
     );
 }
 
+/// B9: `reify eval examples/generics/dim_param.ri` succeeds with BOTH dimensions.
+///
+/// The SAME generic fn `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q>`
+/// is applied at LENGTH (`scale_q(10mm, 3.0) == 30mm`) and PRESSURE
+/// (`scale_q(5MPa, 2.0) == 10MPa`), Q bound per-call, the return scalar
+/// carrying the bound dimension.  This is the PRD §1 / §4.4 D8 / §8 B9 signal.
+///
+/// The constraint gate is the STRONG B9 check: both the LENGTH and PRESSURE
+/// constraints must pass (`reify check` exit 0 + "All constraints satisfied.").
+/// A mis-substituted result type (dimension-mismatch) or unbound ScalarParam
+/// (poisoned call) would fail the check → this test is RED until step-10 creates
+/// the example file.
+///
+/// The pressure value is NOT asserted as a stdout substring — pressure scalars
+/// display in SI-base form (`kg/(m·s²)`, not "Pa" or "MPa") — the constraint
+/// window gates it instead.
+///
+/// RED until step-10 creates examples/generics/dim_param.ri.
+#[test]
+fn eval_dim_param_example_b9() {
+    let path = common::example_path("generics/dim_param.ri");
+
+    // `reify check` must exit 0 AND report all constraints satisfied (both dims).
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+    assert!(
+        status.success(),
+        "reify check generics/dim_param.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "stdout should contain 'All constraints satisfied.' (both LENGTH and PRESSURE \
+         constraints must hold); got: {stdout}\nstderr: {stderr}"
+    );
+
+    // `reify eval` must exit 0 AND contain the LENGTH result "0.03 m".
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+    assert!(
+        status.success(),
+        "reify eval generics/dim_param.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("0.03 m"),
+        "stdout should contain '0.03 m' (scale_q(10mm, 3.0)); got: {stdout}\nstderr: {stderr}"
+    );
+}
+
 /// B5: `reify eval examples/generics/unbound_param.ri` succeeds and stdout
 /// contains the Real value `42.5`, exercising that a nested unbound type-param D
 /// inside `Field<D, C>` is TOLERATED (no `E_FN_TYPE_ARG_UNRESOLVED`).
