@@ -47,19 +47,19 @@
 //      analogous alias makes sense (Mechanism is a structural type, not a
 //      scalar dimension) — same placeholder-with-TODO pattern; the analogous
 //      `LoadCase.loads` placeholder was since tightened (task ζ/4444).
-//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3`, `Vec3`, and `LocationId` are
-//      all aliased to `Real` (lines 67-86). Because all three resolve to the
-//      identical underlying type, the typechecker currently provides ZERO
-//      nominal type-checking between them — the compiler will silently accept
-//      a `Pose3` value where a `LocationId` index is expected, or a `Vec3`
-//      displacement where a `Pose3` pose is required. This is a known
-//      placeholder trade-off: the geometry/pose PRD (not yet landed) will
-//      replace these aliases with proper record types, at which point
-//      call-site type confusion becomes a compile error. Until then, the
-//      hazard is documented rather than enforced — the three TODO(…-type)
-//      comments on each alias name the owning PRD and serve as the retarget
-//      hooks. No α/η-phase consumer is expected to mix these types at
-//      runtime; the risk is low and closes when the geometry/pose PRD lands.
+//   3. TYPE-ALIAS COLLAPSE (η-phase): `Pose3` and `LocationId` are aliased to
+//      `Real` (lines 87 and 106). `Vec3` is now `Vector3<Length>` (tightened by
+//      task #4575, per affine-map-type.md §4.2) and is nominally distinct from
+//      Real/Pose3/LocationId. Pose3 and LocationId remain Real placeholders:
+//      the typechecker still provides ZERO nominal checking between them — the
+//      compiler will silently accept a `Pose3` value where a `LocationId` index
+//      is expected. This is a known placeholder trade-off: the geometry/pose PRD
+//      (not yet landed, owned by #4577) will replace these two aliases with
+//      proper record types, at which point call-site type confusion becomes a
+//      compile error. Until then, the hazard is documented rather than enforced
+//      — the two remaining TODO(…-type) comments name the owning PRD and serve
+//      as retarget hooks. No α/η-phase consumer is expected to mix these types
+//      at runtime; the risk is low and closes when the geometry/pose PRD lands.
 
 // ── Type aliases ──────────────────────────────────────────────────────────
 
@@ -86,14 +86,15 @@ pub type JointValue = Real
 // that PRD lands.
 pub type Pose3 = Real
 
-// Vec3: 3-D Euclidean vector (vibration displacement or offset). Currently
-// aliased to `Real` as the geometry/pose PRD (which owns the proper Vec3
-// type) has not landed yet. Same placeholder convention as `pub type
-// JointValue = Real` above.
-//
-// TODO(vec3-type, #4575): retarget to the geometry/pose PRD's `Vec3` type when
-// that PRD lands.
-pub type Vec3 = Real
+// Vec3: 3-D Euclidean vector (vibration displacement, joint axis direction, or
+// spatial offset). Now the real 3-vector surface type `Vector3<Length>` per
+// affine-map-type.md §4.2 and the established stdlib convention (fdm.ri:112
+// `build_direction : Vector3<Length>`, constitutive.ri x/y/z_axis : Vector3<Length>).
+// Tightened from the `Real` placeholder by task #4575.
+// Note: Vector3<Q> requires a concrete Dimension; Length is the canonical choice
+// for trajectory and kinematic axis parameters (dimension is observationally
+// irrelevant for normalized directions, but Length is required syntactically).
+pub type Vec3 = Vector3<Length>
 
 // LocationId: identifier for a named monitoring location on a mechanism
 // link (indexes into the per-location inner lists on EndEffectorTrack).
