@@ -1,6 +1,9 @@
 pub(super) mod checker;
 use checker::*;
 
+pub(super) mod sub_component_validation;
+pub(crate) use sub_component_validation::check_sub_structure_existence;
+
 use super::*;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,

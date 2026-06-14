@@ -967,9 +967,14 @@ fn sub_compiles_into_template_sub_components() {
 /// the parent's scope for name resolution.
 #[test]
 fn sub_args_reference_parent_params() {
+    // Rib is defined in the same module so the compile-time existence check
+    // (task 4528) accepts the sub declaration without emitting an error.
     let source = r#"structure S {
     param t: Length = 5mm
     sub rib = Rib(height: t * 0.8)
+}
+structure Rib {
+    param height: Length = 1mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sub_ref"));
     assert!(
@@ -1068,6 +1073,8 @@ fn e2e_stdlib_function_in_let_binding() {
 /// Comprehensive: import + sub-structure + stdlib function in one module.
 #[test]
 fn comprehensive_all_three_features() {
+    // Base is defined in the same module so the compile-time existence check
+    // (task 4528) accepts the sub declaration without emitting an error.
     let source = r#"import std.math
 
 structure Bracket {
@@ -1076,6 +1083,9 @@ structure Bracket {
     let diag = sqrt(w * w + h * h)
     sub base = Base(width: w)
     constraint diag > 0mm
+}
+structure Base {
+    param width: Length = 1mm
 }"#;
     let parsed = reify_syntax::parse(
         source,
