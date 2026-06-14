@@ -1115,11 +1115,10 @@ impl<'a> Lowering<'a> {
                 if child.kind() == "fn_param_list" {
                     let mut param_cursor = child.walk();
                     for param_child in child.children(&mut param_cursor) {
-                        if param_child.kind() == "fn_param" {
-                            if let Some(p) = self.lower_fn_param(param_child) {
+                        if param_child.kind() == "fn_param"
+                            && let Some(p) = self.lower_fn_param(param_child) {
                                 params.push(p);
                             }
-                        }
                     }
                     break;
                 }
@@ -1135,11 +1134,10 @@ impl<'a> Lowering<'a> {
             let mut fields = Vec::new();
             let mut cursor = dof_node.walk();
             for child in dof_node.children(&mut cursor) {
-                if child.kind() == "joint_dof_field" {
-                    if let Some(f) = self.lower_joint_dof_field(child) {
+                if child.kind() == "joint_dof_field"
+                    && let Some(f) = self.lower_joint_dof_field(child) {
                         fields.push(f);
                     }
-                }
             }
             fields
         } else {
