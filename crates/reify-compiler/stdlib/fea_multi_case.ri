@@ -302,9 +302,14 @@ structure def PointLoad : Load {
     // (task 3015's non-colinear superposition). Inserting `direction` first
     // would shift `point`/`force` and silently mis-bind every existing caller.
     //
-    // TODO(vec3-type, #4575): tighten to `Vec3` once a real 3-vector type exists.
-    // Vec3 is currently a scalar alias (trajectory.ri:96) and is declared in
-    // std.trajectory which loads after std.fea — both make it unusable here.
+    // `direction` stays `List<Real>` — NOT `Vec3`. Vec3 is now `Vector3<Length>`
+    // (tightened by task #4575), which is the WRONG type here: PointLoad direction
+    // is a DIMENSIONLESS unit-direction vector consumed component-wise by
+    // reify-eval (elastic_static.rs:1769) as `Value::List`. The honest future
+    // target is `Vector3<Dimensionless>` + eval marshalling, mirroring the
+    // modal-direction precedent (`Vector3<Dimensionless>` in modal_analysis.ri).
+    // That migration is out of scope for #4575 (positive Vec3 surface only) and
+    // is left as future work alongside `Gravity.direction` below.
     param direction : List<Real> = [0.0, 0.0, -1.0]
 }
 
@@ -429,8 +434,13 @@ structure def BodyForce : Load {
 //                  (standard Earth surface gravity, ISO 80000-3).
 //                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
 //   `direction`  — unit vector pointing in the direction gravity acts.
-//                  `List<Real>` is a placeholder for `Vec3` until a real
-//                  dimensionless 3-vector type is available (TODO(vec3-type, #4575)).
+//                  `List<Real>` stays as-is — NOT `Vec3`. Vec3 is now
+//                  `Vector3<Length>` (tightened by task #4575), which is the
+//                  WRONG type here: gravity direction is a DIMENSIONLESS unit
+//                  vector consumed component-wise by reify-eval (elastic_static.rs:3234)
+//                  as `Value::List`. Honest future target: `Vector3<Dimensionless>`
+//                  + eval marshalling (cf. `PointLoad.direction` above and the
+//                  modal-direction `Vector3<Dimensionless>` precedent). Deferred.
 //                  Default [0, 0, -1] = −Z (canonical downward direction).
 //                  Caller is responsible for supplying a unit vector; non-unit
 //                  vectors silently scale effective gravity by |direction|.
