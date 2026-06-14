@@ -86,30 +86,51 @@ pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
     )
 }
 
-/// Classify the declared DOF field types into their `(rot, trans)` kind
-/// contribution, together with the list of types that could not be classified.
+/// Classify a single resolved DOF field `Type` into its `(rot, trans)` kind
+/// contribution, or `None` if it has no geometric joint-DOF kind:
+/// - `Scalar<Angle>` → `(1, 0)` (1 rotational),
+/// - `Scalar<Length>` → `(0, 1)` (1 translational),
+/// - `Orientation(_)` → `(3, 0)` (a free spherical orientation),
+/// - anything else → `None` — a DOF field that is neither an angle, a length,
+///   nor an orientation has no kind to match against the residual.
 ///
-/// Each resolved declared DOF `Type` maps to:
-/// - `Scalar<Angle>` → 1 rotational,
-/// - `Scalar<Length>` → 1 translational,
-/// - `Orientation(_)` → 3 rotational (a free spherical orientation),
-/// - anything else → contributes `(0, 0)` AND is appended to the returned
-///   unclassified list, so the caller can surface it. A DOF field that is
-///   neither an angle, a length, nor an orientation has no geometric kind to
-///   match against the residual.
-pub(crate) fn declared_kinds(declared: &[Type]) -> (DofKinds, Vec<Type>) {
+/// The single source of truth for DOF-kind classification, shared by
+/// [`declared_kinds`] (which sums the classifiable contributions) and the
+/// compile-time wiring in `compile_builder/entities_phase.rs` (which surfaces
+/// each `None` as a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
+/// rather than silently folding it into a confusing `E_JOINT_DOF_MISMATCH`).
+pub(crate) fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
+    match ty {
+        Type::Scalar { dimension } if *dimension == DimensionVector::ANGLE => {
+            Some(DofKinds::new(1, 0))
+        }
+        Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => {
+            Some(DofKinds::new(0, 1))
+        }
+        Type::Orientation(_) => Some(DofKinds::new(3, 0)),
+        _ => None,
+    }
+}
+
+/// Sum the declared DOF field types' `(rot, trans)` kind contributions via
+/// [`dof_kind_of`].
+///
+/// Unclassifiable types (those for which [`dof_kind_of`] is `None`) contribute
+/// nothing here; they are surfaced separately, per-field, by the caller (which
+/// holds the field name and span). The caller also GATES the count/kind verdict
+/// on every DOF being classifiable — an unclassifiable `(0, 0)` contribution
+/// would otherwise make the residual comparison meaningless — so this function
+/// stays a pure sum with no diagnostic responsibility.
+pub(crate) fn declared_kinds(declared: &[Type]) -> DofKinds {
     let mut rot: u32 = 0;
     let mut trans: u32 = 0;
-    let mut unclassified: Vec<Type> = Vec::new();
     for ty in declared {
-        match ty {
-            Type::Scalar { dimension } if *dimension == DimensionVector::ANGLE => rot += 1,
-            Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => trans += 1,
-            Type::Orientation(_) => rot += 3,
-            other => unclassified.push(other.clone()),
+        if let Some(k) = dof_kind_of(ty) {
+            rot += k.rot;
+            trans += k.trans;
         }
     }
-    (DofKinds::new(rot, trans), unclassified)
+    DofKinds::new(rot, trans)
 }
 
 /// Render a `DofKinds` as the human-readable declared-DOF phrase used in the
@@ -290,61 +311,70 @@ mod tests {
         assert_eq!(residual_kinds(&body), DofKinds::new(1, 1));
     }
 
-    // ── declared_kinds (step-7 RED / step-8 GREEN) ───────────────────────────
+    // ── dof_kind_of / declared_kinds (step-7 RED / step-8 GREEN) ─────────────
 
-    /// A `Scalar<Angle>` DOF field contributes 1 rotational freedom; no
-    /// unclassifiable types are surfaced.
+    /// `dof_kind_of` classifies the three valid DOF kinds and rejects everything
+    /// else with `None` — the single classifier shared by `declared_kinds` (sum)
+    /// and the caller's per-field surfacing.
+    #[test]
+    fn dof_kind_of_classifies_the_three_valid_kinds() {
+        assert_eq!(dof_kind_of(&Type::angle()), Some(DofKinds::new(1, 0)));
+        assert_eq!(dof_kind_of(&Type::length()), Some(DofKinds::new(0, 1)));
+        assert_eq!(dof_kind_of(&Type::Orientation(3)), Some(DofKinds::new(3, 0)));
+    }
+
+    /// An unclassifiable declared type (a dimensionless `Scalar`, or a datum like
+    /// `Axis`) has no geometric DOF kind → `None`. The caller surfaces each such
+    /// field with a targeted diagnostic instead of folding it into the residual.
+    #[test]
+    fn dof_kind_of_unclassifiable_is_none() {
+        assert_eq!(dof_kind_of(&Type::dimensionless_scalar()), None);
+        assert_eq!(dof_kind_of(&Type::Axis), None);
+    }
+
+    /// A `Scalar<Angle>` DOF field contributes 1 rotational freedom.
     #[test]
     fn declared_kinds_angle_is_one_rotational() {
-        let (kinds, unclassified) = declared_kinds(&[Type::angle()]);
-        assert_eq!(kinds, DofKinds::new(1, 0));
-        assert!(unclassified.is_empty());
+        assert_eq!(declared_kinds(&[Type::angle()]), DofKinds::new(1, 0));
     }
 
     /// A `Scalar<Length>` DOF field contributes 1 translational freedom.
     #[test]
     fn declared_kinds_length_is_one_translational() {
-        let (kinds, unclassified) = declared_kinds(&[Type::length()]);
-        assert_eq!(kinds, DofKinds::new(0, 1));
-        assert!(unclassified.is_empty());
+        assert_eq!(declared_kinds(&[Type::length()]), DofKinds::new(0, 1));
     }
 
     /// The record form `{ angle: Angle, travel: Length }` sums to (1 rot, 1 trans)
     /// — the cylindrical pair (boundary B4).
     #[test]
     fn declared_kinds_angle_and_length_sum() {
-        let (kinds, unclassified) = declared_kinds(&[Type::angle(), Type::length()]);
-        assert_eq!(kinds, DofKinds::new(1, 1));
-        assert!(unclassified.is_empty());
+        assert_eq!(
+            declared_kinds(&[Type::angle(), Type::length()]),
+            DofKinds::new(1, 1)
+        );
     }
 
     /// An `Orientation(_)` DOF field declares a full 3-rotational freedom (a free
     /// spherical/ball orientation).
     #[test]
     fn declared_kinds_orientation_is_three_rotational() {
-        let (kinds, unclassified) = declared_kinds(&[Type::Orientation(3)]);
-        assert_eq!(kinds, DofKinds::new(3, 0));
-        assert!(unclassified.is_empty());
+        assert_eq!(declared_kinds(&[Type::Orientation(3)]), DofKinds::new(3, 0));
     }
 
-    /// An unclassifiable declared type (a `Scalar` whose dimension is neither
-    /// `Angle` nor `Length` — here dimensionless) contributes (0, 0) AND is
-    /// surfaced in the returned unclassified list so the caller can diagnose it.
+    /// Unclassifiable types contribute nothing to the sum (they are surfaced
+    /// per-field by the caller, not folded into the kinds here): a lone
+    /// dimensionless scalar sums to (0, 0), and a mix keeps only the classifiable
+    /// `angle` contribution.
     #[test]
-    fn declared_kinds_unclassifiable_contributes_zero_and_is_surfaced() {
-        let (kinds, unclassified) = declared_kinds(&[Type::dimensionless_scalar()]);
-        assert_eq!(kinds, DofKinds::new(0, 0));
-        assert_eq!(unclassified, vec![Type::dimensionless_scalar()]);
-    }
-
-    /// A mix of classifiable and unclassifiable types: the classifiable kinds are
-    /// summed and ONLY the unclassifiable one is surfaced.
-    #[test]
-    fn declared_kinds_mixed_sums_classifiable_and_surfaces_rest() {
-        let (kinds, unclassified) =
-            declared_kinds(&[Type::angle(), Type::dimensionless_scalar()]);
-        assert_eq!(kinds, DofKinds::new(1, 0));
-        assert_eq!(unclassified, vec![Type::dimensionless_scalar()]);
+    fn declared_kinds_skips_unclassifiable_in_the_sum() {
+        assert_eq!(
+            declared_kinds(&[Type::dimensionless_scalar()]),
+            DofKinds::new(0, 0)
+        );
+        assert_eq!(
+            declared_kinds(&[Type::angle(), Type::dimensionless_scalar()]),
+            DofKinds::new(1, 0)
+        );
     }
 
     // ── check_joint_dof (step-9 RED / step-10 GREEN) ─────────────────────────

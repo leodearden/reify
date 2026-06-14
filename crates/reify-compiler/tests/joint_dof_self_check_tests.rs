@@ -242,3 +242,52 @@ fn range_dimension_match_angle_dof_angle_range_is_clean() {
         range_dim_errors(&module)
     );
 }
+
+// ── Unclassifiable DOF field type ────────────────────────────────────────────
+
+/// The `E_ARG_TYPE_MISMATCH` diagnostics naming a DOF field whose declared type
+/// has no geometric joint-DOF kind (the per-field surfacing — distinct from the
+/// `in <range>` dimension check, which also uses `ArgTypeMismatch` but whose
+/// message mentions `range`).
+fn dof_kind_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+                && d.message.contains("not a valid joint DOF kind")
+        })
+        .collect()
+}
+
+/// A DOF declared with a type that is neither `Angle`, `Length`, nor
+/// `Orientation` (here a datum `Axis`) has no geometric kind to match against the
+/// residual. β surfaces this per-field with a targeted `E_ARG_TYPE_MISMATCH`
+/// naming the offending field — and SUPPRESSES the count/kind verdict, since a
+/// `(0, 0)` contribution would otherwise emit a confusing `E_JOINT_DOF_MISMATCH`
+/// that never names the real problem.
+#[test]
+fn unclassifiable_dof_type_is_surfaced_per_field_and_suppresses_the_verdict() {
+    let module =
+        compile_source_with_stdlib("joint j(a: Axis, b: Axis) with foo: Axis = concentric(a, b)");
+    let errs = dof_kind_errors(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "a DOF declared `foo: Axis` must draw exactly one targeted \
+         not-a-valid-DOF-kind error.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+    assert!(
+        errs[0].message.contains("foo"),
+        "the diagnostic must name the offending DOF field `foo`: {}",
+        errs[0].message
+    );
+    assert!(
+        joint_dof_errors(&module).is_empty(),
+        "the unclassifiable-DOF diagnostic must REPLACE (not accompany) a confusing \
+         JointDofMismatch: {:#?}",
+        joint_dof_errors(&module)
+    );
+}

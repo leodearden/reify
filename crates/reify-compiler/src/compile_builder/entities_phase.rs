@@ -375,13 +375,41 @@ fn compile_joint_self_check(
         }
     }
 
-    // (4) Compare declared free DOF against the body's geometric residual.
-    let residual = crate::joint_self_check::residual_kinds(&compiled_body);
-    let (declared, _unclassified) = crate::joint_self_check::declared_kinds(&declared_types);
-    if let Some(diag) =
-        crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
-    {
-        diagnostics.push(diag);
+    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). A gradualism gate
+    // stands in front of it: a declared DOF field whose resolved type has no
+    // geometric kind (neither Angle, Length, nor Orientation) is surfaced here,
+    // per-field, with a targeted `E_ARG_TYPE_MISMATCH` naming the offending
+    // field — and gates the verdict off, since its `(0, 0)` contribution would
+    // otherwise make the residual comparison meaningless (and at best emit a
+    // confusing `E_JOINT_DOF_MISMATCH` that never names the real problem). A
+    // `Type::Error` DOF (already diagnosed by the resolver) gates the verdict
+    // too, but draws no second diagnostic (anti-cascade).
+    let mut skip_verdict = false;
+    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+        if *declared_ty == Type::Error {
+            skip_verdict = true; // resolver already diagnosed — no second diagnostic
+        } else if crate::joint_self_check::dof_kind_of(declared_ty).is_none() {
+            skip_verdict = true;
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint `{}` DOF `{}`: type `{}` is not a valid joint DOF kind \
+                     (expected Angle, Length, or Orientation)",
+                    joint.name, field.name, declared_ty
+                ))
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
+            );
+        }
+    }
+
+    if !skip_verdict {
+        let residual = crate::joint_self_check::residual_kinds(&compiled_body);
+        let declared = crate::joint_self_check::declared_kinds(&declared_types);
+        if let Some(diag) =
+            crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
+        {
+            diagnostics.push(diag);
+        }
     }
 }
 
