@@ -3278,29 +3278,47 @@ pub(crate) fn try_eval_feature_datum_projection(
     let handle = match resolve_selector_target(object, values) {
         Some(target) => target.kernel_handle,
         None => {
-            // The receiver did not resolve to a realized geometry handle. If it
-            // STATICALLY types as a topology selection (`Type::Selector(_)` /
-            // `Type::AnySelector`), the compiler accepted the projection but the
-            // selector→sub-handle resolution is not yet wired here: emit an
-            // explicit select-a-subfeature diagnostic instead of leaving the cell a
-            // silent `Value::Undef` (the clean-compile-then-silent-Undef failure
-            // mode). Any OTHER unresolved receiver — a β datum such as `axis.dir`,
-            // or a not-yet-hydrated cell — is not ours, so return None and let the
-            // pure `eval_datum_projection` path own it.
+            // The receiver did not resolve to a realized geometry handle. Check
+            // whether the receiver cell holds a hydrated `Value::Selector` (the
+            // common post-hydration case where the topology-selector pass has
+            // already written the cell before this feature-datum pass runs).
             if matches!(
                 object.result_type,
                 reify_core::ty::Type::Selector(_) | reify_core::ty::Type::AnySelector
             ) {
+                // Try to read the hydrated Value::Selector from the values map.
+                let maybe_sv = match &object.kind {
+                    reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+                        Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(sv) = maybe_sv {
+                    return Some(eval_selector_feature_datum(
+                        &sv,
+                        member,
+                        kernel,
+                        swept_kinds,
+                        diagnostics,
+                    ));
+                }
+                // No hydrated Value::Selector in the cell: static-type fallback —
+                // emit an explicit select-a-subfeature diagnostic instead of
+                // leaving the cell a silent `Value::Undef`.
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "feature→datum projection '.{member}' over a topology selector is \
-                         not yet supported; select a single sub-feature (e.g. `single(...)`) \
-                         or project from the realized feature instead"
+                        "feature→datum projection '.{member}' over a topology selector \
+                         requires a resolved selector; select a single sub-feature \
+                         (e.g. `single(...)`) or project from the realized feature instead"
                     ))
                     .with_code(reify_core::DiagnosticCode::FeatureDatumAmbiguous),
                 );
                 return Some(reify_ir::Value::Undef);
             }
+            // Not a selector receiver — β datum such as `axis.dir`, or a
+            // not-yet-hydrated cell. Return None and let the pure
+            // `eval_datum_projection` path own it.
             return None;
         }
     };
@@ -3312,6 +3330,76 @@ pub(crate) fn try_eval_feature_datum_projection(
         member,
         diagnostics,
     ))
+}
+
+/// Resolve a hydrated `Value::Selector` to its sub-handle ids via
+/// [`crate::topology_selectors::resolve`], build a per-handle
+/// [`crate::feature_datum::FeatureDatumBundle`] for each, union the four groups
+/// across all handles, re-dedup the union at the confusion-floor tolerance
+/// (so coaxial/coplanar/coincident datums from different sub-handles collapse to
+/// one), and finally project via [`crate::feature_datum::feature_datum_projection`]
+/// — the same select-one-or-diagnose refinement the `GeometryHandle` arm uses.
+///
+/// On `topology_selectors::resolve` returning `Err`, pushes a `Severity::Warning`
+/// and returns `Value::Undef` (mirroring `try_eval_resolve_selector` @3471-3476).
+///
+/// Called from `try_eval_feature_datum_projection` in the `None` branch of
+/// `resolve_selector_target` when a hydrated `Value::Selector` cell is present.
+fn eval_selector_feature_datum(
+    sv: &reify_ir::value::SelectorValue,
+    member: &str,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    // (a) Resolve the selector to a list of sub-handle ids.
+    let ids = match crate::topology_selectors::resolve(sv, kernel, diagnostics) {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "feature→datum projection over selector: kernel error resolving selector: \
+                 {err}; cell left at Undef"
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+
+    // (b) Union per-handle FeatureDatumBundles into one combined bundle.
+    let mut combined = crate::feature_datum::FeatureDatumBundle::default();
+    for id in ids {
+        let b = crate::feature_datum::feature_datum_bundle(id, kernel, swept_kinds.lookup(id));
+        combined.axes.extend(b.axes);
+        combined.planes.extend(b.planes);
+        combined.points.extend(b.points);
+        combined.directions.extend(b.directions);
+    }
+
+    // (c) Re-dedup each group at the confusion-floor tolerance so N coaxial /
+    // coplanar / coincident sub-handle datums collapse to one.
+    //
+    // V1 DESIGN NOTE — floor-only tolerance (deliberate):
+    // `dedup_tolerance(0.0, 0.0)` uses the geometric confusion floor with no
+    // per-sub-shape local modelling tolerance added.  The `Datum` carrier that
+    // flows through `feature_datum_bundle` does not retain each sub-shape's
+    // local lin_tol, so we cannot fold per-handle tolerances here without a
+    // Datum API change.  For clean analytic primitives (all local tols at the
+    // floor) this is equivalent to `max(local_tols)`, making it correct for the
+    // v1 target.  A coarse/imprecise sub-shape whose local tol exceeds the
+    // floor could in theory yield a spurious FeatureDatumAmbiguous where the
+    // single-GeometryHandle arm would merge; that narrowing is accepted as a v1
+    // limitation and documented here so future readers do not mistake it for a
+    // bug.  Threading per-handle lin_tol into the cross-handle re-dedup (e.g.
+    // fold the max of per-handle bundle lin_tols) would fix it at the cost of
+    // a `FeatureDatumBundle::lin_tol` field — left to a follow-up if coarse
+    // models are encountered in practice.
+    let tol = crate::feature_datum::dedup_tolerance(0.0, 0.0);
+    combined.axes = crate::feature_datum::dedup_datums(combined.axes, tol);
+    combined.planes = crate::feature_datum::dedup_datums(combined.planes, tol);
+    combined.points = crate::feature_datum::dedup_datums(combined.points, tol);
+    combined.directions = crate::feature_datum::dedup_datums(combined.directions, tol);
+
+    // (d) Project: unique → datum Value; zero/many → FeatureDatumAmbiguous + Undef.
+    crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
@@ -20017,6 +20105,391 @@ mod tests {
         assert!(
             diagnostics.is_empty(),
             "declining to the pure path must emit no diagnostic; got {diagnostics:?}"
+        );
+    }
+
+    // ── feature→datum projection over a HYDRATED Selector receiver (task 4594) ─
+    //
+    // These tests verify the new `eval_selector_feature_datum` arm added to
+    // `try_eval_feature_datum_projection`: when the receiver cell holds a hydrated
+    // `Value::Selector`, the arm resolves it to sub-handles, unions the per-handle
+    // `FeatureDatumBundle`s, re-dedups across handles at the confusion-floor
+    // tolerance, and calls `feature_datum_projection` — the same select-one-or-
+    // diagnose refinement the GeometryHandle arm uses.
+
+    /// Assert that a `Value` is a `Value::Axis` lying on the world Z line
+    /// (origin x ≈ y ≈ 0, direction parallel to ±Z, |z| ≈ 1).
+    /// Mirrors `assert_value_axis_is_z_line` from feature_datum_tests.rs.
+    fn assert_value_axis_is_z_line(v: &reify_ir::Value) {
+        match v {
+            reify_ir::Value::Axis { origin, direction } => {
+                let o = match origin.as_ref() {
+                    reify_ir::Value::Point(c) if c.len() == 3 => [
+                        c[0].as_f64().expect("axis origin x is numeric"),
+                        c[1].as_f64().expect("axis origin y is numeric"),
+                        c[2].as_f64().expect("axis origin z is numeric"),
+                    ],
+                    other => panic!("axis origin must be a 3-component Point; got {other:?}"),
+                };
+                let d = match direction.as_ref() {
+                    reify_ir::Value::Direction { x, y, z } => [*x, *y, *z],
+                    other => panic!("axis direction must be a Direction; got {other:?}"),
+                };
+                assert!(
+                    o[0].abs() < 1e-9 && o[1].abs() < 1e-9,
+                    "axis origin must lie on the world Z line; got {o:?}"
+                );
+                assert!(
+                    d[0].abs() < 1e-9 && d[1].abs() < 1e-9 && (d[2].abs() - 1.0).abs() < 1e-9,
+                    "axis direction must be parallel to ±Z; got {d:?}"
+                );
+            }
+            other => panic!("expected Value::Axis; got {other:?}"),
+        }
+    }
+
+    /// Build a `Value::Axis` along the world Z line at the given z-origin offset,
+    /// direction +Z.  Mirrors `axis_value` from feature_datum_tests.rs.
+    fn z_axis_value_at(z_origin: f64) -> reify_ir::Value {
+        reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(z_origin),
+            ])),
+            direction: Box::new(reify_ir::Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }),
+        }
+    }
+
+    /// `s.axis` where `s : FaceSelector` is backed by a hydrated `Value::Selector`
+    /// that `topology_selectors::resolve` expands to a single cylindrical face,
+    /// whose `FaceAnalyticDatum` is an Axis on the world-Z line, must evaluate to
+    /// `Some(Value::Axis{..})` on Z with zero `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED today: the existing stub returns `Some(Value::Undef)` + one
+    /// `FeatureDatumAmbiguous` error for ANY selector receiver — hydrated or not.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_resolves_single_cyl_face_to_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let cyl_face = reify_ir::GeometryHandleId(10);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:        extract_faces(parent)   → [cyl_face]
+        // feature_datum_bundle:    extract_faces(cyl_face) → [cyl_face]
+        // FaceAnalyticDatum(cyl_face)                      → Axis at z=0, dir +Z
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![cyl_face])
+            .with_extracted_faces(cyl_face, vec![cyl_face])
+            .with_face_analytic_datum_result(cyl_face, z_axis_value_at(0.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (single cyl face) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over a single coaxial face must emit zero \
+             FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector resolves to TWO coaxial cylindrical faces whose
+    /// analytic axes share the world-Z line at different origins must deduplicate
+    /// across sub-handles and return `Some(Value::Axis{..})` on Z with zero
+    /// `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED after step-2 (before step-4 dedup): without cross-handle
+    /// `dedup_datums` the combined bundle has `axes = [Z@0, Z@5]` (len 2), so
+    /// `feature_datum_projection` emits FeatureDatumAmbiguous + Undef.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_dedups_coaxial_faces_to_single_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let face_a = reify_ir::GeometryHandleId(10);
+        let face_b = reify_ir::GeometryHandleId(11);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:     extract_faces(parent) → [face_a, face_b]
+        // bundle(face_a):       extract_faces(face_a) → [face_a]
+        //                       FaceAnalyticDatum(face_a) → Axis at z=0, dir +Z
+        // bundle(face_b):       extract_faces(face_b) → [face_b]
+        //                       FaceAnalyticDatum(face_b) → Axis at z=5, dir +Z
+        // → two coaxial Z axes, perpendicular distance = 0 → dedup_datums merges to 1
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![face_a, face_b])
+            .with_extracted_faces(face_a, vec![face_a])
+            .with_extracted_faces(face_b, vec![face_b])
+            .with_face_analytic_datum_result(face_a, z_axis_value_at(0.0))
+            .with_face_analytic_datum_result(face_b, z_axis_value_at(5.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (two coaxial cyl faces) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over two coaxial faces must dedup to one axis \
+             and emit zero FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector resolves to TWO genuinely non-coaxial cylindrical
+    /// faces (one on Z, one on X) must NOT merge the axes and must emit exactly one
+    /// `FeatureDatumAmbiguous` error and return `Some(Value::Undef)`.
+    ///
+    /// This guards the most important regression: real ambiguity is still surfaced
+    /// even after the cross-handle dedup pass.  The dedup step merges *only* datums
+    /// that are geometrically equivalent; distinct axes must survive and produce a
+    /// diagnostic rather than silently picking one.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_ambiguous_non_coaxial_faces_emit_diagnostic()
+    {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let face_z = reify_ir::GeometryHandleId(10); // axis on +Z
+        let face_x = reify_ir::GeometryHandleId(11); // axis on +X (perpendicular to face_z)
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // An axis on +X, perpendicular to Z — not coaxial with the Z axis so
+        // dedup_datums will NOT merge the two.
+        let x_axis_value = reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            direction: Box::new(reify_ir::Value::Direction {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![face_z, face_x])
+            .with_extracted_faces(face_z, vec![face_z])
+            .with_extracted_faces(face_x, vec![face_x])
+            .with_face_analytic_datum_result(face_z, z_axis_value_at(0.0))
+            .with_face_analytic_datum_result(face_x, x_axis_value);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect("non-coaxial s.axis must yield Some(Value::Undef), not None");
+        assert!(
+            matches!(value, reify_ir::Value::Undef),
+            "non-coaxial s.axis must return Value::Undef; got {value:?}"
+        );
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert_eq!(
+            ambiguous_errors.len(),
+            1,
+            "non-coaxial s.axis must emit exactly one FeatureDatumAmbiguous error; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector's `topology_selectors::resolve` returns `Err`
+    /// (e.g. `extract_faces` on the parent handle fails) must push a
+    /// `Severity::Warning` and return `Some(Value::Undef)` — not a hard error, not
+    /// `None`.
+    ///
+    /// Mirrors the `try_eval_resolve_selector` Err handling precedent
+    /// (geometry_ops.rs `@try_eval_resolve_selector` Warning arm).
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_resolve_error_emits_warning_and_undef() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{Severity, Type, ValueCellId};
+        use reify_ir::QueryError;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // Inject an error so that extract_faces(parent) fails → resolve returns Err.
+        let mut kernel = MockGeometryKernel::new().with_extract_faces_error(
+            parent,
+            QueryError::QueryFailed("mock extract_faces failure for test".to_string()),
+        );
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "resolve-error s.axis must yield Some(Value::Undef), not None",
+        );
+        assert!(
+            matches!(value, reify_ir::Value::Undef),
+            "resolve-error s.axis must return Value::Undef; got {value:?}"
+        );
+
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "resolve-error s.axis must push at least one Severity::Warning diagnostic; \
+             got {diagnostics:?}"
         );
     }
 
