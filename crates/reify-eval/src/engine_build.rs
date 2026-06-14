@@ -2261,6 +2261,36 @@ impl Engine {
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // The public imperative build: realize geometry AND serialize the
+        // Phase-B product bodies into `geometry_output` (the single-output,
+        // format-from-a-flag path). Delegates to the shared realization worker
+        // with the Phase-B product export ENABLED.
+        self.build_with_geometry_output(module, format, true)
+    }
+
+    /// Internal realization worker shared by [`Self::build`] and
+    /// [`Self::build_outputs`] (io-export δ).
+    ///
+    /// `emit_geometry_output` controls ONLY the trailing Phase-B product-body
+    /// export: with `true` (the imperative [`Self::build`]) the product bodies
+    /// are serialized into [`BuildResult::geometry_output`]; with `false`
+    /// (`build_outputs`) that export is skipped and `geometry_output` is `None`.
+    /// Realization, `Value::GeometryHandle` hydration, `realization_handles`
+    /// population, and constraint checking are IDENTICAL on both paths — only the
+    /// final serialization differs. `build_outputs` needs the hydrated handles
+    /// but drives its own per-occurrence export, so the Phase-B export would be
+    /// redundant work and — under a recording kernel — a spurious extra
+    /// `export()` call that does not belong to any DSL `Output` occurrence.
+    ///
+    /// See [`Self::build`]'s doc comment for the four production-wiring contracts
+    /// (tolerance-promise diagnostics, per-realization demanded tolerance,
+    /// per-stage budget, `RealizationCache`) this worker threads.
+    fn build_with_geometry_output(
+        &mut self,
+        module: &CompiledModule,
+        format: ExportFormat,
+        emit_geometry_output: bool,
+    ) -> BuildResult {
         // Task ε (3436) step-12: reset the dispatch-count instrumentation
         // counter at the entry to every build/tessellate surface so a second
         // build of the same module reports its own per-build dispatch tally
@@ -2594,6 +2624,15 @@ impl Engine {
                     ));
                 }
                 None
+            } else if !emit_geometry_output {
+                // io-export δ realize-only path (`build_outputs`): realization +
+                // Value::GeometryHandle hydration above is everything the
+                // occurrence-driven export needs, so skip the Phase-B product
+                // export entirely. This both avoids redundant serialization work
+                // (the bytes would be discarded) and keeps a recording kernel's
+                // `export()` capture limited to the DSL-driven per-occurrence
+                // calls `build_outputs` issues itself.
+                None
             } else {
                 // T7 (task 3905) Phase-B export walk: collect placed-product
                 // BRep handles via the containment-tree surfacing walk, then
@@ -2826,6 +2865,162 @@ impl Engine {
             diagnostics,
             resolved_params: check_result.resolved_params,
         }
+    }
+
+    /// Occurrence-driven export driver (io-export δ, step-8): realize the module
+    /// once, then emit one file [`crate::ExportArtifact`] per realized `Output`
+    /// occurrence whose `format` and `path` come from the DSL.
+    ///
+    /// PRD: `docs/prds/v0_6/io-export-import-completion.md` §4.3/§7.3 (signals
+    /// B5/B6/B7). Unlike the imperative [`Self::build`] (one output, format from
+    /// a CLI flag), the *DSL* drives both the serializer (`STLOutput` →
+    /// `ExportFormat::Stl`, `STEPOutput` → `Step`, …) and the destination path.
+    ///
+    /// Pipeline:
+    /// 1. Reuse [`Self::build`] (with `ExportFormat::Step`) to realize geometry,
+    ///    hydrate `Value::GeometryHandle` cells, populate `realization_handles`,
+    ///    and run constraints. Its serialized `geometry_output` is discarded —
+    ///    export is driven by the recognized occurrences below, not that format.
+    /// 2. Walk `module.templates × sub_components` in declaration order. Each
+    ///    `sub`'s occurrence template is resolved module-first, then via the
+    ///    stdlib prelude ([`crate::engine_eval::find_template_with_prelude`]) —
+    ///    stdlib `Output` templates (`STLOutput` et al.) live in the prelude, not
+    ///    `CompiledModule::templates`. An occurrence is an `Output` iff it is an
+    ///    `EntityKind::Occurrence` AND its trait bounds transitively conform to
+    ///    `Output` (trait-bound conformance, not a name match, so user-defined
+    ///    Output occurrences work too).
+    /// 3. Read the per-instance export spec (`format`/`path`/`resolution`) off
+    ///    the elaborated `Value::StructureInstance` at `ValueCellId(template,
+    ///    sub)` via [`crate::tolerance_combine::extract_output_export_spec`].
+    /// 4. Resolve `subject` → live kernel handle via the sub's `subject` ARG (a
+    ///    `ValueRef` into the post-build hydrated values map).
+    /// 5. Resolve the destination path (design-relative / `--out-dir` override)
+    ///    via [`resolve_artifact_path`].
+    /// 6. Emit the file via the default kernel's `export()`.
+    ///
+    /// step-8 is the single-occurrence happy path: it emits only the FIRST
+    /// recognized `Output` occurrence. step-10 lifts this to one artifact per
+    /// occurrence in declaration order.
+    pub fn build_outputs(
+        &mut self,
+        module: &CompiledModule,
+        design_dir: &std::path::Path,
+        out_dir_override: Option<&std::path::Path>,
+    ) -> Vec<crate::ExportArtifact> {
+        use crate::tolerance_combine::{
+            OutputTarget, conforms_to_output, extract_output_export_spec,
+        };
+
+        // (1) Realize + hydrate Value::GeometryHandle cells by reusing the build
+        //     worker with the Phase-B product export DISABLED: `build_outputs`
+        //     drives its own per-occurrence export below, so the imperative
+        //     single-output serialization would be redundant (and, under a
+        //     recording kernel, a spurious extra `export()` call). The `format`
+        //     argument is irrelevant when `emit_geometry_output == false`.
+        let r = self.build_with_geometry_output(module, ExportFormat::Step, false);
+
+        // Merge module trait defs with the prelude's: the `trait Output : Sink`
+        // lattice lives in the prelude std.io module, and `module.trait_defs` is
+        // empty for user modules. Built once; supports transitive user-defined
+        // Output occurrences (`occurrence def Foo : MyExport`, `trait MyExport :
+        // Output`). The direct `["Output"]` bound greens even without the merge.
+        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> =
+            module.trait_defs.clone();
+        for pm in self.prelude {
+            merged_trait_defs.extend(pm.trait_defs.iter().cloned());
+        }
+
+        let default_kernel_name = self.default_kernel_name.clone();
+        let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
+
+        // (2) Deterministic declaration-order walk of every occurrence sub.
+        'occurrences: for template in &module.templates {
+            for sub in &template.sub_components {
+                // Resolve the occurrence template — module first, then prelude.
+                let Some(occ_template) = crate::engine_eval::find_template_with_prelude(
+                    module,
+                    self.prelude,
+                    &sub.structure_name,
+                ) else {
+                    continue;
+                };
+                // Gate: Output == an `occurrence def … : Output` (trait-bound
+                // conformance, not a type-name match).
+                if occ_template.entity_kind != reify_compiler::EntityKind::Occurrence {
+                    continue;
+                }
+                if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                    continue;
+                }
+
+                // (3) Read the per-instance export spec off the elaborated
+                //     StructureInstance at ValueCellId(template, sub).
+                let instance_id = reify_core::ValueCellId::new(&template.name, &sub.name);
+                let Some(instance) = r.values.get(&instance_id) else {
+                    continue;
+                };
+                let Some(spec) = extract_output_export_spec(instance) else {
+                    continue;
+                };
+                // step-8 happy path: only File targets emit (DisplayOutput
+                // recognize-but-defer is step-12).
+                let OutputTarget::File(export_format) = spec.format else {
+                    continue;
+                };
+
+                // (4) Resolve `subject` → live kernel handle via the sub's
+                //     `subject` ARG: a ValueRef into the post-build hydrated map
+                //     (NOT the pre-hydration StructureInstance.subject field).
+                let Some(subject_expr) = sub
+                    .args
+                    .iter()
+                    .find_map(|(k, e)| (k.as_str() == "subject").then_some(e))
+                else {
+                    continue;
+                };
+                let reify_ir::CompiledExprKind::ValueRef(subject_id) = &subject_expr.kind
+                else {
+                    continue;
+                };
+                let Some(reify_ir::Value::GeometryHandle { kernel_handle, .. }) =
+                    r.values.get(subject_id)
+                else {
+                    continue;
+                };
+                let handle_id = *kernel_handle;
+
+                // (5) Resolve the destination (design-relative / --out-dir).
+                let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
+
+                // (6) Emit one file via the default kernel's export().
+                let mut bytes = Vec::new();
+                let exported = match default_kernel_name.as_deref() {
+                    Some(name) => match self.geometry_kernels.get(name) {
+                        Some(kernel) => {
+                            kernel.export(handle_id, export_format, &mut bytes).is_ok()
+                        }
+                        None => false,
+                    },
+                    None => false,
+                };
+                if !exported {
+                    continue;
+                }
+
+                artifacts.push(crate::ExportArtifact {
+                    path,
+                    format: export_format,
+                    bytes,
+                    diagnostics: Vec::new(),
+                });
+
+                // step-8: single happy path — emit only the first recognized
+                // Output occurrence. step-10 removes this early break.
+                break 'occurrences;
+            }
+        }
+
+        artifacts
     }
 
     /// T7 (task 3905): compute the minimum distance (SI metres) between two

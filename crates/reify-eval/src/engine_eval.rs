@@ -46,7 +46,13 @@ use crate::{
 /// sub-component loop in `eval()` and the validation-only mirror in
 /// `eval_cached()` — which must agree on which names are unknown, or cached
 /// re-evals emit false "unknown structure" errors.
-fn find_template_with_prelude<'a>(
+///
+/// `pub(crate)` so the io-export δ occurrence-driven export driver
+/// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
+/// occurrence template through the SAME module-first/prelude-fallback rule the
+/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
+/// live in the prelude, not `CompiledModule::templates`.
+pub(crate) fn find_template_with_prelude<'a>(
     module: &'a CompiledModule,
     prelude: &'a [CompiledModule],
     name: &str,
