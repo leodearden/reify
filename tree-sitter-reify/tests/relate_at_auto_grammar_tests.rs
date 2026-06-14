@@ -430,3 +430,102 @@ fn relate_block_empty_parses() {
 fn gate_gr01_at_auto_relate_fixture_parses_clean() {
     assert_fixture_parses_clean("gr-01-at-auto-relate.ri");
 }
+
+// ── step-7 (RED until step-8): inline `at … where { }` relate-block ───────────
+
+/// `sub b : B at auto where { concentric(a, b)  flush(c, d) }` parses so the
+/// sub_declaration carries an inline relate-block in its `relations` field — a
+/// `sub_relate_block` holding the two relations as `relation_member` children —
+/// with NO ERROR. RED: the trailing `at … where { }` block is not accepted on
+/// the base grammar (it misparses as a following member-level guarded_block
+/// with a MISSING condition).
+#[test]
+fn sub_inline_where_relate_block_parses() {
+    let source = b"structure S { sub b : B at auto where { concentric(a, b)  flush(c, d) } }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+
+    let pose = sub.child_by_field_name("pose").expect("pose field missing");
+    assert_eq!(pose.kind(), "auto_keyword", "pose must be an auto_keyword");
+
+    let block = sub
+        .child_by_field_name("relations")
+        .expect("sub_declaration must expose a `relations` field for the inline where-block");
+    assert_eq!(
+        block.kind(),
+        "sub_relate_block",
+        "inline relations must be a sub_relate_block, got {}",
+        block.kind()
+    );
+    let members = find_all_nodes_by_kind(block, "relation_member");
+    assert_eq!(
+        members.len(),
+        2,
+        "expected 2 relation_member children in the inline where-block, got {}",
+        members.len()
+    );
+    for m in &members {
+        assert_eq!(
+            m.child_by_field_name("expr")
+                .expect("relation_member must expose an `expr` field")
+                .kind(),
+            "function_call",
+            "each inline relation must be a function_call"
+        );
+    }
+}
+
+/// Discrimination regression: the existing `where <expr>` sub guard (no braces)
+/// still parses to a `guard` field that is a `where_clause`, and produces NO
+/// `sub_relate_block`. GREEN before and after step-8 — guards against step-8
+/// stealing the guard's `where`.
+#[test]
+fn sub_where_clause_guard_still_parses() {
+    let source = b"structure S { sub b : B where x > 0mm }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+    let guard = sub
+        .child_by_field_name("guard")
+        .expect("sub `where <expr>` guard field missing");
+    assert_eq!(
+        guard.kind(),
+        "where_clause",
+        "a `where <expr>` sub guard must remain a where_clause, got {}",
+        guard.kind()
+    );
+    assert!(
+        find_node_by_kind(sub, "sub_relate_block").is_none(),
+        "a bare `where <expr>` guard must NOT produce a sub_relate_block"
+    );
+}
+
+/// Discrimination regression: a member-level `where <expr> { }` guarded_block
+/// still parses to a `guarded_block` node retaining its `condition` field —
+/// distinct from the new conditionless `where { }` relate-block. GREEN before
+/// and after step-8.
+#[test]
+fn member_guarded_block_still_parses() {
+    let source = b"structure S { where x > 0mm { } }";
+    let tree = parse_clean(source);
+    let gb = find_node_by_kind(tree.root_node(), "guarded_block")
+        .expect("guarded_block not found for `where <expr> { }`");
+    assert!(
+        gb.child_by_field_name("condition").is_some(),
+        "guarded_block must retain its `condition` field (distinct from conditionless relate-block)"
+    );
+    assert!(
+        find_node_by_kind(gb, "sub_relate_block").is_none(),
+        "a member-level guarded_block must NOT be a sub_relate_block"
+    );
+}
+
+/// Consolidated gate: gr-02-at-auto-where.ri (needs `at auto` + the inline
+/// trailing `where { }` relate-block) parses with zero ERROR nodes once step-8
+/// lands. RED until step-8. With gr-01/02/03 all GREEN, this completes the
+/// user-observable parse-gate signal (PRD §9).
+#[test]
+fn gate_gr02_at_auto_where_fixture_parses_clean() {
+    assert_fixture_parses_clean("gr-02-at-auto-where.ri");
+}
