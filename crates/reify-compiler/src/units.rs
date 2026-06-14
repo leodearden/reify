@@ -66,6 +66,8 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "wedge",
     "rectangle",
     "circle",
+    "polygon",
+    "ellipse",
     "zone_slab",
 ];
 
@@ -2949,6 +2951,21 @@ mod tests {
     fn is_geometry_function_circle_recognized() {
         // RED until step-6 adds "circle" to GEOMETRY_FUNCTION_NAMES.
         assert!(is_geometry_function("circle"));
+    }
+
+    // --- 2-D profile face producers (task-4161) ---
+    // RED until step-6 adds "polygon" and "ellipse" to GEOMETRY_FUNCTION_NAMES.
+
+    #[test]
+    fn is_geometry_function_polygon_recognized() {
+        // RED until step-6 adds "polygon" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("polygon"));
+    }
+
+    #[test]
+    fn is_geometry_function_ellipse_recognized() {
+        // RED until step-6 adds "ellipse" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("ellipse"));
     }
 
     // --- split topology selector (task 4190, step-5 RED / step-6 GREEN) ---

@@ -1455,6 +1455,10 @@ pub enum ProfileKind {
     Rectangle,
     /// Circle in the XY plane: `circle(radius)`.
     Circle,
+    /// Closed planar polygon from flat coordinate pairs: `polygon(x1,y1, x2,y2, ...)`.
+    Polygon,
+    /// Ellipse in the XY plane: `ellipse(semi_major, semi_minor)`.
+    Ellipse,
 }
 
 impl std::fmt::Display for ProfileKind {
@@ -1462,6 +1466,8 @@ impl std::fmt::Display for ProfileKind {
         match self {
             ProfileKind::Rectangle => f.write_str("rectangle"),
             ProfileKind::Circle => f.write_str("circle"),
+            ProfileKind::Polygon => f.write_str("polygon"),
+            ProfileKind::Ellipse => f.write_str("ellipse"),
         }
     }
 }

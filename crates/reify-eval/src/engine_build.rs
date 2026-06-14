@@ -1155,9 +1155,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
 
         // Profile face producers — no parent handles.
-        GeometryOp::RectangleProfile { .. } | GeometryOp::CircleProfile { .. } => {
-            ParentHandles::Inline([z, z], 0)
-        }
+        GeometryOp::RectangleProfile { .. }
+        | GeometryOp::CircleProfile { .. }
+        | GeometryOp::PolygonProfile { .. }
+        | GeometryOp::EllipseProfile { .. } => ParentHandles::Inline([z, z], 0),
 
         // Pipe — kernel-internal circle profile; no user-facing parent.
         GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
@@ -1295,6 +1296,8 @@ fn substitute_op_parents(
         | GeometryOp::NurbsCurve { .. }
         | GeometryOp::RectangleProfile { .. }
         | GeometryOp::CircleProfile { .. }
+        | GeometryOp::PolygonProfile { .. }
+        | GeometryOp::EllipseProfile { .. }
         | GeometryOp::Pipe { .. } => {}
 
         // Topology selectors — never inserted into the realization graph.
@@ -1442,6 +1445,8 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Profile face producers
         GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
         GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
+        GeometryOp::PolygonProfile { .. } => Operation::ProfilePolygon,
+        GeometryOp::EllipseProfile { .. } => Operation::ProfileEllipse,
 
         // Topology selectors — never inserted into the realization graph;
         // Split is dispatched via GeometryKernel::execute_split at eval time.
@@ -1534,7 +1539,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         | CurveNurbsCurve => Some(BREP_ONLY),
 
         // Profile face producers — sources (no geometric input); same rationale.
-        ProfileRectangle | ProfileCircle => Some(BREP_ONLY),
+        ProfileRectangle | ProfileCircle | ProfilePolygon | ProfileEllipse => Some(BREP_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
@@ -1618,6 +1623,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Profile { kind, .. } => match kind {
             ProfileKind::Rectangle => Operation::ProfileRectangle,
             ProfileKind::Circle => Operation::ProfileCircle,
+            ProfileKind::Polygon => Operation::ProfilePolygon,
+            ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
     }
 }
@@ -10973,6 +10980,22 @@ mod tests {
                 op: GeometryOp::CircleProfile { radius: r(0.008) },
                 expected: Operation::ProfileCircle,
                 label: "CircleProfile → ProfileCircle",
+            },
+            // Profiles (task-4161)
+            Case {
+                op: GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+                },
+                expected: Operation::ProfilePolygon,
+                label: "PolygonProfile → ProfilePolygon",
+            },
+            Case {
+                op: GeometryOp::EllipseProfile {
+                    semi_major: r(0.010),
+                    semi_minor: r(0.005),
+                },
+                expected: Operation::ProfileEllipse,
+                label: "EllipseProfile → ProfileEllipse",
             },
         ];
 

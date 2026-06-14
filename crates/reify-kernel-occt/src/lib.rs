@@ -2921,6 +2921,35 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            GeometryOp::PolygonProfile { points } => {
+                if points.len() < 3 {
+                    return Err(GeometryError::OperationFailed(
+                        "polygon_profile requires at least 3 vertices".into(),
+                    ));
+                }
+                // Flatten Vec<[f64; 2]> → Vec<f64> for the FFI (mirrors InterpCurve at lib.rs:2742).
+                let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_polygon_face(&coords, points.len(), 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            GeometryOp::EllipseProfile { semi_major, semi_minor } => {
+                let a = extract_f64(semi_major)?;
+                let b = extract_f64(semi_minor)?;
+                if !(a.is_finite() && a > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_major must be a finite positive value".into(),
+                    ));
+                }
+                if !(b.is_finite() && b > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_minor must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
             GeometryOp::Split { .. } => {
@@ -10178,6 +10207,352 @@ mod tests {
         match result {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(_) => panic!("expected OperationFailed for negative radius, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    // --- FFI face builders: polygon + ellipse (task-4161 step-1) ---
+    // RED until step-2 adds make_polygon_face / make_ellipse_face to ffi.rs + occt_wrapper.
+
+    /// (a) Square polygon face → extrude → volume ≈ 1e-4 m² × 0.005 m = 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// prism volume = base_area × height = 1e-4 × 0.005 = 5e-7 m³ (exact for rectilinear mesh).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_square_extrude_volume() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 4, 0.0)
+            .expect("make_polygon_face(4-vertex square) should succeed");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 0.005)
+            .expect("make_prism should succeed for polygon square face");
+        let vol = ffi::ffi::query_volume(&prism)
+            .expect("query_volume should work for extruded polygon square");
+        let expected = 1e-4_f64 * 0.005; // area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon square extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) Triangle polygon face → surface area ≈ shoelace = 0.5 × 0.02 × 0.01 = 1e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_triangle_surface_area() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.02, 0.0, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 3, 0.0)
+            .expect("make_polygon_face(triangle) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for polygon triangle face");
+        let expected = 0.5_f64 * 0.02 * 0.01; // shoelace = 1e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon triangle area: expected ≈ {expected:.3e}, got {area:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Degenerate: n_points < 3 must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_too_few_points_returns_err() {
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 2, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with n_points=2 should return Err, got Ok"
+        );
+    }
+
+    /// (c-ii) Degenerate: coords.len() != 2 × n_points must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_wrong_coords_len_returns_err() {
+        // 3 points claimed but only 4 coords (should be 6)
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with coords.len()=4 but n_points=3 should return Err, got Ok"
+        );
+    }
+
+    /// (c-iii) Degenerate: 3 collinear points produce a degenerate polygon that
+    /// BRepBuilderAPI_MakeFace rejects (IsDone() = false → Err).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_collinear_points_returns_err() {
+        // All three points on the X-axis → zero area → degenerate face
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.02, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with 3 collinear points should return Err (degenerate face), got Ok"
+        );
+    }
+
+    /// (d) Ellipse face → surface area ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_surface_area() {
+        let face = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for ellipse face");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-3,
+            "ellipse face area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.6})"
+        );
+    }
+
+    /// (e) Swapped semi-axes → identical area (π·a·b is orientation-invariant).
+    ///
+    /// make_ellipse_face(0.005, 0.010) must normalize major/minor internally and
+    /// produce the same area as make_ellipse_face(0.010, 0.005).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_same_area() {
+        let face_ab = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area_ab = ffi::ffi::query_area(&face_ab)
+            .expect("query_area for ellipse(a,b) should work");
+
+        let face_ba = ffi::ffi::make_ellipse_face(0.005, 0.010, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let area_ba = ffi::ffi::query_area(&face_ba)
+            .expect("query_area for ellipse(b,a) should work");
+
+        let rel_diff = (area_ab - area_ba).abs() / area_ab;
+        assert!(
+            rel_diff < 1e-9,
+            "swapped ellipse axes should give same area: a,b={area_ab:.6e} vs b,a={area_ba:.6e} (rel_diff={rel_diff:.2e})"
+        );
+    }
+
+    /// (e-ii) Bounding-box orientation test for make_ellipse_face(semi_major < semi_minor).
+    ///
+    /// When semi_major=0.005 < semi_minor=0.010, the implementation normalises
+    /// major=max=0.010, minor=min=0.005 and orients the OCCT Ax2 X-direction along
+    /// Y so that the longer semi-axis lies along the Y axis.  The bounding box must
+    /// therefore have X half-extent ≈ semi_major = 0.005 and Y half-extent ≈
+    /// semi_minor = 0.010.  A regression breaking the conditional orientation would
+    /// swap these extents.
+    ///
+    /// Requires OCCT (BBox relies on the actual built shape).
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_bbox_orientation() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let semi_major = 0.005_f64;
+        let semi_minor = 0.010_f64;
+        // semi_major < semi_minor → major axis should be along Y, minor along X
+        let face = ffi::ffi::make_ellipse_face(semi_major, semi_minor, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let bbox = ffi::ffi::query_bbox(&face).expect("query_bbox should work for ellipse face");
+        // The face is centred at origin; half-extents should equal the semi-axis lengths.
+        // BRepBndLib adds Precision::Confusion() ≈ 1e-7 padding per side, so 1e-5 is a
+        // conservative tolerance that accepts the correct orientation while rejecting the
+        // wrong one (axes differ by 2×: 0.005 vs 0.010).
+        let x_half = (bbox.xmax - bbox.xmin) / 2.0;
+        let y_half = (bbox.ymax - bbox.ymin) / 2.0;
+        assert!(
+            (x_half - semi_major).abs() < 1e-5,
+            "X half-extent should be ≈ semi_major={semi_major:.4e}, got {x_half:.4e} \
+             (xmin={:.4e}, xmax={:.4e})",
+            bbox.xmin, bbox.xmax
+        );
+        assert!(
+            (y_half - semi_minor).abs() < 1e-5,
+            "Y half-extent should be ≈ semi_minor={semi_minor:.4e}, got {y_half:.4e} \
+             (ymin={:.4e}, ymax={:.4e})",
+            bbox.ymin, bbox.ymax
+        );
+    }
+
+    /// (f-i) Non-positive semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_zero_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(0.0, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=0 should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, 0.0, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=0 should return Err, got Ok"
+        );
+    }
+
+    /// (f-ii) Non-finite semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(f64::INFINITY, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=Inf should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, f64::NAN, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=NaN should return Err, got Ok"
+        );
+    }
+
+    // --- kernel execute for PolygonProfile + EllipseProfile (task-4161 step-3) ---
+    // RED until step-4 adds GeometryOp::PolygonProfile / EllipseProfile.
+
+    /// (a) PolygonProfile (4-vertex square) execute → extrude → volume ≈ 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// extrude height = 0.005 m → volume = 5e-7 m³ (exact rectangular prism).
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_executes_and_extrude_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::PolygonProfile {
+                points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+            })
+            .expect("PolygonProfile execute should succeed");
+        let solid_h = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile_h.id,
+                distance: Value::Real(0.005),
+            })
+            .expect("Extrude of PolygonProfile should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(solid_h.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 1e-4_f64 * 0.005; // shoelace_area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "PolygonProfile extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) EllipseProfile execute → SurfaceArea ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_executes_surface_area() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::EllipseProfile {
+                semi_major: Value::Real(0.010),
+                semi_minor: Value::Real(0.005),
+            })
+            .expect("EllipseProfile execute should succeed");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(profile_h.id))
+            .expect("SurfaceArea query should succeed")
+            .as_f64()
+            .expect("SurfaceArea should be numeric");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "EllipseProfile surface area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Validation: PolygonProfile with fewer than 3 points returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_too_few_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for <3 points, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-ii) Validation: EllipseProfile with non-positive semi-axis returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_nonpositive_axis_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::EllipseProfile {
+            semi_major: Value::Real(0.0),
+            semi_minor: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for semi_major=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-iii) Validation: PolygonProfile with collinear points returns OperationFailed.
+    ///
+    /// Collinear points produce a degenerate (zero-area) polygon that BRepBuilderAPI
+    /// rejects (MakePolygon.IsDone() or MakeFace.IsDone() fails, or the GProp Mass()<=0
+    /// guard fires).  Exercising this through OcctKernel::execute() confirms that the
+    /// kernel-level PolygonProfile arm correctly propagates the C++ rejection as
+    /// OperationFailed rather than panicking or returning Ok with an invalid handle.
+    ///
+    /// The FFI-level analogue is make_polygon_face_ffi_collinear_points_returns_err;
+    /// this test adds coverage at the kernel-execute layer.
+    #[test]
+    fn polygon_profile_collinear_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Three collinear points on the X-axis → zero area → degenerate face
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0], [0.02, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for collinear polygon points, got Ok"),
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }

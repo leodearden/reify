@@ -66,6 +66,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_Ellipse.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
 
@@ -2476,6 +2477,87 @@ std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, doub
         BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
         if (!faceBuilder.IsDone()) {
             throw std::runtime_error("make_rectangle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
+/// Build a closed planar polygon face from n_points 2-D vertices in the XY plane
+/// at the given Z height.  coords is a flat slice of 2*n_points doubles (x,y pairs).
+/// Requires n_points >= 3, coords.size() == 2*n_points, all coordinates finite,
+/// and a non-degenerate (non-collinear) vertex set.
+std::unique_ptr<OcctShape> make_polygon_face(rust::Slice<const double> coords, size_t n_points, double z_height) {
+    return wrap_occt_call("make_polygon_face", [&]() {
+        if (n_points < 3) {
+            throw std::runtime_error("make_polygon_face: n_points must be >= 3");
+        }
+        if (coords.size() != 2 * n_points) {
+            throw std::runtime_error("make_polygon_face: coords.size() must equal 2 * n_points");
+        }
+        for (size_t i = 0; i < coords.size(); ++i) {
+            if (!std::isfinite(coords[i])) {
+                throw std::runtime_error("make_polygon_face: all coordinates must be finite");
+            }
+        }
+        BRepBuilderAPI_MakePolygon polyBuilder;
+        for (size_t i = 0; i < n_points; ++i) {
+            polyBuilder.Add(gp_Pnt(coords[2 * i], coords[2 * i + 1], z_height));
+        }
+        polyBuilder.Close();
+        if (!polyBuilder.IsDone()) {
+            throw std::runtime_error("make_polygon_face: MakePolygon failed (degenerate or collinear vertices)");
+        }
+        TopoDS_Wire wire = polyBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_polygon_face: MakeFace failed (degenerate polygon)");
+        }
+        TopoDS_Face face = faceBuilder.Face();
+        // Reject degenerate (zero-area) faces, e.g. collinear vertices.
+        GProp_GProps gprops;
+        BRepGProp::SurfaceProperties(face, gprops);
+        if (gprops.Mass() <= 0.0) {
+            throw std::runtime_error("make_polygon_face: polygon has zero area (collinear or degenerate vertices)");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = face;
+        return result;
+    });
+}
+
+/// Build a flat ellipse face in the XY plane at the given Z height, centred at the origin.
+/// semi_major and semi_minor are the half-axis lengths along the major and minor axes
+/// respectively; both must be finite and positive.  OCCT requires major >= minor, so the
+/// function normalises: major = max(a, b), minor = min(a, b) and orients the Ax2 X-direction
+/// along the larger semi-axis.  Area = π·a·b is orientation-invariant.
+std::unique_ptr<OcctShape> make_ellipse_face(double semi_major, double semi_minor, double z_height) {
+    return wrap_occt_call("make_ellipse_face", [&]() {
+        if (!(std::isfinite(semi_major) && semi_major > 0.0)) {
+            throw std::runtime_error("make_ellipse_face: semi_major must be finite and positive");
+        }
+        if (!(std::isfinite(semi_minor) && semi_minor > 0.0)) {
+            throw std::runtime_error("make_ellipse_face: semi_minor must be finite and positive");
+        }
+        // OCCT gp_Elips requires major >= minor.
+        double major = std::max(semi_major, semi_minor);
+        double minor = std::min(semi_major, semi_minor);
+        // Orient X-axis along the longer semi-axis so the constructed ellipse matches input.
+        gp_Dir x_dir = (semi_major >= semi_minor) ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+        gp_Ax2 ax2(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1), x_dir);
+        Handle(Geom_Ellipse) ellipse = new Geom_Ellipse(gp_Elips(ax2, major, minor));
+        BRepBuilderAPI_MakeEdge edgeBuilder(ellipse);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeWire failed");
+        }
+        BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
