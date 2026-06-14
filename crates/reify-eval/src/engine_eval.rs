@@ -13,9 +13,9 @@ use reify_core::{
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind,
-    PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance,
-    SolveResult, Value, ValueMap,
+    AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
+    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
+    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -786,6 +786,82 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
         "joint has no free motion variable (coupling or fixed)",
         Some(&pred),
     )
+}
+
+/// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
+/// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
+///
+/// **Why this detector exists (task 250):** `engine.eval()` and `engine.eval_cached()`
+/// are the geometry-free evaluation path — they never execute realizations and
+/// therefore never call `post_process_ad_hoc_selectors` (the build-path resolver
+/// in engine_build.rs/geometry_ops.rs).  As a result, any `@face` or `@edge`
+/// cell whose compiled `default_expr` is `AdHocSelector{Face|Edge}` remains at
+/// the `Value::Undef` placeholder that `eval_ad_hoc_selector` (reify-expr)
+/// leaves behind, with no accompanying diagnostic.  This violates the task spec:
+/// "If selector fails … port frame becomes undef, **diagnostic emitted**."
+///
+/// **Scope:** only `SelectorKind::Face` and `SelectorKind::Edge` are checked.
+/// `@point` cells resolve to a `Value::Frame` in Layer-1 (no kernel) and never
+/// match the `Undef` filter.  Body/other kinds are skipped.
+///
+/// **Severity: Warning** — matches the build-path failure arms in
+/// `geometry_ops.rs:6043-6055` (extract_faces/extract_edges errors) and does
+/// not trip the many `errors.is_empty()` / `severity == Error` guards in sibling
+/// tests, minimising fallout.
+///
+/// Called in both `eval()` and `eval_cached()` immediately before `EvalResult`
+/// construction, mirroring the `detect_mechanism_errors` /
+/// `detect_nondriving_joint_errors` placement.
+fn detect_unresolved_ad_hoc_selectors(
+    templates: &[reify_compiler::TopologyTemplate],
+    values: &ValueMap,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        for cell in &template.value_cells {
+            // Only care about @face and @edge selectors.
+            let selector_kind = match &cell.default_expr {
+                Some(expr) => match &expr.kind {
+                    CompiledExprKind::AdHocSelector { selector_kind, .. } => match selector_kind {
+                        SelectorKind::Face | SelectorKind::Edge => *selector_kind,
+                        // @point resolves in Layer-1 (no kernel) — skip.
+                        // Body / other kinds are not selector-frame kinds — skip.
+                        _ => continue,
+                    },
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            // Only emit if the evaluated value is Undef (or absent from the map).
+            let is_undef = values
+                .get(&cell.id)
+                .map_or(true, |v| matches!(v, Value::Undef));
+            if !is_undef {
+                continue;
+            }
+
+            let kind_str = match selector_kind {
+                SelectorKind::Face => "@face",
+                SelectorKind::Edge => "@edge",
+                // Already filtered above; unreachable.
+                _ => continue,
+            };
+
+            let msg = format!(
+                "{kind_str} selector could not be resolved to a frame during evaluation: \
+                 no realized geometry is available (selector frame is undef); \
+                 a geometry kernel is required for resolution"
+            );
+            diagnostics.push(
+                Diagnostic::warning(msg)
+                    .with_label(DiagnosticLabel::new(cell.span, "selector frame is undef")),
+            );
+        }
+    }
+
+    diagnostics
 }
 
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
@@ -2815,6 +2891,11 @@ impl Engine {
         // Passes `module` so the compile-span suppression predicate (task 4364)
         // can skip cells already flagged by the compiler at the same source span.
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
+        // Value::Undef by the geometry-free eval path surface a warning here so the
+        // eval/check path is behaviorally consistent with the build() path (which
+        // emits a warning via geometry_ops.rs when a selector cannot be resolved).
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         EvalResult {
             values,
@@ -3423,6 +3504,10 @@ impl Engine {
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
         // Passes `module` for compile-span suppression parity with eval() (task 4364).
         diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
+        // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
+        // warning as the cold-eval path.
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
