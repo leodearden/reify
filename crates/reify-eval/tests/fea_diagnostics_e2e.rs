@@ -128,3 +128,68 @@ fn no_supports_fixture_emits_fea_under_constrained_warning() {
         under_constrained[0].message
     );
 }
+
+// ── step-9: RED — thin-body fixture ──────────────────────────────────────────
+//
+// Fails (thin_body_fixture test) until step-10 wires thin_body_advisory.
+// The cantilever_smoke guard passes even before step-10 (no FeaThinBody emitted).
+
+/// Thin-body fixture: plate with aspect ratio ≈ 100 (1000mm × 1000mm × 10mm).
+///
+/// Expects:
+/// - Exactly one `Severity::Warning` diagnostic with
+///   `code == Some(DiagnosticCode::FeaThinBody)` and message referencing
+///   "element_order" (part of the actionable text from the triage table).
+#[test]
+fn thin_body_fixture_emits_fea_thin_body_warning() {
+    let source = include_str!("fixtures/fea_thin_body.ri");
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let thin_body: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FeaThinBody)
+        })
+        .collect();
+    assert_eq!(
+        thin_body.len(),
+        1,
+        "expected exactly one FeaThinBody warning, got {}: {:#?}",
+        thin_body.len(),
+        eval_result.diagnostics
+    );
+    assert!(
+        thin_body[0].message.contains("element_order"),
+        "FeaThinBody message must reference 'element_order', got: {}",
+        thin_body[0].message
+    );
+}
+
+/// Standard cantilever (ratio = max_dim/min_dim = 1.0m/0.1m = 10, exactly at
+/// threshold) must NOT trigger FeaThinBody — the advisory fires only when ratio
+/// STRICTLY exceeds the threshold.
+#[test]
+fn cantilever_smoke_does_not_emit_fea_thin_body() {
+    let source = include_str!("../../../examples/fea_cantilever_smoke.ri");
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let thin_body: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::FeaThinBody))
+        .collect();
+    assert!(
+        thin_body.is_empty(),
+        "standard cantilever (ratio=10, at threshold) must not emit FeaThinBody, got: {:#?}",
+        thin_body
+    );
+}
