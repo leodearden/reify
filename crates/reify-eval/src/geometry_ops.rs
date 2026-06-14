@@ -12682,6 +12682,87 @@ mod tests {
         }
     }
 
+    // ── resolve_geometry_handle_arg cross-sub resolution (task 4358 ε) ────────
+    //
+    // Pins that `resolve_geometry_handle_arg` resolves the cross-sub
+    // `proc.build_volume` geometry-handle arg. Per the CORRECTED esc-4358-124
+    // premise, that arg lowers (via try_resolve_cross_sub_geometry_value_ref,
+    // reify-compiler/src/expr.rs) to one of two shapes, BOTH carrying a scoped
+    // `<parent>.<sub>` entity stamp:
+    //   * `CrossSubGeometryRef(ValueCellId)` — a genuine child realization.
+    //   * a forward-declared scoped `ValueRef(ValueCellId)`.
+    // Either way the live handle is keyed in `named_steps` under the composed
+    // `<sub>.<member>` key that `seed_cross_sub_named_steps` stamps
+    // ("proc.build_volume", engine_build.rs) — NOT the bare member. The arm must
+    // reconstruct that composed key for any dotted-entity id while still
+    // resolving a plain same-template `ValueRef` via its bare member and
+    // returning None for a missing key.
+    //
+    // RED until step-4: resolve_geometry_handle_arg matches ONLY ValueRef and
+    // looks up named_steps by the BARE member ("build_volume"), so the dotted
+    // cross-sub entity misses the "proc.build_volume" key → None (shape b), and
+    // the CrossSubGeometryRef shape isn't matched at all → None (shape a).
+    #[test]
+    fn resolve_geometry_handle_arg_resolves_cross_sub_composed_key() {
+        let cross_handle = reify_ir::GeometryHandleId(91);
+        let bare_handle = reify_ir::GeometryHandleId(7);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        // Cross-sub handle keyed by the composed "<sub>.<member>" key, exactly as
+        // seed_cross_sub_named_steps stamps it (engine_build.rs).
+        named_steps.insert("proc.build_volume".to_string(), kh(cross_handle));
+        // Same-template let-bound geometry keyed by its bare member.
+        named_steps.insert("part".to_string(), kh(bare_handle));
+
+        // The scoped ValueCellId both cross-sub shapes carry: entity
+        // "<parent>.<sub>" ("Parent.proc"), member "build_volume".
+        let scoped_id = reify_core::ValueCellId::new("Parent.proc", "build_volume");
+
+        // (a) CrossSubGeometryRef shape (genuine child realization).
+        let cross_ref = reify_ir::CompiledExpr::cross_sub_geometry_ref(
+            scoped_id.clone(),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&cross_ref, &named_steps),
+            Some(cross_handle),
+            "CrossSubGeometryRef(Parent.proc.build_volume) must resolve via the \
+             composed \"proc.build_volume\" named_steps key"
+        );
+
+        // (b) forward-declared scoped ValueRef shape (same scoped id).
+        let fwd_ref = reify_ir::CompiledExpr::value_ref(scoped_id, reify_core::Type::Geometry);
+        assert_eq!(
+            resolve_geometry_handle_arg(&fwd_ref, &named_steps),
+            Some(cross_handle),
+            "forward-declared scoped ValueRef(Parent.proc.build_volume) must also \
+             resolve via the composed \"proc.build_volume\" key"
+        );
+
+        // (c) regression: a plain same-template ValueRef (dot-free entity)
+        // still resolves via its bare member.
+        let plain_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "part"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&plain_ref, &named_steps),
+            Some(bare_handle),
+            "plain ValueRef(S.part) must still resolve via its bare member \"part\""
+        );
+
+        // (d) regression: a missing key returns None.
+        let missing_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "absent"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&missing_ref, &named_steps),
+            None,
+            "a ValueRef whose member is absent from named_steps must return None"
+        );
+    }
+
     // ── try_eval_conformance_query unit tests (task 2320) ────────────────────
     //
     // These tests pin the contract of `try_eval_conformance_query`, the
