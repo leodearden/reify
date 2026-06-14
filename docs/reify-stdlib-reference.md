@@ -664,23 +664,10 @@ trait MechanicalPort : LocatedPort {
     param max_torque : Option<Torque> = none
 }
 
-trait MatingFace : MechanicalPort {
-    param contact_area : Area
-    param surface_finish : Length
-    param flatness : Length
-}
-
-trait Bore : MechanicalPort {
-    param diameter : Length
-    param depth : Length
-    param fit : FitType
-}
-
-trait Shaft : MechanicalPort {
-    param diameter : Length
-    param length : Length
-    param fit : FitType
-}
+// MatingFace + parameterized Bore/Shaft (diameter/depth/fit:FitType) not yet shipped — bare markers today
+trait Bore : MechanicalPort {}
+trait Shaft : MechanicalPort {}
+trait StructurePort : MechanicalPort {}
 
 trait ThreadedPort : MechanicalPort {
     param thread_spec : ThreadSpec
@@ -708,13 +695,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Axis
+    param axis : Vector3<Length>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Axis
+    param axis : Vector3<Length>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int
