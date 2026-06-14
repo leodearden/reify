@@ -10231,6 +10231,48 @@ mod tests {
         );
     }
 
+    /// (e-ii) Bounding-box orientation test for make_ellipse_face(semi_major < semi_minor).
+    ///
+    /// When semi_major=0.005 < semi_minor=0.010, the implementation normalises
+    /// major=max=0.010, minor=min=0.005 and orients the OCCT Ax2 X-direction along
+    /// Y so that the longer semi-axis lies along the Y axis.  The bounding box must
+    /// therefore have X half-extent ≈ semi_major = 0.005 and Y half-extent ≈
+    /// semi_minor = 0.010.  A regression breaking the conditional orientation would
+    /// swap these extents.
+    ///
+    /// Requires OCCT (BBox relies on the actual built shape).
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_bbox_orientation() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let semi_major = 0.005_f64;
+        let semi_minor = 0.010_f64;
+        // semi_major < semi_minor → major axis should be along Y, minor along X
+        let face = ffi::ffi::make_ellipse_face(semi_major, semi_minor, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let bbox = ffi::ffi::query_bbox(&face).expect("query_bbox should work for ellipse face");
+        // The face is centred at origin; half-extents should equal the semi-axis lengths.
+        // BRepBndLib adds Precision::Confusion() ≈ 1e-7 padding per side, so 1e-5 is a
+        // conservative tolerance that accepts the correct orientation while rejecting the
+        // wrong one (axes differ by 2×: 0.005 vs 0.010).
+        let x_half = (bbox.xmax - bbox.xmin) / 2.0;
+        let y_half = (bbox.ymax - bbox.ymin) / 2.0;
+        assert!(
+            (x_half - semi_major).abs() < 1e-5,
+            "X half-extent should be ≈ semi_major={semi_major:.4e}, got {x_half:.4e} \
+             (xmin={:.4e}, xmax={:.4e})",
+            bbox.xmin, bbox.xmax
+        );
+        assert!(
+            (y_half - semi_minor).abs() < 1e-5,
+            "Y half-extent should be ≈ semi_minor={semi_minor:.4e}, got {y_half:.4e} \
+             (ymin={:.4e}, ymax={:.4e})",
+            bbox.ymin, bbox.ymax
+        );
+    }
+
     /// (f-i) Non-positive semi-axis → Err.
     ///
     /// RED until step-2 implements ffi::ffi::make_ellipse_face.
@@ -10373,6 +10415,34 @@ mod tests {
         match result {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(_) => panic!("expected OperationFailed for semi_major=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-iii) Validation: PolygonProfile with collinear points returns OperationFailed.
+    ///
+    /// Collinear points produce a degenerate (zero-area) polygon that BRepBuilderAPI
+    /// rejects (MakePolygon.IsDone() or MakeFace.IsDone() fails, or the GProp Mass()<=0
+    /// guard fires).  Exercising this through OcctKernel::execute() confirms that the
+    /// kernel-level PolygonProfile arm correctly propagates the C++ rejection as
+    /// OperationFailed rather than panicking or returning Ok with an invalid handle.
+    ///
+    /// The FFI-level analogue is make_polygon_face_ffi_collinear_points_returns_err;
+    /// this test adds coverage at the kernel-execute layer.
+    #[test]
+    fn polygon_profile_collinear_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Three collinear points on the X-axis → zero area → degenerate face
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0], [0.02, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for collinear polygon points, got Ok"),
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }

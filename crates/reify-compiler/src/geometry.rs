@@ -1936,8 +1936,8 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    22  (added fillet_all, zone_slab)
-    /// NO_GEOM_ARG_FUNCTIONS 20  (added rectangle, circle, polygon, ellipse for 2-D profile faces)
+    /// GEOM_ARG_FUNCTIONS    22  (zone_slab was the last addition)
+    /// NO_GEOM_ARG_FUNCTIONS 20  (polygon, ellipse added by task-4161)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
     /// Total                 49

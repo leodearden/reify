@@ -396,6 +396,12 @@ fn polygon_profile_through_full_eval_pipeline() {
                 (x1 - 0.01).abs() < 1e-9 && y1.abs() < 1e-9,
                 "second polygon point should be ~(0.01,0), got ({x1},{y1})"
             );
+            // Third point approximately (0.01, 0.01) — 10mm, 10mm in SI
+            let (x2, y2) = (points[2][0], points[2][1]);
+            assert!(
+                (x2 - 0.01).abs() < 1e-9 && (y2 - 0.01).abs() < 1e-9,
+                "third polygon point should be ~(0.01,0.01), got ({x2},{y2})"
+            );
         }
         other => panic!("expected GeometryOp::PolygonProfile at op 0, got {:?}", other),
     }

@@ -1914,7 +1914,8 @@ pub(crate) fn compile_geometry_op(
                 let coords =
                     eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
                         .ok_or_else(|| {
-                            "polygon() has non-finite coordinates".to_string()
+                            "polygon() has invalid (non-numeric or non-finite) coordinates"
+                                .to_string()
                         })?;
                 let points: Vec<[f64; 2]> =
                     coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
