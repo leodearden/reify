@@ -24,7 +24,7 @@
 //                          (task 2343) is retained for back-compat and is untouched.
 //   sample               — intercepting builtin (see above)
 //   restrict             — intercepting builtin; no `.ri` fn body (codomain unchanged)
-//   constant_field       — intercepting builtin; no `.ri` fn body yet (task 4223 ε)
+//   constant_field       — `.ri` fn body below (task 4223 ε): pub fn constant_field<D,C>
 //   fn_field             — intercepting builtin; wraps a lambda as Field{Analytical}
 //   from_samples         — intercepting builtin; no `.ri` fn body yet
 //
@@ -66,6 +66,19 @@ pub fn through<T>(x: T) -> T { x }
 
 pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
     fn_field(|p| sample(f, sample(g, p)))
+}
+
+// ── ε spatial-op constructors (task 4223 ε — PRD §2/§6 B6/B7/B8) ─────────────
+//
+//   constant_field<D, C>(value: C) -> Field<D, C>   [landed step-2]
+//     Returns a uniform field that ignores its domain point and always
+//     evaluates to `value`.  D is nested-unbound at call sites but tolerated
+//     (B5) and type-erased at eval.  B6 gate: sample at any point == value.
+//
+//   clamp_field / remap_field / threshold — bodies added in steps 4 & 6.
+
+pub fn constant_field<D, C>(value: C) -> Field<D, C> {
+    fn_field(|p| value)
 }
 
 // ── Why no Field type alias ───────────────────────────────────────────────────
