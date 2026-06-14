@@ -1968,6 +1968,21 @@ pub(crate) fn compile_expr_guarded(
                         diagnostics,
                     );
 
+                    // γ (task 4383): compile-time per-arg type check for the
+                    // geometric-relation vocabulary — the three §3.2 policing
+                    // layers (unit / kind-projection / curation). A parallel
+                    // pure diagnostic side-effect to `check_builtin_arg_types`
+                    // above: result-type inference is unchanged (anti-cascade),
+                    // Type::Error / Type::TypeParam slots are skipped (gradualism),
+                    // and the shared verbs `angle`/`distance` are policed only in
+                    // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
+                    relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -2005,6 +2020,29 @@ pub(crate) fn compile_expr_guarded(
                         // the helper's actual return type.
                         topology_selector_result_type(name)
                             .expect("is_geometry_topology_selector implies result type")
+                    } else if let Some(t) =
+                        relation_signatures::relation_fn_result_type(name, &compiled_args)
+                    {
+                        // γ (task 4383): the geometric-relation vocabulary —
+                        // coincident / on / parallel / antiparallel /
+                        // perpendicular / concentric / flush / offset / tangent,
+                        // plus the arity-3 DRIVE forms of `angle` / `distance`.
+                        //
+                        // A relation is a DOF-removal directive: it types to
+                        // `Type::Relation` (distinct from Bool, no truth value)
+                        // and evaluates to `Value::Undef` until ζ supplies the
+                        // relate-solve (the geometry-query Phase-1 precedent — the
+                        // emitted node stays a `FunctionCall`).
+                        //
+                        // **Placed BEFORE `is_geometry_query`** (which is name-only
+                        // and would otherwise claim `angle`/`distance` at any
+                        // arity): this arg-aware arm returns `Some(Relation)` for
+                        // the pure names and for arity-3 `angle`/`distance`, and
+                        // `None` for the arity-2 `angle`/`distance` DERIVE forms so
+                        // they fall through to the geometry-query arm below
+                        // (Angle / Scalar<Length>). Mirrors the arg-aware
+                        // `selector_composition_result_type` fall-through idiom.
+                        t
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /
