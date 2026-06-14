@@ -790,5 +790,147 @@ class TestRunProbe(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# step-11 (RED): harness exit-code aggregation
+# ---------------------------------------------------------------------------
+
+class TestHarnessExitCode(unittest.TestCase):
+    """Tests for harness_exit_code(results) exit-code aggregation.
+
+    Tests FAIL until step-12 implements harness_exit_code().
+    """
+
+    def _make_result(self, verdict: str) -> Any:
+        """Build a synthetic Result with the given verdict string."""
+        probe = pcc.Probe(
+            capability="test",
+            probe_kind="check",
+            fixture="some/fixture.ri",
+            expected={"observation": "present", "match": {}},
+        )
+        return pcc.Result(
+            probe=probe,
+            command=["reify", "check", "some/fixture.ri"],
+            exit_code=0,
+            stdout="",
+            stderr="",
+            observation=pcc.PRESENT,
+            verdict=verdict,
+        )
+
+    # ── 0: all PASS ───────────────────────────────────────────────────────────
+
+    def test_all_pass_exits_0(self):
+        """All PASS results → exit code 0."""
+        results = [
+            self._make_result(pcc.PASS),
+            self._make_result(pcc.PASS),
+            self._make_result(pcc.PASS),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 0)
+
+    def test_single_pass_exits_0(self):
+        """Single PASS → exit code 0."""
+        self.assertEqual(pcc.harness_exit_code([self._make_result(pcc.PASS)]), 0)
+
+    # ── 1: ≥1 FAIL (FAIL beats UNPROVABLE) ───────────────────────────────────
+
+    def test_one_fail_exits_1(self):
+        """≥1 FAIL result (with PASSes) → exit code 1."""
+        results = [
+            self._make_result(pcc.PASS),
+            self._make_result(pcc.FAIL),
+            self._make_result(pcc.PASS),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 1)
+
+    def test_fail_with_unprovable_exits_1(self):
+        """≥1 FAIL + ≥1 UNPROVABLE → exit code 1 (FAIL beats UNPROVABLE)."""
+        results = [
+            self._make_result(pcc.FAIL),
+            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc.PASS),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 1)
+
+    # ── 2: ≥1 UNPROVABLE, 0 FAIL ─────────────────────────────────────────────
+
+    def test_unprovable_only_exits_2(self):
+        """≥1 UNPROVABLE and 0 FAIL → exit code 2."""
+        results = [
+            self._make_result(pcc.PASS),
+            self._make_result(pcc.UNPROVABLE),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 2)
+
+    def test_multiple_unprovable_exits_2(self):
+        """Multiple UNPROVABLE (no FAIL) → exit code 2."""
+        results = [
+            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc.UNPROVABLE),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 2)
+
+    # ── 70: harness-error result ──────────────────────────────────────────────
+
+    def test_harness_error_exits_70(self):
+        """≥1 harness-error result → exit code 70."""
+        results = [self._make_result(pcc._HARNESS_ERROR)]
+        self.assertEqual(pcc.harness_exit_code(results), 70)
+
+    def test_harness_error_beats_fail(self):
+        """harness-error + FAIL → exit code 70 (harness error takes highest priority)."""
+        results = [
+            self._make_result(pcc._HARNESS_ERROR),
+            self._make_result(pcc.FAIL),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 70)
+
+    def test_harness_error_beats_unprovable(self):
+        """harness-error + UNPROVABLE → exit code 70."""
+        results = [
+            self._make_result(pcc._HARNESS_ERROR),
+            self._make_result(pcc.UNPROVABLE),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 70)
+
+    # ── determinism ───────────────────────────────────────────────────────────
+
+    def test_determinism_same_runner_same_verdicts(self):
+        """Same probe + same injected runner → identical verdicts both evaluations."""
+        probe = pcc.Probe(
+            capability="determinism-test",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": "present", "match": {}},
+        )
+
+        def fixed_runner(p: Any) -> Any:
+            return pcc.ProbeRun(exit_code=0, stdout="", stderr="")
+
+        r1 = pcc.evaluate(probe, runner=fixed_runner)
+        r2 = pcc.evaluate(probe, runner=fixed_runner)
+        self.assertEqual(r1.verdict, r2.verdict)
+
+    def test_determinism_same_exit_code(self):
+        """Same probe set + same injected runner → identical harness_exit_code."""
+        probe = pcc.Probe(
+            capability="determinism-test",
+            probe_kind="check",
+            fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            expected={"observation": "present", "match": {"exit_code": 1}},
+        )
+
+        def fixed_runner(p: Any) -> Any:
+            return pcc.ProbeRun(exit_code=0, stdout="All constraints satisfied.", stderr="")
+
+        results1 = [pcc.evaluate(probe, runner=fixed_runner)]
+        results2 = [pcc.evaluate(probe, runner=fixed_runner)]
+        self.assertEqual(
+            pcc.harness_exit_code(results1),
+            pcc.harness_exit_code(results2),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
