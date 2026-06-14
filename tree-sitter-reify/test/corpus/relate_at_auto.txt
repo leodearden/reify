@@ -66,3 +66,41 @@ structure S { param p : Frame = auto(free) }
       type: (type_expr
         (identifier))
       default: (auto_keyword))))
+
+================================================================================
+at auto: bare-auto pose on a specialization sub — sub b : B at auto
+================================================================================
+
+structure S { sub b : B at auto }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword))))
+
+================================================================================
+at auto: parameterized pose — sub b : B at auto(seed = self.frame)
+================================================================================
+
+structure S { sub b : B at auto(seed = self.frame) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword
+        (auto_param_list
+          (auto_param
+            name: (identifier)
+            value: (member_access
+              object: (identifier)
+              member: (identifier))))))))

@@ -704,7 +704,7 @@ module.exports = grammar({
         optional($.named_argument_list),
         ')',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
       ),
       // Collection form: sub name : List<StructName>
       // The bare `'List'` token is reached only on exact-length matches —
@@ -728,7 +728,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         '>',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
       //
@@ -776,7 +776,7 @@ module.exports = grammar({
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
       ),
     ),
 
