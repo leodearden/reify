@@ -291,3 +291,29 @@ fn unclassifiable_dof_type_is_surfaced_per_field_and_suppresses_the_verdict() {
         joint_dof_errors(&module)
     );
 }
+
+// ── Gradualism: body member with a curated count but no kind split ────────────
+
+/// `tangent` has a curated DOF COUNT (`relation_delta_dof` = 2) but no
+/// rotational/translational split (`relation_delta_dof_kinds` = `None`, because
+/// it is surface-conditional). `residual_kinds` omits it, INFLATING the residual
+/// above the true geometry — so a count/kind verdict computed from that residual
+/// would draw a SPURIOUS `E_JOINT_DOF_MISMATCH`.
+///
+/// PRD §7.1 gradualism requires the verdict be suppressed when the body contains
+/// any such count-known/kind-unknown member. Here `concentric(a, b)` (residual
+/// the kind table reads as (1, 1)) plus `tangent(a, b)` would mismatch the
+/// `angle: Angle` = (1, 0) declaration under the naive computation, but must NOT:
+/// the residual cannot be fully attributed, so no mismatch is emitted.
+#[test]
+fn body_with_undecidable_kind_split_suppresses_spurious_mismatch() {
+    let module = compile_source_with_stdlib(
+        "joint j(a: Axis, b: Axis) with angle: Angle = { concentric(a, b)  tangent(a, b) }",
+    );
+    assert!(
+        joint_dof_errors(&module).is_empty(),
+        "a body with a count-known/kind-unknown member (`tangent`) must suppress the \
+         count/kind verdict (gradualism), drawing zero E_JOINT_DOF_MISMATCH: {:#?}",
+        joint_dof_errors(&module)
+    );
+}

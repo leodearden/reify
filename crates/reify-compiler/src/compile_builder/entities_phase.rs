@@ -375,15 +375,22 @@ fn compile_joint_self_check(
         }
     }
 
-    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). A gradualism gate
-    // stands in front of it: a declared DOF field whose resolved type has no
-    // geometric kind (neither Angle, Length, nor Orientation) is surfaced here,
-    // per-field, with a targeted `E_ARG_TYPE_MISMATCH` naming the offending
-    // field — and gates the verdict off, since its `(0, 0)` contribution would
-    // otherwise make the residual comparison meaningless (and at best emit a
-    // confusing `E_JOINT_DOF_MISMATCH` that never names the real problem). A
-    // `Type::Error` DOF (already diagnosed by the resolver) gates the verdict
-    // too, but draws no second diagnostic (anti-cascade).
+    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). Two gradualism gates
+    // stand in front of it; either leaves the residual comparison unable to
+    // substantiate a verdict, so it is skipped rather than emit a spurious
+    // `E_JOINT_DOF_MISMATCH`:
+    //
+    //   (a) a declared DOF field whose resolved type has no geometric kind
+    //       (neither Angle, Length, nor Orientation) — surfaced here, per-field,
+    //       with a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
+    //       since its `(0, 0)` contribution would otherwise emit a confusing
+    //       `E_JOINT_DOF_MISMATCH` that never names the real problem. A
+    //       `Type::Error` DOF (already diagnosed by the resolver) gates the
+    //       verdict too, but draws no second diagnostic (anti-cascade).
+    //   (b) a body relation whose DOF COUNT is curated but whose rot/trans split
+    //       is not (e.g. `tangent`): `residual_kinds` omits it, INFLATING the
+    //       residual above the true geometry, so the verdict could fire
+    //       spuriously (see `joint_self_check::body_has_undecidable_kind_split`).
     let mut skip_verdict = false;
     for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
         if *declared_ty == Type::Error {
@@ -400,6 +407,9 @@ fn compile_joint_self_check(
                 .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
             );
         }
+    }
+    if crate::joint_self_check::body_has_undecidable_kind_split(&compiled_body) {
+        skip_verdict = true;
     }
 
     if !skip_verdict {

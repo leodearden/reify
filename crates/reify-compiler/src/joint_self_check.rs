@@ -25,7 +25,7 @@
 //! testable without a full compile (mirroring the
 //! `relation_signatures.rs` / `joint_signatures.rs` convention).
 
-use crate::relation_signatures::relation_delta_dof_kinds;
+use crate::relation_signatures::{relation_delta_dof, relation_delta_dof_kinds};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -65,10 +65,17 @@ const NOMINAL_TRANS: u32 = 3;
 /// residual is `(3 − Σrot, 3 − Σtrans)`, saturating at 0 so an over-constrained
 /// body reports `(0, 0)` rather than underflowing.
 ///
-/// GRADUALISM: a body member that is not a `FunctionCall`, or whose relation has
-/// no curated kind split (`None` — e.g. `tangent`, or an unknown name), is
-/// SKIPPED. The residual is computed as if only the curated relation members
-/// were present, so an undecidable member never forces a spurious mismatch.
+/// GRADUALISM (per-member only): a body member that is not a `FunctionCall`, or
+/// whose relation has no curated kind split (`None` — e.g. `tangent`, or an
+/// unknown name), contributes nothing to THIS function's residual.
+///
+/// This is a per-member skip, NOT a whole-check guarantee. A member with a
+/// curated DOF COUNT but no kind split — `tangent`, where [`relation_delta_dof`]
+/// is `Some(2)` yet [`relation_delta_dof_kinds`] is `None` — removes DOF the
+/// kind table cannot attribute, so omitting it here INFLATES the residual above
+/// the true geometry. Suppressing the resulting spurious mismatch is the
+/// caller's responsibility: it gates the verdict off via
+/// [`body_has_undecidable_kind_split`] whenever such a member is present.
 pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
     let mut sum_rot: u32 = 0;
     let mut sum_trans: u32 = 0;
@@ -84,6 +91,35 @@ pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
         NOMINAL_ROT.saturating_sub(sum_rot),
         NOMINAL_TRANS.saturating_sub(sum_trans),
     )
+}
+
+/// Does `body` contain any relation member whose DOF COUNT is curated
+/// ([`relation_delta_dof`] is `Some`) but whose rotational/translational KIND
+/// split is NOT ([`relation_delta_dof_kinds`] is `None`)?
+///
+/// `tangent` is the motivating case: its codimension is a known `2`, but its
+/// split is surface-conditional and nominally undecidable. [`residual_kinds`]
+/// omits such a member (it has no kind to attribute), which INFLATES the residual
+/// above the true geometry — so a declaration written to match the *true*
+/// residual would draw a spurious `E_JOINT_DOF_MISMATCH`. When this returns
+/// `true` the caller suppresses the count/kind verdict entirely (PRD §7.1
+/// gradualism): a residual the kind table cannot fully account for must not force
+/// a verdict.
+///
+/// A purely uncurated member (unknown name, or an operand shape outside the
+/// vocabulary) has `relation_delta_dof` = `None` too, so it does NOT trip this
+/// gate — its DOF removal is wholly unknown rather than known-count/unknown-kind,
+/// and `residual_kinds` already treats it as removing nothing under the same
+/// gradualism.
+pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
+    body.iter().any(|member| {
+        if let CompiledExprKind::FunctionCall { function, args } = &member.kind {
+            relation_delta_dof(&function.name, args).is_some()
+                && relation_delta_dof_kinds(&function.name, args).is_none()
+        } else {
+            false
+        }
+    })
 }
 
 /// Classify a single resolved DOF field `Type` into its `(rot, trans)` kind
@@ -309,6 +345,51 @@ mod tests {
             rel("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
         ];
         assert_eq!(residual_kinds(&body), DofKinds::new(1, 1));
+    }
+
+    // ── body_has_undecidable_kind_split (count-known / kind-unknown) ──────────
+
+    /// A body of fully-curated relations (count AND kind both `Some`) has no
+    /// undecidable member — the verdict is trustworthy and is NOT gated off.
+    #[test]
+    fn body_has_undecidable_kind_split_false_for_fully_curated() {
+        let body = [
+            rel("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
+            rel("on", vec![pt(), arg(Type::Plane)]),
+            rel("parallel", vec![arg(Type::Direction), arg(Type::Direction)]),
+        ];
+        assert!(!body_has_undecidable_kind_split(&body));
+    }
+
+    /// `tangent` has a curated COUNT (`relation_delta_dof` = `Some(2)`) but no
+    /// kind split (`relation_delta_dof_kinds` = `None`) — the motivating
+    /// count-known/kind-unknown member. Its presence trips the gate so the caller
+    /// suppresses the verdict (`residual_kinds` would otherwise inflate the
+    /// residual and draw a spurious mismatch).
+    #[test]
+    fn body_has_undecidable_kind_split_true_for_tangent() {
+        let body = [rel("tangent", vec![arg(Type::Axis), arg(Type::Axis)])];
+        assert!(body_has_undecidable_kind_split(&body));
+        // And still trips when mixed with a fully-curated relation.
+        let mixed = [
+            rel("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
+            rel("tangent", vec![arg(Type::Axis), arg(Type::Axis)]),
+        ];
+        assert!(body_has_undecidable_kind_split(&mixed));
+    }
+
+    /// A purely uncurated member (unknown name → both `relation_delta_dof` and
+    /// `relation_delta_dof_kinds` are `None`) does NOT trip the gate: its removal
+    /// is wholly unknown, not known-count/unknown-kind. An empty body and a
+    /// non-`FunctionCall` member likewise do not trip it.
+    #[test]
+    fn body_has_undecidable_kind_split_false_for_uncurated_empty_and_nonfn() {
+        let unknown = [rel("frobnicate", vec![arg(Type::Axis)])];
+        assert!(!body_has_undecidable_kind_split(&unknown));
+        let empty: [CompiledExpr; 0] = [];
+        assert!(!body_has_undecidable_kind_split(&empty));
+        let nonfn = [arg(Type::Relation)];
+        assert!(!body_has_undecidable_kind_split(&nonfn));
     }
 
     // ── dof_kind_of / declared_kinds (step-7 RED / step-8 GREEN) ─────────────
