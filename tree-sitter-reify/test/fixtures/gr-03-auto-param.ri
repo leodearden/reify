@@ -1,0 +1,16 @@
+/// Fixture gr-03: parameterized `at auto(...)` pose-binding forms
+/// (geometric-relations v0_6, PRD §4/§3 G3/§9 task δ; design §4 `auto(…)`).
+///
+/// Exercises ONLY the `at auto(...)` forms — `auto(free)`, `auto(seed = …)`, and
+/// the component-fix `auto(x = …, orientation = …)` — so it is GREEN after the
+/// auto-param arm (step-2) + `at auto` pose-binding (step-4). δ only PRESERVES
+/// the seed/component-fix params; consumption is ζ.
+///
+/// Signal: `tree-sitter parse --quiet gr-03-auto-param.ri` exits 0 once steps
+/// 2 + 4 land. ERRORs on the base grammar (parameterized `auto(...)` produces an
+/// ERROR node and `auto` is not accepted at the pose position).
+structure Assembly {
+    sub a : Part at auto(free)
+    sub b : Part at auto(seed = self.frame)
+    sub c : Part at auto(x = 5mm, orientation = orient_identity())
+}
