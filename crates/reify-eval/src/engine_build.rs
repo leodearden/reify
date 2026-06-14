@@ -7125,6 +7125,87 @@ mod tests {
         );
     }
 
+    /// step-09 (RED): `build_outputs` emits one [`crate::ExportArtifact`] per
+    /// recognized `Output` occurrence, in declaration order (B6).
+    ///
+    /// Two occurrences on the same solid — `sub o = STLOutput(...)` then
+    /// `sub s = STEPOutput(...)` — must yield exactly two artifacts in source
+    /// order: `[{Stl, "/tmp/d/o.stl"}, {Step, "/tmp/d/o2.step"}]`, and the
+    /// recording kernel must observe the two `export()` calls as `[Stl, Step]`
+    /// in that same order. The `STEPOutput` occurrence's `format` default
+    /// (`OutputFormat.STEP`) must route to `ExportFormat::Step`, proving the
+    /// per-occurrence DSL format — not a single shared flag — drives each file.
+    ///
+    /// RED until step-10: the step-08 happy path breaks after the FIRST
+    /// recognized occurrence, so it emits a single STL artifact and this test's
+    /// `artifacts.len() == 2` (and the `[Stl, Step]` export order) fail.
+    #[test]
+    fn build_outputs_emits_one_artifact_per_occurrence_in_declaration_order() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub s = STEPOutput(subject: part, path: "o2.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            2,
+            "one artifact per Output occurrence (STLOutput + STEPOutput), got {}",
+            artifacts.len()
+        );
+        // Declaration order: STLOutput first, STEPOutput second.
+        assert_eq!(artifacts[0].format, reify_ir::ExportFormat::Stl);
+        assert_eq!(artifacts[0].path, PathBuf::from("/tmp/d/o.stl"));
+        assert_eq!(
+            artifacts[1].format,
+            reify_ir::ExportFormat::Step,
+            "the STEPOutput occurrence's format default (STEP) must route to Step"
+        );
+        assert_eq!(artifacts[1].path, PathBuf::from("/tmp/d/o2.step"));
+
+        let exported = exported.lock().unwrap().clone();
+        let formats: Vec<reify_ir::ExportFormat> = exported.iter().map(|(_, f)| *f).collect();
+        assert_eq!(
+            formats,
+            vec![reify_ir::ExportFormat::Stl, reify_ir::ExportFormat::Step],
+            "the recording kernel must observe per-occurrence exports [Stl, Step] \
+             in declaration order, got {:?}",
+            formats
+        );
+        let executed = executed.lock().unwrap().clone();
+        for (handle, _) in &exported {
+            assert!(
+                executed.contains(handle),
+                "each exported handle {:?} must be a realized `subject: part` \
+                 handle; realized handles were {:?}",
+                handle,
+                executed
+            );
+        }
+    }
+
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /
     /// `module_named_steps`.
