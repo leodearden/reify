@@ -7,14 +7,51 @@
 //   - reify-eval depends on BOTH reify-solver-elastic AND reify-core.
 //   - The mapping is therefore the natural glue layer here.
 //
-// Implementation added in step-4.  This file contains only the #[cfg(test)]
-// unit tests so step-3 (RED) compiles to a "function not found" error.
+// All TODAY callers pass `span = None` (per the Leo-ratified relaxed scope
+// 2026-05-30, esc-2929-40 option B).  The `span: Option<SourceSpan>` parameter
+// is kept for future-proofing: the label is only attached when `span` is `Some`.
+
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan};
+use reify_solver_elastic::FeaFailure;
+
+/// Map a `FeaFailure` to a `reify_core::Diagnostic`.
+///
+/// - `message` is taken verbatim from `failure.message()`.
+/// - `severity` is `Severity::Error` when `failure.is_error()`, else `Severity::Warning`.
+/// - `code` is set to the corresponding `DiagnosticCode::Fea*` variant.
+/// - A `DiagnosticLabel` is appended only when `span` is `Some`; all current
+///   callers pass `None` (per esc-2929-40 relaxed scope).
+pub fn fea_diagnostic_to_core(failure: &FeaFailure, span: Option<SourceSpan>) -> Diagnostic {
+    let message = failure.message();
+    let code = match failure {
+        FeaFailure::UnderConstrained { .. } => DiagnosticCode::FeaUnderConstrained,
+        FeaFailure::SingularStiffness { .. } => DiagnosticCode::FeaSingularStiffness,
+        FeaFailure::NonConvergence { .. } => DiagnosticCode::FeaNonConvergence,
+        FeaFailure::NoLoads => DiagnosticCode::FeaNoLoads,
+        FeaFailure::LoadOnInterior { .. } => DiagnosticCode::FeaLoadOnInterior,
+        FeaFailure::SelectorNoMatch { .. } => DiagnosticCode::FeaSelectorNoMatch,
+        FeaFailure::ThinBody { .. } => DiagnosticCode::FeaThinBody,
+    };
+
+    let mut diag = if failure.is_error() {
+        Diagnostic::error(message.clone())
+    } else {
+        Diagnostic::warning(message.clone())
+    }
+    .with_code(code);
+
+    if let Some(s) = span {
+        diag = diag.with_label(DiagnosticLabel::new(s, message));
+    }
+
+    diag
+}
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan};
+    use reify_core::{DiagnosticCode, Severity, SourceSpan};
     use reify_solver_elastic::FeaFailure;
 
     use super::fea_diagnostic_to_core;

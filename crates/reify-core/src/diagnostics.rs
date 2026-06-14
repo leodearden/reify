@@ -2323,6 +2323,78 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 ε).
     FeatureDatumAmbiguous,
+
+    // ── FEA failure-mode diagnostics (task 2929) ─────────────────────────
+    //
+    // Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    // (task 2929 — FEA diagnostic mapping for common failure modes).
+    // Conversion: `fea_diagnostic_to_core` in the same file.
+    //
+    // Severity convention (matches FeaFailure::is_error()):
+    //   W_FEA_* → Warning (advisory, solve still returns a result)
+    //   E_FEA_* → Error   (degenerate / unresolvable, solve aborts)
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when no user-specified supports are provided
+    /// (empty `supports` list); the fixed-cantilever trampoline auto-clamps
+    /// the root face so the solve still returns an ElasticResult.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_UNDER_CONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaUnderConstrained,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when one or more elements have near-zero volume
+    /// (degenerate mesh); the stiffness matrix is singular and the solve
+    /// cannot proceed. Returns `ComputeOutcome::Failed`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_SINGULAR_STIFFNESS`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaSingularStiffness,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when the CG solver reaches its iteration limit
+    /// without converging. The result is returned but may be inaccurate.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_NON_CONVERGENCE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaNonConvergence,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when no loads are applied to the model (all
+    /// applied forces are zero). The solve produces a trivial all-zero
+    /// result.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_NO_LOADS`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaNoLoads,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when a load selector targets an interior node
+    /// rather than a boundary face. Detection is mapping-only (upstream
+    /// selector resolution); reserved for future wiring.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_LOAD_ON_INTERIOR`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaLoadOnInterior,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when a selector matches no geometry nodes.
+    /// Detection is mapping-only (upstream selector resolution); reserved
+    /// for future wiring.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_SELECTOR_NO_MATCH`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaSelectorNoMatch,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when the body bounding-box aspect ratio exceeds
+    /// the thin-body threshold (~10); P1 solid elements perform poorly for
+    /// very thin bodies. Advisory only — the solve still runs.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_THIN_BODY`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaThinBody,
 }
 
 /// A diagnostic message with location and optional labels.
