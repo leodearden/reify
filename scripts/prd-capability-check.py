@@ -53,8 +53,112 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Valid constants
+# ---------------------------------------------------------------------------
+
+_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
+_VALID_OBSERVATIONS = frozenset({"present", "absent"})
+
+
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Probe:
+    """A single capability probe record from the committed probe-set JSON."""
+    capability: str
+    probe_kind: str                   # "grammar" | "check" | "ir"
+    fixture: str                      # repo-relative path to the .ri fixture
+    expected: Dict[str, Any]          # {observation: str, match: dict}
+
+
+# ---------------------------------------------------------------------------
+# Probe-set serialization
+# ---------------------------------------------------------------------------
+
+def load_probe_set(text: str) -> List[Probe]:
+    """Parse a committed-probe-set JSON string into a list of Probe objects.
+
+    Raises ValueError if the structure is invalid:
+    - missing top-level 'probes' key
+    - missing required fields (capability, probe_kind, fixture, expected)
+    - unknown probe_kind (must be grammar|check|ir)
+    - unknown observation value (must be present|absent)
+    """
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"probe set is not valid JSON: {e}") from e
+
+    if not isinstance(obj, dict) or "probes" not in obj:
+        raise ValueError("probe set JSON must be an object with a top-level 'probes' key")
+
+    probes: List[Probe] = []
+    for i, raw in enumerate(obj["probes"]):
+        # Required fields
+        for field_name in ("capability", "probe_kind", "fixture", "expected"):
+            if field_name not in raw:
+                raise ValueError(
+                    f"probe[{i}] is missing required field '{field_name}'"
+                )
+
+        probe_kind = raw["probe_kind"]
+        if probe_kind not in _VALID_PROBE_KINDS:
+            raise ValueError(
+                f"probe[{i}] has unknown probe_kind '{probe_kind}'; "
+                f"must be one of {sorted(_VALID_PROBE_KINDS)}"
+            )
+
+        expected = raw["expected"]
+        if not isinstance(expected, dict) or "observation" not in expected:
+            raise ValueError(
+                f"probe[{i}] expected must be an object with an 'observation' field"
+            )
+        observation = expected["observation"]
+        if observation not in _VALID_OBSERVATIONS:
+            raise ValueError(
+                f"probe[{i}] has unknown observation '{observation}'; "
+                f"must be one of {sorted(_VALID_OBSERVATIONS)}"
+            )
+        # Ensure 'match' key exists (default to empty dict if absent)
+        if "match" not in expected:
+            expected = dict(expected, match={})
+
+        probes.append(Probe(
+            capability=raw["capability"],
+            probe_kind=probe_kind,
+            fixture=raw["fixture"],
+            expected=expected,
+        ))
+
+    return probes
+
+
+def dump_probe_set(probes: List[Probe]) -> str:
+    """Serialize a list of Probe objects to a committed-probe-set JSON string.
+
+    Uses stable key order and 4-space indentation for diff-friendliness.
+    Round-trips with load_probe_set: load_probe_set(dump_probe_set(p)) == p.
+    """
+    def probe_to_dict(p: Probe) -> Dict[str, Any]:
+        return {
+            "capability": p.capability,
+            "probe_kind": p.probe_kind,
+            "fixture": p.fixture,
+            "expected": {
+                "observation": p.expected["observation"],
+                "match": p.expected.get("match", {}),
+            },
+        }
+
+    obj = {"probes": [probe_to_dict(p) for p in probes]}
+    return json.dumps(obj, indent=4)
 
 
 def main(argv: List[str]) -> int:

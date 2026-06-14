@@ -22,6 +22,9 @@ _HARNESS_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
 
 _spec = importlib.util.spec_from_file_location("prd_capability_check", _HARNESS_PATH)
 pcc = importlib.util.module_from_spec(_spec)
+# Register in sys.modules before exec_module so @dataclass and typing annotations
+# resolve correctly (they look up cls.__module__ in sys.modules at decoration time).
+sys.modules["prd_capability_check"] = pcc
 _spec.loader.exec_module(pcc)
 
 
