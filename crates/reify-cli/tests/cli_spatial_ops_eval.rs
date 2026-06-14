@@ -14,12 +14,15 @@
 mod common;
 
 /// B6/B7/B8: `reify check examples/fields/spatial_ops.ri` exits 0 and reports
-/// "All constraints satisfied." proving all four spatial-op constructor fns work.
+/// "All constraints satisfied." — this single assertion validates ALL four
+/// spatial-op constructor fns because the example encodes their expected
+/// behavior as range/boolean constraints (clamp bound, remap linear, threshold
+/// true/false, constant value).
 ///
-/// `reify eval` must also exit 0 and contain key value substrings:
-///   - the constant-field value "42" (from constant_field(42.0) sampled at 0.0/1.0)
-///   - the clamped pressure value (200MPa in SI-base ≈ 2e8 Pa → contains "200000000")
-///   - the boolean true/false results from threshold
+/// `reify eval` is also run (exit 0 check) and the B6 constant-field result is
+/// spot-checked by variable-name-anchored substring (`c0 = 42`).  The B7/B8
+/// behaviors are covered by the constraint gate above; no separate eval
+/// substrings are asserted for clamped pressure or threshold booleans.
 ///
 /// RED until step-8 creates examples/fields/spatial_ops.ri: `reify check`
 /// fails to load the file → non-zero exit / no "All constraints satisfied."
@@ -44,9 +47,10 @@ fn eval_spatial_ops_example() {
         status.success(),
         "reify eval fields/spatial_ops.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    // B6: constant_field(42.0) sampled at any point → 42.0 (Real).
+    // B6: constant_field(42.0) sampled at 0.0 → c0 = 42.0 (Real).
+    // Name-anchored to avoid false matches from unrelated numeric output.
     assert!(
-        stdout.contains("42"),
-        "stdout should contain '42' (constant_field(42.0) value);\ngot: {stdout}\nstderr: {stderr}"
+        stdout.contains("c0 = 42"),
+        "stdout should contain 'c0 = 42' (constant_field(42.0) sampled at 0.0);\ngot: {stdout}\nstderr: {stderr}"
     );
 }

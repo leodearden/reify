@@ -86,6 +86,13 @@ pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
 //     (numeric.rs:219).  Design decision: 4 scalar bound params (not 2 Range
 //     params) because scalar `remap` is strictly 5-arg and Range.lower/upper
 //     return Value::Option, not bare scalars (see plan.json D1 decision).
+//     NOTE — same-dimension restriction: a single Q constrains BOTH the input
+//     range (from_lo/from_hi) and the output range (to_lo/to_hi) to the same
+//     dimension.  The underlying `remap` builtin supports distinct from/to
+//     dimensions, but remap_field intentionally restricts to same-Q remapping
+//     (e.g. Pressure → Pressure).  Cross-dimension remapping (e.g. Pressure →
+//     Temperature) would require a second type param
+//     <D, Qin: Dimension, Qout: Dimension> — deferred to a follow-up if needed.
 //
 //   threshold<D, Q: Dimension>(f, value) -> Field<D, Bool>   [step-6, landed]
 //     Produces a Bool field: true where `sample(f, p) > value`, false
