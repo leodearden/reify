@@ -4775,4 +4775,74 @@ structure def Manifold {
             "vents keyed_members must carry the author-assigned keys in declaration order",
         );
     }
+
+    /// `substitute_expr` must recurse into `ExprKind::Auto`'s `params` value
+    /// expressions. A component-fix / seed param (`auto(seed = T.field)`) holds
+    /// a full value expression that references real bindings, so instantiating a
+    /// structure that binds those names must rewrite them *inside* the auto
+    /// param — otherwise monomorphization would carry a stale reference. This is
+    /// the one walker that is correctness-relevant for monomorphization (the
+    /// LSP/lint walker recursion added alongside it is checked elsewhere).
+    /// Mirrors the MapLiteral / FunctionCall substitution recursion arms.
+    /// Regression guard for geometric-relations δ (task 4384).
+    #[test]
+    fn substitute_expr_recurses_into_auto_params() {
+        let span = SourceSpan::new(0, 0);
+
+        // `auto(seed = T.field)` — the param value is a member-access whose base
+        // `T` references the binding to be substituted; `free` is preserved.
+        let auto = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Auto {
+                free: false,
+                params: vec![(
+                    "seed".to_string(),
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::MemberAccess {
+                            object: Box::new(reify_ast::Expr {
+                                kind: reify_ast::ExprKind::Ident("T".to_string()),
+                                span,
+                            }),
+                            member: "field".to_string(),
+                        },
+                        span,
+                    },
+                )],
+            },
+            span,
+        };
+
+        // Bind `T` → `S`.
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
+        bindings.insert(
+            "T".to_string(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("S".to_string()),
+                span,
+            },
+        );
+
+        let result = substitute_expr(&auto, &bindings);
+
+        match result.kind {
+            reify_ast::ExprKind::Auto { free, params } => {
+                assert!(!free, "free flag must be preserved through substitution");
+                assert_eq!(params.len(), 1, "param count must be preserved");
+                assert_eq!(params[0].0, "seed", "param name must be preserved");
+                match &params[0].1.kind {
+                    reify_ast::ExprKind::MemberAccess { object, member } => {
+                        assert_eq!(member, "field", "member segment must be preserved");
+                        match &object.kind {
+                            reify_ast::ExprKind::Ident(n) => assert_eq!(
+                                n, "S",
+                                "auto param value base must be substituted T → S"
+                            ),
+                            other => panic!("expected substituted Ident(S), got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected MemberAccess param value, got {other:?}"),
+                }
+            }
+            other => panic!("expected ExprKind::Auto, got {other:?}"),
+        }
+    }
 }
