@@ -94,7 +94,16 @@ pub(crate) fn substitute_expr(
         },
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto { free } => ExprKind::Auto { free: *free },
+        ExprKind::Auto { free, params } => ExprKind::Auto {
+            free: *free,
+            // `params` hold full value expressions (`seed = self.frame`,
+            // `x = 5mm`, …) that may reference bindings, so substitute into
+            // each — mirroring the MapLiteral / FunctionCall recursion above.
+            params: params
+                .iter()
+                .map(|(n, v)| (n.clone(), substitute_expr(v, bindings)))
+                .collect(),
+        },
         ExprKind::Undef => ExprKind::Undef,
         ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
             type_name: type_name.clone(),

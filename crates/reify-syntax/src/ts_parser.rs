@@ -2048,13 +2048,44 @@ impl<'a> Lowering<'a> {
     fn lower_binding_value(&self, node: tree_sitter::Node) -> Option<Expr> {
         if node.kind() == "auto_keyword" {
             let free = node.child_by_field_name("modifier").is_some();
+            let params = self.lower_auto_params(node);
             Some(Expr {
-                kind: ExprKind::Auto { free },
+                kind: ExprKind::Auto { free, params },
                 span: self.span(node),
             })
         } else {
             self.lower_expr(node)
         }
+    }
+
+    /// Collect the ordered `name = value` params of a parameterized `auto(...)`
+    /// CST node (geometric-relations δ, task 4384).
+    ///
+    /// The grammar (`auto_keyword`, grammar.js:635) has a parameterized arm
+    /// `seq($._auto_token, '(', $.auto_param_list, ')')` whose `auto_param_list`
+    /// holds `auto_param` children, each `field('name', identifier) '='
+    /// field('value', _expression)`. Returns an empty Vec for bare `auto` and
+    /// `auto(free)` (neither carries an `auto_param_list` child). δ only
+    /// PRESERVES these params in the AST; consuming them is ζ.
+    fn lower_auto_params(&self, auto_node: tree_sitter::Node) -> Vec<(String, Expr)> {
+        let mut params = Vec::new();
+        let mut cursor = auto_node.walk();
+        for child in auto_node.children(&mut cursor) {
+            if child.kind() != "auto_param_list" {
+                continue;
+            }
+            let mut inner = child.walk();
+            for param in child.children(&mut inner) {
+                if param.kind() == "auto_param"
+                    && let Some(name_node) = param.child_by_field_name("name")
+                    && let Some(value_node) = param.child_by_field_name("value")
+                    && let Some(value) = self.lower_expr(value_node)
+                {
+                    params.push((self.node_text(name_node).to_string(), value));
+                }
+            }
+        }
+        params
     }
 
     fn lower_param(&self, node: tree_sitter::Node) -> Option<ParamDecl> {
@@ -2306,11 +2337,15 @@ impl<'a> Lowering<'a> {
         let is_aux = self.has_aux_keyword(node);
         // Lower the optional `at <pose>` clause. The grammar exposes the pose
         // expression as a named field "pose" on the sub_declaration node
-        // (grammar.js task 3899 step-2). Pattern mirrors other optional-expr
-        // members (e.g. lower_port frame_expr, lower_param default).
+        // (grammar.js task 3899 step-2). δ (task 4384) widened the pose field
+        // to `choice($._expression, $.auto_keyword)`, making `at` a new auto
+        // binding-site; lowering therefore goes through `lower_binding_value`
+        // (not `lower_expr`) so `at auto` / `at auto(seed = …)` lower to
+        // `ExprKind::Auto { free, params }`. Ordinary pose expressions still
+        // fall through to `lower_expr` inside the helper.
         let pose_expr = node
             .child_by_field_name("pose")
-            .and_then(|n| self.lower_expr(n));
+            .and_then(|n| self.lower_binding_value(n));
 
         Some(SubDecl {
             name,
