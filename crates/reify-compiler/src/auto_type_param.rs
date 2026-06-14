@@ -2003,6 +2003,9 @@ pub fn resolve_auto_type_params_with_backtracking(
     // `EarlyTerminate` are observationally equivalent for a caller that reads
     // only `feasible_assignments`, and `BackjumpTo(0)` is consumed by the
     // `j == level` arm at level 0 — it cannot escape to this call site.
+    // Compute template literal seed once; threaded into dfs_search so every
+    // leaf starts with the template's own literal-param defaults (task 4599).
+    let dfs_template_seed = seed_template_literal_params(parameterized_template);
     let _ = dfs_search(
         0,
         &per_param_candidates,
@@ -2015,6 +2018,7 @@ pub fn resolve_auto_type_params_with_backtracking(
         functions,
         max_feasible_to_collect,
         &blame_map,
+        &dfs_template_seed,
     );
 
     match feasible_assignments.len() {
@@ -2615,16 +2619,18 @@ fn dfs_search(
     functions: &[CompiledFunction],
     max_feasible_to_collect: usize,
     blame_map: &HashMap<ConstraintNodeId, BTreeSet<usize>>,
+    template_seed: &reify_ir::ValueMap,
 ) -> DfsControl {
     if level == per_param_candidates.len() {
-        // Leaf branch: build a per-leaf ValueMap seeded from each param's selected
-        // candidate's literal defaults (hoist reversion — task 4434 γ, re-homed from
-        // task 3637).  `param_members[i]` is the member name of the value cell in the
-        // parameterized template that carries `Type::TypeParam(params[i].name)`.
+        // Leaf branch: build a per-leaf ValueMap seeded from the template's
+        // own literal-param defaults (task 4599) plus each param's selected
+        // candidate's literal defaults (hoist reversion — task 4434 γ, re-homed
+        // from task 3637).  `param_members[i]` is the member name of the value
+        // cell in the parameterized template that carries `Type::TypeParam(params[i].name)`.
         // When a member is `None` (no matching value cell) or the candidate template is
         // absent from the registry, that param's contribution to the map is empty —
         // stub-path no-op semantics (PRD §11.2).
-        let mut leaf_values = reify_ir::ValueMap::new();
+        let mut leaf_values = template_seed.clone();
         for (i, candidate) in current.iter().enumerate() {
             if let Some(Some(member)) = param_members.get(i)
                 && let Some(&candidate_template) = template_registry.get(candidate.as_str())
@@ -2685,6 +2691,7 @@ fn dfs_search(
             functions,
             max_feasible_to_collect,
             blame_map,
+            template_seed,
         );
         current.pop();
         match control {
@@ -3026,6 +3033,7 @@ mod helper_tests {
         let mut feasible_assignments: Vec<Vec<String>> = Vec::new();
         let empty_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let empty_param_members: Vec<Option<String>> = Vec::new();
+        let empty_template_seed = reify_ir::ValueMap::new();
         dfs_search(
             0,
             &per_param_candidates,
@@ -3038,6 +3046,7 @@ mod helper_tests {
             functions,
             usize::MAX,
             &blame_map,
+            &empty_template_seed,
         );
     }
 
