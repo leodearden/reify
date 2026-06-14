@@ -33,7 +33,7 @@ structure OverlapUnion {
     // for entity "OverlapUnion".  Without at least one param, propagate_subject_to_descendants
     // returns [] → active_tolerance_scope stays empty → demanded_tol = None →
     // RealizationCache insert is skipped → test_terminal_handle returns None.
-    param offset : Scalar = 5mm
+    param offset : Length = 5mm
 
     let box_a = box(10mm, 10mm, 10mm)
     let box_b_raw = box(10mm, 10mm, 10mm)
