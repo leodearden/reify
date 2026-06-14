@@ -202,6 +202,10 @@ use super::shell_solve::{
     resolve_extraction_failure,
 };
 
+// Task 2929: FEA diagnostic mapping glue.
+use super::fea_diagnostics::fea_diagnostic_to_core;
+use reify_solver_elastic::FeaFailure;
+
 // ── MaterialModel ────────────────────────────────────────────────────────────
 
 /// Dispatch tag used by `solve_cantilever_fea` to route element assembly and
@@ -371,6 +375,26 @@ pub fn solve_elastic_static_trampoline(
     // (the user demanded a shell solve — no silent fallback), `Auto`/`Off` fall
     // back to tet with a VISIBLE warning carried to the final ComputeOutcome.
     let mut route_diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // ── (task 2929) FEA pre-solve diagnostics ─────────────────────────────────
+    //
+    // Detect well-known failure modes BEFORE the solve and push warning
+    // diagnostics into `route_diagnostics` (the same vehicle used for the
+    // ShellTooThick and non-isotropic-material warnings above).
+    //
+    // Severity policy: advisory modes emit Warning and ride on
+    // ComputeOutcome::Completed; genuinely-unsolvable modes emit Error and
+    // return ComputeOutcome::Failed.  Per esc-2929-40 (relaxed scope), all
+    // diagnostics are emitted label-less (span=None).
+
+    // No-loads advisory: all applied forces are zero.
+    // tip_force components ≈ 0 ∧ pressures.is_empty() ∧ body_force ≈ 0.
+    let no_tip_force = tip_force.iter().all(|&c| c.abs() < 1e-300);
+    let no_body_force = body_force.iter().all(|&c| c.abs() < 1e-300);
+    if no_tip_force && pressures.is_empty() && no_body_force {
+        route_diagnostics.push(fea_diagnostic_to_core(&FeaFailure::NoLoads, None));
+    }
+
     if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
         let policy = resolve_extraction_failure(shell_force);
         let msg = format!(
