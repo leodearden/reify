@@ -255,31 +255,12 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
-pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LoftOpHistoryRecords, SweepOpHistoryRecords};
-
-/// History records emitted by a local-feature operation (fillet or chamfer)
-/// at the OCCT FFI surface.
-///
-/// Mirrors `BooleanOpHistoryRecords` (single-parent, no cap-face concept) —
-/// fillet/chamfer have no FirstShape/LastShape and no revolve-synthesis counters.
-/// `parent_index` in every record is always `0` (single parent solid).
-///
-/// Defined in `reify-kernel-occt` rather than `reify-types` because the
-/// narrowed task-2655 scope excludes reify-types changes. Subtask 2655.1
-/// (eval-side wiring) may lift this to `reify-types` when AttributeHistory
-/// grows Fillet/Chamfer variants.
-#[derive(Debug, Clone, Default)]
-pub struct LocalFeatureOpHistoryRecords {
-    /// Count of Modified/Generated children silently dropped because they
-    /// could not be found in the result map. Zero for a well-formed op.
-    pub silent_drop_count: u32,
-    pub face_modified: Vec<HistoryRecord>,
-    pub face_generated: Vec<HistoryRecord>,
-    pub face_deleted: Vec<DeletedRecord>,
-    pub edge_modified: Vec<HistoryRecord>,
-    pub edge_generated: Vec<HistoryRecord>,
-    pub edge_deleted: Vec<DeletedRecord>,
-}
+// Task 7b (#2831): LocalFeatureOpHistoryRecords lifted to reify-ir so that
+// reify-eval can consume fillet/chamfer history without a normal-dep on
+// reify-kernel-occt. Re-exported here so existing callers (stubs.rs,
+// tests/common/mod.rs, local_feature_helper_contract.rs, per_edge_fillet.rs)
+// continue resolving `reify_kernel_occt::LocalFeatureOpHistoryRecords` unchanged.
+pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 
 #[cfg(has_occt)]
 /// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
