@@ -1731,13 +1731,15 @@ pub(crate) fn compile_expr_guarded(
                             &matched_fn.return_type,
                             &subst,
                         );
-                        // A BARE top-level unbound type-param means nothing pinned
-                        // the result type (e.g. `make<T>() -> T` called as `make()`):
-                        // the call yields a wholly-undetermined type → error + poison.
+                        // A BARE top-level unbound type-param or dimension-param
+                        // means nothing pinned the result type (e.g. `make<T>() -> T`
+                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
+                        // called as `mk(3.0)` — Q undetermined): the call yields a
+                        // wholly-undetermined type → error + poison (task ζ / D8).
                         // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
                         // is TOLERATED — it is pinned by an enclosing call (B5,
                         // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_)) {
+                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
                             return make_poison_literal(
                                 diagnostics,
                                 Diagnostic::error(format!(

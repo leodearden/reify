@@ -261,3 +261,117 @@ fn generic_constant_field_nested_unbound_does_not_emit_unresolved() {
         unresolved_diag
     );
 }
+
+// ── task 4235 ζ: call-site dimension-param inference (D8 / B9-at-compiler) ───
+//
+// Uses mm (LENGTH) + kg (MASS) — both in the no-stdlib hardcoded unit fallback.
+// `5MPa` is NOT available here (requires the full stdlib prelude); the B9 literal
+// scenario (mm + MPa) is gated by the CLI e2e test in cli_generics_eval.rs.
+
+/// B9 (compiler-level, two dims): `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
+/// called at LENGTH (10mm) and MASS (5kg) must:
+///   (a) emit zero Error diagnostics,
+///   (b) result_type of `a` == Scalar{LENGTH},  result_type of `b` == Scalar{MASS},
+///   (c) eval `a` == 0.03 m (10mm * 3.0), eval `b` == 10.0 kg (5kg * 2.0) — INV-2/7.
+///
+/// RED until step-8 clears the overload + substitute path and the bare-unbound
+/// guard properly handles (a)/(b). Partial RED: (a)/(b) become green after
+/// steps 2/4/6; (c) verifies eval. Note: (c) unbound case drives step-8 RED.
+#[test]
+fn dim_param_scale_q_resolves_at_two_dimensions() {
+    let module = compile_source(
+        "fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k } \
+         structure S { let a = scale_q(10mm, 3.0)  let b = scale_q(5kg, 2.0) }",
+    );
+
+    // (a) zero Error diagnostics.
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "scale_q at two dims should produce no Error diagnostics; got: {errors:?}"
+    );
+
+    // (b) result_type of a == Scalar{LENGTH}, b == Scalar{MASS}.
+    let a_expr = cell_expr(&module, "a");
+    let b_expr = cell_expr(&module, "b");
+    assert_eq!(
+        a_expr.result_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "a = scale_q(10mm, 3.0): result_type should be Scalar{{LENGTH}}, got {:?}",
+        a_expr.result_type
+    );
+    assert_eq!(
+        b_expr.result_type,
+        Type::Scalar { dimension: DimensionVector::MASS },
+        "b = scale_q(5kg, 2.0): result_type should be Scalar{{MASS}}, got {:?}",
+        b_expr.result_type
+    );
+
+    // (c) eval values — INV-2 / INV-7: value is type-erased but correct.
+    let values = reify_ir::ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let a_val = reify_expr::eval_expr(a_expr, &ctx);
+    let b_val = reify_expr::eval_expr(b_expr, &ctx);
+    assert_eq!(
+        a_val,
+        reify_ir::Value::Scalar { si_value: 0.03, dimension: DimensionVector::LENGTH },
+        "scale_q(10mm, 3.0) should eval to 0.03 m, got {a_val:?}"
+    );
+    assert_eq!(
+        b_val,
+        reify_ir::Value::Scalar { si_value: 10.0, dimension: DimensionVector::MASS },
+        "scale_q(5kg, 2.0) should eval to 10.0 kg, got {b_val:?}"
+    );
+}
+
+/// Conflict: `need_same<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>)` called with
+/// two DIFFERENT dimension scalars (mm=LENGTH, kg=MASS) must emit
+/// `DiagnosticCode::FnTypeArgConflict`.
+///
+/// RED until step-8: before D8 inference fires, no conflict is detected.
+#[test]
+fn dim_param_conflict_different_dimensions_emits_conflict_diagnostic() {
+    let module = compile_source(
+        "fn need_same<Q: Dimension>(a: Scalar<Q>, b: Scalar<Q>) -> Scalar<Q> { a } \
+         structure S { let c = need_same(10mm, 5kg) }",
+    );
+
+    let conflict_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgConflict));
+    assert!(
+        conflict_diag.is_some(),
+        "need_same(10mm, 5kg) with differing dimensions should emit FnTypeArgConflict; \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// Unbound: `mk<Q: Dimension>(k: Real) -> Scalar<Q>` called as `mk(3.0)` —
+/// zero params pin Q, so the bare top-level result type stays ScalarParam("Q")
+/// → must emit `DiagnosticCode::FnTypeArgUnresolved`.
+///
+/// RED until step-8: the bare-unbound guard only catches TypeParam, not ScalarParam.
+#[test]
+fn dim_param_unbound_bare_result_emits_unresolved_diagnostic() {
+    let module = compile_source(
+        "fn mk<Q: Dimension>(k: Real) -> Scalar<Q> { k } \
+         structure S { let d = mk(3.0) }",
+    );
+
+    let unresolved_diag = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgUnresolved));
+    assert!(
+        unresolved_diag.is_some(),
+        "mk(3.0) with bare unbound ScalarParam result should emit FnTypeArgUnresolved; \
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+}

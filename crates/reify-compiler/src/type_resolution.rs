@@ -1307,6 +1307,12 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // Dimension-param scalar: substitute when bound (mirrors the TypeParam
+        // arm above), else pass through unchanged. Nested dim-params inside
+        // Vector/Point/Tensor/Matrix quantity slots substitute for free via the
+        // quantity-slot recursion already in place above.
+        Type::ScalarParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
@@ -1326,9 +1332,6 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — substitutes to itself.
-        // Dimension binding is ζ / D8 and does not go through this walk.
-        | Type::ScalarParam(_)
         | Type::Error => ty.clone(),
     }
 }
@@ -3271,6 +3274,52 @@ mod tests {
         // (h) non-typeparam leaf (Int) with empty subst → identity.
         let subst = subst_of(&[]);
         assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
+    }
+
+    // ── task 4235 ζ: substitute_type_params dimension-param (D8) ────────────
+
+    /// (a) A bound ScalarParam substitutes to the concrete Scalar type.
+    ///
+    /// RED until step-4: the leaves arm clones ScalarParam unchanged even when
+    /// Q is in subst.
+    #[test]
+    fn substitute_scalar_param_bound_to_length() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("Q".to_string()), &subst),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+            "ScalarParam(\"Q\") with Q→Scalar{{LENGTH}} should substitute to Scalar{{LENGTH}}"
+        );
+    }
+
+    /// (b) Nested dim-param in Vector3<Q> substitutes in the quantity slot.
+    ///
+    /// RED until step-4: the leaves arm returns ScalarParam unchanged, so the
+    /// Vector quantity slot stays as ScalarParam rather than Scalar{LENGTH}.
+    #[test]
+    fn substitute_scalar_param_inside_vector3_quantity() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Vector { n: 3, quantity: Box::new(Type::ScalarParam("Q".to_string())) },
+                &subst,
+            ),
+            Type::Vector { n: 3, quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }) },
+            "Vector3<ScalarParam(\"Q\")> with Q→LENGTH should become Vector3<Scalar{{LENGTH}}>"
+        );
+    }
+
+    /// (c) Unbound ScalarParam passes through unchanged (R not in subst).
+    ///
+    /// GREEN even before step-4 (the leaves arm already clones ScalarParam).
+    #[test]
+    fn substitute_scalar_param_unbound_passthrough() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("R".to_string()), &subst),
+            Type::ScalarParam("R".to_string()),
+            "unbound ScalarParam(\"R\") should pass through unchanged"
+        );
     }
 
     // ── Range<T> parameterized resolution (step-1 RED / task 4576) ───────────
