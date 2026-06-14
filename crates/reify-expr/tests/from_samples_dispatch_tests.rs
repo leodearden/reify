@@ -181,3 +181,80 @@ fn from_samples_non_grid_emits_field_samples_not_grid_b3() {
         *diags
     );
 }
+
+// ── B4 tests (unsupported method → InterpMethodUnsupported) ──────────────────
+
+/// B4: `from_samples([0,1,2],[0,10,20], InterpolationMethod.RBF)` — valid
+/// 1-D regular grid but unsupported RBF method — must return `Value::Undef`
+/// and push a `DiagnosticCode::InterpMethodUnsupported` Error.
+///
+/// **RED before step-8**: `DiagnosticCode::InterpMethodUnsupported` variant
+/// does not exist (E0599 compile error) + eval returns Undef silently.
+/// **GREEN after step-8**: variant exists; returns Undef + pushes Error.
+#[test]
+fn from_samples_rbf_method_emits_interp_method_unsupported_b4() {
+    let sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+    let expr = make_from_samples_call(
+        real_list(0.0, 1.0, 2.0), // valid uniform grid
+        real_list(0.0, 10.0, 20.0),
+        interp_method("RBF"), // unsupported method
+    );
+
+    let result = eval_expr(&expr, &ctx);
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "from_samples with RBF method must return Undef (B4); got {:?}",
+        result
+    );
+
+    let diags = sink.borrow();
+    assert!(
+        diags.iter().any(|d| {
+            d.code == Some(DiagnosticCode::InterpMethodUnsupported)
+                && d.severity == Severity::Error
+        }),
+        "from_samples with RBF method must push InterpMethodUnsupported Error (B4); \
+         diagnostics: {:?}",
+        *diags
+    );
+}
+
+/// B4 (Kriging): confirm the Kriging variant also emits
+/// `DiagnosticCode::InterpMethodUnsupported`.
+#[test]
+fn from_samples_kriging_method_emits_interp_method_unsupported_b4() {
+    let sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+    let expr = make_from_samples_call(
+        real_list(0.0, 1.0, 2.0),
+        real_list(0.0, 10.0, 20.0),
+        interp_method("Kriging"), // unsupported method
+    );
+
+    let result = eval_expr(&expr, &ctx);
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "from_samples with Kriging method must return Undef (B4); got {:?}",
+        result
+    );
+
+    let diags = sink.borrow();
+    assert!(
+        diags.iter().any(|d| {
+            d.code == Some(DiagnosticCode::InterpMethodUnsupported)
+                && d.severity == Severity::Error
+        }),
+        "from_samples with Kriging method must push InterpMethodUnsupported Error (B4); \
+         diagnostics: {:?}",
+        *diags
+    );
+}
