@@ -3261,6 +3261,44 @@ pub struct BooleanOpHistoryRecords {
 }
 
 /// All Modified / Generated / Deleted history records for a single
+/// **local-feature operation** (`GeometryOp::Fillet` / `GeometryOp::Chamfer`;
+/// task 7, #2831).
+///
+/// Structural sibling of [`BooleanOpHistoryRecords`].  The per-stream parent
+/// kinds differ from the boolean case — they are **cross-kind**:
+///
+/// | Stream           | Parent kind | Result kind |
+/// |------------------|-------------|-------------|
+/// | `face_modified`  | FACE        | FACE        |
+/// | `face_generated` | EDGE        | FACE        |
+/// | `edge_modified`  | EDGE        | EDGE        |
+/// | `edge_generated` | VERTEX      | EDGE        |
+///
+/// `parent_index` on every inner record is always `0` (a fillet/chamfer has
+/// one target shape, not two operands), included only for layout-uniformity
+/// with the boolean variant.
+///
+/// Returned by `OcctKernel::fillet_with_history`,
+/// `OcctKernel::fillet_edges_with_history`, and
+/// `OcctKernel::chamfer_with_history` (via `LocalFeatureOpHistoryRecords`
+/// re-exported by `reify-kernel-occt`).  Consumed by
+/// `reify_eval::propagate_attributes_via_local_feature_history`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalFeatureOpHistoryRecords {
+    /// Number of Modified/Generated children that the FFI primitive observed
+    /// but could not map back into the result face/edge map (i.e. the child
+    /// shape reported by BRep_Builder was absent from the result's TopExp
+    /// map).  For well-formed BRep operations this should be zero.
+    pub silent_drop_count: u32,
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+}
+
+/// All Modified / Generated / Deleted history records for a single
 /// **single-parent sweep operation** (extrude / revolve, currently;
 /// sweep / loft in task 5b).
 ///

@@ -45,8 +45,8 @@ use std::collections::HashMap;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{
     AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-    HistoryRecord, LoftOpHistoryRecords, ModEntry, QueryError, Role, SweepOpHistoryRecords,
-    TopologyAttribute, TopologyAttributeTable,
+    HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, ModEntry, QueryError, Role,
+    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -183,6 +183,112 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     // Deleted records are intentionally skipped: no result sub-shape
     // exists to receive the attribute, and parents' existing table
     // entries remain valid (task 4 will add diagnostics).
+    Ok(())
+}
+
+/// Propagate parent topology attributes onto the result of a `BRep` local-feature
+/// operation (fillet / chamfer), using the Modified / Generated / Deleted records
+/// the algorithm exposes.
+///
+/// Local features have **cross-kind** parent relationships that differ from boolean
+/// ops. Each of the four streams is processed independently with its own parent map:
+///
+/// | Stream           | Parent slice         | Result slice        |
+/// |------------------|----------------------|---------------------|
+/// | `face_modified`  | `parent_face_handles`| `result_face_handles`|
+/// | `face_generated` | `parent_edge_handles`| `result_face_handles`|
+/// | `edge_modified`  | `parent_edge_handles`| `result_edge_handles`|
+/// | `edge_generated` | `parent_vertex_handles`| `result_edge_handles`|
+///
+/// `parent_index` on every inner record is always `0` (one target shape).
+///
+/// Split detection works identically to
+/// [`propagate_attributes_via_brepalgoapi_history`]: a parent with >1 same-stream
+/// result children gets a fresh `ModEntry { splitting_feature_id, split_index }`
+/// appended to `mod_history` on each child; single-result parents are pure
+/// pass-through (mod_history unchanged). Each stream uses its own independent
+/// count map and split-counter map so cross-stream index collisions do not occur.
+///
+/// Returns `Err(QueryError::QueryFailed)` if any record references an out-of-bounds
+/// parent or result sub-shape index.
+pub fn propagate_attributes_via_local_feature_history(
+    table: &mut TopologyAttributeTable,
+    parent_face_handles: &[GeometryHandleId],
+    parent_edge_handles: &[GeometryHandleId],
+    parent_vertex_handles: &[GeometryHandleId],
+    result_face_handles: &[GeometryHandleId],
+    result_edge_handles: &[GeometryHandleId],
+    history: &LocalFeatureOpHistoryRecords,
+    splitting_feature_id: &FeatureId,
+) -> Result<(), QueryError> {
+    // ---- stream 1: face_modified <- parent FACE -> result FACE ----
+    {
+        let counts = count_children_per_parent(&history.face_modified, &[]);
+        let mut split_counters = std::collections::HashMap::new();
+        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
+        for record in &history.face_modified {
+            propagate_one(
+                table,
+                &[parent_face_handles],
+                result_face_handles,
+                record,
+                "face_modified",
+                &mut ctx,
+            )?;
+        }
+    }
+
+    // ---- stream 2: face_generated <- parent EDGE -> result FACE (cross-kind) ----
+    {
+        let counts = count_children_per_parent(&history.face_generated, &[]);
+        let mut split_counters = std::collections::HashMap::new();
+        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
+        for record in &history.face_generated {
+            propagate_one(
+                table,
+                &[parent_edge_handles],
+                result_face_handles,
+                record,
+                "face_generated",
+                &mut ctx,
+            )?;
+        }
+    }
+
+    // ---- stream 3: edge_modified <- parent EDGE -> result EDGE ----
+    {
+        let counts = count_children_per_parent(&history.edge_modified, &[]);
+        let mut split_counters = std::collections::HashMap::new();
+        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
+        for record in &history.edge_modified {
+            propagate_one(
+                table,
+                &[parent_edge_handles],
+                result_edge_handles,
+                record,
+                "edge_modified",
+                &mut ctx,
+            )?;
+        }
+    }
+
+    // ---- stream 4: edge_generated <- parent VERTEX -> result EDGE (cross-kind) ----
+    {
+        let counts = count_children_per_parent(&history.edge_generated, &[]);
+        let mut split_counters = std::collections::HashMap::new();
+        let mut ctx = SplitContext::new(splitting_feature_id, &counts, &mut split_counters);
+        for record in &history.edge_generated {
+            propagate_one(
+                table,
+                &[parent_vertex_handles],
+                result_edge_handles,
+                record,
+                "edge_generated",
+                &mut ctx,
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -3735,8 +3841,8 @@ mod tests {
 
     mod local_feature_propagation {
         use reify_ir::{
-            FeatureId, GeometryHandleId, HistoryRecord, LocalFeatureOpHistoryRecords, ModEntry,
-            QueryError, Role, TopologyAttribute, TopologyAttributeTable,
+            AxisSign, FeatureId, GeometryHandleId, HistoryRecord, LocalFeatureOpHistoryRecords,
+            ModEntry, QueryError, Role, TopologyAttribute, TopologyAttributeTable,
         };
 
         use super::super::propagate_attributes_via_local_feature_history;
@@ -3925,7 +4031,8 @@ mod tests {
             let splitting_fid = fillet_feature_id();
 
             let mut table = TopologyAttributeTable::default();
-            table.record(parent_vertex, make_attr(&fid, Role::CornerVertex, 3));
+            let corner_role = Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos };
+            table.record(parent_vertex, make_attr(&fid, corner_role.clone(), 3));
 
             let history = LocalFeatureOpHistoryRecords {
                 edge_generated: vec![rec(0, 0), rec(0, 1)],
@@ -3949,7 +4056,7 @@ mod tests {
                     .lookup(handle)
                     .unwrap_or_else(|| panic!("result edge {:?} must have an attribute", handle));
                 assert_eq!(attr.feature_id, fid, "feature_id inherited from parent vertex");
-                assert_eq!(attr.role, Role::CornerVertex, "role inherited from parent vertex");
+                assert_eq!(attr.role, corner_role, "role inherited from parent vertex");
                 assert_eq!(attr.local_index, 3, "local_index inherited from parent vertex");
                 assert_eq!(
                     attr.mod_history.len(),
