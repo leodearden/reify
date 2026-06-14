@@ -1850,8 +1850,12 @@ fn part_structure_def_declared() {
 fn part_value_accepted_where_part_param_declared() {
     let source = r#"
 structure PartBoundarySmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
     let step = StepForce(
-        at: "tip",
+        at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
@@ -1962,8 +1966,12 @@ fn displacement_time_history_part_is_part_type() {
 fn string_arg_to_part_param_rejected() {
     let source = r#"
 structure PartLeniencySmoke {
+    let b   = box(10mm, 10mm, 10mm)
+    let dir = vec3(0.0, 0.0, 1.0)
+    let tol = 1deg
+    let face_sel = faces_by_normal(b, dir, tol)
     let step = StepForce(
-        at: "tip",
+        at: face_sel,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s

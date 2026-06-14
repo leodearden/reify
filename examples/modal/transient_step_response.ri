@@ -21,10 +21,10 @@
 // Geometry / material / BC are the shared 200×10×2 mm AISI 1045 steel cantilever
 // (clamped at the x_min root), identical to cantilever_beam_modes.ri. The Z axis
 // (h = 2 mm) is the slender bending direction, so the fundamental mode is
-// Z-bending and the tip is its antinode — `StepForce(at:"tip", …, vec3(0,0,1))`
-// excites it and `displacement_at(response,"tip",vec3(0,0,1))` queries it (both
-// resolve geometry-free to the same fundamental-mode antinode node; plan
-// design-dec-3).
+// Z-bending and the tip is its antinode — `StepForce(at: <tip-face selector>,
+// …, vec3(0,0,1))` excites it and `displacement_at(response,"tip",vec3(0,0,1))`
+// queries it (both resolve geometry-free to the same fundamental-mode antinode
+// node until task 4122 lands selector→mesh-node resolution; plan design-dec-3).
 //
 // Damping: `RayleighDamping(alpha: 0, beta: 0.0003)` gives a per-mode ratio
 // ζ_i = (α + β·ω_i²)/(2·ω_i) = β·ω_i/2. For the fundamental (f₁ ≈ 44.7 Hz at P1,
@@ -88,8 +88,19 @@ structure CantileverStepResponse {
     // ForcingTimeHistory bundles the sources acting on the part (PRD §5.1); the
     // `sources.count > 0` ctor constraint is satisfied by the one StepForce.
     // `part` is the opaque Part marker (task 4578 / 4584: was String "beam").
+    //
+    // `at` is now a topology Selector (task 4577: was String "tip"). The
+    // free-tip (x_max) face is addressed kernel-free via box + faces_by_normal —
+    // the selector is never realized against a mesh, so it stays geometry-free
+    // (the bt7 idiom). Runtime selector→mesh-node resolution is task 4122; until
+    // it lands the modal force reader falls back to the fundamental-mode antinode
+    // (the tip), exactly as the displacement_at("tip", …) query below does.
+    let beam = box(length, width, height)
+    let tip_dir = vec3(1.0, 0.0, 0.0)
+    let tip_tol = 1deg
+    let tip_face = faces_by_normal(beam, tip_dir, tip_tol)
     let tip_push = StepForce(
-        at: "tip",
+        at: tip_face,
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
