@@ -547,6 +547,35 @@ See `docs/auto-type-param-resolution.md` for the complete algorithm, diagnostic 
 
 **Limited dependent typing:** Value parameters of type `Int` and `Bool` can appear in type-level positions (collection sizes, conditional presence gating, array dimensions). This is a targeted set of rules, not a general dependent type theory.
 
+#### 3.9.1 Generic functions
+
+A function declaration may carry a **type-parameter list** `<P₁, P₂, …>` in angle brackets after the function name. Type parameters declared here may appear in the function's parameter types and return type, including at any depth inside built-in parameterized types such as `List<T>`, `Set<T>`, and `Field<D, C>`. A name referenced in the signature that is neither a known concrete type nor a declared type parameter is an error (`E_FN_UNKNOWN_TYPE_PARAM`).
+
+```
+fn id<T>(x: T) -> T { x }                          // T in param and return
+fn single<T>(x: T) -> List<T> { [x] }              // T threaded inside List<…>
+fn constant_field<D, C>(value: C) -> Field<D, C>   // two params; D only in return
+    { fn_field(|p| value) }
+```
+
+**Call-site inference:** Type arguments are inferred at call sites by conservative, payload-driven, single-pass unification of the declared parameter types (with `Type::TypeParam` leaves) against the concrete argument types. Binding the same type parameter to two different concrete types across two arguments is a conflict (`E_FN_TYPE_ARG_CONFLICT`). This is the *function* analog of enum construction-inference; it is distinct from the structure-side `auto` candidate-enumeration -- no candidate pool, no BFS, no backtracking.
+
+```
+id(5mm)       // infers T = Length; result type Length
+single(5mm)   // infers T = Length; result type List<Length>
+```
+
+**Return-type substitution:** After unification, the inferred substitution `{P₁ → C₁, …}` is applied to the declared return type to yield the call's result type (replacing each `Type::TypeParam` leaf with its bound concrete type).
+
+**Unbound type parameters:** A type parameter not mentioned by any argument type stays unbound after unification. A *nested* unbound parameter (for example, `D` inside `Field<D, C>` when only `C` is pinned by an argument) is **tolerated** -- an enclosing call may still pin it. A *bare top-level* unbound result type (for example, `fn make<T>() -> T` called with no arguments) is an error (`E_FN_TYPE_ARG_UNRESOLVED`).
+
+**Type-erasure:** Type arguments are resolved and checked at compile time and erased before evaluation. Evaluating a call to a generic function is indistinguishable from evaluating its monomorphic equivalent -- the evaluator is type-arg-agnostic. One compiled function definition exists per generic function; no per-call monomorphization occurs.
+
+```
+id(5mm)     // evaluates to 5 mm -- identical to the monomorphic twin id_length(5mm)
+single(5mm) // evaluates to [5 mm] (a one-element List<Length>)
+```
+
 ### 3.10 Determinacy and Types
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are written as plain `Length`, `Force`, etc. Determinacy (`undef` / constrained / `auto` / determined) is a property of the parameter tracked by the design system, not part of the type.
