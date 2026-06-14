@@ -2898,9 +2898,9 @@ impl Engine {
     ///    via [`resolve_artifact_path`].
     /// 6. Emit the file via the default kernel's `export()`.
     ///
-    /// step-8 is the single-occurrence happy path: it emits only the FIRST
-    /// recognized `Output` occurrence. step-10 lifts this to one artifact per
-    /// occurrence in declaration order.
+    /// Emits one artifact per recognized `Output` occurrence, in deterministic
+    /// declaration order (`templates × sub_components`) — so a multi-output
+    /// module produces a reproducible artifact sequence (B6).
     pub fn build_outputs(
         &mut self,
         module: &CompiledModule,
@@ -2933,8 +2933,9 @@ impl Engine {
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
 
-        // (2) Deterministic declaration-order walk of every occurrence sub.
-        'occurrences: for template in &module.templates {
+        // (2) Deterministic declaration-order walk of every occurrence sub:
+        //     emit one artifact per recognized Output occurrence (step-10).
+        for template in &module.templates {
             for sub in &template.sub_components {
                 // Resolve the occurrence template — module first, then prelude.
                 let Some(occ_template) = crate::engine_eval::find_template_with_prelude(
@@ -3013,10 +3014,6 @@ impl Engine {
                     bytes,
                     diagnostics: Vec::new(),
                 });
-
-                // step-8: single happy path — emit only the first recognized
-                // Output occurrence. step-10 removes this early break.
-                break 'occurrences;
             }
         }
 
