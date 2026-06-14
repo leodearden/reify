@@ -10,8 +10,12 @@ CLI main() in hermetic golden tests — real subprocess probes are skip-guarded.
 import importlib.util
 import json
 import os
+import shlex
+import shutil
 import sys
+import tempfile
 import unittest
+import unittest.mock
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -588,6 +592,202 @@ class TestEvaluate(unittest.TestCase):
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
         self.assertEqual(result.observation, pcc.PRESENT)
+
+
+# ---------------------------------------------------------------------------
+# step-09 (RED): run_probe() command construction + binary location + capture
+# ---------------------------------------------------------------------------
+
+class TestRunProbe(unittest.TestCase):
+    """Tests for run_probe() + build_command shapes, via stub binaries.
+
+    build_command shapes pass immediately (step-08 implemented it).
+    run_probe tests FAIL until step-10 adds run_probe() + full binary resolution.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_test_")
+        self._stub_idx = 0
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_stub(self, stdout_text="", stderr_text="", exit_code=0, print_cwd=False):
+        """Create a temporary executable stub shell script."""
+        self._stub_idx += 1
+        path = os.path.join(self._tmpdir, f"stub{self._stub_idx}")
+        lines = ["#!/bin/sh"]
+        if print_cwd:
+            lines.append('echo "CWD=$PWD"')
+        if stdout_text:
+            lines.append(f"printf '%s' {shlex.quote(stdout_text)}")
+        if stderr_text:
+            lines.append(f"printf '%s' {shlex.quote(stderr_text)} >&2")
+        lines.append(f"exit {exit_code}")
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def _make_probe(self, kind="check",
+                    fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
+                    match=None):
+        return pcc.Probe(
+            capability="test",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present",
+                      "match": match if match is not None else {}},
+        )
+
+    # ── build_command shapes ──────────────────────────────────────────────────
+
+    def test_build_command_check_shape(self):
+        """check → [reify, check, fixture]"""
+        probe = self._make_probe(
+            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"
+        )
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe)
+        self.assertEqual(
+            cmd,
+            ["reify", "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"],
+        )
+
+    def test_build_command_ir_shape(self):
+        """ir → [reify, eval, fixture]"""
+        probe = self._make_probe("ir", "tests/prd-gate/fixtures/ir_clean_eval.ri")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe)
+        self.assertEqual(
+            cmd,
+            ["reify", "eval", "tests/prd-gate/fixtures/ir_clean_eval.ri"],
+        )
+
+    def test_build_command_grammar_shape(self):
+        """grammar → [tree-sitter, parse, --quiet, fixture]"""
+        probe = self._make_probe(
+            "grammar", "tests/prd-gate/fixtures/arrow_type.ri"
+        )
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "tree-sitter"}):
+            cmd = pcc.build_command(probe)
+        self.assertEqual(
+            cmd,
+            ["tree-sitter", "parse", "--quiet",
+             "tests/prd-gate/fixtures/arrow_type.ri"],
+        )
+
+    def test_build_command_reify_bin_override(self):
+        """REIFY_BIN env var overrides the reify binary in the command."""
+        probe = self._make_probe("check", "x.ri")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/custom/reify"}):
+            cmd = pcc.build_command(probe)
+        self.assertEqual(cmd[0], "/custom/reify")
+
+    def test_build_command_tree_sitter_bin_override(self):
+        """TREE_SITTER_BIN env var overrides the tree-sitter binary in the command."""
+        probe = self._make_probe("grammar", "x.ri")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "/custom/ts"}):
+            cmd = pcc.build_command(probe)
+        self.assertEqual(cmd[0], "/custom/ts")
+
+    # ── run_probe existence and basic capture ─────────────────────────────────
+
+    def test_run_probe_exists(self):
+        """run_probe must be a callable in the harness module."""
+        self.assertTrue(hasattr(pcc, "run_probe"), "missing run_probe()")
+        self.assertTrue(callable(pcc.run_probe))
+
+    def test_run_probe_returns_proberun(self):
+        """run_probe(probe) returns a ProbeRun instance."""
+        stub = self._make_stub(exit_code=0)
+        probe = self._make_probe("check")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertIsInstance(run, pcc.ProbeRun)
+
+    def test_run_probe_captures_exit_code(self):
+        """run_probe captures the subprocess exit code."""
+        stub = self._make_stub(exit_code=42)
+        probe = self._make_probe("ir")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 42)
+
+    def test_run_probe_captures_stdout(self):
+        """run_probe captures stdout from the subprocess."""
+        stub = self._make_stub(stdout_text="hello stdout", exit_code=0)
+        probe = self._make_probe("check")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertIn("hello stdout", run.stdout)
+
+    def test_run_probe_captures_stderr(self):
+        """run_probe captures stderr from the subprocess."""
+        stub = self._make_stub(stderr_text="hello stderr", exit_code=1)
+        probe = self._make_probe("check")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertIn("hello stderr", run.stderr)
+
+    def test_grammar_run_probe_uses_tree_sitter_stub(self):
+        """Grammar probe runs via TREE_SITTER_BIN stub."""
+        stub = self._make_stub(stdout_text="ts-ran", exit_code=0)
+        probe = self._make_probe("grammar")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertEqual(run.exit_code, 0)
+        self.assertIn("ts-ran", run.stdout)
+
+    def test_grammar_run_probe_cwd_is_tree_sitter_reify_dir(self):
+        """Grammar probe subprocess CWD must be the tree-sitter-reify directory."""
+        stub = self._make_stub(print_cwd=True, exit_code=0)
+        probe = self._make_probe("grammar")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
+        # Stub echoes CWD=$PWD; CWD must reference the tree-sitter-reify dir
+        self.assertIn(
+            "tree-sitter-reify", run.stdout,
+            "grammar probe must run with CWD inside tree-sitter-reify/",
+        )
+
+    # ── harness-error cases: missing binary, grammar load failure ─────────────
+
+    def test_missing_reify_binary_produces_harness_error(self):
+        """REIFY_BIN=/nonexistent → evaluate() verdict is not PASS/FAIL/UNPROVABLE."""
+        probe = pcc.Probe(
+            capability="test",
+            probe_kind="check",
+            fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            expected={"observation": "present", "match": {"exit_code": 1}},
+        )
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/nonexistent-reify-xyz"}):
+            result = pcc.evaluate(probe)  # uses the real run_probe default
+        self.assertNotIn(
+            result.verdict,
+            (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),
+            "missing binary must produce harness-error verdict, not PASS/FAIL/UNPROVABLE",
+        )
+
+    def test_grammar_load_failure_produces_harness_error(self):
+        """Grammar 'Failed to load language' → harness-error verdict from evaluate()."""
+        stub = self._make_stub(
+            stderr_text="Failed to load language: reify",
+            exit_code=1,
+        )
+        probe = pcc.Probe(
+            capability="test",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": "absent", "match": {}},
+        )
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            result = pcc.evaluate(probe)  # uses the real run_probe default
+        self.assertNotIn(
+            result.verdict,
+            (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),
+            "grammar load failure must produce harness-error verdict",
+        )
 
 
 if __name__ == "__main__":
