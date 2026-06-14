@@ -5684,8 +5684,19 @@ fn resolve_owner_solid_handle(
     None
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
-/// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
+/// Resolve a geometry-handle arg to a `GeometryHandleId` via `named_steps`.
+///
+/// Matches both `CompiledExprKind::ValueRef(id)` and
+/// `CompiledExprKind::CrossSubGeometryRef(id)` — the established OR-pattern
+/// convention (reify-ir/src/expr.rs) — so the cross-sub `proc.build_volume`
+/// arg resolves whether it lowered to a forward-declared scoped `ValueRef` or a
+/// genuine-realization `CrossSubGeometryRef` (task 4358 ε, esc-4358-124).
+///
+/// A cross-sub handle carries a scoped `<parent>.<sub>` entity stamp, and
+/// `seed_cross_sub_named_steps` keys it in `named_steps` by the composed
+/// `"<sub>.<member>"` key (engine_build.rs), so a dotted entity looks up that
+/// composed key; a plain same-template ref (dot-free entity) keeps the
+/// bare-member lookup. Returns `None` for any other expr shape or a missing
 /// `named_steps` entry — caller maps to the "unsupported arg shape → fall
 /// through" behaviour.
 fn resolve_geometry_handle_arg(
@@ -5693,10 +5704,18 @@ fn resolve_geometry_handle_arg(
     named_steps: &HashMap<String, KernelHandle>,
 ) -> Option<GeometryHandleId> {
     let cell_id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
+        reify_ir::CompiledExprKind::ValueRef(id)
+        | reify_ir::CompiledExprKind::CrossSubGeometryRef(id) => id,
         _ => return None,
     };
-    named_steps.get(&cell_id.member).map(|kh| kh.id)
+    // `rsplit_once('.')` is exactly "if entity contains '.', take the last
+    // segment as the sub name": `Some((_, sub))` ⟺ dotted entity, `sub` =
+    // everything after the final '.' (== `entity.rsplit('.').next().unwrap()`).
+    let key = match cell_id.entity.rsplit_once('.') {
+        Some((_, sub)) => format!("{}.{}", sub, cell_id.member),
+        None => cell_id.member.clone(),
+    };
+    named_steps.get(&key).map(|kh| kh.id)
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
