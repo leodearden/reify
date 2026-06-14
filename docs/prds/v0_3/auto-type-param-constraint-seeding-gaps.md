@@ -300,18 +300,25 @@ is likely a separate PRD this one would *consume*, not own.
 | **4599** (3-site literal sibling-param seeding) | depends-on | seeds literal siblings so the diagnostic fires only on non-literal skips | 4599 | **deferred** — wire the §6 leaf `depends_on 4599` |
 | **β/4433** (candidate-field literal seeding) | shares primitive | `seed_candidate_value_map` literal guard is Gap C's anchor on the candidate side | 4433 (done) | do **not** re-open; cite |
 | **ζ/4437** (integration gate) | independent | the §6 diagnostic could join ζ's `examples/auto/` set as a regression fixture, but does **not** block ζ | 4437 (pending) | optional fixture add at decompose |
-| `esc-4312` **type-system substrate PRD** (type-args-at-type-level + associated-type projection) | **orthogonal, named seam** | **type-level** `Type` variant (`reify-core/src/ty.rs:108`) + `::` projection (`type_resolution.rs:818-845`); this PRD is **value-level** ValueMap seeding (`auto_type_param.rs` + `expr.rs`) | esc-4312 PRD | **running in parallel** — see seam note below |
+| `docs/prds/type-args-and-assoc-type-projection.md` (esc-4312 **type-system substrate PRD**: type-args-at-type-level + associated-type projection) | **orthogonal, named seam** | **type-level** `Type::Applied`/`Type::Projection` variant (`reify-core/src/ty.rs:108`) + `::` projection (`type_resolution.rs:818-845`); this PRD is **value-level** ValueMap seeding (`auto_type_param.rs` + `expr.rs`) | esc-4312 PRD | **running in parallel** (draft on disk, at/near decompose) — see seam note below |
 
-**Seam note — esc-4312 (the PRD Leo flagged as concurrently running).** Both PRDs
-descend from the same `auto-type-param` family and both name auto-type-param
-resolution as a consumer, so the seam is real — but the layers are **disjoint**:
+**Seam note — esc-4312 (the PRD Leo flagged as concurrently running; verified
+against its on-disk draft, not just its brief).** Both PRDs descend from the same
+`auto-type-param` family and both name auto-type-param resolution as a consumer, so
+the seam is real — but the layers are **disjoint**:
 
-- **No edit clash.** esc-4312 edits `reify-core/src/ty.rs` (the `Type` enum) and
-  `type_resolution.rs:818-845` (associated-type projection) plus exhaustive `Type`
-  matches. This PRD's near-term leaf edits `auto_type_param.rs` (seeding/blame) and
-  `reify-core/src/diagnostics.rs` (a new `W_*` code) — different mechanisms,
-  no shared edit region. (`diagnostics.rs` and `ty.rs` are distinct files in
-  `reify-core`.)
+- **No core edit clash; one benign shared file.** esc-4312's migration (its §5)
+  touches `reify-core/src/ty.rs` (the `Type` enum) + ~11 **exhaustive `Type`-match**
+  sites (`reify-eval/src/{engine_eval,lib}.rs`, `reify-compiler/src/{type_compat,type_resolution}.rs`,
+  `reify-expr/src/lib.rs`, `conformance/checker.rs`) + grammar + `kinematic.ri` +
+  `joint_signatures.rs`. **Its migration table does not include `auto_type_param.rs`**,
+  which is this PRD's near-term core edit region (seeding/blame) — so the seeding
+  mechanism is genuinely disjoint. The **one** shared file is
+  `reify-core/src/diagnostics.rs`: esc-4312 appends `E_TYPE_ARG_ARITY` /
+  `E_TYPE_ARG_BOUND` to the `DiagnosticCode` enum; this PRD appends
+  `AutoTypeParamConstraintUnevaluated`. Distinct variants → at worst a trivial
+  enum-append merge, not a semantic clash — and this PRD's leaf is gated behind
+  4596/4599 (unlanded) so it cannot land concurrently anyway.
 - **No capability overlap.** esc-4312 distinguishes `Coupling<Prismatic>` from
   `Coupling<Revolute>` and projects **associated types** (`P::MotionValue`, a
   *Type*, via `::`). This PRD seeds **runtime values** for constraints and, for
