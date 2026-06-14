@@ -2992,42 +2992,77 @@ impl Engine {
                     }
                 };
 
+                // (5) Resolve the destination (design-relative / --out-dir) up
+                //     front so any failure diagnostic below can name the path.
+                let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
+
                 // (4) Resolve `subject` → live kernel handle via the sub's
                 //     `subject` ARG: a ValueRef into the post-build hydrated map
                 //     (NOT the pre-hydration StructureInstance.subject field).
-                let Some(subject_expr) = sub
+                //
+                // Per-occurrence failure isolation (step-14): a recognized
+                // Output occurrence whose `subject` cannot be resolved to live
+                // geometry — or whose kernel export() fails below — must NOT
+                // abort the loop. It pushes a "partial" artifact (empty bytes
+                // carrying an error-severity diagnostic that names the occurrence
+                // + path) and `continue`s, so one bad Output never aborts the
+                // others (PRD §4.3/§7.3). The CLI gates file-writing on
+                // `!bytes.is_empty()`, so a partial artifact writes no file.
+                let subject_handle = sub
                     .args
                     .iter()
                     .find_map(|(k, e)| (k.as_str() == "subject").then_some(e))
-                else {
-                    continue;
-                };
-                let reify_ir::CompiledExprKind::ValueRef(subject_id) = &subject_expr.kind
-                else {
-                    continue;
-                };
-                let Some(reify_ir::Value::GeometryHandle { kernel_handle, .. }) =
-                    r.values.get(subject_id)
-                else {
-                    continue;
-                };
-                let handle_id = *kernel_handle;
-
-                // (5) Resolve the destination (design-relative / --out-dir).
-                let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
-
-                // (6) Emit one file via the default kernel's export().
-                let mut bytes = Vec::new();
-                let exported = match default_kernel_name.as_deref() {
-                    Some(name) => match self.geometry_kernels.get(name) {
-                        Some(kernel) => {
-                            kernel.export(handle_id, export_format, &mut bytes).is_ok()
+                    .and_then(|e| match &e.kind {
+                        reify_ir::CompiledExprKind::ValueRef(id) => r.values.get(id),
+                        _ => None,
+                    })
+                    .and_then(|v| match v {
+                        reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
+                            Some(*kernel_handle)
                         }
-                        None => false,
-                    },
-                    None => false,
+                        _ => None,
+                    });
+                let Some(handle_id) = subject_handle else {
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![Diagnostic::error(format!(
+                            "Output occurrence `{}.{}` could not resolve its \
+                             `subject` to realized geometry (export to {} skipped)",
+                            template.name,
+                            sub.name,
+                            path.display()
+                        ))],
+                    });
+                    continue;
                 };
-                if !exported {
+
+                // (6) Emit one file via the default kernel's export(); isolate a
+                //     kernel failure as an error diagnostic + continue.
+                let mut bytes = Vec::new();
+                let export_result = match default_kernel_name
+                    .as_deref()
+                    .and_then(|name| self.geometry_kernels.get(name))
+                {
+                    Some(kernel) => kernel.export(handle_id, export_format, &mut bytes),
+                    None => Err(reify_ir::ExportError::FormatError(
+                        "no default geometry kernel registered".to_string(),
+                    )),
+                };
+                if let Err(e) = export_result {
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![Diagnostic::error(format!(
+                            "Output occurrence `{}.{}` failed to export to {}: {}",
+                            template.name,
+                            sub.name,
+                            path.display(),
+                            e
+                        ))],
+                    });
                     continue;
                 }
 
