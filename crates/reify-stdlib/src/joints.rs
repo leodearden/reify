@@ -1569,48 +1569,99 @@ fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range:
     Value::Map(m)
 }
 
-/// Lift a pivot `Value::Point` or `Value::Vector` of exactly three LENGTH-dimensioned,
-/// finite components into a pure-translation SE(3) origin Transform.
+/// Lift a pivot value into an SE(3) origin `Value::Transform` for use as a joint's
+/// `"origin"` key.  Accepts three forms (KIN-OFFSET α + δ):
 ///
-/// Returns `None` if:
-/// - the value is not a `Value::Point` or `Value::Vector` with exactly 3 components,
-/// - any component is not a `Value::Scalar` with `dimension == LENGTH`, or
-/// - any component's `si_value` is non-finite (NaN / ±∞).
+/// - **`Value::Point(3)` / `Value::Vector(3)`** (α, back-compat): each component must be
+///   a finite LENGTH Scalar.  Emits `Transform{ rotation=identity, translation=Vector(3) }`.
+/// - **`Value::Frame { origin, basis }`** (δ, task 4394): lifts the Frame's basis orientation
+///   as the rotation and the Frame's origin point as the translation.  The Frame's origin
+///   must have three finite LENGTH components (same discipline as the α arms — `frame3`
+///   itself accepts dimensionless points, so this helper enforces the LENGTH requirement).
+///   The basis is normalized via `normalize_quaternion`; a zero-norm or non-finite basis
+///   returns `None`.
+///
+/// Returns `None` (→ `Value::Undef` at the constructor call site) if:
+/// - the value is not one of the accepted forms,
+/// - any origin component is not a finite LENGTH Scalar, or
+/// - the basis quaternion is non-finite or zero-norm.
 ///
 /// Resolves PRD §7.1 / §11 Q1 + Q3: positional 3rd pivot arg → "origin" key.
 /// Dimensionless pivots (bare `Real`) are rejected to avoid silently mis-scaling
 /// `point3(40,0,0)` as 40 m instead of the user's intended 40 mm (PRD B9 rationale).
 fn pivot_to_origin(pivot: &Value) -> Option<Value> {
-    let comps = match pivot {
-        Value::Point(c) if c.len() == 3 => c,
-        Value::Vector(c) if c.len() == 3 => c,
-        _ => return None,
-    };
-    let mut vals = [0.0f64; 3];
-    for (i, comp) in comps.iter().enumerate() {
-        match comp {
-            Value::Scalar { si_value, dimension } if *dimension == DimensionVector::LENGTH => {
-                if !si_value.is_finite() {
-                    return None;
+    // ── α back-compat: Point3 / Vector3 → pure-translation origin ──────────────
+    if let Value::Point(c) | Value::Vector(c) = pivot {
+        if c.len() == 3 {
+            let mut vals = [0.0f64; 3];
+            for (i, comp) in c.iter().enumerate() {
+                match comp {
+                    Value::Scalar { si_value, dimension }
+                        if *dimension == DimensionVector::LENGTH =>
+                    {
+                        if !si_value.is_finite() {
+                            return None;
+                        }
+                        vals[i] = *si_value;
+                    }
+                    _ => return None,
                 }
-                vals[i] = *si_value;
             }
-            _ => return None,
+            return Some(Value::Transform {
+                rotation: Box::new(Value::Orientation {
+                    w: 1.0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                }),
+                translation: Box::new(Value::Vector(vec![
+                    Value::length(vals[0]),
+                    Value::length(vals[1]),
+                    Value::length(vals[2]),
+                ])),
+            });
         }
+        return None;
     }
-    Some(Value::Transform {
-        rotation: Box::new(Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        }),
-        translation: Box::new(Value::Vector(vec![
-            Value::length(vals[0]),
-            Value::length(vals[1]),
-            Value::length(vals[2]),
-        ])),
-    })
+
+    // ── δ (task 4394): Frame3 → oriented origin (basis→rotation, origin→translation) ──
+    if let Value::Frame { origin, basis } = pivot {
+        // Validate origin: must be Point(3) with finite LENGTH components.
+        let comps = match origin.as_ref() {
+            Value::Point(c) if c.len() == 3 => c,
+            _ => return None,
+        };
+        let mut vals = [0.0f64; 3];
+        for (i, comp) in comps.iter().enumerate() {
+            match comp {
+                Value::Scalar { si_value, dimension }
+                    if *dimension == DimensionVector::LENGTH =>
+                {
+                    if !si_value.is_finite() {
+                        return None;
+                    }
+                    vals[i] = *si_value;
+                }
+                _ => return None,
+            }
+        }
+        // Validate + normalize basis: must be a finite, non-zero-norm Orientation.
+        let (w, x, y, z) = match basis.as_ref() {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            _ => return None,
+        };
+        let normalized_rot = normalize_quaternion(w, x, y, z)?;
+        return Some(Value::Transform {
+            rotation: Box::new(normalized_rot),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(vals[0]),
+                Value::length(vals[1]),
+                Value::length(vals[2]),
+            ])),
+        });
+    }
+
+    None
 }
 
 /// Build a joint `Value::Map` with the standard layout: `"kind"`, `"axis"`, `"range"`,
