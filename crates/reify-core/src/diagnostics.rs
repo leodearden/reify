@@ -352,6 +352,18 @@ pub enum DiagnosticCode {
     /// from the same dispatch path; downstream tooling that wants to surface
     /// these as harder failures can filter by code at the consumer side.
     FieldSampledInvalidConfig,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: points must form a uniformly-spaced 1-D regular grid (<reason>)"`.
+    ///
+    /// Emitted when the `points` argument to `from_samples(points, values, method)` is not
+    /// a valid 1-D regular grid. Reasons include: non-scalar elements (e.g. Point2/Point3),
+    /// length mismatch between points and values, fewer than 2 points, non-positive or
+    /// non-uniform spacing. The builtin returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_FIELD_SAMPLES_NOT_GRID`. Severity is `Error`
+    /// (unlike the sibling `W_FIELD_SAMPLED_INVALID_CONFIG` which is a Warning).
+    FieldSamplesNotGrid,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -2878,6 +2890,34 @@ mod tests {
     fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
+    }
+
+    // --- FieldSamplesNotGrid tests (task 4221 — E_FIELD_SAMPLES_NOT_GRID) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSamplesNotGrid` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::FieldSamplesNotGrid)`.
+    /// Pins the error-severity contract for E_FIELD_SAMPLES_NOT_GRID.
+    #[test]
+    fn field_samples_not_grid_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("not a 1-D regular grid").with_code(DiagnosticCode::FieldSamplesNotGrid);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSamplesNotGrid));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSamplesNotGrid`
+    /// serializes as `"FieldSamplesNotGrid"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_samples_not_grid_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSamplesNotGrid).unwrap();
+        assert_eq!(s, "\"FieldSamplesNotGrid\"");
     }
 
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---

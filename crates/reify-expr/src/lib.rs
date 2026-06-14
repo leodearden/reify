@@ -2173,16 +2173,46 @@ fn eval_from_samples(
     // ── 1. Extract lists ─────────────────────────────────────────────────────
     let pts = match points {
         Value::List(v) => v,
-        _ => return Value::Undef,
+        _ => {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (points argument is not a List)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
     };
     let vals = match values {
         Value::List(v) => v,
-        _ => return Value::Undef,
+        _ => {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (values argument is not a List)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
     };
 
     // ── 2. Length checks ─────────────────────────────────────────────────────
-    if pts.len() != vals.len() || pts.len() < 2 {
-        // E_FIELD_SAMPLES_NOT_GRID: diagnostic pushed in step-6
+    if pts.len() != vals.len() {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (points and values have different lengths)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
+    if pts.len() < 2 {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (at least 2 sample points are required)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
         return Value::Undef;
     }
 
@@ -2190,26 +2220,50 @@ fn eval_from_samples(
     let pt_f64: Vec<f64> = match pts.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
-            // non-scalar points (e.g. Point2/Point3): E_FIELD_SAMPLES_NOT_GRID (step-6)
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (only scalar (Real/Int) point elements are supported; \
+                  N-D point types are deferred to a follow-up)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
             return Value::Undef;
         }
     };
     let val_f64: Vec<f64> = match vals.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
         Some(v) => v,
-        None => return Value::Undef,
+        None => {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (non-scalar value elements are not supported)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
     };
 
     // ── 4. Uniform spacing check ─────────────────────────────────────────────
     let step = pt_f64[1] - pt_f64[0];
     if step <= 0.0 {
-        // non-increasing points: E_FIELD_SAMPLES_NOT_GRID (step-6)
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (points must be strictly increasing)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
         return Value::Undef;
     }
     for i in 1..pt_f64.len() {
         let delta = pt_f64[i] - pt_f64[i - 1];
         let rel_err = (delta - step).abs() / step;
         if rel_err > 1e-6 {
-            // non-uniform spacing: E_FIELD_SAMPLES_NOT_GRID (step-6)
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (spacing between consecutive points is not uniform)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
             return Value::Undef;
         }
     }
@@ -2227,9 +2281,6 @@ fn eval_from_samples(
         },
         _ => return Value::Undef,
     };
-
-    // Suppress "unused variable" warnings for ctx until step-6 uses it.
-    let _ = ctx;
 
     // ── 6. Build Regular1D SampledField ──────────────────────────────────────
     let p0 = pt_f64[0];
@@ -2258,6 +2309,16 @@ fn eval_from_samples(
         codomain_type,
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Push a `Severity::Error` diagnostic into the eval context's diagnostics sink
+/// (if a sink is attached). Used by `eval_from_samples` for B3/B4 error codes.
+#[inline]
+fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
+    if let Some(sink) = ctx.diagnostics {
+        sink.borrow_mut()
+            .push(Diagnostic::error(msg).with_code(code));
     }
 }
 

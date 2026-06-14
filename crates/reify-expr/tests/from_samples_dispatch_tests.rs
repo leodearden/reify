@@ -17,7 +17,9 @@
 //!     binding) → `Value::Undef`
 //!   - `sample(Undef, 0.5)` → strict Undef propagation → `Value::Undef`
 
-use reify_core::{ContentHash, Type};
+use std::cell::RefCell;
+
+use reify_core::{ContentHash, DiagnosticCode, Severity, Type};
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap};
 
@@ -135,5 +137,47 @@ fn sample_from_samples_evaluates_to_real_b2() {
         matches!(&result, Value::Real(v) if (v - 5.0).abs() < 1e-12),
         "sample(from_samples([0,1,2],[0,10,20],Linear), 0.5) must be 5.0 (B2); got {:?}",
         result
+    );
+}
+
+// ── B3 tests (non-uniform spacing → FieldSamplesNotGrid) ─────────────────────
+
+/// B3: `from_samples([0,1,5],[0,10,20], Linear)` — non-uniform spacing
+/// [1.0, 4.0] — must return `Value::Undef` and push a
+/// `DiagnosticCode::FieldSamplesNotGrid` Error into the diagnostics sink.
+///
+/// **RED before step-6**: `DiagnosticCode::FieldSamplesNotGrid` variant does
+/// not exist (E0599 compile error) + eval returns Undef silently (no code pushed).
+/// **GREEN after step-6**: variant exists; returns Undef + pushes Error.
+#[test]
+fn from_samples_non_grid_emits_field_samples_not_grid_b3() {
+    let sink: RefCell<Vec<reify_core::Diagnostic>> = RefCell::new(Vec::new());
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+    let expr = make_from_samples_call(
+        real_list(0.0, 1.0, 5.0), // spacing [1.0, 4.0] — non-uniform
+        real_list(0.0, 10.0, 20.0),
+        interp_method("Linear"),
+    );
+
+    let result = eval_expr(&expr, &ctx);
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "from_samples with non-uniform spacing must return Undef (B3); got {:?}",
+        result
+    );
+
+    let diags = sink.borrow();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FieldSamplesNotGrid)
+                && d.severity == Severity::Error),
+        "from_samples with non-uniform spacing must push FieldSamplesNotGrid Error (B3); \
+         diagnostics: {:?}",
+        *diags
     );
 }
