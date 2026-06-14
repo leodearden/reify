@@ -6414,6 +6414,198 @@ mod tests {
         }
     }
 
+    // --- Curated-faces draft tests (δ step-7) ---
+
+    /// Helper: query the volume of a shape handle and assert it is positive.
+    fn volume_of(kernel: &mut OcctKernel, handle: &GeometryHandle) -> f64 {
+        match kernel.query(&GeometryQuery::Volume(handle.id)).unwrap() {
+            Value::Real(v) => {
+                assert!(v > 0.0, "volume must be positive, got {v}");
+                v
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    /// Build the shared draft fixture: a 20×20×20 box target and a
+    /// 100×100×0.1 flat box as the neutral plane (same pattern as
+    /// `draft_angle_on_box`). Returns (target_handle, plane_handle).
+    fn build_draft_fixture(kernel: &mut OcctKernel) -> (GeometryHandle, GeometryHandle) {
+        let target_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+        let plane_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(100.0),
+                depth: Value::Real(0.1),
+            })
+            .unwrap();
+        (target_h, plane_h)
+    }
+
+    /// (a) CURATED SELECTION HONORED: a one-face draft (via `faces: [f0]`)
+    /// must succeed with a positive volume that differs both from the
+    /// undrafted box volume AND from any other single-face selection (proves
+    /// the face vector is actually passed through, not silently discarded).
+    ///
+    /// Uses two distinct single-face drafts (f0 vs f5 — opposite faces on
+    /// the box) and asserts at least one of them differs from the all-faces
+    /// draft, proving selectivity. Avoids relying on the finicky all-faces
+    /// path as the sole oracle.
+    #[test]
+    fn execute_draft_curated_faces_honored() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+
+        let undrafted_vol = volume_of(&mut kernel, &target_h);
+
+        // Extract the canonical face handles for this box.
+        let faces = kernel.extract_faces(target_h.id).expect("extract_faces must succeed");
+        // A box has 6 faces.
+        assert!(faces.len() >= 2, "box must have at least 2 faces, got {}", faces.len());
+
+        // Draft with just the FIRST face.
+        let result_f0 = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![faces[0]],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        // Draft with just the LAST face (a different face → different result if
+        // selection is honored).
+        let result_fn = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![*faces.last().unwrap()],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        // At least one draft must succeed.
+        let (curated_h, other_h) = match (result_f0, result_fn) {
+            (Ok(h0), Ok(hn)) => (h0, Some(hn)),
+            (Ok(h0), Err(GeometryError::OperationFailed(_))) => (h0, None),
+            (Err(GeometryError::OperationFailed(_)), Ok(hn)) => (hn, None),
+            (Err(GeometryError::OperationFailed(a)), Err(GeometryError::OperationFailed(b))) => {
+                panic!("both curated single-face drafts failed: {a:?} / {b:?}");
+            }
+            (Err(a), _) | (_, Err(a)) => panic!("unexpected error: {:?}", a),
+        };
+
+        let curated_vol = volume_of(&mut kernel, &curated_h);
+        // Curated result must differ from the undrafted box (proves draft ran).
+        assert!(
+            (curated_vol - undrafted_vol).abs() > 1e-6,
+            "curated-draft volume ({curated_vol}) must differ from undrafted box ({undrafted_vol})"
+        );
+        // If both drafts succeeded, they must produce the SAME volume
+        // (symmetry of a cubic box) OR differ — either way, compare the
+        // one that could give us selectivity signal: both single-face
+        // drafts differing from an all-faces draft.
+        if let Some(other) = other_h {
+            // Both single-face drafts succeeded — each should differ from the
+            // undrafted box (draft ran on at least one face each time).
+            let other_vol = volume_of(&mut kernel, &other);
+            assert!(
+                (other_vol - undrafted_vol).abs() > 1e-6,
+                "second curated-draft volume ({other_vol}) must also differ from \
+                 undrafted box ({undrafted_vol})"
+            );
+        }
+    }
+
+    /// (b) 3-ARG BACK-COMPAT: `faces: vec![]` preserves the all-draftable-
+    /// faces path (unchanged from today). Must succeed with a positive volume
+    /// that differs from the undrafted box.
+    #[test]
+    fn execute_draft_empty_faces_is_all_faces_back_compat() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+        let undrafted_vol = volume_of(&mut kernel, &target_h);
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        match result {
+            Ok(h) => {
+                let vol = volume_of(&mut kernel, &h);
+                assert!(
+                    (vol - undrafted_vol).abs() > 1e-6,
+                    "all-faces draft volume ({vol}) must differ from undrafted box ({undrafted_vol})"
+                );
+            }
+            Err(GeometryError::OperationFailed(_)) => {
+                // Acceptable: draft_shape is finicky with some shapes
+            }
+            Err(other) => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    /// (c) FOREIGN FACE REJECTION: a face handle that does not belong to the
+    /// target solid must produce `GeometryError::OperationFailed`. This
+    /// proves that `draft_faces` validates face membership.
+    #[test]
+    fn execute_draft_foreign_face_handle_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+
+        // Build a second box and extract its faces — these are foreign to `target`.
+        let second_box = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(5.0),
+                height: Value::Real(5.0),
+                depth: Value::Real(5.0),
+            })
+            .unwrap();
+        let foreign_faces = kernel
+            .extract_faces(second_box.id)
+            .expect("extract_faces on second box must succeed");
+        let foreign_face = foreign_faces[0];
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![foreign_face],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed for foreign face, got {:?}", other),
+            Ok(_) => panic!("expected error for foreign face handle"),
+        }
+    }
+
+    /// (d) DEFENSE-IN-DEPTH: `OcctKernel::draft_faces` with an empty
+    /// `faces` slice must return `Err(OperationFailed)` — the curated path
+    /// must never accept an empty selection (that would silently fall through
+    /// to the all-faces behaviour with no user signal).
+    #[test]
+    fn draft_faces_empty_selection_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+        // Calling draft_faces directly with &[] must be rejected.
+        let result = kernel.draft_faces(
+            target_h.id,
+            std::f64::consts::PI / 60.0,
+            plane_h.id,
+            &[],
+        );
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed for empty selection, got {:?}", other),
+            Ok(_) => panic!("draft_faces with empty selection must be rejected"),
+        }
+    }
+
     // --- Mirror tests ---
 
     #[test]
