@@ -3099,6 +3099,39 @@ mod tests {
         assert_eq!(s, "\"RelateExpectsRelation\"");
     }
 
+    // --- JointDofMismatch tests (task 4396 β — E_JOINT_DOF_MISMATCH) ---
+    // Pairs with the definition-time DOF self-check in
+    // `crates/reify-compiler/src/joint_self_check.rs` (geometric-joints β).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::JointDofMismatch` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::JointDofMismatch)`.
+    /// Pins the error-severity contract for E_JOINT_DOF_MISMATCH.
+    #[test]
+    fn joint_dof_mismatch_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error(
+            "declared 1 rotational free DOF, but the relation leaves 1 rot + 1 trans; \
+             add a constraint or declare travel: Length",
+        )
+        .with_code(DiagnosticCode::JointDofMismatch);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::JointDofMismatch`
+    /// serializes as `"JointDofMismatch"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_joint_dof_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::JointDofMismatch).unwrap();
+        assert_eq!(s, "\"JointDofMismatch\"");
+    }
+
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
     // Pairs with `emit_split_children_diagnostic` in
     // `crates/reify-eval/src/topology_attribute_resolver.rs`.
