@@ -1,0 +1,46 @@
+// trait-assoc-type ιₑ — qualified associated-type access as a type-expr.
+//
+// Demonstrates resolving a `QualifiedAssoc` type-expr (`Beam::Material`, and the
+// FORK-G paren disambiguator `Beam::(IotaHasMaterial::Material)`) to the base
+// structure's bound associated type, used in `param` type-annotation position.
+//
+// PRD: docs/prds/v0_6/trait-associated-functions.md §5.3a, §8 Phase 10, FORK-G.
+//
+// Only clean (resolving) cases live here: examples_smoke.rs auto-discovers every
+// examples/*.ri and requires compile-clean. The error paths (ambiguity, unknown
+// member, bad disambiguator, type-parameter base) live in the dedicated test
+// crates/reify-compiler/tests/trait_assoc_type_qualified_resolution_tests.rs.
+//
+// Source order matters: `Beam` is declared BEFORE its consumer `UseBeam`, so
+// `Beam`'s resolved associated-type table is available when `UseBeam` compiles.
+//
+// Naming: this file compiles with the stdlib prelude, so the concrete structure
+// and the trait are both uniquely `Iota`-prefixed (`IotaSteel`, `IotaHasMaterial`)
+// to avoid colliding with any current-or-future stdlib `Material` structure or
+// `HasMaterial` trait. (`type Material` is an associated-type member name, not a
+// top-level definition, so it cannot collide.)
+
+// A concrete material.
+structure IotaSteel {}
+
+// A trait that declares an associated type `Material`.
+trait IotaHasMaterial {
+    type Material
+}
+
+// `Beam` conforms to `IotaHasMaterial` and binds `type Material = IotaSteel`.
+structure def Beam : IotaHasMaterial {
+    type Material = IotaSteel
+}
+
+// Consumer: a non-conforming structure whose params are typed by qualified
+// associated-type access on the concrete structure `Beam`.
+structure def UseBeam {
+    // Bare access — unambiguous because `Beam` conforms to exactly one trait
+    // (`IotaHasMaterial`) declaring `Material`. Resolves to `IotaSteel`.
+    param m : Beam::Material
+
+    // FORK-G paren disambiguator — names the declaring trait explicitly and
+    // resolves to the same single binding (`IotaSteel`).
+    param n : Beam::(IotaHasMaterial::Material)
+}

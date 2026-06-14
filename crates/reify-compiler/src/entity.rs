@@ -810,6 +810,47 @@ pub(crate) fn compile_entity(
                                     )
                                 {
                                     ty
+                                } else if let reify_ast::TypeExprKind::QualifiedAssoc {
+                                    base,
+                                    trait_name,
+                                    member,
+                                } = &type_expr.kind
+                                {
+                                    // Qualified associated-type access (`Beam::Material` /
+                                    // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
+                                    // resolver lacks the cross-structure registries, so
+                                    // resolve here where `entity_template_registry` +
+                                    // `trait_registry` are in scope. The helper owns its own
+                                    // diagnostics (anti-cascade — no second UnresolvedType).
+                                    //
+                                    // Poison policy mirrors the bare-name fallback above:
+                                    // `Some(Type::Error)` is the declared-but-unbound poison
+                                    // sentinel (root cause already reported at the producer)
+                                    // and flows through `Some(t) => t` unchanged to suppress a
+                                    // type-mismatch cascade; `None` is a genuine error the
+                                    // helper already diagnosed, poisoned to a concrete
+                                    // `Type::dimensionless_scalar()` placeholder.
+                                    //
+                                    // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
+                                    // into `param` type-annotation position ONLY. Other type-expr
+                                    // positions (field types, fn/return annotations, `let`
+                                    // bindings) still fall through to the generic resolver's
+                                    // `UnresolvedType`. Extending them is a trivial follow-up
+                                    // that reuses this same `resolve_qualified_assoc_type` helper
+                                    // (see plan.json "Scope": let/field/conformance-checker sites).
+                                    match resolve_qualified_assoc_type(
+                                        base,
+                                        trait_name.as_deref(),
+                                        member,
+                                        type_expr.span,
+                                        &entity_template_registry,
+                                        trait_registry,
+                                        &type_param_names,
+                                        diagnostics,
+                                    ) {
+                                        Some(t) => t,
+                                        None => Type::dimensionless_scalar(),
+                                    }
                                 } else {
                                     diagnostics.push(
                                         Diagnostic::error(format!(

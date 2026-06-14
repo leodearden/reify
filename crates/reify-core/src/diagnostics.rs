@@ -1873,6 +1873,29 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_CONFLICTING_TRAIT_ASSOC_TYPE`
     /// (see task 3972; trait-assoc-type iota-β).
     ConflictingTraitAssocType,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    ///          (`resolve_qualified_assoc_type`, the qualified-assoc type-expr resolver).
+    ///
+    /// Canonical message form:
+    /// `"ambiguous associated type '<Structure>::<Member>': declared by traits '<A>', '<B>'; \
+    ///  qualify as '<Structure>::(<Trait>::<Member>)' to disambiguate"`.
+    /// (Trait names are comma-joined; the phrasing is "qualify as".)
+    ///
+    /// Emitted as a `Severity::Error` when a bare qualified associated-type access
+    /// `Base::Member` (a `TypeExprKind::QualifiedAssoc` with no `trait_name`) names a
+    /// member that is declared by two or more of `Base`'s conformed traits, so the
+    /// intended declaration is ambiguous. A single label is attached at the type-expr
+    /// span suggesting the `Base::(Trait::Member)` paren disambiguator (FORK-G). The
+    /// structure binds the associated type once, so the qualifier is
+    /// disambiguation-only — every valid qualifier resolves to the same `Type`.
+    ///
+    /// Sibling of [`TraitAssocTypeNotBound`] / [`ConflictingTraitAssocType`] (the
+    /// producer-side assoc-type diagnostics); this code is the consumer-side
+    /// resolution diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_ASSOC_TYPE`
+    /// (see task 3974; trait-assoc-type iota-ε).
+    AmbiguousAssocType,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
@@ -3196,6 +3219,37 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
         assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
+    }
+
+    // --- AmbiguousAssocType tests (task 3974 — E_AMBIGUOUS_ASSOC_TYPE) ---
+    // Pairs with `resolve_qualified_assoc_type` in
+    // `crates/reify-compiler/src/type_resolution.rs` (qualified-assoc resolver).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip, severity, and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::AmbiguousAssocType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::AmbiguousAssocType)`.
+    /// Pins the error-severity contract and variant existence for a bare
+    /// qualified associated-type access ambiguous across two conformed traits
+    /// (`Beam::Material` where two conformed traits each declare `Material`).
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::AmbiguousAssocType);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::AmbiguousAssocType));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::AmbiguousAssocType`
+    /// serializes as `"AmbiguousAssocType"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::AmbiguousAssocType).unwrap();
+        assert_eq!(s, "\"AmbiguousAssocType\"");
     }
 
     // --- TopologyAttributeLocalIndexReassigned tests (task 2654 — W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED) ---
