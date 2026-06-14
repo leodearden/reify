@@ -31,17 +31,17 @@
 //! The table below is the authoritative BT1–BT9 cross-reference.  Each row names
 //! the test file that OWNS that boundary test; this file is the *collected view*.
 //!
-//! | BT   | Description                                          | Owner file                                      |
+//! | BT   | Description                                          | Owner file / function                           |
 //! |------|------------------------------------------------------|-------------------------------------------------|
-//! | BT1  | golden-equivalence (A1)                              | `reify-compiler/tests/purpose_compile_tests.rs:2076` |
-//! | BT2  | AllGeometryDetermined (A2)                           | `reify-compiler/tests/purpose_compile_tests.rs:1992` |
-//! | BT3  | scope / arg diagnostics (A3)                         | `reify-compiler/tests/purpose_compile_tests.rs:2162/2214/2252` |
-//! | BT4  | intrinsic CLI Satisfied/Violated (A4)                | `reify-cli/tests/cli_determinacy_intrinsics.rs` |
+//! | BT1  | golden-equivalence (A1)                              | `reify-compiler/tests/purpose_compile_tests.rs` fn `all_params_determined_desugars_to_same_compiled_expr_as_hand_written_forall` |
+//! | BT2  | AllGeometryDetermined (A2)                           | `reify-compiler/tests/purpose_compile_tests.rs` fn `all_geometry_determined_desugars_to_same_compiled_expr_as_hand_written_forall` |
+//! | BT3  | scope / arg diagnostics (A3)                         | `reify-compiler/tests/purpose_compile_tests.rs` fns `all_params_determined_outside_purpose_body_emits_scope_diagnostic`, `all_geometry_determined_outside_purpose_body_emits_scope_diagnostic`, `all_params_determined_zero_args_emits_arg_diagnostic` |
+//! | BT4  | intrinsic CLI Satisfied/Violated (A4)                | `reify-cli/tests/cli_determinacy_intrinsics.rs` fns `check_design_review_satisfied_for_determined_bracket`, `check_design_review_violated_for_draft_bracket` |
 //! | BT5  | deviation monotonicity (B1/B2)                       | `reify-eval/tests/achieved_repr_tol.rs`         |
-//! | BT6  | RW Violated + non-zero exit (C3)                     | `reify-eval/tests/representation_within_assertion.rs` bt6 + `reify-cli/tests/cli_representation_within.rs` |
-//! | BT7  | RW Satisfied + zero exit (C3) — CLI consumer boundary | `reify-cli/tests/cli_determinacy_gate.rs`       |
-//! | BT8  | RW Indeterminate (C1)                                | `reify-eval/tests/representation_within_assertion.rs` bt8 + `reify-cli/tests/cli_representation_within.rs` |
-//! | BT9  | budget regression (C2)                               | `reify-eval/tests/representation_within_assertion.rs` c2 + `reify-eval/tests/tolerance_scope.rs` + `reify-eval/tests/tolerance_combine.rs` |
+//! | BT6  | RW Violated + non-zero exit (C3)                     | `reify-eval/tests/representation_within_assertion.rs` fn `bt6_coarse_sphere_tight_bound_yields_violated` + `reify-cli/tests/cli_representation_within.rs` fn `check_representation_within_violated_under_occt` |
+//! | BT7  | RW Satisfied + zero exit (C3) — CLI consumer boundary | `reify-cli/tests/cli_determinacy_gate.rs` fn `check_representation_within_satisfied_exits_zero` |
+//! | BT8  | RW Indeterminate (C1)                                | `reify-eval/tests/representation_within_assertion.rs` fn `bt8_no_tessellation_yields_indeterminate` + `reify-cli/tests/cli_representation_within.rs` fn `check_representation_within_violated_under_occt` (stub branch) |
+//! | BT9  | budget regression (C2)                               | `reify-eval/tests/representation_within_assertion.rs` fn `c2_extract_output_tolerance_bound_still_returns_declared_bound` + `reify-eval/tests/tolerance_scope.rs` + `reify-eval/tests/tolerance_combine.rs` |
 //!
 //! This gate (δ) adds the α↔γ COMPOSITION seam (no dep task crossed) and closes the
 //! BT7 CLI gap (no CLI Satisfied/zero-exit test existed in γ).  BT1–BT6/BT8/BT9 stay
