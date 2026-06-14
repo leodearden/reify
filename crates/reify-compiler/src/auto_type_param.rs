@@ -837,9 +837,11 @@ pub(crate) fn filter_feasible_candidates_seeded(
     // expression graph will specialize per-candidate and this build must move
     // inside the loop.  The per-candidate ValueMap seeding DOES belong inside.
     let constraints_template = build_constraints_template(parameterized_template);
+    // Compute template literal seed once — constant across all candidates.
+    let template_seed = seed_template_literal_params(parameterized_template);
 
     for candidate in candidates {
-        let candidate_values =
+        let mut candidate_values =
             if let Some(param_member) = param_type_member(parameterized_template, param_name) {
                 if let Some(&candidate_template) = template_registry.get(candidate.as_str()) {
                     seed_candidate_value_map(candidate_template, param_member)
@@ -849,6 +851,10 @@ pub(crate) fn filter_feasible_candidates_seeded(
             } else {
                 reify_ir::ValueMap::new()
             };
+        // Merge template literal-param defaults (disjoint entity prefix; no collision).
+        for (k, v) in template_seed.iter() {
+            candidate_values.insert(k.clone(), v.clone());
+        }
 
         let input = ConstraintInput {
             constraints: Cow::Borrowed(&constraints_template),
