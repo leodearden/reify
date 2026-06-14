@@ -1215,12 +1215,38 @@ fn configured_eval_engine(engine: reify_eval::Engine) -> reify_eval::Engine {
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 fn cmd_eval(args: &[String]) -> ExitCode {
-    if args.is_empty() {
+    // Parse args: walk the list to extract --explain-undef and the file path.
+    // Reject unknown flags so they are never silently misread as the file path.
+    let mut explain_undef = false;
+    let mut file_path: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--explain-undef" => {
+                explain_undef = true;
+                i += 1;
+            }
+            flag if flag.starts_with("--") => {
+                eprintln!("Error: unknown flag for `eval`: {}", flag);
+                eprintln!("Usage: reify eval [--explain-undef] <file>");
+                return ExitCode::FAILURE;
+            }
+            path => {
+                if file_path.is_some() {
+                    eprintln!("Error: unexpected extra positional argument: {}", path);
+                    return ExitCode::FAILURE;
+                }
+                file_path = Some(path);
+                i += 1;
+            }
+        }
+    }
+    let Some(path) = file_path else {
         eprintln!("Usage: reify eval <file>");
         return ExitCode::FAILURE;
-    }
+    };
 
-    let compiled = match parse_and_compile(&args[0]) {
+    let compiled = match parse_and_compile(path) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1233,31 +1259,37 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Normalise both branches to (values, diagnostics) for the shared print loop.
-    // `configured_eval_engine` handles the shared `.with_solver` +
-    // `register_compute_fns` setup; only the constructor and terminal call differ.
-    let (values, diagnostics) = if module_has_geometry(&compiled) {
+    // Normalise both branches to (values, diagnostics, engine) for the shared
+    // print loop.  The engine is hoisted into a binding so:
+    //   (a) set_capture_undef_causes(true) fires before eval/build (A1-safe), and
+    //   (b) trace_undef_causes can be called post-eval with the engine still alive.
+    //
+    // Both `eval` and `build` take `&mut self`, so the engine survives the call.
+    let (values, diagnostics, engine) = if module_has_geometry(&compiled) {
         // Geometry-bearing module: route through the kernel-backed build() path so
         // that run_post_processes/post_process_geometry_queries fires and resolves
         // geometry-query value cells (mass, centroid, volume, …).
         // geometry_output is discarded — reify eval is a value inspector only.
-        let result = configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
-            SimpleConstraintChecker,
-        )))
-        .build(&compiled, reify_ir::ExportFormat::Step);
-        (result.values, result.diagnostics)
+        let mut engine =
+            configured_eval_engine(reify_eval::Engine::with_registered_kernel(Box::new(
+                SimpleConstraintChecker,
+            )));
+        engine.set_capture_undef_causes(true);
+        let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+        (result.values, result.diagnostics, engine)
     } else {
         // Plain numeric module: keep the existing lightweight eval() path so
         // non-geometry eval tests (cli_eval_auto_resolve, cli_stackup_eval,
         // cli_integration_smoke) remain on the exact unchanged code path.
         // Note: register_compute_fns is still required so `@optimized` targets
         // dispatch to their solver kernels (task 3794 / esc-3794-183).
-        let result = configured_eval_engine(reify_eval::Engine::new(
+        let mut engine = configured_eval_engine(reify_eval::Engine::new(
             Box::new(SimpleConstraintChecker),
             None,
-        ))
-        .eval(&compiled);
-        (result.values, result.diagnostics)
+        ));
+        engine.set_capture_undef_causes(true);
+        let result = engine.eval(&compiled);
+        (result.values, result.diagnostics, engine)
     };
 
     let mut cells: Vec<(String, String)> = values
@@ -1271,6 +1303,32 @@ fn cmd_eval(args: &[String]) -> ExitCode {
 
     for diag in &diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);
+    }
+
+    // Emit undef notes: for each undef cell in the printed `values` (the
+    // requested outputs the user sees), report the complete root-cause set from
+    // β's tracer.  Notes go to stderr so stdout stays machine-parseable.
+    //
+    // `explain_undef` is parsed above; widening to ALL undef cells (incl.
+    // unbound input params absent from `values`) is wired in step-6.
+    let _ = explain_undef; // behaviour wired in step-6 (--explain-undef)
+    let mut undef_cells: Vec<reify_core::ValueCellId> = values
+        .iter()
+        .filter(|(_, v)| v.is_undef())
+        .map(|(id, _)| id.clone())
+        .collect();
+    undef_cells.sort_by_key(|id| id.to_string());
+    for id in &undef_cells {
+        let causes = engine.trace_undef_causes(id);
+        if causes.is_empty() {
+            continue;
+        }
+        let because = causes
+            .iter()
+            .map(format_undef_cause)
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("note: {id} is undef (because: {because})");
     }
 
     if diagnostics.iter().any(|d| d.severity == Severity::Error) {
