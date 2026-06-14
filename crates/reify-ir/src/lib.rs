@@ -66,8 +66,8 @@ pub use geometry::{
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
     FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
-    KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LoftOpHistoryRecords,
-    Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
+    KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
+    LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
     QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeMesh, debug_assert_query_many_invariant,
 };

@@ -1142,6 +1142,40 @@ impl OcctKernelHandle {
                             GeometryOp::Intersection { left, right } => kernel
                                 .boolean_common_with_history(*left, *right)
                                 .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+                            // Task 7b (#2831): Fillet branches on
+                            // edges.is_empty() — all-edges vs curated-edge —
+                            // mirroring OcctKernel::execute (lib.rs Fillet arm).
+                            // Both producers return (GeometryHandle,
+                            // LocalFeatureOpHistoryRecords) and map uniformly
+                            // to AttributeHistory::LocalFeature.
+                            GeometryOp::Fillet {
+                                target,
+                                edges,
+                                radius,
+                            } => match radius.as_f64() {
+                                Some(r) => (if edges.is_empty() {
+                                    kernel.fillet_with_history(*target, r)
+                                } else {
+                                    kernel.fillet_edges_with_history(*target, r, edges)
+                                })
+                                .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
+                                None => Err(GeometryError::OperationFailed(
+                                    "fillet radius must be numeric".into(),
+                                )),
+                            },
+                            // Task 7b (#2831): Chamfer has no edges field
+                            // (GeometryOp::Chamfer{target,distance}), so
+                            // always routes to chamfer_with_history.
+                            GeometryOp::Chamfer { target, distance } => {
+                                match distance.as_f64() {
+                                    Some(d) => kernel
+                                        .chamfer_with_history(*target, d)
+                                        .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
+                                    None => Err(GeometryError::OperationFailed(
+                                        "chamfer distance must be numeric".into(),
+                                    )),
+                                }
+                            }
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.

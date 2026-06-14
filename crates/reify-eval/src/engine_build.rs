@@ -12,8 +12,9 @@ use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
     CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind,
-    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
+    GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    ValueMap, VolumeMesh,
 };
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
@@ -702,7 +703,65 @@ fn populate_attribute_history(
                 history,
             )
         }
+        AttributeHistory::LocalFeature(history) => {
+            // Local-feature ops (fillet / chamfer): one target shape.
+            let target_handle = match geom_op {
+                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                _ => {
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
+                         GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_local_feature_op(
+                table,
+                kernel,
+                feature_id,
+                target_handle,
+                result_handle,
+                history,
+            )
+        }
     }
+}
+
+/// Propagate local-feature (fillet / chamfer) history onto the result shape.
+///
+/// Mirrors [`populate_boolean_op`] but extracts target faces/edges/vertices
+/// (three parent slices) rather than two operand face/edge slices.
+/// Delegates to [`propagate_attributes_via_local_feature_history`] which runs
+/// four independent per-stream cross-kind passes (face_modified←faces,
+/// face_generated←edges, edge_modified←edges, edge_generated←vertices).
+///
+/// Failure semantics are identical to [`populate_boolean_op`]: a `QueryError`
+/// returned here surfaces as `Diagnostic::warning` at the call site — never a
+/// Failed-realization regression (per task-2574 convention).
+fn populate_local_feature_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    target_handle: GeometryHandleId,
+    result_handle: GeometryHandleId,
+    history: &LocalFeatureOpHistoryRecords,
+) -> Result<(), reify_ir::QueryError> {
+    let target_faces = kernel.extract_faces(target_handle)?;
+    let target_edges = kernel.extract_edges(target_handle)?;
+    let target_vertices = kernel.extract_vertices(target_handle)?;
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+
+    crate::topology_attribute_propagation::propagate_attributes_via_local_feature_history(
+        table,
+        &target_faces,
+        &target_edges,
+        &target_vertices,
+        &result_faces,
+        &result_edges,
+        history,
+        feature_id,
+    )
 }
 
 /// Build per-cap-face vertex-index-lists by position-matching cap-face vertex
@@ -12297,6 +12356,216 @@ mod tests {
             "direct body: com must not be Undef after run_post_processes; \
              got {com_field:?}"
         );
+    }
+}
+
+// ── populate_attribute_history LocalFeature unit tests (step-3, RED) ────────
+
+/// Tests for `populate_attribute_history` with `AttributeHistory::LocalFeature`.
+///
+/// RED: `AttributeHistory::LocalFeature` variant and the dispatch arm in
+/// `populate_attribute_history` do not exist yet. Tests compile after step-4.
+#[cfg(test)]
+mod populate_local_feature_tests {
+    use reify_ir::{
+        AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord,
+        LocalFeatureOpHistoryRecords, ModEntry, QueryError, Role, TopologyAttribute,
+        TopologyAttributeTable, Value,
+    };
+    use reify_test_support::mocks::MockGeometryKernel;
+
+    use super::populate_attribute_history;
+
+    fn fillet_fid() -> FeatureId {
+        FeatureId::new("Fillet#realization[0]")
+    }
+
+    fn make_attr(fid: &FeatureId, role: Role, local_index: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: fid.clone(),
+            role,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        }
+    }
+
+    fn hrec(parent_subshape_index: u32, result_subshape_index: u32) -> HistoryRecord {
+        HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index,
+            result_subshape_index,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fillet: face_generated cross-kind split (1 parent edge → 2 result faces)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn fillet_local_feature_dispatches_and_propagates_face_generated_split() {
+        // Handles
+        let target = GeometryHandleId(1);
+        let result = GeometryHandleId(100);
+        let parent_face = GeometryHandleId(10);
+        let parent_edge = GeometryHandleId(20);
+        let parent_vertex = GeometryHandleId(30);
+        let result_face_a = GeometryHandleId(110);
+        let result_face_b = GeometryHandleId(111);
+        let result_edge = GeometryHandleId(120);
+
+        // Mock: target extraction + result extraction
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(target, vec![parent_face])
+            .with_extracted_edges(target, vec![parent_edge])
+            .with_extracted_vertices(target, vec![parent_vertex])
+            .with_extracted_faces(result, vec![result_face_a, result_face_b])
+            .with_extracted_edges(result, vec![result_edge]);
+
+        // Seed: parent_edge has an attribute (its Role::NewEdge propagates to 2 result faces)
+        let fid = FeatureId::new("Box#realization[0]");
+        let splitting_fid = fillet_fid();
+        let mut table = TopologyAttributeTable::default();
+        table.record(parent_face, make_attr(&fid, Role::Side, 0));
+        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 5));
+
+        // History: one parent edge → two result faces (cross-kind split)
+        let history = LocalFeatureOpHistoryRecords {
+            face_generated: vec![hrec(0, 0), hrec(0, 1)],
+            ..Default::default()
+        };
+        let attr_history = AttributeHistory::LocalFeature(history);
+
+        let geom_op = GeometryOp::Fillet {
+            target,
+            edges: vec![],
+            radius: Value::Real(0.001),
+        };
+
+        populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &splitting_fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect("fillet LocalFeature dispatch should succeed");
+
+        // Both result faces inherit parent_edge's attr + split ModEntry
+        for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+            let attr = table
+                .lookup(handle)
+                .unwrap_or_else(|| panic!("{handle:?} must have attr after fillet propagation"));
+            assert_eq!(attr.feature_id, fid);
+            assert_eq!(attr.role, Role::NewEdge);
+            assert_eq!(attr.local_index, 5);
+            assert_eq!(
+                attr.mod_history,
+                vec![ModEntry {
+                    splitting_feature_id: splitting_fid.clone(),
+                    split_index: expected_split_index,
+                }],
+                "result face {handle:?} must have split ModEntry at index {expected_split_index}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Chamfer: edge_generated cross-kind pass-through (1 parent edge → 1 result edge)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn chamfer_local_feature_dispatches_and_propagates_edge_modified_passthrough() {
+        let target = GeometryHandleId(2);
+        let result = GeometryHandleId(200);
+        let parent_face = GeometryHandleId(11);
+        let parent_edge = GeometryHandleId(21);
+        let parent_vertex = GeometryHandleId(31);
+        let result_face = GeometryHandleId(210);
+        let result_edge = GeometryHandleId(220);
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(target, vec![parent_face])
+            .with_extracted_edges(target, vec![parent_edge])
+            .with_extracted_vertices(target, vec![parent_vertex])
+            .with_extracted_faces(result, vec![result_face])
+            .with_extracted_edges(result, vec![result_edge]);
+
+        let fid = FeatureId::new("Box#realization[0]");
+        let splitting_fid = fillet_fid();
+        let mut table = TopologyAttributeTable::default();
+        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 3));
+
+        // edge_modified: 1 parent edge → 1 result edge (pure pass-through)
+        let history = LocalFeatureOpHistoryRecords {
+            edge_modified: vec![hrec(0, 0)],
+            ..Default::default()
+        };
+        let attr_history = AttributeHistory::LocalFeature(history);
+
+        let geom_op = GeometryOp::Chamfer {
+            target,
+            distance: Value::Real(0.001),
+        };
+
+        populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &splitting_fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect("chamfer LocalFeature dispatch should succeed");
+
+        let attr = table
+            .lookup(result_edge)
+            .expect("result_edge must have attr after chamfer propagation");
+        assert_eq!(attr.feature_id, fid);
+        assert_eq!(attr.role, Role::NewEdge);
+        assert_eq!(attr.local_index, 3);
+        assert!(
+            attr.mod_history.is_empty(),
+            "1→1 pass-through must not add ModEntry; got {:?}",
+            attr.mod_history
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Guard: non-Fillet/Chamfer GeometryOp with AttributeHistory::LocalFeature
+    //        must return Err(QueryError::QueryFailed).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn local_feature_with_non_fillet_chamfer_geom_op_returns_query_failed() {
+        let profile = GeometryHandleId(4);
+        let result = GeometryHandleId(300);
+
+        // Empty mock — the error must fire before any kernel extraction.
+        let mut kernel = MockGeometryKernel::new();
+        let mut table = TopologyAttributeTable::default();
+        let fid = fillet_fid();
+
+        let attr_history = AttributeHistory::LocalFeature(LocalFeatureOpHistoryRecords::default());
+
+        // Use Extrude (not Fillet/Chamfer) as the mismatched op.
+        let geom_op = GeometryOp::Extrude {
+            profile,
+            distance: Value::Real(0.01),
+        };
+
+        let err = populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect_err("non-Fillet/Chamfer op with LocalFeature history must return QueryFailed");
+
+        match err {
+            QueryError::QueryFailed(_) => {}
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
     }
 }
 
