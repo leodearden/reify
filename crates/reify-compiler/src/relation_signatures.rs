@@ -31,7 +31,8 @@
 //! through to the geometry-query arm. The pure family stays disjoint from every
 //! sibling family (pinned by the `units.rs` disjointness test).
 
-use reify_core::Type;
+use crate::datum_projection::DatumProjectionResolution;
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
 /// The complete set of **pure** geometric-relation builtin names recognised by
@@ -178,6 +179,246 @@ fn format_relation_arg_ty(ty: &Type) -> String {
         Type::Frame(_) => "Frame".to_string(),
         other => format!("{}", other),
     }
+}
+
+// ── The three policing layers (design §3.2) ─────────────────────────────────
+//
+// `check_relation_arg_types` is a pure diagnostic side-effect mirroring
+// `builtin_signatures::check_builtin_arg_types`: it pushes diagnostics for
+// DEFINITE static violations only and never changes inference or the emitted IR
+// node. It composes the §3.2 layers:
+//   (a) UNIT       — the metric slot's dimension (θ:Angle, δ:Length).
+//   (b) KIND/PROJ  — operands must project to the named datum, "implicit
+//                    projection iff unique" (reuses β's projection semantics +
+//                    `DatumProjectionUnavailable`/`Ambiguous` codes).
+//   (c) CURATION   — only unconditionally-well-defined signatures exist; a
+//                    `distance` call on a `Plane` is redirected to `offset`.
+// PRD decision-6 gradualism: a `Type::Error` (poison) or `Type::TypeParam`
+// (unresolved) slot is skipped silently.
+
+/// The datum kind a relation's operands must project to (the §3.3 lift target).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedDatum {
+    Direction,
+    Axis,
+    Plane,
+    Point,
+}
+
+impl ExpectedDatum {
+    /// The short datum name used in projection diagnostics.
+    fn datum_name(self) -> &'static str {
+        match self {
+            ExpectedDatum::Direction => "Direction",
+            ExpectedDatum::Axis => "Axis",
+            ExpectedDatum::Plane => "Plane",
+            ExpectedDatum::Point => "Point",
+        }
+    }
+}
+
+/// The checkable metric slot for a relation, if any: `(index, dimension,
+/// type_name)`. Only the arity-3 metric-DRIVE relations have one (`angle`→Angle,
+/// `distance`/`offset`→Length). A name without a metric slot — or a call too
+/// short to reach the slot index — is not unit-checked (the arity-2 `angle`/
+/// `distance` DERIVE forms reach `compiled_args.get(2) == None` and fall out).
+fn relation_metric_slot(name: &str) -> Option<(usize, DimensionVector, &'static str)> {
+    match name {
+        "angle" => Some((2, DimensionVector::ANGLE, "Angle")),
+        "distance" | "offset" => Some((2, DimensionVector::LENGTH, "Length")),
+        _ => None,
+    }
+}
+
+/// The datum kind a relation's two operand slots (indices 0 and 1) must project
+/// to, or `None` for names that are not projection-policed in γ.
+///
+/// The shared verbs `angle`/`distance` are policed ONLY in their arity-3 DRIVE
+/// form; their arity-2 DERIVE forms are geometry queries and return `None` here
+/// (so the relation checker is a no-op for them). `coincident`/`on`/`tangent`
+/// are intentionally `None`: `coincident` is kind-generic (any same-kind datum
+/// pair), `on` mixes operand kinds (Point + host), and `tangent` is surface-
+/// conditional — none has a single fixed operand datum to police in γ.
+fn relation_operand_datum(name: &str, args: &[CompiledExpr]) -> Option<ExpectedDatum> {
+    match name {
+        // Orientation primitives (arity-2): operands are directions.
+        "parallel" | "antiparallel" | "perpendicular" => Some(ExpectedDatum::Direction),
+        // Named compounds with a fixed operand datum.
+        "concentric" => Some(ExpectedDatum::Axis),
+        "flush" | "offset" => Some(ExpectedDatum::Plane),
+        // Shared verbs: only the arity-3 DRIVE form is a relation.
+        "angle" if args.len() == 3 => Some(ExpectedDatum::Direction),
+        "distance" if args.len() == 3 => Some(ExpectedDatum::Point),
+        _ => None,
+    }
+}
+
+/// Resolve whether an operand `actual` lifts to the `expected` datum under the
+/// §3.3 "implicit projection iff unique" rule, reusing β's
+/// [`DatumProjectionResolution`]:
+/// - same-datum → `Resolved`;
+/// - `Axis`→`Direction` (via `.dir`) and `Plane`→`Direction` (via `.normal`) →
+///   `Resolved` (the unique direction);
+/// - `Frame`→`Direction` → `Ambiguous` (any basis axis — suggest `.x/.y/.z`);
+/// - anything else (e.g. `Point`→`Direction`, `Direction`→`Point`) →
+///   `Unavailable`.
+fn lift_to_datum(actual: &Type, expected: ExpectedDatum) -> DatumProjectionResolution {
+    use DatumProjectionResolution::*;
+    match (expected, actual) {
+        // Same-datum: always the identity projection.
+        (ExpectedDatum::Direction, Type::Direction) => Resolved(Type::Direction),
+        (ExpectedDatum::Axis, Type::Axis) => Resolved(Type::Axis),
+        (ExpectedDatum::Plane, Type::Plane) => Resolved(Type::Plane),
+        (ExpectedDatum::Point, Type::Point { .. }) => Resolved(actual.clone()),
+        // Implicit projection iff unique → Direction.
+        (ExpectedDatum::Direction, Type::Axis) => Resolved(Type::Direction), // .dir
+        (ExpectedDatum::Direction, Type::Plane) => Resolved(Type::Direction), // .normal
+        (ExpectedDatum::Direction, Type::Frame(_)) => Ambiguous {
+            suggestions: vec!["x", "y", "z"],
+        },
+        // No unique projection to the named datum.
+        _ => Unavailable,
+    }
+}
+
+/// Check a relation call's arguments against the §3.2 policing layers, pushing
+/// reused diagnostic codes (`ArgTypeMismatch` for the unit layer; β's
+/// `DatumProjectionUnavailable`/`DatumProjectionAmbiguous` for the kind/projection
+/// and curation layers). A pure side-effect on `diagnostics`; mirrors
+/// [`crate::builtin_signatures::check_builtin_arg_types`].
+pub(crate) fn check_relation_arg_types(
+    name: &str,
+    compiled_args: &[CompiledExpr],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // (a) UNIT layer — the metric slot's physical dimension.
+    if let Some((idx, expected_dim, type_name)) = relation_metric_slot(name) {
+        if let Some(metric) = compiled_args.get(idx) {
+            match &metric.result_type {
+                // Gradualism: poison / unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => {}
+                // Dimensioned scalar: mismatch only when the dimension differs.
+                Type::Scalar { dimension } if *dimension == expected_dim => {}
+                other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
+            }
+        }
+    }
+
+    // (b) KIND/PROJECTION + (c) CURATION layers — operand slots 0 and 1.
+    if let Some(expected) = relation_operand_datum(name, compiled_args) {
+        for idx in 0..2 {
+            let Some(operand) = compiled_args.get(idx) else {
+                break; // call too short — arity errors handled elsewhere.
+            };
+            let actual = &operand.result_type;
+
+            // Gradualism: skip poison / unresolved operands silently.
+            if matches!(actual, Type::Error | Type::TypeParam(_)) {
+                continue;
+            }
+
+            // (c) CURATION: there is no bare plane-to-plane `distance`; the
+            // well-defined plane-separation relation is `offset`.
+            if name == "distance" && matches!(actual, Type::Plane) {
+                emit_curation_use_offset(name, call_span, diagnostics);
+                break;
+            }
+
+            // (b) KIND/PROJECTION: operand must lift to the named datum.
+            // Anti-cascade: stop at the first failing operand.
+            match lift_to_datum(actual, expected) {
+                DatumProjectionResolution::Resolved(_) => {}
+                DatumProjectionResolution::Unavailable => {
+                    emit_projection_unavailable(name, expected, actual, call_span, diagnostics);
+                    break;
+                }
+                DatumProjectionResolution::Ambiguous { suggestions } => {
+                    emit_projection_ambiguous(name, expected, &suggestions, call_span, diagnostics);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Emit a B10 unit-layer `ArgTypeMismatch` for a metric slot whose dimension is
+/// wrong. Wording mirrors `builtin_signatures::emit_mismatch` for consistency.
+fn emit_unit_mismatch(
+    name: &str,
+    type_name: &str,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!("{name}: metric argument expects {type_name}, got {actual}");
+    let label = format!("expected {type_name}, got {actual}");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
+}
+
+/// Emit a B9 kind/projection-layer `DatumProjectionUnavailable` for an operand
+/// with no unique projection to the named datum (reuses β's code/wording).
+fn emit_projection_unavailable(
+    name: &str,
+    expected: ExpectedDatum,
+    actual: &Type,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let datum = expected.datum_name();
+    let msg = format!("{name}: operand {actual} has no {datum} projection");
+    let label = format!("no {datum} projection");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::DatumProjectionUnavailable)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
+}
+
+/// Emit a `DatumProjectionAmbiguous` for an operand whose projection to the named
+/// datum is non-unique (e.g. `Frame`→`Direction`), naming the disambiguators.
+fn emit_projection_ambiguous(
+    name: &str,
+    expected: ExpectedDatum,
+    suggestions: &[&str],
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let datum = expected.datum_name();
+    let hints = suggestions
+        .iter()
+        .map(|s| format!(".{s}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let msg = format!("{name}: ambiguous {datum} projection; specify one of {hints}");
+    let label = format!("ambiguous {datum} projection");
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::DatumProjectionAmbiguous)
+            .with_label(DiagnosticLabel::new(call_span, label)),
+    );
+}
+
+/// Emit the curation redirect for a `distance` call with a `Plane` operand:
+/// there is no bare plane-to-plane distance, so point the author to `offset`,
+/// which bundles its own parallelism precondition (design §3.2(c)).
+fn emit_curation_use_offset(
+    name: &str,
+    call_span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let msg = format!(
+        "{name}: no plane-to-plane distance; use offset(a, b, δ) for plane separation"
+    );
+    diagnostics.push(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::DatumProjectionUnavailable)
+            .with_label(DiagnosticLabel::new(call_span, "use offset(a, b, δ)")),
+    );
 }
 
 #[cfg(test)]
