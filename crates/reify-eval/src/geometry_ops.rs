@@ -20225,6 +20225,89 @@ mod tests {
         );
     }
 
+    /// `s.axis` where the selector resolves to TWO coaxial cylindrical faces whose
+    /// analytic axes share the world-Z line at different origins must deduplicate
+    /// across sub-handles and return `Some(Value::Axis{..})` on Z with zero
+    /// `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED after step-2 (before step-4 dedup): without cross-handle
+    /// `dedup_datums` the combined bundle has `axes = [Z@0, Z@5]` (len 2), so
+    /// `feature_datum_projection` emits FeatureDatumAmbiguous + Undef.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_dedups_coaxial_faces_to_single_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let face_a = reify_ir::GeometryHandleId(10);
+        let face_b = reify_ir::GeometryHandleId(11);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:     extract_faces(parent) → [face_a, face_b]
+        // bundle(face_a):       extract_faces(face_a) → [face_a]
+        //                       FaceAnalyticDatum(face_a) → Axis at z=0, dir +Z
+        // bundle(face_b):       extract_faces(face_b) → [face_b]
+        //                       FaceAnalyticDatum(face_b) → Axis at z=5, dir +Z
+        // → two coaxial Z axes, perpendicular distance = 0 → dedup_datums merges to 1
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![face_a, face_b])
+            .with_extracted_faces(face_a, vec![face_a])
+            .with_extracted_faces(face_b, vec![face_b])
+            .with_face_analytic_datum_result(face_a, z_axis_value_at(0.0))
+            .with_face_analytic_datum_result(face_b, z_axis_value_at(5.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (two coaxial cyl faces) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over two coaxial faces must dedup to one axis \
+             and emit zero FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
     // ── Scalar-branch coverage (suggestion from review, task 3622 amend) ────
     //
     // Both dispatch_edge_length and dispatch_perimeter accept
