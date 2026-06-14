@@ -1143,7 +1143,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
         | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. } => ParentHandles::Inline([z, z], 0),
+        | GeometryOp::Wedge { .. }
+        | GeometryOp::Torus { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -1285,6 +1286,7 @@ fn substitute_op_parents(
         | GeometryOp::Tube { .. }
         | GeometryOp::Cone { .. }
         | GeometryOp::Wedge { .. }
+        | GeometryOp::Torus { .. }
         | GeometryOp::LineSegment { .. }
         | GeometryOp::Arc { .. }
         | GeometryOp::Helix { .. }
@@ -1387,6 +1389,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Tube { .. } => Operation::PrimitiveTube,
         GeometryOp::Cone { .. } => Operation::PrimitiveCone,
         GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
+        GeometryOp::Torus { .. } => Operation::PrimitiveTorus,
 
         // Booleans
         GeometryOp::Union { .. } => Operation::BooleanUnion,
@@ -1522,7 +1525,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
         PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
-        | PrimitiveWedge => {
+        | PrimitiveWedge | PrimitiveTorus => {
             Some(BREP_ONLY)
         }
 
@@ -1565,6 +1568,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Tube => Operation::PrimitiveTube,
             PrimitiveKind::Cone => Operation::PrimitiveCone,
             PrimitiveKind::Wedge => Operation::PrimitiveWedge,
+            PrimitiveKind::Torus => Operation::PrimitiveTorus,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
@@ -10646,6 +10650,14 @@ mod tests {
                 },
                 expected: Operation::PrimitiveWedge,
                 label: "Wedge → PrimitiveWedge",
+            },
+            Case {
+                op: GeometryOp::Torus {
+                    major_radius: r(0.02),
+                    minor_radius: r(0.005),
+                },
+                expected: Operation::PrimitiveTorus,
+                label: "Torus → PrimitiveTorus",
             },
             // Booleans
             Case {

@@ -686,6 +686,10 @@ pub(crate) fn compile_geometry_op(
                     height: eval_arg("height")?,
                     top_width: eval_arg("top_width")?,
                 }),
+                PrimitiveKind::Torus => Ok(reify_ir::GeometryOp::Torus {
+                    major_radius: eval_arg("major_radius")?,
+                    minor_radius: eval_arg("minor_radius")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {

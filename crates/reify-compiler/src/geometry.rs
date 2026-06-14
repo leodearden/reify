@@ -1213,7 +1213,20 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
-
+        // torus(major_radius, minor_radius) — mirrors cylinder's 2-arg lowering.
+        "torus" => {
+            if !check_arg_count_exact("torus", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Torus,
+                args: vec![
+                    ("major_radius".to_string(), it.next().unwrap()),
+                    ("minor_radius".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
         "linear_pattern" => {
@@ -1862,6 +1875,7 @@ mod tests {
         "tube",
         "cone",
         "wedge",
+        "torus",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -1895,11 +1909,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    21  (added fillet_all)
-    /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
+    /// GEOM_ARG_FUNCTIONS    22  (added offset_solid, fillet_all, zone_slab)
+    /// NO_GEOM_ARG_FUNCTIONS 19  (added rectangle, circle for 2-D profile faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 46
+    /// Total                 48
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1911,7 +1925,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 47;
+    const EXPECTED_DISPATCH_COUNT: usize = 48;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

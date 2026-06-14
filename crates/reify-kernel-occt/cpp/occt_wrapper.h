@@ -127,6 +127,12 @@ std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double heigh
 /// Volume = dy * dz * (dx + ltx) / 2.
 std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx);
 
+/// Create a torus centered at origin about the Z axis (in meters).
+/// `major_r` is the distance from the centre of the tube to the centre of
+/// the torus; `minor_r` is the radius of the tube. Callers must enforce
+/// `minor_r < major_r` (a self-intersecting torus is rejected upstream).
+std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r);
+
 // --- Compound assembly ---
 
 /// Assemble N solid shapes into a single TopoDS_Compound for multi-body STEP

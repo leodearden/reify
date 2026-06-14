@@ -18,6 +18,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeWedge.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -371,6 +372,19 @@ std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double lt
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeWedge failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r) {
+    return wrap_occt_call("make_torus", [&]() {
+        BRepPrimAPI_MakeTorus maker(major_r, minor_r);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeTorus failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();

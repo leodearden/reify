@@ -2186,6 +2186,25 @@ impl OcctKernel {
                 ffi::ffi::make_wedge(w, d, h, ltx)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Torus {
+                major_radius,
+                minor_radius,
+            } => {
+                let major = extract_f64(major_radius)?;
+                let minor = extract_f64(minor_radius)?;
+                validate_positive_finite(major, "torus major radius")?;
+                validate_positive_finite(minor, "torus minor radius")?;
+                // Both values are already validated finite+positive above,
+                // so `>=` is unambiguous here (no NaN possible). A minor radius
+                // at or beyond the major radius is a self-intersecting torus.
+                if minor >= major {
+                    return Err(GeometryError::OperationFailed(
+                        "torus minor radius must be strictly less than major radius".into(),
+                    ));
+                }
+                ffi::ffi::make_torus(major, minor)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
@@ -7843,6 +7862,97 @@ mod tests {
                 outer_r: Value::Real(*outer),
                 inner_r: Value::Real(*inner),
                 height: Value::Real(*height),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(_)) => {}
+                Ok(_) => panic!("expected error for {label}, got Ok"),
+                Err(other) => panic!("expected OperationFailed for {label}, got {:?}", other),
+            }
+        }
+    }
+
+    // --- Torus tests (task-4157) ---
+
+    #[test]
+    fn make_torus_ffi_produces_correct_volume() {
+        // Pappus' theorem: a torus with major radius R and minor radius r has
+        // analytic volume V = 2π²·R·r². With R=20, r=5 → V = 2π²·20·25.
+        // BRepPrimAPI_MakeTorus builds a genuine Geom_ToroidalSurface, so
+        // query_volume takes OCCT's analytic BRepGProp::VolumeProperties path
+        // (not the mesh fallback, which only triggers when VolumeProperties
+        // returns 0 for surfaces of revolution). The result is exact to f64
+        // rounding — measured rel_err ≈ 1.8e-16 — so a 1e-9 tolerance pins the
+        // major/minor radius wiring tightly while leaving ~7 orders of margin
+        // above the machine-epsilon floor for cross-platform variance.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let shape = ffi::ffi::make_torus(20.0, 5.0).expect("make_torus should succeed");
+        let vol = ffi::ffi::query_volume(&shape).expect("query_volume should work on torus");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-9,
+            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:e})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn torus_execute_volume() {
+        // OcctKernel::execute(&GeometryOp::Torus{..}) → exact analytic torus.
+        // V = 2π²·R·r² for R=20, r=5. The kernel's Volume query routes through
+        // the same analytic VolumeProperties path as the FFI test, so the
+        // result is machine-exact (measured rel_err ≈ 1.8e-16); a 1e-9 tolerance
+        // pins the radius wiring with ample margin above the f64 floor.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Torus {
+                major_radius: Value::Real(20.0),
+                minor_radius: Value::Real(5.0),
+            })
+            .expect("Torus execute should succeed");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        assert_volume_near(&mut kernel, handle.id, expected, 1e-9, "torus");
+    }
+
+    #[test]
+    fn torus_minor_ge_major_returns_error() {
+        // minor_radius >= major_radius is a self-intersecting torus → rejected
+        // with a message naming the strict-inequality contract.
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Torus {
+            major_radius: Value::Real(5.0),
+            minor_radius: Value::Real(20.0),
+        });
+        assert_operation_fails_with(result, "minor radius must be strictly less than major");
+    }
+
+    #[test]
+    fn torus_nonfinite_or_zero_radius_returns_error() {
+        // Zero, negative, NaN, and +Inf radii are each rejected by
+        // validate_positive_finite (which requires `is_finite() && > 0.0`),
+        // before the FFI is reached — for both the major and minor radius.
+        let cases: &[(f64, f64, &str)] = &[
+            (0.0, 5.0, "major=0"),
+            (20.0, 0.0, "minor=0"),
+            (-1.0, 5.0, "major<0"),
+            (20.0, -1.0, "minor<0"),
+            (f64::NAN, 5.0, "major=NaN"),
+            (20.0, f64::NAN, "minor=NaN"),
+            (f64::INFINITY, 5.0, "major=+Inf"),
+            (20.0, f64::INFINITY, "minor=+Inf"),
+        ];
+        for (major, minor, label) in cases {
+            let mut kernel = OcctKernel::new();
+            let result = kernel.execute(&GeometryOp::Torus {
+                major_radius: Value::Real(*major),
+                minor_radius: Value::Real(*minor),
             });
             match result {
                 Err(GeometryError::OperationFailed(_)) => {}
