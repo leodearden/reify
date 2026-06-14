@@ -33,7 +33,7 @@
 
 use crate::datum_projection::DatumProjectionResolution;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
-use reify_ir::CompiledExpr;
+use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// The complete set of **pure** geometric-relation builtin names recognised by
 /// the compiler. Single source of truth — imported into the `units.rs` test
@@ -68,7 +68,10 @@ pub const RELATION_FN_NAMES: &[&str] = &[
 /// Is `name` a **pure** relation builtin? Name-only classification — a
 /// `.contains` over the single-source-of-truth slice [`RELATION_FN_NAMES`].
 /// Case-sensitive. Excludes the arity-gated shared verbs `angle`/`distance`.
-pub(crate) fn is_relation_typed_fn(name: &str) -> bool {
+///
+/// `pub` so reify-lsp's hover provider can gate its relation-contract branch on
+/// the relation vocabulary without re-deriving the name family.
+pub fn is_relation_typed_fn(name: &str) -> bool {
     RELATION_FN_NAMES.contains(&name)
 }
 
@@ -179,6 +182,63 @@ fn format_relation_arg_ty(ty: &Type) -> String {
         Type::Frame(_) => "Frame".to_string(),
         other => format!("{}", other),
     }
+}
+
+/// Find a relation call named `name` in `module` and return its ΔDOF contract
+/// string (`name(ArgTys) -> Relation removes N`), or `None` if no such call is
+/// present. This is the compiler-side traversal backing reify-lsp's hover: it
+/// keeps `CompiledExprKind` matching inside reify-compiler so the LSP crate need
+/// not depend on the IR's expression internals.
+///
+/// `enclosing_decl` scopes the search to a single template (the structure /
+/// occurrence the hover cursor sits in); `None` searches every template. Each
+/// candidate cell's compiled `default_expr` is walked in pre-order; the first
+/// `FunctionCall` whose `function.name` is `name` AND which `relation_fn_result_type`
+/// confirms is a relation (so the arity-2 `angle`/`distance` DERIVE forms are
+/// excluded) supplies the operand `result_type`s the contract is rendered from.
+///
+/// For the single-call hover snippets this name+scope match is unambiguous;
+/// span-level disambiguation of multiple same-name calls is a noted refinement,
+/// not required for the user-observable signal.
+pub fn relation_contract_for_call(
+    module: &crate::CompiledModule,
+    name: &str,
+    enclosing_decl: Option<&str>,
+) -> Option<String> {
+    for template in &module.templates {
+        if let Some(decl) = enclosing_decl
+            && template.name != decl
+        {
+            continue;
+        }
+        // Top-level value cells plus guarded-group members (where/else), mirroring
+        // the cell traversal in reify-lsp's `AnalysisContext::find_member_decl`.
+        let guarded = template
+            .guarded_groups
+            .iter()
+            .flat_map(|g| g.members.iter().chain(g.else_members.iter()));
+        for vc in template.value_cells.iter().chain(guarded) {
+            let Some(expr) = &vc.default_expr else {
+                continue;
+            };
+            let mut found: Option<String> = None;
+            expr.walk(&mut |node| {
+                if found.is_some() {
+                    return;
+                }
+                if let CompiledExprKind::FunctionCall { function, args } = &node.kind
+                    && function.name == name
+                    && relation_fn_result_type(name, args).is_some()
+                {
+                    found = Some(relation_contract_string(name, args));
+                }
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    None
 }
 
 // ── The three policing layers (design §3.2) ─────────────────────────────────

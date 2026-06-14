@@ -147,6 +147,19 @@ pub fn compute_hover_in_context(
         }
     }
 
+    // Try relation builtin (geometric-relations γ, task 4383): surface the ΔDOF
+    // contract. A relation call (`offset(pa, pb, 5mm)`, `concentric(a, b)`) is
+    // not a member, structure, user fn, or keyword, so it reaches this branch.
+    // When `word` is a pure relation name, surface its
+    // `name(ArgTys) -> Relation removes N` contract, scoped to the enclosing
+    // declaration so the operand types come from the right call site.
+    if reify_compiler::relation_signatures::is_relation_typed_fn(word)
+        && let Some(contract) = ctx.relation_contract(word, enclosing)
+    {
+        let md = format!("```reify\n{contract}\n```");
+        return Some(make_hover_markdown(md));
+    }
+
     // Try keyword
     if let Some(desc) = keyword_description(word) {
         let md = format!("**{word}** — {desc}");
