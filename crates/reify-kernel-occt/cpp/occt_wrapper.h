@@ -757,6 +757,18 @@ std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height);
 /// finite and positive.
 std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height);
 
+/// Create a closed planar polygon face from n_points 2-D vertices in the XY plane
+/// at the given Z height.  `coords` is a flat slice of 2*n_points doubles (x0,y0, x1,y1, …).
+/// Requires n_points >= 3, coords.size() == 2*n_points, all coordinates finite,
+/// and a non-degenerate (non-collinear) vertex set (checked via BRepBuilderAPI_MakeFace IsDone).
+std::unique_ptr<OcctShape> make_polygon_face(rust::Slice<const double> coords, size_t n_points, double z_height);
+
+/// Create a flat ellipse face in the XY plane at the given Z height, centred at the origin.
+/// Both semi_major and semi_minor must be finite and positive.
+/// Internally normalises major = max(a,b), minor = min(a,b) so OCCT's major≥minor constraint
+/// is satisfied regardless of argument order.  Area = π·a·b is orientation-invariant.
+std::unique_ptr<OcctShape> make_ellipse_face(double semi_major, double semi_minor, double z_height);
+
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
     double x2, double y2, double z2);

@@ -659,6 +659,16 @@ pub mod ffi {
             height: f64,
             z_height: f64,
         ) -> Result<UniquePtr<OcctShape>>;
+        fn make_polygon_face(
+            coords: &[f64],
+            n_points: usize,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_ellipse_face(
+            semi_major: f64,
+            semi_minor: f64,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
             x1: f64,
             y1: f64,
