@@ -2375,4 +2375,106 @@ mod tests {
         });
         assert!(!is_syntactic_zero_literal(&expr));
     }
+
+    // ── task 4235 ζ: unify dimension-slot binding (D8) ───────────────────────
+
+    /// (a) `unify(ScalarParam("Q"), Scalar{LENGTH})` binds Q → Scalar{LENGTH}.
+    ///
+    /// RED until step-2: the leaf arm `(Type::ScalarParam(_), _) => Ok(())` binds
+    /// nothing, so subst stays empty.
+    #[test]
+    fn unify_scalar_param_binds_to_concrete_scalar() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(result.is_ok(), "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}");
+        assert_eq!(
+            subst.get("Q"),
+            Some(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "subst[\"Q\"] should be Scalar{{LENGTH}} after binding, got {:?}",
+            subst.get("Q")
+        );
+    }
+
+    /// (b) Re-unifying the SAME `(ScalarParam("Q"), Scalar{LENGTH})` after Q is
+    /// already bound to Scalar{LENGTH} is idempotent — no error.
+    ///
+    /// RED until step-2: the leaf arm binds nothing, so (a) never binds; the
+    /// idempotent check is vacuous before (a) passes — but (a) failing is itself
+    /// the RED signal, so (b) is an additional gate once (a) is green.
+    #[test]
+    fn unify_scalar_param_idempotent_rebind() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(
+            result.is_ok(),
+            "idempotent rebind of Q→Scalar{{LENGTH}} should be Ok, got {result:?}"
+        );
+    }
+
+    /// (c) After Q→Scalar{LENGTH}, unifying with Scalar{MASS} → TypeArgConflict.
+    ///
+    /// RED until step-2: the leaf arm never sets subst, so the conflict arm can
+    /// never fire.
+    #[test]
+    fn unify_scalar_param_conflict_emits_type_arg_conflict() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::MASS },
+            &mut subst,
+        );
+        match result {
+            Err(TypeArgConflict { param, existing, incoming }) => {
+                assert_eq!(param, "Q", "conflict param should be Q");
+                assert_eq!(
+                    existing,
+                    Type::Scalar { dimension: DimensionVector::LENGTH },
+                    "existing should be Scalar{{LENGTH}}"
+                );
+                assert_eq!(
+                    incoming,
+                    Type::Scalar { dimension: DimensionVector::MASS },
+                    "incoming should be Scalar{{MASS}}"
+                );
+            }
+            Ok(()) => panic!(
+                "expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"
+            ),
+        }
+    }
+
+    /// (d) Non-scalar arg (`Bool`) against `ScalarParam("Q")` binds nothing and
+    /// returns Ok (conservative per D8).
+    ///
+    /// GREEN even before step-2 (the leaf arm already returns Ok for any arg).
+    #[test]
+    fn unify_scalar_param_non_scalar_arg_binds_nothing() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Bool,
+            &mut subst,
+        );
+        assert!(result.is_ok(), "non-scalar arg against ScalarParam should be Ok, got {result:?}");
+        assert!(
+            subst.is_empty(),
+            "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
+        );
+    }
 }
