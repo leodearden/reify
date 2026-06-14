@@ -757,12 +757,16 @@ trait ThermalContactPort : ThermalPort + RegionPort {
 ### 5.5 `std.ports.fluid`
 
 ```
+pub type VolumetricFlowRate = Volume / Time
+
 trait FluidPort : Port {
-    param pressure_range : Range<Pressure>
-    param flow_rate_range : Range<Scalar<Volume/Time>>
+    param pressure : Pressure
+    param flow_rate : VolumetricFlowRate
+    param medium : String
     param fluid_type : FluidType
 }
 enum FluidType { Liquid, Gas, TwoPhase }
+enum FittingStandard { NPT, BSP, JIC, ORFS }
 trait PipedFluidPort : FluidPort + LocatedPort {
     param inner_diameter : Length
     param connection_type : PipeConnectionType
