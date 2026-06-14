@@ -1,0 +1,12 @@
+// Fixture: §3 3979 arrow-type grammar probe.
+//
+// `tree-sitter parse --quiet arrow_type.ri` exits 1 and emits an ERROR node
+// because there is no arrow-type grammar production in the reify grammar.
+// Empirically verified: `(ERROR [1,12]-[1,32])` appears in the parser output
+// (exit 1) even under --quiet; parse takes ~0.07 ms.
+//
+// Used as a FAIL grammar probe in the committed probe set:
+//   expected = {observation: "present", match: {}}
+//   (we expect the arrow-type production to parse cleanly, observed=absent → FAIL)
+
+param f : (Length) -> Length
