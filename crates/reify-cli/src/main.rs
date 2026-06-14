@@ -1305,18 +1305,37 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         eprintln!("{}: {}", diag.severity, diag.message);
     }
 
-    // Emit undef notes: for each undef cell in the printed `values` (the
-    // requested outputs the user sees), report the complete root-cause set from
-    // β's tracer.  Notes go to stderr so stdout stays machine-parseable.
+    // Emit undef notes: for each undef cell, report the complete root-cause
+    // set from β's tracer.  Notes go to stderr so stdout stays parseable.
     //
-    // `explain_undef` is parsed above; widening to ALL undef cells (incl.
-    // unbound input params absent from `values`) is wired in step-6.
-    let _ = explain_undef; // behaviour wired in step-6 (--explain-undef)
-    let mut undef_cells: Vec<reify_core::ValueCellId> = values
-        .iter()
-        .filter(|(_, v)| v.is_undef())
-        .map(|(id, _)| id.clone())
-        .collect();
+    // Source selection (Q2 / §8.4 noise gate):
+    //   DEFAULT         — undef cells in the printed `values` only (the
+    //                     requested outputs the user sees; unbound input params
+    //                     are absent from EvalResult.values so they are silenced
+    //                     as subject lines while still appearing as because-causes
+    //                     inside the wall_thickness note).
+    //   --explain-undef — ALL undef cells in engine.snapshot().values, incl.
+    //                     unbound input params and internal cells.
+    let mut undef_cells: Vec<reify_core::ValueCellId> = if explain_undef {
+        // Widen to ALL undef cells: iterate the full snapshot value map.
+        engine
+            .snapshot()
+            .map(|snap| {
+                snap.values
+                    .iter()
+                    .filter(|(_, (v, _))| v.is_undef())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        // Default: only the undef cells that were printed to stdout.
+        values
+            .iter()
+            .filter(|(_, v)| v.is_undef())
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
     undef_cells.sort_by_key(|id| id.to_string());
     for id in &undef_cells {
         let causes = engine.trace_undef_causes(id);
