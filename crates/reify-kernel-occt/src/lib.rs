@@ -10237,4 +10237,114 @@ mod tests {
             "make_ellipse_face with semi_minor=NaN should return Err, got Ok"
         );
     }
+
+    // --- kernel execute for PolygonProfile + EllipseProfile (task-4161 step-3) ---
+    // RED until step-4 adds GeometryOp::PolygonProfile / EllipseProfile.
+
+    /// (a) PolygonProfile (4-vertex square) execute → extrude → volume ≈ 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// extrude height = 0.005 m → volume = 5e-7 m³ (exact rectangular prism).
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_executes_and_extrude_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::PolygonProfile {
+                points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+            })
+            .expect("PolygonProfile execute should succeed");
+        let solid_h = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile_h.id,
+                distance: Value::Real(0.005),
+            })
+            .expect("Extrude of PolygonProfile should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(solid_h.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 1e-4_f64 * 0.005; // shoelace_area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "PolygonProfile extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) EllipseProfile execute → SurfaceArea ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_executes_surface_area() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::EllipseProfile {
+                semi_major: Value::Real(0.010),
+                semi_minor: Value::Real(0.005),
+            })
+            .expect("EllipseProfile execute should succeed");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(profile_h.id))
+            .expect("SurfaceArea query should succeed")
+            .as_f64()
+            .expect("SurfaceArea should be numeric");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "EllipseProfile surface area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Validation: PolygonProfile with fewer than 3 points returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_too_few_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for <3 points, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-ii) Validation: EllipseProfile with non-positive semi-axis returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_nonpositive_axis_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::EllipseProfile {
+            semi_major: Value::Real(0.0),
+            semi_minor: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for semi_major=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
 }
