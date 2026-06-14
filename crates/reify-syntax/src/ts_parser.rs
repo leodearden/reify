@@ -800,14 +800,28 @@ impl<'a> Lowering<'a> {
 
     /// Lower a `qualified_type` CST node to a `TypeExpr`.
     ///
-    /// Handles two grammar forms (FORK-G):
-    /// - Bare:           `Beam::Material`           → `QualifiedAssoc { base: Named("Beam"), trait_name: None,               member: "Material" }`
-    /// - Disambiguated:  `Beam::(HasMaterial::Material)` → `QualifiedAssoc { base: Named("Beam"), trait_name: Some("HasMaterial"), member: "Material" }`
+    /// Handles three grammar forms (task 4601 α widened the base to
+    /// `choice($.identifier, $.parameterized_type)`):
+    /// - Bare:           `Beam::Material`
+    ///   → `QualifiedAssoc { base: Named("Beam"), trait_name: None, member: "Material" }`
+    /// - Type-param:     `T::Material`
+    ///   → `QualifiedAssoc { base: Named("T"),    trait_name: None, member: "Material" }`
+    /// - Applied-base:   `Coupling<Prismatic>::MotionValue`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: None, member: "MotionValue" }`
+    /// - FORK-G applied: `Coupling<Prismatic>::(HasMotion::MotionValue)`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: Some("HasMotion"), member: "MotionValue" }`
+    ///
+    /// The base is lowered via `lower_type_expr_node`, which dispatches
+    /// `parameterized_type → lower_parameterized_type` (carrying `type_args`) and
+    /// falls through `identifier → Named { name, type_args: [] }` — so bare/type-param
+    /// bases are byte-identical to the pre-4601 output.
     ///
     /// Resolution to a concrete `Type` is deferred to task ιₑ — this function emits the
     /// unresolved AST node only.
     fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
-        // `base` field: the leading identifier (e.g. "Beam" or a type-param "T").
+        // `base` field: either a bare identifier (e.g. "Beam", "T") or a
+        // parameterized_type (e.g. `Coupling<Prismatic>`).  Lowered via
+        // `lower_type_expr_node` so the applied-base's type_args are preserved.
         //
         // Under well-formed input the `base` field is always present.  Under
         // tree-sitter error recovery it may be absent; rather than silently
@@ -827,13 +841,7 @@ impl<'a> Lowering<'a> {
                 node
             }
         };
-        let base = Box::new(TypeExpr {
-            kind: TypeExprKind::Named {
-                name: self.node_text(base_node).to_string(),
-                type_args: vec![],
-            },
-            span: self.span(base_node),
-        });
+        let base = Box::new(self.lower_type_expr_node(base_node));
 
         // `trait` field: present only for the disambiguated form `(Trait::Member)`.
         let trait_name = node
