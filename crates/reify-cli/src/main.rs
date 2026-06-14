@@ -1039,13 +1039,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 if artifact.bytes.is_empty() {
                     continue;
                 }
-                if let Some(parent) = artifact.path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        if let Err(e) = std::fs::create_dir_all(parent) {
-                            eprintln!("Error creating {}: {}", parent.display(), e);
-                            return ExitCode::FAILURE;
-                        }
-                    }
+                if let Some(parent) = artifact.path.parent()
+                    && !parent.as_os_str().is_empty()
+                    && let Err(e) = std::fs::create_dir_all(parent)
+                {
+                    eprintln!("Error creating {}: {}", parent.display(), e);
+                    return ExitCode::FAILURE;
                 }
                 if let Err(e) = std::fs::write(&artifact.path, &artifact.bytes) {
                     eprintln!("Error writing {}: {}", artifact.path.display(), e);
