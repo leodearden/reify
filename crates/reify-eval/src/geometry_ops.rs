@@ -10602,6 +10602,14 @@ mod tests {
         );
     }
 
+    // TODO(tasks 4360/4358): Once engine-unified-build-dag η/ε lands and the
+    // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
+    // resolve on the active pipeline, add an end-to-end .ri-source test that
+    // compiles a 4-arg draft, runs it through eval, and asserts the resulting
+    // `GeometryOp::Draft.faces` vector is non-empty and the kernel produces a
+    // drafted solid with positive volume — confirming the full
+    // compiler → eval → kernel path works from authored .ri source.
+
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
         let step_handles = vec![GeometryHandleId(1)];

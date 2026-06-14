@@ -2313,6 +2313,7 @@ std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angl
 
         BRepOffsetAPI_DraftAngle drafter(shape.shape);
 
+        uint32_t added_count = 0;
         for (auto idx : face_indices) {
             if (idx >= face_count) {
                 throw std::runtime_error(
@@ -2327,7 +2328,23 @@ std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angl
                 // or already at the requested angle) — skip it, matching
                 // draft_shape's per-face AddDone/Remove skip pattern.
                 drafter.Remove(face);
+            } else {
+                ++added_count;
             }
+        }
+
+        // A curated selection that silently drafts zero faces is a
+        // user-actionable failure — unlike draft_shape's best-effort all-faces
+        // path, the user explicitly requested these faces.  Calling Build() on
+        // an empty drafter would either silently return the original shape or
+        // emit a generic failure; surface a clear diagnostic instead.
+        if (added_count == 0) {
+            throw std::runtime_error(
+                "draft_faces_shape: none of the " +
+                std::to_string(face_indices.size()) +
+                " selected face(s) were draftable at the requested angle "
+                "(all were rejected by AddDone); "
+                "try a different angle, pull direction, or face selection");
         }
 
         drafter.Build();

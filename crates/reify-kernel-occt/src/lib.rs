@@ -1617,14 +1617,21 @@ impl OcctKernel {
                 "draft_faces: failed to enumerate parent faces of {target:?}: {e:?}"
             ))
         })?;
+        // Build a reverse map (handle → 0-based index) once so each lookup is
+        // O(1) rather than scanning the whole parent list per selected face.
+        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (*h, i as u32))
+            .collect();
         let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
         for f in faces {
-            let pos = parent_faces.iter().position(|h| h == f).ok_or_else(|| {
+            let pos = face_index_map.get(f).copied().ok_or_else(|| {
                 GeometryError::OperationFailed(format!(
                     "draft_faces: face {f:?} does not belong to solid {target:?}"
                 ))
             })?;
-            face_indices.push(pos as u32);
+            face_indices.push(pos);
         }
         let shape = self.get_shape(target)?;
         let plane_shape = self.get_shape(plane)?;
