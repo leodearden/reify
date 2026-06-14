@@ -2261,6 +2261,36 @@ impl Engine {
     /// `end_to_end_tolerance_wiring_threads_promise_diagnostic_cache_and_per_stage_budget`
     /// in `crates/reify-eval/tests/tolerance_wiring_e2e.rs`.
     pub fn build(&mut self, module: &CompiledModule, format: ExportFormat) -> BuildResult {
+        // The public imperative build: realize geometry AND serialize the
+        // Phase-B product bodies into `geometry_output` (the single-output,
+        // format-from-a-flag path). Delegates to the shared realization worker
+        // with the Phase-B product export ENABLED.
+        self.build_with_geometry_output(module, format, true)
+    }
+
+    /// Internal realization worker shared by [`Self::build`] and
+    /// [`Self::build_outputs`] (io-export δ).
+    ///
+    /// `emit_geometry_output` controls ONLY the trailing Phase-B product-body
+    /// export: with `true` (the imperative [`Self::build`]) the product bodies
+    /// are serialized into [`BuildResult::geometry_output`]; with `false`
+    /// (`build_outputs`) that export is skipped and `geometry_output` is `None`.
+    /// Realization, `Value::GeometryHandle` hydration, `realization_handles`
+    /// population, and constraint checking are IDENTICAL on both paths — only the
+    /// final serialization differs. `build_outputs` needs the hydrated handles
+    /// but drives its own per-occurrence export, so the Phase-B export would be
+    /// redundant work and — under a recording kernel — a spurious extra
+    /// `export()` call that does not belong to any DSL `Output` occurrence.
+    ///
+    /// See [`Self::build`]'s doc comment for the four production-wiring contracts
+    /// (tolerance-promise diagnostics, per-realization demanded tolerance,
+    /// per-stage budget, `RealizationCache`) this worker threads.
+    fn build_with_geometry_output(
+        &mut self,
+        module: &CompiledModule,
+        format: ExportFormat,
+        emit_geometry_output: bool,
+    ) -> BuildResult {
         // Task ε (3436) step-12: reset the dispatch-count instrumentation
         // counter at the entry to every build/tessellate surface so a second
         // build of the same module reports its own per-build dispatch tally
@@ -2594,6 +2624,15 @@ impl Engine {
                     ));
                 }
                 None
+            } else if !emit_geometry_output {
+                // io-export δ realize-only path (`build_outputs`): realization +
+                // Value::GeometryHandle hydration above is everything the
+                // occurrence-driven export needs, so skip the Phase-B product
+                // export entirely. This both avoids redundant serialization work
+                // (the bytes would be discarded) and keeps a recording kernel's
+                // `export()` capture limited to the DSL-driven per-occurrence
+                // calls `build_outputs` issues itself.
+                None
             } else {
                 // T7 (task 3905) Phase-B export walk: collect placed-product
                 // BRep handles via the containment-tree surfacing walk, then
@@ -2825,6 +2864,249 @@ impl Engine {
             geometry_output,
             diagnostics,
             resolved_params: check_result.resolved_params,
+        }
+    }
+
+    /// Thin convenience wrapper over [`Self::build_outputs_with_result`] that
+    /// returns ONLY the per-occurrence artifacts, discarding the bundled
+    /// constraint results + diagnostics from the driver's single realization.
+    ///
+    /// Prefer [`Self::build_outputs_with_result`] when you ALSO need the
+    /// exit-code signal (constraint results / diagnostics) without realizing the
+    /// module a second time — that is exactly what the declarative `reify build`
+    /// (no `-o`) path needs, so it must not pay for two realizations.
+    pub fn build_outputs(
+        &mut self,
+        module: &CompiledModule,
+        design_dir: &std::path::Path,
+        out_dir_override: Option<&std::path::Path>,
+    ) -> Vec<crate::ExportArtifact> {
+        self.build_outputs_with_result(module, design_dir, out_dir_override)
+            .artifacts
+    }
+
+    /// Occurrence-driven export driver (io-export δ, step-8): realize the module
+    /// once, then emit one file [`crate::ExportArtifact`] per realized `Output`
+    /// occurrence whose `format` and `path` come from the DSL.
+    ///
+    /// PRD: `docs/prds/v0_6/io-export-import-completion.md` §4.3/§7.3 (signals
+    /// B5/B6/B7). Unlike the imperative [`Self::build`] (one output, format from
+    /// a CLI flag), the *DSL* drives both the serializer (`STLOutput` →
+    /// `ExportFormat::Stl`, `STEPOutput` → `Step`, …) and the destination path.
+    ///
+    /// Pipeline:
+    /// 1. Reuse [`Self::build`] (with `ExportFormat::Step`) to realize geometry,
+    ///    hydrate `Value::GeometryHandle` cells, populate `realization_handles`,
+    ///    and run constraints. Its serialized `geometry_output` is discarded —
+    ///    export is driven by the recognized occurrences below, not that format.
+    /// 2. Walk `module.templates × sub_components` in declaration order. Each
+    ///    `sub`'s occurrence template is resolved module-first, then via the
+    ///    stdlib prelude ([`crate::engine_eval::find_template_with_prelude`]) —
+    ///    stdlib `Output` templates (`STLOutput` et al.) live in the prelude, not
+    ///    `CompiledModule::templates`. An occurrence is an `Output` iff it is an
+    ///    `EntityKind::Occurrence` AND its trait bounds transitively conform to
+    ///    `Output` (trait-bound conformance, not a name match, so user-defined
+    ///    Output occurrences work too).
+    /// 3. Read the per-instance export spec (`format`/`path`/`resolution`) off
+    ///    the elaborated `Value::StructureInstance` at `ValueCellId(template,
+    ///    sub)` via [`crate::tolerance_combine::extract_output_export_spec`].
+    /// 4. Resolve `subject` → live kernel handle via the sub's `subject` ARG (a
+    ///    `ValueRef` into the post-build hydrated values map).
+    /// 5. Resolve the destination path (design-relative / `--out-dir` override)
+    ///    via [`resolve_artifact_path`].
+    /// 6. Emit the file via the default kernel's `export()`.
+    ///
+    /// Emits one artifact per recognized `Output` occurrence, in deterministic
+    /// declaration order (`templates × sub_components`) — so a multi-output
+    /// module produces a reproducible artifact sequence (B6).
+    ///
+    /// Returns a [`crate::BuildOutputs`] bundling those artifacts with the
+    /// constraint results + diagnostics from the SINGLE realization in step 1,
+    /// so a caller needing the exit-code signal reuses this one realization
+    /// rather than calling [`Self::build`] (which would realize, constraint-check,
+    /// and serialize the discarded Phase-B product bodies all over again).
+    pub fn build_outputs_with_result(
+        &mut self,
+        module: &CompiledModule,
+        design_dir: &std::path::Path,
+        out_dir_override: Option<&std::path::Path>,
+    ) -> crate::BuildOutputs {
+        use crate::tolerance_combine::{
+            OutputTarget, conforms_to_output, extract_output_export_spec,
+        };
+
+        // (1) Realize + hydrate Value::GeometryHandle cells by reusing the build
+        //     worker with the Phase-B product export DISABLED: `build_outputs`
+        //     drives its own per-occurrence export below, so the imperative
+        //     single-output serialization would be redundant (and, under a
+        //     recording kernel, a spurious extra `export()` call). The `format`
+        //     argument is irrelevant when `emit_geometry_output == false`.
+        let r = self.build_with_geometry_output(module, ExportFormat::Step, false);
+
+        // Merge module trait defs with the prelude's: the `trait Output : Sink`
+        // lattice lives in the prelude std.io module, and `module.trait_defs` is
+        // empty for user modules. Built once; supports transitive user-defined
+        // Output occurrences (`occurrence def Foo : MyExport`, `trait MyExport :
+        // Output`). The direct `["Output"]` bound greens even without the merge.
+        let mut merged_trait_defs: Vec<reify_compiler::CompiledTrait> =
+            module.trait_defs.clone();
+        for pm in self.prelude {
+            merged_trait_defs.extend(pm.trait_defs.iter().cloned());
+        }
+
+        let default_kernel_name = self.default_kernel_name.clone();
+        let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
+
+        // (2) Deterministic declaration-order walk of every occurrence sub:
+        //     emit one artifact per recognized Output occurrence (step-10).
+        for template in &module.templates {
+            for sub in &template.sub_components {
+                // Resolve the occurrence template — module first, then prelude.
+                let Some(occ_template) = crate::engine_eval::find_template_with_prelude(
+                    module,
+                    self.prelude,
+                    &sub.structure_name,
+                ) else {
+                    continue;
+                };
+                // Gate: Output == an `occurrence def … : Output` (trait-bound
+                // conformance, not a type-name match).
+                if occ_template.entity_kind != reify_compiler::EntityKind::Occurrence {
+                    continue;
+                }
+                if !conforms_to_output(&occ_template.trait_bounds, &merged_trait_defs) {
+                    continue;
+                }
+
+                // (3) Read the per-instance export spec off the elaborated
+                //     StructureInstance at ValueCellId(template, sub).
+                let instance_id = reify_core::ValueCellId::new(&template.name, &sub.name);
+                let Some(instance) = r.values.get(&instance_id) else {
+                    continue;
+                };
+                let Some(spec) = extract_output_export_spec(instance) else {
+                    continue;
+                };
+                // File targets serialize below; a DisplayOutput conforms to
+                // Output but its file emission is DEFERRED (the viewport drive is
+                // a sibling PRD). Rather than a silent skip, surface an
+                // info-severity I_DISPLAY_OUTPUT_DEFERRED diagnostic so the user
+                // learns the occurrence was recognized and intentionally
+                // deferred (step-12). It is carried as a zero-byte "skipped
+                // entry" (the step-14 placement choice): `bytes` is empty so the
+                // CLI writes no file and `path` is empty (a viewport sink has no
+                // destination); `format` is an unread placeholder because
+                // `ExportFormat` has no `Display` variant. Consumers MUST gate
+                // file-writing on `!bytes.is_empty()`, never on `format`.
+                let export_format = match spec.format {
+                    OutputTarget::File(f) => f,
+                    OutputTarget::DisplayDeferred => {
+                        artifacts.push(crate::ExportArtifact {
+                            path: std::path::PathBuf::new(),
+                            format: ExportFormat::Step,
+                            bytes: Vec::new(),
+                            diagnostics: vec![Diagnostic::info(format!(
+                                "{}: DisplayOutput occurrence `{}.{}` recognized; \
+                                 file emission deferred (the viewport drive is a \
+                                 deferred sibling PRD)",
+                                crate::I_DISPLAY_OUTPUT_DEFERRED, template.name, sub.name
+                            ))],
+                        });
+                        continue;
+                    }
+                };
+
+                // (5) Resolve the destination (design-relative / --out-dir) up
+                //     front so any failure diagnostic below can name the path.
+                let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
+
+                // (4) Resolve `subject` → live kernel handle via the sub's
+                //     `subject` ARG: a ValueRef into the post-build hydrated map
+                //     (NOT the pre-hydration StructureInstance.subject field).
+                //
+                // Per-occurrence failure isolation (step-14): a recognized
+                // Output occurrence whose `subject` cannot be resolved to live
+                // geometry — or whose kernel export() fails below — must NOT
+                // abort the loop. It pushes a "partial" artifact (empty bytes
+                // carrying an error-severity diagnostic that names the occurrence
+                // + path) and `continue`s, so one bad Output never aborts the
+                // others (PRD §4.3/§7.3). The CLI gates file-writing on
+                // `!bytes.is_empty()`, so a partial artifact writes no file.
+                let subject_handle = sub
+                    .args
+                    .iter()
+                    .find_map(|(k, e)| (k.as_str() == "subject").then_some(e))
+                    .and_then(|e| match &e.kind {
+                        reify_ir::CompiledExprKind::ValueRef(id) => r.values.get(id),
+                        _ => None,
+                    })
+                    .and_then(|v| match v {
+                        reify_ir::Value::GeometryHandle { kernel_handle, .. } => {
+                            Some(*kernel_handle)
+                        }
+                        _ => None,
+                    });
+                let Some(handle_id) = subject_handle else {
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![Diagnostic::error(format!(
+                            "Output occurrence `{}.{}` could not resolve its \
+                             `subject` to realized geometry (export to {} skipped)",
+                            template.name,
+                            sub.name,
+                            path.display()
+                        ))],
+                    });
+                    continue;
+                };
+
+                // (6) Emit one file via the default kernel's export(); isolate a
+                //     kernel failure as an error diagnostic + continue.
+                let mut bytes = Vec::new();
+                let export_result = match default_kernel_name
+                    .as_deref()
+                    .and_then(|name| self.geometry_kernels.get(name))
+                {
+                    Some(kernel) => kernel.export(handle_id, export_format, &mut bytes),
+                    None => Err(reify_ir::ExportError::FormatError(
+                        "no default geometry kernel registered".to_string(),
+                    )),
+                };
+                if let Err(e) = export_result {
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![Diagnostic::error(format!(
+                            "Output occurrence `{}.{}` failed to export to {}: {}",
+                            template.name,
+                            sub.name,
+                            path.display(),
+                            e
+                        ))],
+                    });
+                    continue;
+                }
+
+                artifacts.push(crate::ExportArtifact {
+                    path,
+                    format: export_format,
+                    bytes,
+                    diagnostics: Vec::new(),
+                });
+            }
+        }
+
+        // Bundle the artifacts with the single realization's constraint results +
+        // diagnostics so the CLI exit-code gate reuses THIS realization instead of
+        // calling build() a second time (the `r` fields are moved out — the loop's
+        // immutable borrows of `r.values` have all ended by here).
+        crate::BuildOutputs {
+            constraint_results: r.constraint_results,
+            diagnostics: r.diagnostics,
+            artifacts,
         }
     }
 
@@ -6720,9 +7002,542 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
     found
 }
 
+/// Resolves an `Output` occurrence's raw `path` field into the fully-resolved
+/// destination written by [`Engine::build_outputs`] (io-export δ).
+///
+/// The B7 design-relative-path rule
+/// (`docs/prds/v0_6/io-export-import-completion.md` §7.3): an absolute `raw`
+/// path is returned verbatim; a relative `raw` path is joined onto
+/// `out_dir_override` when present (a CI escape hatch that beats the design
+/// dir), otherwise onto `design_dir` (the directory containing the `.ri` design
+/// file). Keeping the rule in one pure function makes `ExportArtifact.path`
+/// fully resolved and unit-testable without spawning the CLI binary.
+fn resolve_artifact_path(
+    raw: &str,
+    design_dir: &std::path::Path,
+    out_dir_override: Option<&std::path::Path>,
+) -> std::path::PathBuf {
+    let raw_path = std::path::Path::new(raw);
+    if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        out_dir_override.unwrap_or(design_dir).join(raw_path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// step-05 (RED): `resolve_artifact_path` resolves an `Output` occurrence's
+    /// raw `path` field against the design-file directory, an optional
+    /// `--out-dir` override, or verbatim when already absolute.
+    ///
+    /// This is the pure core of the B7 design-relative-path rule
+    /// (`docs/prds/v0_6/io-export-import-completion.md` §7.3): a relative
+    /// occurrence path joins onto `out_dir_override.unwrap_or(design_dir)` — so
+    /// the override is a CI escape hatch that beats the design dir — while an
+    /// absolute path ignores both bases. Encapsulating the rule here makes
+    /// `build_outputs`'s `ExportArtifact.path` fully resolved and unit-testable
+    /// without spawning the CLI binary.
+    #[test]
+    fn resolve_artifact_path_handles_relative_override_and_absolute() {
+        use std::path::{Path, PathBuf};
+
+        // Relative path + design dir, no override → joins onto the design dir.
+        assert_eq!(
+            resolve_artifact_path("o.stl", Path::new("/d"), None),
+            PathBuf::from("/d/o.stl"),
+        );
+
+        // Relative path + override → the override wins over the design dir.
+        assert_eq!(
+            resolve_artifact_path("o.stl", Path::new("/d"), Some(Path::new("/ci"))),
+            PathBuf::from("/ci/o.stl"),
+        );
+
+        // Absolute path → verbatim, ignoring both bases.
+        assert_eq!(
+            resolve_artifact_path("/abs/x.stl", Path::new("/d"), Some(Path::new("/ci"))),
+            PathBuf::from("/abs/x.stl"),
+        );
+    }
+
+    // ── build_outputs occurrence-driven export (io-export δ steps 7–14) ───────
+
+    /// Recording kernel for the io-export δ driver tests: delegates the full
+    /// `GeometryKernel` surface to a `MockGeometryKernel`, and additionally
+    /// captures (a) every handle `execute` produced — so a test can identify the
+    /// realized geometry handle (e.g. the `part` box) the occurrence's `subject`
+    /// must resolve to — and (b) every `export(handle, format)` call's
+    /// `(handle, format)` pair. `export` still delegates to the inner mock (which
+    /// writes `MOCK_EXPORT_DATA`), so `ExportArtifact.bytes` is non-empty.
+    /// Capturing the export format proves the DSL `Output` occurrence — not a
+    /// hardcoded CLI flag — drove the serializer.
+    struct ExportRecordingKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
+        exported: std::sync::Arc<
+            std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+        >,
+    }
+
+    impl reify_ir::GeometryKernel for ExportRecordingKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            let result = self.inner.execute(op);
+            if let Ok(handle) = &result {
+                self.executed.lock().unwrap().push(handle.id);
+            }
+            result
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.exported.lock().unwrap().push((handle, format));
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn make_compound(
+            &mut self,
+            handles: &[reify_ir::GeometryHandleId],
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.make_compound(handles)
+        }
+    }
+
+    /// step-07 (RED): `build_outputs` drives a single `STLOutput` occurrence to
+    /// exactly one `ExportArtifact` whose `format` (STL) and `path` ("o.stl",
+    /// resolved design-relative) come from the DSL, and whose exported handle is
+    /// the realized `part` box (the occurrence's `subject`).
+    ///
+    /// Asserting the single export's `format == Stl` proves the DSL occurrence —
+    /// not a hardcoded flag — chose the serializer (B5); asserting its handle is
+    /// one the kernel realized proves the `subject: part` arg resolved to live
+    /// geometry.
+    ///
+    /// RED until step-08 adds `Engine::build_outputs`: the method does not yet
+    /// exist, so this test fails to compile.
+    #[test]
+    fn build_outputs_drives_single_stl_output() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "exactly one ExportArtifact for the single STLOutput occurrence, got {}",
+            artifacts.len()
+        );
+        let art = &artifacts[0];
+        assert_eq!(
+            art.format,
+            reify_ir::ExportFormat::Stl,
+            "the DSL STLOutput occurrence must drive ExportFormat::Stl"
+        );
+        assert_eq!(
+            art.path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "a relative occurrence path joins onto the design dir (B7)"
+        );
+        assert!(
+            !art.bytes.is_empty(),
+            "the kernel export() must have written bytes into the artifact"
+        );
+
+        let exported = exported.lock().unwrap().clone();
+        assert_eq!(
+            exported.len(),
+            1,
+            "exactly one export() call for the single occurrence, got {}",
+            exported.len()
+        );
+        assert_eq!(
+            exported[0].1,
+            reify_ir::ExportFormat::Stl,
+            "the recorded export() format must be Stl (DSL-driven, not flag-driven)"
+        );
+        let executed = executed.lock().unwrap().clone();
+        assert!(
+            executed.contains(&exported[0].0),
+            "the exported handle {:?} must be a realized kernel handle (the resolved \
+             `subject: part`); realized handles were {:?}",
+            exported[0].0,
+            executed
+        );
+    }
+
+    /// step-09 (RED): `build_outputs` emits one [`crate::ExportArtifact`] per
+    /// recognized `Output` occurrence, in declaration order (B6).
+    ///
+    /// Two occurrences on the same solid — `sub o = STLOutput(...)` then
+    /// `sub s = STEPOutput(...)` — must yield exactly two artifacts in source
+    /// order: `[{Stl, "/tmp/d/o.stl"}, {Step, "/tmp/d/o2.step"}]`, and the
+    /// recording kernel must observe the two `export()` calls as `[Stl, Step]`
+    /// in that same order. The `STEPOutput` occurrence's `format` default
+    /// (`OutputFormat.STEP`) must route to `ExportFormat::Step`, proving the
+    /// per-occurrence DSL format — not a single shared flag — drives each file.
+    ///
+    /// RED until step-10: the step-08 happy path breaks after the FIRST
+    /// recognized occurrence, so it emits a single STL artifact and this test's
+    /// `artifacts.len() == 2` (and the `[Stl, Step]` export order) fail.
+    #[test]
+    fn build_outputs_emits_one_artifact_per_occurrence_in_declaration_order() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub s = STEPOutput(subject: part, path: "o2.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            2,
+            "one artifact per Output occurrence (STLOutput + STEPOutput), got {}",
+            artifacts.len()
+        );
+        // Declaration order: STLOutput first, STEPOutput second.
+        assert_eq!(artifacts[0].format, reify_ir::ExportFormat::Stl);
+        assert_eq!(artifacts[0].path, PathBuf::from("/tmp/d/o.stl"));
+        assert_eq!(
+            artifacts[1].format,
+            reify_ir::ExportFormat::Step,
+            "the STEPOutput occurrence's format default (STEP) must route to Step"
+        );
+        assert_eq!(artifacts[1].path, PathBuf::from("/tmp/d/o2.step"));
+
+        let exported = exported.lock().unwrap().clone();
+        let formats: Vec<reify_ir::ExportFormat> = exported.iter().map(|(_, f)| *f).collect();
+        assert_eq!(
+            formats,
+            vec![reify_ir::ExportFormat::Stl, reify_ir::ExportFormat::Step],
+            "the recording kernel must observe per-occurrence exports [Stl, Step] \
+             in declaration order, got {:?}",
+            formats
+        );
+        let executed = executed.lock().unwrap().clone();
+        for (handle, _) in &exported {
+            assert!(
+                executed.contains(handle),
+                "each exported handle {:?} must be a realized `subject: part` \
+                 handle; realized handles were {:?}",
+                handle,
+                executed
+            );
+        }
+    }
+
+    /// step-11 (RED): `build_outputs` RECOGNIZES a `DisplayOutput` occurrence as
+    /// a conforming `Output` but DEFERS its file emission (the viewport drive is
+    /// a sibling PRD), surfacing an info-severity [`crate::I_DISPLAY_OUTPUT_DEFERRED`]
+    /// diagnostic instead of a file — while an `Input` occurrence (`STEPInput`)
+    /// is EXCLUDED entirely (it conforms to `Input`, not `Output`).
+    ///
+    /// The module mixes all three: one `STLOutput` (a file), one `DisplayOutput`
+    /// (recognize-but-defer), one `STEPInput` (not an Output at all). The driver
+    /// must therefore produce exactly ONE file artifact (the STLOutput, with
+    /// non-empty bytes), surface exactly ONE `I_DISPLAY_OUTPUT_DEFERRED` info
+    /// diagnostic for the DisplayOutput, and emit NEITHER artifact NOR diagnostic
+    /// for the STEPInput. The recording kernel must observe exactly ONE
+    /// `export()` call (the STLOutput) — proving DisplayOutput/STEPInput drove no
+    /// serialization.
+    ///
+    /// RED until step-12: the step-8/10 happy path `continue`s silently on a
+    /// `DisplayDeferred` target, so no `I_DISPLAY_OUTPUT_DEFERRED` diagnostic is
+    /// surfaced and this test's diagnostic assertion fails.
+    #[test]
+    fn build_outputs_defers_display_output_and_excludes_input() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub d = DisplayOutput(subject: part)
+    sub i = STEPInput(source: "in.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        // Exactly one FILE artifact (non-empty bytes): the STLOutput. The
+        // DisplayOutput is recognized-but-deferred (a zero-byte skipped entry,
+        // never a written file); STEPInput contributes no entry at all.
+        let files: Vec<&crate::ExportArtifact> =
+            artifacts.iter().filter(|a| !a.bytes.is_empty()).collect();
+        assert_eq!(
+            files.len(),
+            1,
+            "exactly one FILE artifact (the STLOutput); DisplayOutput defers and \
+             STEPInput is excluded, got files {:?}",
+            files.iter().map(|a| &a.path).collect::<Vec<_>>()
+        );
+        assert_eq!(files[0].format, reify_ir::ExportFormat::Stl);
+        assert_eq!(files[0].path, PathBuf::from("/tmp/d/o.stl"));
+
+        // Exactly one info-severity I_DISPLAY_OUTPUT_DEFERRED diagnostic, for the
+        // DisplayOutput. "Result diagnostics" = every artifact's diagnostics.
+        let display_diags: Vec<&reify_core::Diagnostic> = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.message.contains(crate::I_DISPLAY_OUTPUT_DEFERRED))
+            .collect();
+        assert_eq!(
+            display_diags.len(),
+            1,
+            "exactly one I_DISPLAY_OUTPUT_DEFERRED diagnostic for the single \
+             DisplayOutput occurrence, got {}",
+            display_diags.len()
+        );
+        assert_eq!(
+            display_diags[0].severity,
+            Severity::Info,
+            "the DisplayOutput-deferred diagnostic must be info-severity (not an \
+             error that would fail the build)"
+        );
+
+        // STEPInput (an `Input`, not an `Output`) produces NO diagnostic of any
+        // kind — it is filtered out by the conforms_to_output gate before any
+        // spec read.
+        let input_diags = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.message.contains("STEPInput") || d.message.contains(".i"))
+            .count();
+        assert_eq!(
+            input_diags, 0,
+            "STEPInput is not an Output: it must produce neither artifact nor diagnostic"
+        );
+
+        // The kernel serialized exactly once — the STLOutput. DisplayOutput and
+        // STEPInput drove no export() call.
+        let exported = exported.lock().unwrap().clone();
+        assert_eq!(
+            exported.len(),
+            1,
+            "only the STLOutput exports; DisplayOutput defers and STEPInput is \
+             excluded, got {} export() calls",
+            exported.len()
+        );
+        assert_eq!(exported[0].1, reify_ir::ExportFormat::Stl);
+    }
+
+    /// step-13 helper: a kernel whose FIRST `export()` call fails with a
+    /// [`reify_ir::ExportError`] and whose subsequent calls succeed (delegated
+    /// to the inner mock). With `build_outputs`'s Phase-B product export
+    /// disabled, the only `export()` calls are the per-occurrence ones, so call
+    /// #1 is the first `Output` occurrence and call #2 the second — letting a
+    /// test drive "first occurrence fails, second succeeds".
+    struct FailFirstExportKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        export_calls: std::sync::Mutex<usize>,
+    }
+
+    impl reify_ir::GeometryKernel for FailFirstExportKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            let mut n = self.export_calls.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                return Err(reify_ir::ExportError::FormatError(
+                    "injected failure (first export)".to_string(),
+                ));
+            }
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn make_compound(
+            &mut self,
+            handles: &[reify_ir::GeometryHandleId],
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.make_compound(handles)
+        }
+    }
+
+    /// step-13 (RED): a per-occurrence export failure must be ISOLATED — it
+    /// emits an error diagnostic and the loop CONTINUES, so a later valid
+    /// `Output` occurrence still serializes its file. One bad Output never
+    /// aborts the others (PRD §4.3/§7.3 per-artifact failure isolation).
+    ///
+    /// Two `STLOutput`s on the same solid; the kernel fails the FIRST `export()`
+    /// (occurrence `o`) and succeeds the second (occurrence `s`). The driver
+    /// must NOT panic/abort: it surfaces an error-severity diagnostic naming the
+    /// failed occurrence's path (`o.stl`) AND still produces a written artifact
+    /// (non-empty bytes) for the valid `s` (`o2.stl`).
+    ///
+    /// RED until step-14: the step-8 happy path `continue`s SILENTLY on an
+    /// export `Err` (no diagnostic), so the error-diagnostic assertion fails.
+    #[test]
+    fn build_outputs_isolates_per_occurrence_export_failure() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub s = STLOutput(subject: part, path: "o2.stl")
+}"#,
+        );
+
+        let kernel = FailFirstExportKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            export_calls: std::sync::Mutex::new(0),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        // Must not panic even though the first occurrence's export errors.
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        // The failed occurrence (`o`) carries an error-severity diagnostic that
+        // names its path, so the failure is attributable and not silent.
+        let error_diags: Vec<&reify_core::Diagnostic> = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            error_diags.len(),
+            1,
+            "the failed occurrence must surface exactly one error diagnostic, got {}",
+            error_diags.len()
+        );
+        assert!(
+            error_diags[0].message.contains("o.stl"),
+            "the error diagnostic must name the failed occurrence's path (o.stl); got {:?}",
+            error_diags[0].message
+        );
+
+        // Isolation: the valid SECOND occurrence (`s`) still produced a written
+        // file with bytes despite the first occurrence failing.
+        let written: Vec<&crate::ExportArtifact> =
+            artifacts.iter().filter(|a| !a.bytes.is_empty()).collect();
+        assert_eq!(
+            written.len(),
+            1,
+            "the valid second occurrence still serializes a file despite the \
+             first failing, got {} written artifacts",
+            written.len()
+        );
+        assert_eq!(
+            written[0].path,
+            PathBuf::from("/tmp/d/o2.stl"),
+            "the surviving artifact must be the second (valid) occurrence o2.stl"
+        );
+    }
 
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /

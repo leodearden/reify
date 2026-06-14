@@ -6,7 +6,9 @@ use std::panic;
 use std::sync::Arc;
 use std::time::Instant;
 
-use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
+use reify_compiler::{
+    CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
+};
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
     SourceSpan, ValueCellId, VersionId,
@@ -31,6 +33,36 @@ use crate::{
     CacheStats, CachedEvalResult, Engine, EvalResult, EvaluationState, GuardLookup, build_meta_map,
     eval_ctx_with_meta, guard_state_fingerprint, merge_functions,
 };
+
+/// Resolve a sub-component's `structure_name` against the user module's
+/// templates first (module definitions shadow the prelude), then fall back to
+/// the engine's compiled stdlib prelude modules.
+///
+/// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
+/// `Engine::prelude` and are deliberately NOT merged into
+/// `CompiledModule::templates`, so a module-only lookup reports them as
+/// unknown structures and `sub o = STLOutput(...)` never elaborates
+/// (io-export δ / esc-4287-15). Used by BOTH resolver sites — the elaborating
+/// sub-component loop in `eval()` and the validation-only mirror in
+/// `eval_cached()` — which must agree on which names are unknown, or cached
+/// re-evals emit false "unknown structure" errors.
+///
+/// `pub(crate)` so the io-export δ occurrence-driven export driver
+/// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
+/// occurrence template through the SAME module-first/prelude-fallback rule the
+/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
+/// live in the prelude, not `CompiledModule::templates`.
+pub(crate) fn find_template_with_prelude<'a>(
+    module: &'a CompiledModule,
+    prelude: &'a [CompiledModule],
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
+    find_template(&module.templates, name).or_else(|| {
+        prelude
+            .iter()
+            .find_map(|pm| find_template(&pm.templates, name))
+    })
+}
 
 /// Sentinel substring included in every panic raised by
 /// [`assert_value_cell_types_representable`].  Used by the unit test
@@ -2241,18 +2273,20 @@ impl Engine {
         // for each sub_component in each template.
         for template in &module.templates {
             for sub in &template.sub_components {
-                // Find the referenced child template by name
-                let child_template = match find_template(&module.templates, &sub.structure_name) {
-                    Some(t) => t,
-                    None => {
-                        self.last_sub_component_unknown_structure_errors += 1;
-                        diagnostics.push(Diagnostic::error(format!(
-                            "sub-component \"{}\" references unknown structure \"{}\"",
-                            sub.name, sub.structure_name
-                        )));
-                        continue;
-                    }
-                };
+                // Find the referenced child template by name — module
+                // templates first, then the stdlib prelude (esc-4287-15).
+                let child_template =
+                    match find_template_with_prelude(module, self.prelude, &sub.structure_name) {
+                        Some(t) => t,
+                        None => {
+                            self.last_sub_component_unknown_structure_errors += 1;
+                            diagnostics.push(Diagnostic::error(format!(
+                                "sub-component \"{}\" references unknown structure \"{}\"",
+                                sub.name, sub.structure_name
+                            )));
+                            continue;
+                        }
+                    };
 
                 // Collection sub: determine count, then elaborate N instances
                 if sub.is_collection {
@@ -3431,11 +3465,13 @@ impl Engine {
             }
 
             // Sub-component validation pass: emit "unknown structure" error for any
-            // sub_component whose structure_name has no matching template in the module.
-            // Mirrors eval() lines 855-864. We do NOT elaborate child instances here —
-            // this is lookup-only by design (see design decision in plan).
+            // sub_component whose structure_name has no matching template in the
+            // module OR the stdlib prelude (the lookup set must match eval()'s
+            // elaborating loop, esc-4287-15). Mirrors eval()'s resolver. We do NOT
+            // elaborate child instances here — this is lookup-only by design (see
+            // design decision in plan).
             for sub in &template.sub_components {
-                if find_template(&module.templates, &sub.structure_name).is_none() {
+                if find_template_with_prelude(module, self.prelude, &sub.structure_name).is_none() {
                     self.last_sub_component_unknown_structure_errors += 1;
                     diagnostics.push(Diagnostic::error(format!(
                         "sub-component \"{}\" references unknown structure \"{}\"",

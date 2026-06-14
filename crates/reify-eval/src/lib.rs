@@ -1001,6 +1001,73 @@ pub struct BuildResult {
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
+/// Diagnostic code for the recognize-but-defer `DisplayOutput` info diagnostic.
+///
+/// `build_outputs` (io-export δ) recognizes a `DisplayOutput` occurrence as a
+/// conforming `Output` but emits NO file for it — the viewport-drive that a
+/// `DisplayOutput` requests is a deferred sibling PRD (per
+/// `docs/prds/v0_6/io-export-import-completion.md` §4.3/§7.3). Instead of a
+/// silent skip, an info-severity [`Diagnostic`] carrying this code is surfaced
+/// so the user learns the occurrence was seen and intentionally deferred. The
+/// code is embedded in the diagnostic message so callers (CLI, tests) can match
+/// on it without a typed [`reify_core::DiagnosticCode`] variant (which would
+/// touch the out-of-scope `reify-core` crate).
+pub const I_DISPLAY_OUTPUT_DEFERRED: &str = "I_DISPLAY_OUTPUT_DEFERRED";
+
+/// One file artifact produced by the occurrence-driven export driver
+/// [`Engine::build_outputs`] (io-export δ).
+///
+/// Each realized `Output` occurrence (an `occurrence def … : Output` instance,
+/// e.g. `STLOutput`/`STEPOutput`/`ThreeMFOutput`) that resolves to geometry
+/// contributes exactly one `ExportArtifact`. The DSL drives both the `format`
+/// (from the occurrence's `format` field) and the `path` (from its `path`
+/// field), so the CLI is a thin writer: it creates `path`'s parent directories
+/// and writes `bytes` verbatim.
+///
+/// * `path` — the FULLY RESOLVED destination. Relative occurrence paths are
+///   joined onto the design-file directory (or an `--out-dir` override) inside
+///   `build_outputs`; absolute paths pass through verbatim. So consumers never
+///   re-resolve against a base.
+/// * `format` — the [`reify_ir::ExportFormat`] the occurrence's `format` field
+///   selected (`Step`/`Stl`/`ThreeMF`); proves the DSL, not the CLI flag, chose
+///   the serializer.
+/// * `bytes` — the serialized geometry exactly as the kernel `export()` wrote
+///   it (e.g. a binary STL `84 + 50·N` byte stream).
+/// * `diagnostics` — per-artifact diagnostics (e.g. an export failure that this
+///   occurrence hit). Mirrors [`BuildResult`]'s location for a consistent
+///   public surface.
+#[derive(Debug)]
+pub struct ExportArtifact {
+    pub path: std::path::PathBuf,
+    pub format: reify_ir::ExportFormat,
+    pub bytes: Vec<u8>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Bundled result of the occurrence-driven export driver
+/// [`Engine::build_outputs_with_result`] (io-export δ).
+///
+/// Carries the per-occurrence [`ExportArtifact`]s AND the constraint results +
+/// diagnostics from the SINGLE realization the driver performs internally, so a
+/// caller that needs the exit-code signal (the declarative `reify build` with no
+/// `-o`) does NOT have to realize the module a second time via [`Engine::build`].
+/// The plain [`Engine::build_outputs`] is a thin wrapper that returns only
+/// [`Self::artifacts`], discarding the two fields below.
+#[derive(Debug)]
+pub struct BuildOutputs {
+    /// Constraint check results from the driver's single realization — identical
+    /// to what [`Engine::build`] would report for the same module (constraint
+    /// checking does not depend on the discarded Phase-B serialization).
+    pub constraint_results: Vec<ConstraintCheckEntry>,
+    /// Build-level diagnostics from the driver's single realization. Per-artifact
+    /// export diagnostics (an `I_DISPLAY_OUTPUT_DEFERRED` info, or a per-occurrence
+    /// export failure) live on each [`ExportArtifact::diagnostics`] instead.
+    pub diagnostics: Vec<Diagnostic>,
+    /// One artifact per recognized `Output` occurrence, in deterministic
+    /// declaration order (see [`ExportArtifact`]).
+    pub artifacts: Vec<ExportArtifact>,
+}
+
 /// A single surfaced mesh produced by tessellation, paired with its entity
 /// path and default visibility.
 ///
