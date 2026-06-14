@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -244,6 +244,29 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 {
                     eval_fn_field(&evaluated_args[0], &expr.result_type)
                 }
+                // from_samples(points, values, method): construct a Regular1D
+                // gridded SampledField from explicit sample points.
+                //
+                // This is the γ-phase intercepting builtin (task 4221,
+                // PRD docs/prds/v0_6/std-fields-api.md §D3/D5). It builds a
+                // `Value::Field { source: Sampled, lambda: Arc(Value::SampledField(sf)) }`
+                // from a uniform 1-D grid of points + values and an
+                // InterpolationMethod variant.
+                //
+                // Gate: exactly 3 args (two Lists + one Enum). Mis-shaped args
+                // fall through to eval_builtin → Undef (graceful degradation).
+                // The strict-Undef short-circuit above already handles any
+                // Undef arg before we get here.
+                //
+                // Extracted into `eval_from_samples` (`#[inline(never)]`) for
+                // the same stack-frame-shrinking rationale as `eval_fn_field`.
+                "from_samples" if evaluated_args.len() == 3 => eval_from_samples(
+                    &evaluated_args[0],
+                    &evaluated_args[1],
+                    &evaluated_args[2],
+                    &expr.result_type,
+                    ctx,
+                ),
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
                 "von_mises"
@@ -2119,6 +2142,133 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
         codomain_type,
         source: FieldSourceKind::Analytical,
         lambda: Arc::new(lambda.clone()),
+    }
+}
+
+/// Construct a Regular1D gridded `SampledField` from explicit sample points.
+///
+/// Implements the `from_samples` intercepting builtin (task 4221 γ,
+/// PRD docs/prds/v0_6/std-fields-api.md §D3/D5).
+///
+/// # Contract (full — diagnostics added in steps 6 and 8)
+///
+/// - `points` and `values` must be `Value::List` of scalar elements
+///   (Real/Int) of equal length >= 2.
+/// - Points must form a uniformly-spaced 1-D grid. Non-uniform spacing
+///   pushes `DiagnosticCode::FieldSamplesNotGrid` (step-6) and returns Undef.
+/// - `method` must be a `Value::Enum { type_name: "InterpolationMethod", .. }`.
+///   Linear/NearestNeighbor/Cubic → `InterpolationKind`;
+///   RBF/Kriging → `DiagnosticCode::InterpMethodUnsupported` (step-8), returns Undef.
+/// - Returns `Value::Field { source: Sampled, lambda: Arc(Value::SampledField(sf)) }`.
+///
+/// Marked `#[inline(never)]` for the same stack-frame rationale as `eval_fn_field`.
+#[inline(never)]
+fn eval_from_samples(
+    points: &Value,
+    values: &Value,
+    method: &Value,
+    result_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // ── 1. Extract lists ─────────────────────────────────────────────────────
+    let pts = match points {
+        Value::List(v) => v,
+        _ => return Value::Undef,
+    };
+    let vals = match values {
+        Value::List(v) => v,
+        _ => return Value::Undef,
+    };
+
+    // ── 2. Length checks ─────────────────────────────────────────────────────
+    if pts.len() != vals.len() || pts.len() < 2 {
+        // E_FIELD_SAMPLES_NOT_GRID: diagnostic pushed in step-6
+        return Value::Undef;
+    }
+
+    // ── 3. Convert to f64 (scalars only — 1-D Regular grid) ─────────────────
+    let pt_f64: Vec<f64> = match pts.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
+        Some(v) => v,
+        None => {
+            // non-scalar points (e.g. Point2/Point3): E_FIELD_SAMPLES_NOT_GRID (step-6)
+            return Value::Undef;
+        }
+    };
+    let val_f64: Vec<f64> = match vals.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+
+    // ── 4. Uniform spacing check ─────────────────────────────────────────────
+    let step = pt_f64[1] - pt_f64[0];
+    if step <= 0.0 {
+        // non-increasing points: E_FIELD_SAMPLES_NOT_GRID (step-6)
+        return Value::Undef;
+    }
+    for i in 1..pt_f64.len() {
+        let delta = pt_f64[i] - pt_f64[i - 1];
+        let rel_err = (delta - step).abs() / step;
+        if rel_err > 1e-6 {
+            // non-uniform spacing: E_FIELD_SAMPLES_NOT_GRID (step-6)
+            return Value::Undef;
+        }
+    }
+
+    // ── 5. Map InterpolationMethod variant → InterpolationKind ──────────────
+    let interp = match method {
+        Value::Enum { variant, .. } => match variant.as_str() {
+            "Linear" => InterpolationKind::Linear,
+            "NearestNeighbor" => InterpolationKind::NearestNeighbor,
+            "Cubic" => InterpolationKind::Cubic,
+            _ => {
+                // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED (step-8)
+                return Value::Undef;
+            }
+        },
+        _ => return Value::Undef,
+    };
+
+    // Suppress "unused variable" warnings for ctx until step-6 uses it.
+    let _ = ctx;
+
+    // ── 6. Build Regular1D SampledField ──────────────────────────────────────
+    let p0 = pt_f64[0];
+    let pn = *pt_f64.last().unwrap();
+    let sf = SampledField {
+        name: "from_samples".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![p0],
+        bounds_max: vec![pn],
+        spacing: vec![step],
+        axis_grids: vec![pt_f64],
+        interpolation: interp,
+        data: val_f64,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    // ── 7. Read domain/codomain from result_type (Field<D,C> stamped by α) ──
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Convert a scalar `Value` (Real or Int) to `f64`. Returns `None` for
+/// non-scalar values (e.g. Point2, Point3, String).
+#[inline]
+fn scalar_to_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Real(x) => Some(*x),
+        Value::Int(n) => Some(*n as f64),
+        _ => None,
     }
 }
 
