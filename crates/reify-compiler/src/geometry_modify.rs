@@ -903,6 +903,105 @@ mod tests {
         }
     }
 
+    // --- shell_open compiler tests (γ step-1 RED) ---
+
+    /// `shell_open(solid, thickness, open_faces)` — the 3-arg curated form — must
+    /// produce a single `Modify { kind: ModifyKind::Shell, args: [target, thickness, open_faces] }`.
+    ///
+    /// RED until step-2 adds the "shell_open" arm to `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_shell_open_3arg_builds_curated_face_args() {
+        let args: Vec<CompiledExpr> =
+            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "shell_open",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics for shell_open 3-arg: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op shell_open (3-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["target", "thickness", "open_faces"],
+                    "arg names must be [target, thickness, open_faces]"
+                );
+            }
+            other => panic!(
+                "expected Modify(Shell) with 3 curated args, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `shell_open` accepts only exactly 3 args — a 2-arg and a 4-arg call must
+    /// each return None and emit ≥1 arity diagnostic.
+    ///
+    /// RED until step-2 adds the "shell_open" arm to `compile_modify_op`.
+    #[test]
+    fn compile_modify_op_shell_open_rejects_2arg_and_4arg() {
+        let span = SourceSpan::new(10, 20);
+        // 2 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "shell_open",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 2-arg shell_open");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 2-arg shell_open"
+            );
+        }
+        // 4 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "shell_open",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 4-arg shell_open");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 4-arg shell_open"
+            );
+        }
+    }
+
     #[test]
     fn single_geom_target_kinds_cases_table_unique_variant_set() {
         use std::collections::HashSet;
