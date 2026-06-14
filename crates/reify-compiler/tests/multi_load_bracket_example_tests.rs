@@ -46,8 +46,16 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
     );
 
     // ── Parse ─────────────────────────────────────────────────────────────────
-
-    let parsed = reify_syntax::parse(&src, ModulePath::single("multi_load_bracket"));
+    //
+    // Parse via `reify_compiler::parse_with_stdlib` (NOT bare `reify_syntax::parse`)
+    // so the lowering's `known_enums` set is seeded with stdlib/prelude enum names.
+    // The example references `ShellForce.Off` (an enum declared in the stdlib's
+    // `solver_elastic.ri`); without prelude-enum seeding the parser lowers
+    // `ShellForce.Off` to a `MemberAccess` instead of an `EnumAccess`, which then
+    // fails compilation with "unresolved name: ShellForce". The production path
+    // (`compile_with_stdlib`) always parses with stdlib enum awareness, so the
+    // test must mirror it to exercise the real resolution behaviour.
+    let parsed = reify_compiler::parse_with_stdlib(&src, ModulePath::single("multi_load_bracket"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in multi_load_bracket.ri: {:?}",

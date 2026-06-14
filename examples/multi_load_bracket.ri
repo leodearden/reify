@@ -91,10 +91,18 @@ structure MultiLoadBracket {
     // three load cases in a single engine dispatch (task 4088 / R1 wired).
     // The arguments match the box dimensions: length=width, width=height,
     // height=thickness — the same prismatic section used for `body` above.
-    // `ElasticOptions()` accepts the solver defaults (grid, material model,
-    // convergence tolerances).  The result is a fully-populated MultiCaseResult
-    // with Sampled Regular3D stress and displacement fields per case.
-    let results = solve_load_cases(material, width, height, thickness, [operating, overload, transport], ElasticOptions())
+    //
+    // `ShellForce.Off` forces the tet/solid solver path.  The default
+    // `ShellForce.Auto` would classify this bracket as a shell (thickness/
+    // in-plane ratio 6/80 = 0.075 < shell_threshold=0.2), but the shell
+    // kernel only applies transverse (Z-axis) loads.  Our loads are in the
+    // Y direction (`direction: [0,−1,0]`), so the shell path would silently
+    // discard them (shell in-plane loading is out of scope; see task 4245).
+    // The tet/solid path handles all three force-vector components and
+    // produces Regular3D Sampled stress fields that `envelope_von_mises`
+    // requires.  A thin-body advisory (aspect ratio ≫ 10) fires at Warning
+    // severity — not Error — and is expected for this plate-like geometry.
+    let results = solve_load_cases(material, width, height, thickness, [operating, overload, transport], ElasticOptions(shell_force: ShellForce.Off))
 
     let envelope    = envelope_von_mises(results)
 
