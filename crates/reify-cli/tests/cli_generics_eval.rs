@@ -89,9 +89,14 @@ fn eval_container_example_b2() {
 /// (poisoned call) would fail the check → this test is RED until step-10 creates
 /// the example file.
 ///
-/// The pressure value is NOT asserted as a stdout substring — pressure scalars
-/// display in SI-base form (`kg/(m·s²)`, not "Pa" or "MPa") — the constraint
-/// window gates it instead.
+/// The LENGTH result (`scale_q(10mm, 3.0)`) is also asserted directly as the
+/// eval-output substring "0.03 m".
+///
+/// The PRESSURE result (`scale_q(5MPa, 2.0)`) is asserted directly as the
+/// SI-base substring "press = 10000000".  Pressure scalars display in SI-base
+/// form — "10000000 kg·m^-1·s^-2" (1e7 Pa) rather than "Pa" or "MPa" — so the
+/// assertion uses the stable SI-base magnitude.  This makes the second-dimension
+/// value gate direct rather than purely constraint-mediated.
 ///
 /// RED until step-10 creates examples/generics/dim_param.ri.
 #[test]
@@ -110,15 +115,25 @@ fn eval_dim_param_example_b9() {
          constraints must hold); got: {stdout}\nstderr: {stderr}"
     );
 
-    // `reify eval` must exit 0 AND contain the LENGTH result "0.03 m".
+    // `reify eval` must exit 0 AND contain both dimension results.
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
     assert!(
         status.success(),
         "reify eval generics/dim_param.ri should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // LENGTH result: scale_q(10mm, 3.0) = 0.03 m.
     assert!(
         stdout.contains("0.03 m"),
         "stdout should contain '0.03 m' (scale_q(10mm, 3.0)); got: {stdout}\nstderr: {stderr}"
+    );
+    // PRESSURE result: scale_q(5MPa, 2.0) = 1e7 Pa = 10000000 (SI-base).
+    // Pressure renders as "10000000 kg·m^-1·s^-2" — assert the SI-base magnitude
+    // directly so a mis-bound Q (wrong dimension) or wrong value is caught without
+    // relying solely on the constraint window.
+    assert!(
+        stdout.contains("press = 10000000"),
+        "stdout should contain 'press = 10000000' (scale_q(5MPa, 2.0) = 1e7 Pa SI-base); \
+         got: {stdout}\nstderr: {stderr}"
     );
 }
 
