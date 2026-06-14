@@ -917,23 +917,139 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
+                    // Evaluate angle FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — this keeps
+                    // the missing-angle Warning behaviour identical to the 3-arg
+                    // path.
                     let angle = eval_arg("angle")?;
-                    // plane is passed as an expression that evaluates to a value;
-                    // at this level we don't have the geometry handle yet, so we
-                    // use step_handles.last() as a placeholder for the plane reference.
-                    // Filter INVALID so a preceding compile failure (sentinel) propagates
-                    // as Err here rather than forwarding INVALID to the kernel.
+                    // plane is resolved via step_handles.last() (a pre-existing
+                    // approximation — plane_xy yields a Value::Plane, not a sub-op;
+                    // the full plane-handle plumbing fix is out of scope for δ).
+                    // Filter INVALID so a preceding compile failure (sentinel)
+                    // propagates as Err here rather than forwarding INVALID to the
+                    // kernel.
                     let plane_id = step_handles
                         .last()
                         .copied()
                         .filter(|h| *h != GeometryHandleId::INVALID)
                         .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
-                    Ok(reify_ir::GeometryOp::Draft {
-                        target: target_id,
-                        faces: vec![],
-                        angle,
-                        plane: plane_id,
-                    })
+                    // Is a curated face selector present? Presence of a "faces"
+                    // named arg distinguishes the 4-arg
+                    // `draft(solid, faces, angle, neutral_plane)` form from the
+                    // 3-arg `draft(solid, angle, neutral_plane)` back-compat form.
+                    // `args` is shared-borrowed (compatible with the closure's
+                    // shared borrow of `args`).
+                    let faces_expr = args.iter().find(|(n, _)| n == "faces").map(|(_, e)| e);
+                    // `eval_arg` is not used again on the Draft path after the
+                    // `angle` call above, so NLL ends its `&mut diagnostics`
+                    // borrow here — letting the empty-selection arm below push
+                    // its own EmptyEdgeSelection diagnostic.
+                    match faces_expr {
+                        // 3-arg form: no selector → empty faces = all-draftable-
+                        // faces back-compat (legacy `draft(solid, angle, plane)`).
+                        None => Ok(reify_ir::GeometryOp::Draft {
+                            target: target_id,
+                            faces: vec![],
+                            angle,
+                            plane: plane_id,
+                        }),
+                        // 4-arg form: evaluate the selector and resolve it.
+                        Some(expr) => {
+                            let faces_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &faces_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Extract each sub-handle's kernel_handle,
+                                    // ERRORING on any element that is NOT a
+                                    // Geometry sub-handle — mirroring the Fillet
+                                    // arm's reject-non-handle strictness so a
+                                    // partially-malformed selector surfaces an
+                                    // error rather than silently drafting only
+                                    // the surviving handle subset (the latent
+                                    // `filter_map` trap the task-3205 reviewer
+                                    // flagged for Fillet). The cross-solid
+                                    // membership gate is deferred to the
+                                    // engine-unified-build-dag η/ε work (tasks
+                                    // 4360/4358), matching the Fillet arm's
+                                    // constraint.
+                                    let mut raw_ids: Vec<GeometryHandleId> =
+                                        Vec::with_capacity(elems.len());
+                                    for (i, e) in elems.iter().enumerate() {
+                                        match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => raw_ids.push(*kernel_handle),
+                                            other => {
+                                                return Err(format!(
+                                                    "draft(solid, faces, angle, neutral_plane): \
+                                                     face selector element [{}] is not a Geometry \
+                                                     sub-handle (got {:?}) — the face selector \
+                                                     must be a List of face handles",
+                                                    i, other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let resolved = canonical_subhandle_ids(raw_ids);
+                                    // ANTI-ZERO-FACES: a present selector that
+                                    // resolves to ZERO faces must NEVER silently
+                                    // fall through to the all-faces path (the
+                                    // task-3295 fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "draft(solid, faces, angle, neutral_plane): \
+                                                 face selector resolved to zero faces — refusing \
+                                                 to silently draft all faces",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "draft: face selector resolved to zero faces"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::Draft {
+                                        target: target_id,
+                                        faces: resolved,
+                                        angle,
+                                        plane: plane_id,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on
+                                // the legacy pipeline it is `Undef` (the faces
+                                // selector resolves in P4, after this P2 arm).
+                                // This is NOT an empty selection, so do NOT emit
+                                // E_EMPTY_SELECTION (that would false-positive on
+                                // every legacy 4-arg draft); return a plain Err
+                                // so the cell stays Undef and future in-loop
+                                // resolution can handle it.
+                                //
+                                // The message is deliberately USER-ACTIONABLE:
+                                // names the 4-arg call form and points at the
+                                // 3-arg all-faces fallback. Pinned by
+                                // `compile_geometry_op_draft_legacy_selector_
+                                // unresolved_is_user_actionable`.
+                                other => Err(format!(
+                                    "draft(solid, faces, angle, neutral_plane): curated \
+                                     face selection is not yet available on the current \
+                                     build pipeline — the face selector cannot be resolved \
+                                     at the point this draft runs. Use 3-arg \
+                                     draft(solid, angle, neutral_plane) to draft all \
+                                     faces, or wait for curated face selection \
+                                     (engine-unified-build-dag tasks 4360/4358). \
+                                     [face selector evaluated to {:?}]",
+                                    other
+                                )),
+                            }
+                        }
+                    }
                 }
                 reify_compiler::ModifyKind::Thicken => {
                     let offset = eval_arg("offset")?;
