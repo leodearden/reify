@@ -204,7 +204,7 @@ use super::shell_solve::{
 
 // Task 2929: FEA diagnostic mapping glue.
 use super::fea_diagnostics::fea_diagnostic_to_core;
-use reify_solver_elastic::FeaFailure;
+use reify_solver_elastic::{FeaFailure, classify_convergence, classify_degenerate, thin_body_advisory};
 
 // ── MaterialModel ────────────────────────────────────────────────────────────
 
@@ -405,6 +405,13 @@ pub fn solve_elastic_static_trampoline(
                 None,
             ));
         }
+    }
+
+    // Thin-body advisory: aspect ratio > threshold (~10).
+    // P1 solid elements perform poorly when max_dim/min_dim > 10; warn to use
+    // shell elements or higher-order elements instead (shells PRD, task P2).
+    if let Some(advisory) = thin_body_advisory(length, width, height, 10.0) {
+        route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
     }
 
     if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
@@ -638,6 +645,48 @@ pub fn solve_elastic_static_trampoline(
     // (per compute-node-contract §2 — no bogus partial result cached).
     if ctx_cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
         return ComputeOutcome::Cancelled;
+    }
+
+    // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
+    //
+    // Degenerate mesh (singular stiffness): find the minimum tet volume and
+    // classify with `classify_degenerate`.  A degenerate element is genuinely
+    // unsolvable → Error → `ComputeOutcome::Failed`.  The well-conditioned
+    // prismatic cantilever mesh never triggers this in practice; it is defensive.
+    {
+        let mut min_tet_vol = f64::INFINITY;
+        let mut min_tet_elem = 0usize;
+        for (elem_id, conn) in fea.tet_connectivity.iter().enumerate() {
+            let phys = [
+                fea.coords[conn[0]],
+                fea.coords[conn[1]],
+                fea.coords[conn[2]],
+                fea.coords[conn[3]],
+            ];
+            let vol = tet_volume_p1(&phys);
+            if vol < min_tet_vol {
+                min_tet_vol = vol;
+                min_tet_elem = elem_id;
+            }
+        }
+        if let Some(failure) = classify_degenerate(min_tet_vol, 1e-12, min_tet_elem) {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![fea_diagnostic_to_core(&failure, None)],
+            };
+        }
+    }
+
+    // Non-convergence advisory: CG did not converge within max_iter iterations.
+    // max_iter is hardcoded to 2000 in solve_cantilever_fea; residual is not
+    // surfaced by CantileverFeaSolve so None is passed.
+    // Advisory (Warning on Completed) — a partially-converged result is still
+    // returned; non-convergence is never .ri-triggerable for the well-conditioned
+    // fixed cantilever, so the classifier is covered by unit tests (step-1).
+    const TRAMPOLINE_MAX_ITER: usize = 2000;
+    if let Some(non_conv) =
+        classify_convergence(fea.converged, fea.iterations, TRAMPOLINE_MAX_ITER, None)
+    {
+        route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
     }
 
     // ── (7) Build ElasticResult StructureInstance ────────────────────────────
