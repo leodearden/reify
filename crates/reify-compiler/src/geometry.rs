@@ -4338,4 +4338,203 @@ mod tests {
             "circle with 0 args must emit at least one diagnostic"
         );
     }
+
+    // --- polygon() compiler dispatch (task-4161, step-5 RED) ---
+
+    /// `polygon(0mm,0mm, 10mm,0mm, 10mm,10mm)` (6 args — 3 pairs) must compile to
+    /// a single `CompiledGeometryOp::Profile { kind: ProfileKind::Polygon }` with
+    /// positional args named `c0..c5`.
+    ///
+    /// RED until step-6 adds `ProfileKind::Polygon` and the `"polygon"` arm in
+    /// `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_6args_returns_profile_polygon() {
+        let expr = make_call_with_arity("polygon", 6);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("polygon with 6 args should produce ops");
+        assert_eq!(ops.len(), 1, "polygon must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Polygon,
+                    "polygon op must have kind ProfileKind::Polygon"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["c0", "c1", "c2", "c3", "c4", "c5"],
+                    "polygon arg names must be c0..c5 for 6 positional args"
+                );
+            }
+            other => panic!("expected Profile(Polygon), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "polygon with 6 args must emit no diagnostics");
+    }
+
+    /// `polygon(0mm,0mm, 10mm,0mm, 10mm)` (5 args — odd, not multiple of 2) must
+    /// emit an arg-count diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"polygon"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_odd_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("polygon", 5);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "polygon with 5 args (odd) must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "polygon with 5 args (odd) must emit at least one diagnostic"
+        );
+    }
+
+    /// `polygon(0mm,0mm, 10mm,0mm)` (4 args — only 2 pairs, < 3 required) must
+    /// emit an arg-count diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"polygon"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_too_few_args_emits_diagnostic() {
+        let expr = make_call_with_arity("polygon", 4);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "polygon with 4 args (< 6 = 3 pairs min) must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "polygon with 4 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- ellipse() compiler dispatch (task-4161, step-5 RED) ---
+
+    /// `ellipse(10mm, 5mm)` (2 args) must compile to a single
+    /// `CompiledGeometryOp::Profile { kind: ProfileKind::Ellipse }` with named
+    /// args `semi_major` and `semi_minor`.
+    ///
+    /// RED until step-6 adds `ProfileKind::Ellipse` and the `"ellipse"` arm in
+    /// `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_ellipse_2args_returns_profile_ellipse() {
+        let expr = make_call_with_arity("ellipse", 2);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("ellipse(_, _) should produce ops");
+        assert_eq!(ops.len(), 1, "ellipse must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Ellipse,
+                    "ellipse op must have kind ProfileKind::Ellipse"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["semi_major", "semi_minor"],
+                    "ellipse arg names must be semi_major / semi_minor"
+                );
+            }
+            other => panic!("expected Profile(Ellipse), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "ellipse(_, _) must emit no diagnostics");
+    }
+
+    /// `ellipse(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"ellipse"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_ellipse_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("ellipse", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "ellipse with 1 arg must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "ellipse with 1 arg must emit at least one diagnostic"
+        );
+    }
 }

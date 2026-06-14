@@ -1545,3 +1545,58 @@ fn circle_infers_surface_dimension_with_full_face_traits() {
     assert!(t.connected, "circle face must be connected");
     assert!(t.convex, "circle face must be convex");
 }
+
+// ─── task-4161: polygon + ellipse Surface inference ──────────────────────────
+
+/// `polygon(&[])` → Surface, planar, closed, bounded, connected, convex=FALSE.
+///
+/// A general polygon may be concave, so `surface_nonconvex()` (convex=false) must
+/// be returned instead of `surface()` (convex=true).
+///
+/// RED until step-6 adds `InferredTraits::surface_nonconvex()` and the
+/// `"polygon"` arm in the name-based dispatch.
+#[test]
+fn polygon_infers_surface_dimension_with_nonconvex_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("polygon", &[])
+        .expect("polygon must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "polygon must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "polygon face must be planar");
+    assert!(t.closed, "polygon face must be closed");
+    assert!(t.bounded, "polygon face must be bounded");
+    assert!(t.connected, "polygon face must be connected");
+    assert!(
+        !t.convex,
+        "polygon face must NOT be convex (general polygon may be concave)"
+    );
+}
+
+/// `ellipse(&[])` → Surface, planar, closed, bounded, connected, convex=TRUE.
+///
+/// An ellipse is always convex, so `surface()` (convex=true) must be returned.
+///
+/// RED until step-6 adds the `"ellipse"` arm in the name-based dispatch.
+#[test]
+fn ellipse_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("ellipse", &[])
+        .expect("ellipse must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "ellipse must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "ellipse face must be planar");
+    assert!(t.closed, "ellipse face must be closed");
+    assert!(t.bounded, "ellipse face must be bounded");
+    assert!(t.connected, "ellipse face must be connected");
+    assert!(t.convex, "ellipse face must be convex");
+}

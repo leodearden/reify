@@ -234,3 +234,60 @@ fn pipe_of_rectangle_is_rejected() {
     );
     assert!(n >= 1, "pipe(rectangle(...)) must be rejected (Surface≠Curve path), got {n}");
 }
+
+// ─── task-4161: polygon + ellipse profile acceptance/rejection ───────────────
+//
+// Once polygon/ellipse infer Surface+closed+planar, the existing α-check
+// accepts them at extrude/revolve/loft profile slots and rejects them at
+// curve-path slots (pipe/sweep path), mirroring rectangle/circle.
+//
+// RED until step-6 adds "polygon"/"ellipse" to GEOMETRY_FUNCTION_NAMES and
+// wires the surface()/surface_nonconvex() inference arms.
+
+/// `extrude(polygon(0mm,0mm, 10mm,0mm, 10mm,10mm), dist)` — Surface profile
+/// is accepted with no `GeometryProfileRequired`.
+///
+/// RED until step-6 wires polygon as a geometry function.
+#[test]
+fn extrude_of_polygon_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(polygon(0mm,0mm, 10mm,0mm, 10mm,10mm), 3mm) }",
+    );
+    assert_eq!(n, 0, "extrude(polygon(...)) must be accepted (Surface profile), got {n}");
+}
+
+/// `extrude(ellipse(10mm, 5mm), dist)` — Surface profile is accepted with no
+/// `GeometryProfileRequired`.
+///
+/// RED until step-6 wires ellipse as a geometry function.
+#[test]
+fn extrude_of_ellipse_is_accepted() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(ellipse(10mm, 5mm), 3mm) }",
+    );
+    assert_eq!(n, 0, "extrude(ellipse(...)) must be accepted (Surface profile), got {n}");
+}
+
+/// `pipe(polygon(...), radius)` — Surface operand at the Curve path slot must
+/// be rejected with `GeometryProfileRequired`.
+///
+/// RED until step-6 wires polygon as a geometry function.
+#[test]
+fn pipe_of_polygon_is_rejected() {
+    let n = profile_required_count(
+        "structure def S { let r = pipe(polygon(0mm,0mm, 10mm,0mm, 10mm,10mm), 2mm) }",
+    );
+    assert!(n >= 1, "pipe(polygon(...)) must be rejected (Surface≠Curve path), got {n}");
+}
+
+/// `pipe(ellipse(...), radius)` — Surface operand at the Curve path slot must
+/// be rejected with `GeometryProfileRequired`.
+///
+/// RED until step-6 wires ellipse as a geometry function.
+#[test]
+fn pipe_of_ellipse_is_rejected() {
+    let n = profile_required_count(
+        "structure def S { let r = pipe(ellipse(10mm, 5mm), 2mm) }",
+    );
+    assert!(n >= 1, "pipe(ellipse(...)) must be rejected (Surface≠Curve path), got {n}");
+}
