@@ -804,10 +804,16 @@ fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) ->
 /// `@point` cells resolve to a `Value::Frame` in Layer-1 (no kernel) and never
 /// match the `Undef` filter.  Body/other kinds are skipped.
 ///
-/// **Severity: Warning** — matches the build-path failure arms in
-/// `geometry_ops.rs:6043-6055` (extract_faces/extract_edges errors) and does
-/// not trip the many `errors.is_empty()` / `severity == Error` guards in sibling
-/// tests, minimising fallout.
+/// **Severity: Warning** — matches the build-path failure arms in the
+/// `extract_faces`/`extract_edges` error arms of `try_eval_ad_hoc_selector`
+/// (geometry_ops.rs) and does not trip the many `errors.is_empty()` /
+/// `severity == Error` guards in sibling tests, minimising fallout.
+///
+/// **Limitation — top-level exprs only:** the detector inspects only the
+/// top-level `cell.default_expr.kind`.  An `@face`/`@edge` selector nested
+/// inside a conditional, list literal, or method call is not detected.  This
+/// is an accepted coverage gap for the current task scope; prefer documenting
+/// over recursing via a full `CompiledExpr` traversal.
 ///
 /// Called in both `eval()` and `eval_cached()` immediately before `EvalResult`
 /// construction, mirroring the `detect_mechanism_errors` /
@@ -834,11 +840,11 @@ fn detect_unresolved_ad_hoc_selectors(
                 None => continue,
             };
 
-            // Only emit if the evaluated value is Undef (or absent from the map).
-            let is_undef = values
-                .get(&cell.id)
-                .is_none_or(|v| matches!(v, Value::Undef));
-            if !is_undef {
+            // Only emit when the cell is explicitly present in the value map AND
+            // equals Value::Undef.  Absent cells may belong to nested / instantiated
+            // sub-component templates whose values are keyed under instance-qualified
+            // ids; treating absence as Undef would produce spurious warnings there.
+            if !matches!(values.get(&cell.id), Some(Value::Undef)) {
                 continue;
             }
 
@@ -851,8 +857,8 @@ fn detect_unresolved_ad_hoc_selectors(
 
             let msg = format!(
                 "{kind_str} selector could not be resolved to a frame during evaluation: \
-                 no realized geometry is available (selector frame is undef); \
-                 a geometry kernel is required for resolution"
+                 selectors are only resolved on the build()/tessellate() path \
+                 (selector frame is undef during eval)"
             );
             diagnostics.push(
                 Diagnostic::warning(msg)

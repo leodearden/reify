@@ -575,16 +575,13 @@ structure S {
         resolved_val
     );
 
-    let has_geometry_diagnostic = eval_result.diagnostics.iter().any(|d| {
+    let has_selector_diagnostic = eval_result.diagnostics.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("geometry")
-            || msg.contains("no kernel")
-            || msg.contains("unavailable")
-            || msg.contains("face")
+        msg.contains("could not be resolved") && msg.contains("selector")
     });
     assert!(
-        has_geometry_diagnostic,
-        "expected eval diagnostic about missing geometry kernel, got: {:?}",
+        has_selector_diagnostic,
+        "expected eval-path selector-undef diagnostic, got: {:?}",
         eval_result.diagnostics
     );
 }
@@ -644,26 +641,24 @@ structure S {
         e_val
     );
 
-    let has_geometry_diagnostic = eval_result.diagnostics.iter().any(|d| {
+    let has_selector_diagnostic = eval_result.diagnostics.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("geometry")
-            || msg.contains("no kernel")
-            || msg.contains("unavailable")
-            || msg.contains("edge")
+        msg.contains("could not be resolved") && msg.contains("selector")
     });
     assert!(
-        has_geometry_diagnostic,
-        "expected eval diagnostic about missing geometry kernel, got: {:?}",
+        has_selector_diagnostic,
+        "expected eval-path selector-undef diagnostic, got: {:?}",
         eval_result.diagnostics
     );
 }
 
 /// Structure with a geometry let-binding (`let body = box(...)`) and `p @ face("top")`.
-/// Eval with FailingMockGeometryKernel (execute always fails → geometry handle never
-/// created → face query cannot succeed). After implementation, `r` should be
-/// Value::Undef and at least one eval diagnostic should mention selector failure
-/// or geometry unavailability.
-/// Behavior covered: selector failure -> undef (kernel path).
+/// Eval with FailingMockGeometryKernel.  Note: `engine.eval()` is geometry-free and
+/// never invokes the kernel — `r` is `Value::Undef` because eval leaves the `@face`
+/// cell at its placeholder value, not because the kernel's `execute` fails.  The
+/// diagnostic comes from `detect_unresolved_ad_hoc_selectors`, which scans post-eval
+/// `Value::Undef` `@face`/`@edge` cells and emits a warning.
+/// Behavior covered: @face selector-frame Undef + diagnostic on the eval() path.
 #[test]
 fn eval_failing_kernel_selector_becomes_undef_with_diagnostic() {
     let source = r#"
@@ -716,17 +711,13 @@ structure S {
         r_val
     );
 
-    let has_failure_diagnostic = eval_result.diagnostics.iter().any(|d| {
+    let has_selector_diagnostic = eval_result.diagnostics.iter().any(|d| {
         let msg = d.message.to_lowercase();
-        msg.contains("selector")
-            || msg.contains("kernel")
-            || msg.contains("unavailable")
-            || msg.contains("failed")
-            || msg.contains("geometry")
+        msg.contains("could not be resolved") && msg.contains("selector")
     });
     assert!(
-        has_failure_diagnostic,
-        "expected eval diagnostic about kernel failure, got: {:?}",
+        has_selector_diagnostic,
+        "expected eval-path selector-undef diagnostic, got: {:?}",
         eval_result.diagnostics
     );
 }
