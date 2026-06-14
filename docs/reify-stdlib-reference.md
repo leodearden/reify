@@ -727,10 +727,10 @@ trait PowerPort : ElectricalPort {
     param power_rating : Power
 }
 trait SignalPort : ElectricalPort {
-    param signal_type : SignalType
-    param impedance : Resistance = undef
+    param signal_kind : SignalKind
+    param impedance : Option<Resistance> = none
 }
-enum SignalType { Analog, Digital, PWM, Differential }
+enum SignalKind { Analog, Digital, PWM, Differential }
 trait PinPort : ElectricalPort + LocatedPort {
     param pin_id : String
 }
