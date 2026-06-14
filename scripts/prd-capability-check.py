@@ -319,14 +319,17 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
         return _HARNESS_ERROR
 
     if probe_kind == "grammar":
-        combined = run.stdout + run.stderr
         if run.exit_code == 0:
             return PRESENT
         if "Failed to load language" in run.stderr:
             return _HARNESS_ERROR
-        if "(ERROR" in combined:
+        if run.exit_code == 1:
+            # Parse error (the grammar produced ERROR nodes).  tree-sitter with
+            # --quiet may suppress the "(ERROR ...)" tree output entirely, so we
+            # classify any exit 1 without a load-failure stderr as ABSENT rather
+            # than requiring "(ERROR" to appear in the combined output.
             return ABSENT
-        # exit ≠ {0, 1} or unexpected content — treat as harness error
+        # exit ≠ {0, 1} — unexpected; treat as harness error
         return _HARNESS_ERROR
 
     if probe_kind == "check":
@@ -585,8 +588,22 @@ def verdict(observation: str, expected_observation: str) -> str:
 
 
 def main(argv: List[str]) -> int:
-    """CLI entry-point. Returns an exit code (0/1/2/64/70)."""
-    # Stub: usage error until implemented in step-14.
+    """CLI entry-point.  Returns an exit code (0/1/2/64/70).
+
+    Usage:
+        prd-capability-check.py [--json] PROBE_SET_JSON
+
+    Reads the committed probe-set JSON from PROBE_SET_JSON, evaluates every
+    probe with the real runner, prints per-probe evidence (or --json), and
+    returns harness_exit_code(results).
+
+    Exit codes:
+        0   all PASS
+        1   ≥1 FAIL
+        2   ≥1 UNPROVABLE, 0 FAIL
+        64  usage / argument / IO error (EX_USAGE)
+        70  tool / runtime error — missing binary, grammar load failure (EX_SOFTWARE)
+    """
     parser = argparse.ArgumentParser(
         description="Run capability probes from a committed probe-set JSON file.",
         prog="prd-capability-check.py",
@@ -603,17 +620,59 @@ def main(argv: List[str]) -> int:
         help="Emit machine-readable JSON results to stdout.",
     )
     try:
-        parser.parse_args(argv)
+        args = parser.parse_args(argv)
     except SystemExit as e:
-        # argparse exits 0 for --help/--version, non-zero (usually 2) for bad args
         code = e.code if isinstance(e.code, int) else 64
-        if code == 0:
-            return 0
-        return 64  # map any argparse error to EX_USAGE
+        return 0 if code == 0 else 64
 
-    # Not yet implemented — return usage error.
-    sys.stderr.write("error: probe runner not yet implemented\n")
-    return 64
+    # --- Load probe set from file ---
+    try:
+        with open(args.probe_set) as fh:
+            text = fh.read()
+    except OSError as exc:
+        sys.stderr.write(f"error: cannot read probe set '{args.probe_set}': {exc}\n")
+        return 64  # EX_USAGE
+
+    try:
+        probes = load_probe_set(text)
+    except ValueError as exc:
+        sys.stderr.write(f"error: invalid probe set: {exc}\n")
+        return 64  # EX_USAGE
+
+    # --- Evaluate each probe with the real runner ---
+    results = [evaluate(probe) for probe in probes]
+
+    # --- Emit output ---
+    if args.emit_json:
+        json_records = [
+            {
+                "capability": r.probe.capability,
+                "probe_kind": r.probe.probe_kind,
+                "verdict": r.verdict,
+                "command": r.command,
+                "exit_code": r.exit_code,
+                "stdout": r.stdout,
+                "stderr": r.stderr,
+            }
+            for r in results
+        ]
+        sys.stdout.write(json.dumps({"results": json_records}, indent=2))
+        sys.stdout.write("\n")
+    else:
+        for r in results:
+            cmd_str = " ".join(r.command)
+            stdout_preview = r.stdout[:200] if r.stdout else "(empty)"
+            stderr_preview = r.stderr[:200] if r.stderr else "(empty)"
+            sys.stdout.write(f"[{r.verdict}] {r.probe.capability}\n")
+            sys.stdout.write(f"  kind:      {r.probe.probe_kind}\n")
+            sys.stdout.write(f"  fixture:   {r.probe.fixture}\n")
+            sys.stdout.write(f"  command:   {cmd_str}\n")
+            sys.stdout.write(f"  exit_code: {r.exit_code}\n")
+            sys.stdout.write(f"  stdout:    {stdout_preview}\n")
+            sys.stdout.write(f"  stderr:    {stderr_preview}\n")
+            sys.stdout.write("\n")
+
+    return harness_exit_code(results)
 
 
 if __name__ == "__main__":
