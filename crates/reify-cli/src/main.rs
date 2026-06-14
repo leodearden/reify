@@ -811,8 +811,15 @@ fn cmd_test(args: &[String]) -> ExitCode {
 }
 
 fn cmd_build(args: &[String]) -> ExitCode {
+    // Shared usage text for the empty-args and no-positional-file guards.
+    const USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
+        With -o:    write a single file in that format (imperative).\n  \
+        Without -o: every `: Output` occurrence in the design drives its own file\n              \
+        (declarative); each relative path resolves against the .ri file's\n              \
+        directory, or against --out-dir when given.";
+
     if args.is_empty() {
-        eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
+        eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     }
 
@@ -832,45 +839,38 @@ fn cmd_build(args: &[String]) -> ExitCode {
         }
     });
 
+    // Likewise for `--out-dir <dir>` (declarative mode's CI escape hatch): its
+    // value must be excluded from the positional-file scan so it is never
+    // mistaken for the input file.
+    let out_dir_value_pos: Option<usize> =
+        args.iter().position(|a| a == "--out-dir").and_then(|i| {
+            if i + 1 < args.len() {
+                Some(i + 1)
+            } else {
+                None
+            }
+        });
+
     // Pick the first positional token: not a flag (`-`-prefixed) and not the
-    // value following `-o`.  This makes flag ordering irrelevant, so both
-    // `reify build file.ri --verbose` and `reify build --verbose file.ri`
+    // value following `-o` or `--out-dir`.  This makes flag ordering irrelevant,
+    // so both `reify build file.ri --verbose` and `reify build --verbose file.ri`
     // correctly identify the input file.
-    let file = match args
-        .iter()
-        .enumerate()
-        .find(|(i, a)| !a.starts_with('-') && Some(*i) != o_value_pos)
-    {
+    let file = match args.iter().enumerate().find(|(i, a)| {
+        !a.starts_with('-') && Some(*i) != o_value_pos && Some(*i) != out_dir_value_pos
+    }) {
         Some((_, f)) => f,
         None => {
-            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
+            eprintln!("{USAGE}");
             return ExitCode::FAILURE;
         }
     };
 
-    // Under `--verbose`, `-o` is optional (the full geometry build still runs
-    // and provenance is printed; the file is only written if `-o` is present).
-    // Without `--verbose`, `-o` is required (no behavior change).
-    let output_path: Option<&String> = match o_value_pos {
-        Some(i) => Some(&args[i]),
-        None if verbose => None,
-        None => {
-            eprintln!("Usage: reify build <file.ri> [-o <output>] [--verbose]");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let format = match output_path {
-        Some(p) if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
-        Some(p) if p.ends_with(".stl") => ExportFormat::Stl,
-        Some(p) if p.ends_with(".3mf") => ExportFormat::ThreeMF,
-        Some(_) => {
-            eprintln!("Unknown output format, defaulting to STEP");
-            ExportFormat::Step
-        }
-        // No -o under --verbose: still run the full geometry build as STEP.
-        None => ExportFormat::Step,
-    };
+    // `-o` present selects imperative single-output mode; its absence selects
+    // the declarative occurrence-driven driver (which writes nothing when the
+    // design declares no `: Output` occurrences). Either mode is valid with or
+    // without `--verbose` — the historical "no -o requires --verbose" guard is
+    // gone now that a bare `reify build f.ri` runs the driver.
+    let output_path: Option<&String> = o_value_pos.map(|i| &args[i]);
 
     let compiled = match parse_and_compile(file) {
         Ok(c) => c,
@@ -905,41 +905,161 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
     register_compute_trampolines(&mut engine);
-    let result = engine.build(&compiled, format);
+    match output_path {
+        // ===== Mode (A): imperative single-output (`-o` present). UNCHANGED
+        //       back-compat path (B10): the `-o` extension selects the format,
+        //       build() serializes the product bodies, and the bytes are written
+        //       verbatim to the `-o` target. =====
+        Some(path) => {
+            let format = match path {
+                p if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
+                p if p.ends_with(".stl") => ExportFormat::Stl,
+                p if p.ends_with(".3mf") => ExportFormat::ThreeMF,
+                _ => {
+                    eprintln!("Unknown output format, defaulting to STEP");
+                    ExportFormat::Step
+                }
+            };
 
-    let outcome = report_eval_output(
-        &result.constraint_results,
-        &result.diagnostics,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    );
+            let result = engine.build(&compiled, format);
 
-    // Under --verbose, print per-realization kernel provenance to stdout.
-    if verbose {
-        let provenance = engine.realization_kernel_provenance();
-        for entry in &provenance {
-            println!(
-                "  {}: kernel: {}, repr: {:?}",
-                entry.realization,
-                entry.kernel.as_registry_name(),
-                entry.repr,
+            let outcome = report_eval_output(
+                &result.constraint_results,
+                &result.diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
             );
-        }
-    }
 
-    match result.geometry_output {
-        Some(data) => {
-            if let Some(path) = output_path {
-                if let Err(e) = std::fs::write(path, &data) {
-                    eprintln!("Error writing {}: {}", path, e);
+            // Under --verbose, print per-realization kernel provenance to stdout.
+            if verbose {
+                let provenance = engine.realization_kernel_provenance();
+                for entry in &provenance {
+                    println!(
+                        "  {}: kernel: {}, repr: {:?}",
+                        entry.realization,
+                        entry.kernel.as_registry_name(),
+                        entry.repr,
+                    );
+                }
+            }
+
+            match result.geometry_output {
+                Some(data) => {
+                    if let Err(e) = std::fs::write(path, &data) {
+                        eprintln!("Error writing {}: {}", path, e);
+                        return ExitCode::FAILURE;
+                    }
+                    println!("Wrote {} ({} bytes)", path, data.len());
+                    // Emit the per-outcome status message (unchanged from
+                    // pre-4458), then decide exit via build_is_success — which
+                    // also gates on Severity::Error diagnostics, matching
+                    // cmd_eval's Error gate (task 4458 fix (c)).
+                    match &outcome {
+                        ConstraintOutcome::AllSatisfied => {}
+                        ConstraintOutcome::SomeIndeterminate(n) => {
+                            println!("No constraints violated ({n} indeterminate).");
+                        }
+                        ConstraintOutcome::SomeViolated => {
+                            println!("Some constraints violated.");
+                        }
+                    }
+                    let has_error_diagnostic =
+                        result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+                    if build_is_success(&outcome, has_error_diagnostic) {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                None => {
+                    eprintln!("No geometry output produced");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+
+        // ===== Mode (B): declarative occurrence-driven export (no `-o`). The
+        //       DSL `: Output` occurrences drive the format(s) + path(s); the
+        //       CLI is a thin writer. =====
+        None => {
+            // CI escape hatch: --out-dir overrides the design-file directory as
+            // the base for relative occurrence paths.
+            let out_dir_override =
+                out_dir_value_pos.map(|i| std::path::Path::new(args[i].as_str()));
+            // design_dir = the .ri file's parent (B7: occurrence paths are
+            // design-file-relative, not cwd-relative). A bare "foo.ri" (empty
+            // parent) resolves against ".".
+            let design_dir = std::path::Path::new(file)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+
+            // Reuse the standard build() for constraint results, diagnostics and
+            // kernel provenance — its serialized geometry_output is discarded;
+            // export is driven per-occurrence by build_outputs below. The
+            // RealizationCache makes build_outputs' internal re-realization cheap.
+            let result = engine.build(&compiled, ExportFormat::Step);
+            let artifacts = engine.build_outputs(&compiled, design_dir, out_dir_override);
+
+            // Surface BOTH the build diagnostics AND every per-artifact
+            // diagnostic (an I_DISPLAY_OUTPUT_DEFERRED info, or a per-occurrence
+            // export error) through the shared reporter + exit gate.
+            let mut all_diagnostics = result.diagnostics.clone();
+            for artifact in &artifacts {
+                all_diagnostics.extend(artifact.diagnostics.iter().cloned());
+            }
+
+            let outcome = report_eval_output(
+                &result.constraint_results,
+                &all_diagnostics,
+                &mut std::io::stdout(),
+                &mut std::io::stderr(),
+            );
+
+            // Under --verbose, print per-realization kernel provenance to stdout.
+            // Preserved for a no-`-o` build even when ZERO Output occurrences are
+            // declared, so `build bracket.ri --verbose` still reports
+            // 'kernel: occt' and exits 0 (cli_build_verbose regression guard).
+            if verbose {
+                let provenance = engine.realization_kernel_provenance();
+                for entry in &provenance {
+                    println!(
+                        "  {}: kernel: {}, repr: {:?}",
+                        entry.realization,
+                        entry.kernel.as_registry_name(),
+                        entry.repr,
+                    );
+                }
+            }
+
+            // Write one file per artifact. Gate on non-empty bytes (NEVER on
+            // format): a DisplayOutput-deferred or failed-occurrence artifact
+            // carries empty bytes and must write no file.
+            for artifact in &artifacts {
+                if artifact.bytes.is_empty() {
+                    continue;
+                }
+                if let Some(parent) = artifact.path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            eprintln!("Error creating {}: {}", parent.display(), e);
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                if let Err(e) = std::fs::write(&artifact.path, &artifact.bytes) {
+                    eprintln!("Error writing {}: {}", artifact.path.display(), e);
                     return ExitCode::FAILURE;
                 }
-                println!("Wrote {} ({} bytes)", path, data.len());
+                println!(
+                    "Wrote {} ({} bytes)",
+                    artifact.path.display(),
+                    artifact.bytes.len()
+                );
             }
-            // Emit the per-outcome status message (unchanged from pre-4458),
-            // then decide exit via build_is_success — which also gates on
-            // Severity::Error diagnostics, matching cmd_eval's Error gate
-            // (task 4458 fix (c)).  See `build_is_success` for rationale.
+
+            // Same status message + exit gate as the imperative path: 0 file
+            // artifacts + no Error diagnostic + no violated constraint => SUCCESS.
             match &outcome {
                 ConstraintOutcome::AllSatisfied => {}
                 ConstraintOutcome::SomeIndeterminate(n) => {
@@ -950,16 +1070,12 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 }
             }
             let has_error_diagnostic =
-                result.diagnostics.iter().any(|d| d.severity == Severity::Error);
+                all_diagnostics.iter().any(|d| d.severity == Severity::Error);
             if build_is_success(&outcome, has_error_diagnostic) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
             }
-        }
-        None => {
-            eprintln!("No geometry output produced");
-            ExitCode::FAILURE
         }
     }
 }
