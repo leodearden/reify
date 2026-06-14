@@ -192,4 +192,61 @@ mod tests {
         ];
         assert_eq!(residual_kinds(&body), DofKinds::new(1, 1));
     }
+
+    // ── declared_kinds (step-7 RED / step-8 GREEN) ───────────────────────────
+
+    /// A `Scalar<Angle>` DOF field contributes 1 rotational freedom; no
+    /// unclassifiable types are surfaced.
+    #[test]
+    fn declared_kinds_angle_is_one_rotational() {
+        let (kinds, unclassified) = declared_kinds(&[Type::angle()]);
+        assert_eq!(kinds, DofKinds::new(1, 0));
+        assert!(unclassified.is_empty());
+    }
+
+    /// A `Scalar<Length>` DOF field contributes 1 translational freedom.
+    #[test]
+    fn declared_kinds_length_is_one_translational() {
+        let (kinds, unclassified) = declared_kinds(&[Type::length()]);
+        assert_eq!(kinds, DofKinds::new(0, 1));
+        assert!(unclassified.is_empty());
+    }
+
+    /// The record form `{ angle: Angle, travel: Length }` sums to (1 rot, 1 trans)
+    /// — the cylindrical pair (boundary B4).
+    #[test]
+    fn declared_kinds_angle_and_length_sum() {
+        let (kinds, unclassified) = declared_kinds(&[Type::angle(), Type::length()]);
+        assert_eq!(kinds, DofKinds::new(1, 1));
+        assert!(unclassified.is_empty());
+    }
+
+    /// An `Orientation(_)` DOF field declares a full 3-rotational freedom (a free
+    /// spherical/ball orientation).
+    #[test]
+    fn declared_kinds_orientation_is_three_rotational() {
+        let (kinds, unclassified) = declared_kinds(&[Type::Orientation(3)]);
+        assert_eq!(kinds, DofKinds::new(3, 0));
+        assert!(unclassified.is_empty());
+    }
+
+    /// An unclassifiable declared type (a `Scalar` whose dimension is neither
+    /// `Angle` nor `Length` — here dimensionless) contributes (0, 0) AND is
+    /// surfaced in the returned unclassified list so the caller can diagnose it.
+    #[test]
+    fn declared_kinds_unclassifiable_contributes_zero_and_is_surfaced() {
+        let (kinds, unclassified) = declared_kinds(&[Type::dimensionless_scalar()]);
+        assert_eq!(kinds, DofKinds::new(0, 0));
+        assert_eq!(unclassified, vec![Type::dimensionless_scalar()]);
+    }
+
+    /// A mix of classifiable and unclassifiable types: the classifiable kinds are
+    /// summed and ONLY the unclassifiable one is surfaced.
+    #[test]
+    fn declared_kinds_mixed_sums_classifiable_and_surfaces_rest() {
+        let (kinds, unclassified) =
+            declared_kinds(&[Type::angle(), Type::dimensionless_scalar()]);
+        assert_eq!(kinds, DofKinds::new(1, 0));
+        assert_eq!(unclassified, vec![Type::dimensionless_scalar()]);
+    }
 }
