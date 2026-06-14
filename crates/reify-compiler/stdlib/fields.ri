@@ -70,15 +70,37 @@ pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
 
 // ── ε spatial-op constructors (task 4223 ε — PRD §2/§6 B6/B7/B8) ─────────────
 //
-//   constant_field<D, C>(value: C) -> Field<D, C>   [landed step-2]
+//   constant_field<D, C>(value: C) -> Field<D, C>   [step-2]
 //     Returns a uniform field that ignores its domain point and always
 //     evaluates to `value`.  D is nested-unbound at call sites but tolerated
 //     (B5) and type-erased at eval.  B6 gate: sample at any point == value.
 //
-//   clamp_field / remap_field / threshold — bodies added in steps 4 & 6.
+//   clamp_field<D, Q: Dimension>(f, lo, hi) -> Field<D, Scalar<Q>>   [step-4]
+//     Clamps the scalar codomain of `f` to [lo, hi] per point.  Uses the
+//     3-arg scalar `clamp` builtin (numeric.rs:101).  B7 gate: an over-range
+//     input is clamped to the bound.
+//
+//   remap_field<D, Q: Dimension>(f, from_lo, from_hi, to_lo, to_hi) -> Field<D, Scalar<Q>>   [step-4]
+//     Linearly remaps the scalar codomain of `f` from [from_lo, from_hi] onto
+//     [to_lo, to_hi] per point, using the 5-arg scalar `remap` builtin
+//     (numeric.rs:219).  Design decision: 4 scalar bound params (not 2 Range
+//     params) because scalar `remap` is strictly 5-arg and Range.lower/upper
+//     return Value::Option, not bare scalars (see plan.json D1 decision).
+//
+//   threshold<D, Q: Dimension>(f, value) -> Field<D, Bool>   [step-6]
+//     Produces a Bool field: true where `sample(f, p) > value`, false
+//     elsewhere.  B8 gate: above-threshold sample == true, below == false.
 
 pub fn constant_field<D, C>(value: C) -> Field<D, C> {
     fn_field(|p| value)
+}
+
+pub fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| clamp(sample(f, p), lo, hi))
+}
+
+pub fn remap_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, from_lo: Scalar<Q>, from_hi: Scalar<Q>, to_lo: Scalar<Q>, to_hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| remap(sample(f, p), from_lo, from_hi, to_lo, to_hi))
 }
 
 // ── Why no Field type alias ───────────────────────────────────────────────────
