@@ -1564,6 +1564,12 @@ fn emit_fallback_warning_and_delegate_to_bfs(
                 }
             }
         }
+        // Merge template's own literal-param defaults (task 4599). Template
+        // keys use the template entity name as prefix, candidate keys use
+        // param_member — disjoint, no collision with the debug_assert! above.
+        for (k, v) in seed_template_literal_params(parameterized_template).iter() {
+            full_value_map.insert(k.clone(), v.clone());
+        }
 
         // Single joint check (O(1), one `checker.check()` call).
         let constraints_template = build_constraints_template(parameterized_template);
