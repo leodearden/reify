@@ -3278,29 +3278,47 @@ pub(crate) fn try_eval_feature_datum_projection(
     let handle = match resolve_selector_target(object, values) {
         Some(target) => target.kernel_handle,
         None => {
-            // The receiver did not resolve to a realized geometry handle. If it
-            // STATICALLY types as a topology selection (`Type::Selector(_)` /
-            // `Type::AnySelector`), the compiler accepted the projection but the
-            // selector→sub-handle resolution is not yet wired here: emit an
-            // explicit select-a-subfeature diagnostic instead of leaving the cell a
-            // silent `Value::Undef` (the clean-compile-then-silent-Undef failure
-            // mode). Any OTHER unresolved receiver — a β datum such as `axis.dir`,
-            // or a not-yet-hydrated cell — is not ours, so return None and let the
-            // pure `eval_datum_projection` path own it.
+            // The receiver did not resolve to a realized geometry handle. Check
+            // whether the receiver cell holds a hydrated `Value::Selector` (the
+            // common post-hydration case where the topology-selector pass has
+            // already written the cell before this feature-datum pass runs).
             if matches!(
                 object.result_type,
                 reify_core::ty::Type::Selector(_) | reify_core::ty::Type::AnySelector
             ) {
+                // Try to read the hydrated Value::Selector from the values map.
+                let maybe_sv = match &object.kind {
+                    reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+                        Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(sv) = maybe_sv {
+                    return Some(eval_selector_feature_datum(
+                        &sv,
+                        member,
+                        kernel,
+                        swept_kinds,
+                        diagnostics,
+                    ));
+                }
+                // No hydrated Value::Selector in the cell: static-type fallback —
+                // emit an explicit select-a-subfeature diagnostic instead of
+                // leaving the cell a silent `Value::Undef`.
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "feature→datum projection '.{member}' over a topology selector is \
-                         not yet supported; select a single sub-feature (e.g. `single(...)`) \
-                         or project from the realized feature instead"
+                        "feature→datum projection '.{member}' over a topology selector \
+                         requires a resolved selector; select a single sub-feature \
+                         (e.g. `single(...)`) or project from the realized feature instead"
                     ))
                     .with_code(reify_core::DiagnosticCode::FeatureDatumAmbiguous),
                 );
                 return Some(reify_ir::Value::Undef);
             }
+            // Not a selector receiver — β datum such as `axis.dir`, or a
+            // not-yet-hydrated cell. Return None and let the pure
+            // `eval_datum_projection` path own it.
             return None;
         }
     };
@@ -3312,6 +3330,60 @@ pub(crate) fn try_eval_feature_datum_projection(
         member,
         diagnostics,
     ))
+}
+
+/// Resolve a hydrated `Value::Selector` to its sub-handle ids via
+/// [`crate::topology_selectors::resolve`], build a per-handle
+/// [`crate::feature_datum::FeatureDatumBundle`] for each, union the four groups
+/// across all handles, re-dedup the union at the confusion-floor tolerance
+/// (so coaxial/coplanar/coincident datums from different sub-handles collapse to
+/// one), and finally project via [`crate::feature_datum::feature_datum_projection`]
+/// — the same select-one-or-diagnose refinement the `GeometryHandle` arm uses.
+///
+/// On `topology_selectors::resolve` returning `Err`, pushes a `Severity::Warning`
+/// and returns `Value::Undef` (mirroring `try_eval_resolve_selector` @3471-3476).
+///
+/// Called from `try_eval_feature_datum_projection` in the `None` branch of
+/// `resolve_selector_target` when a hydrated `Value::Selector` cell is present.
+fn eval_selector_feature_datum(
+    sv: &reify_ir::value::SelectorValue,
+    member: &str,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    // (a) Resolve the selector to a list of sub-handle ids.
+    let ids = match crate::topology_selectors::resolve(sv, kernel, diagnostics) {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "feature→datum projection over selector: kernel error resolving selector: \
+                 {err}; cell left at Undef"
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+
+    // (b) Union per-handle FeatureDatumBundles into one combined bundle.
+    let mut combined = crate::feature_datum::FeatureDatumBundle::default();
+    for id in ids {
+        let b = crate::feature_datum::feature_datum_bundle(id, kernel, swept_kinds.lookup(id));
+        combined.axes.extend(b.axes);
+        combined.planes.extend(b.planes);
+        combined.points.extend(b.points);
+        combined.directions.extend(b.directions);
+    }
+
+    // (c) Re-dedup each group at the confusion-floor tolerance so N coaxial /
+    // coplanar / coincident sub-handle datums collapse to one.
+    let tol = crate::feature_datum::dedup_tolerance(0.0, 0.0);
+    combined.axes = crate::feature_datum::dedup_datums(combined.axes, tol);
+    combined.planes = crate::feature_datum::dedup_datums(combined.planes, tol);
+    combined.points = crate::feature_datum::dedup_datums(combined.points, tol);
+    combined.directions = crate::feature_datum::dedup_datums(combined.directions, tol);
+
+    // (d) Project: unique → datum Value; zero/many → FeatureDatumAmbiguous + Undef.
+    crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
