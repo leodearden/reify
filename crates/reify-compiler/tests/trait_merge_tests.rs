@@ -562,7 +562,7 @@ structure def S : Left + Right {
     );
     assert_eq!(
         x_cells[0].cell_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "x should be Real-typed (matching the param declaration in Right)"
     );
     assert!(
@@ -1267,7 +1267,7 @@ structure def S : HasParam + HasConstraint {
     );
     assert_eq!(
         x_cells[0].cell_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "the Param 'x' should have type Real, got {:?}",
         x_cells[0].cell_type
     );
@@ -1430,7 +1430,7 @@ structure def S : HasParamAndConstraint {
     );
     assert_eq!(
         x_cells[0].cell_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "the Param 'x' should have type Real, got {:?}",
         x_cells[0].cell_type
     );

@@ -6,18 +6,26 @@
 //!
 //! # Recognition-shape twin
 //!
-//! The output-bound extractor below duplicates the `RepresentationWithin`
-//! shape-recognition gates from
-//! [`crate::tolerance_scope::extract_tolerance_bindings`] (top-level
-//! `UserFunctionCall("RepresentationWithin", [<ValueRef typed
-//! StructureRef>, <Literal Scalar LENGTH finite>])`). The duplication is a
-//! deliberate scope clip for task 2650 — a future shared helper would prevent
-//! drift between the two recognition sites at the cost of touching
-//! `tolerance_scope.rs`'s public surface (TODO).
+//! `extract_output_tolerance_bound`, `recognize_representation_within`, and
+//! `crate::tolerance_scope::extract_tolerance_bindings` all share recognition
+//! gates via the `pub(crate) match_representation_within_shape` helper — three
+//! callers, one gate implementation that cannot drift (retiring the TODO that
+//! lived in the extractor's doc before task 4199 γ; the scope-side routing
+//! landed in task 4542).
+//!
+//! The canonical recognition shape (either compiler IR variant):
+//! `UserFunctionCall("RepresentationWithin", ..)` (synthetic/test expressions)
+//! or `FunctionCall { function: ResolvedFunction { name: "RepresentationWithin",
+//! .. }, .. }` (compiler-resolved stdlib calls) — both are matched identically
+//! by `match_representation_within_shape`.
+//!
+//! In both cases: args == `[<ValueRef typed StructureRef>, <Literal Scalar LENGTH finite>=0]`.
 
 use crate::graph::ConstraintNodeData;
-use reify_core::{ConstraintNodeId, DimensionVector, Type};
-use reify_ir::{CompiledExprKind, PersistentMap, Value};
+use reify_core::{ConstraintNodeId, DimensionVector, Diagnostic, Type, ValueCellId};
+use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
+use reify_ir::value::GeometryHandleRef;
+use std::collections::BTreeMap;
 
 /// Combine an output occurrence's tolerance bound with the active purpose's
 /// tolerance bound under partial-order "tighter satisfies looser" semantics.
@@ -65,6 +73,235 @@ pub fn combine_demanded_tolerance(
         (Some(t), None) | (None, Some(t)) => Some(t),
         (None, None) => None,
     }
+}
+
+// ── Private shared recognition helper ────────────────────────────────────────
+
+/// Match the canonical `RepresentationWithin` shape in a single
+/// [`CompiledExpr`] and return the three parsed fields, or `None` on any
+/// gate failure.
+///
+/// ## Gates (mirroring `extract_output_tolerance_bound`'s inner gates)
+///
+/// * **Gate 2** — top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
+/// * **Gate 3** — `arg0` is a `ValueRef(vcid)` whose `result_type` is
+///   `StructureRef(name)`.
+/// * **Gate 4a** — `arg1` is a `Literal(Scalar { dimension == LENGTH, .. })`.
+/// * **Gate 4b/c** — `si_value` passes `is_valid_tolerance_si` (finite + ≥ 0.0).
+///
+/// Returns `(subject_vcid, struct_ref_name, bound_si)` on success.
+pub(crate) fn match_representation_within_shape(
+    expr: &CompiledExpr,
+) -> Option<(ValueCellId, String, f64)> {
+    // Gate 2: top-level call to "RepresentationWithin" with exactly 2 args.
+    //
+    // The compiler emits two different IR variants for function calls:
+    //  • `UserFunctionCall` — used for calls to user-defined functions and by
+    //    synthetic/test-built expressions (e.g. the tolerance_fixtures helpers).
+    //  • `FunctionCall { function: ResolvedFunction, .. }` — emitted when the
+    //    compiler resolves "RepresentationWithin" as a stdlib function
+    //    (qualified_name "std::RepresentationWithin").
+    //
+    // Both variants carry the same args vector and are matched identically
+    // by this gate; only the name field location differs.
+    let (function_name, args) = match &expr.kind {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => (function_name.as_str(), args),
+        CompiledExprKind::FunctionCall { function, args } => (function.name.as_str(), args),
+        _ => return None,
+    };
+    if function_name != "RepresentationWithin" {
+        return None;
+    }
+    if args.len() != 2 {
+        return None;
+    }
+
+    // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(name).
+    let subject_arg = &args[0];
+    let vcid = match &subject_arg.kind {
+        CompiledExprKind::ValueRef(id) => id.clone(),
+        _ => return None,
+    };
+    let struct_name = match &subject_arg.result_type {
+        Type::StructureRef(name) => name.clone(),
+        _ => return None,
+    };
+
+    // Gate 4: arg1 must be a Literal(Scalar { dimension == LENGTH, si_value })
+    // with finite, non-negative si_value (4b/c via is_valid_tolerance_si).
+    let tol_arg = &args[1];
+    let si_value = match &tol_arg.kind {
+        CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::LENGTH => *si_value,
+        _ => return None,
+    };
+    if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
+        return None;
+    }
+
+    Some((vcid, struct_name, si_value))
+}
+
+// ── Assertion recognizer ──────────────────────────────────────────────────────
+
+/// Recognise a single `RepresentationWithin` constraint expression and return
+/// its three parsed components, or `None` if the expression does not match the
+/// canonical shape.
+///
+/// Delegates directly to [`match_representation_within_shape`] — see that
+/// function for the gate definitions. This function is the public asserter
+/// entry point; [`extract_output_tolerance_bound`] is the budget-extractor
+/// entry point. Both share the same gate implementation so they cannot drift.
+///
+/// ## Return value
+///
+/// `Some((subject_vcid, struct_ref_name, bound_si_metres))` on a match;
+/// `None` on any gate failure (silent-skip posture).
+pub fn recognize_representation_within(
+    expr: &CompiledExpr,
+) -> Option<(ValueCellId, String, f64)> {
+    match_representation_within_shape(expr)
+}
+
+// ── Pure assertion eval helper ────────────────────────────────────────────────
+
+/// Planar quantization floor for the C4 zero-bound comparator (SI metres).
+///
+/// β B1 validates that a planar box's achieved deviation is ≤ 1e-5 m at unit
+/// scale (~1e-6 m f32 quantization — NOT exactly 0.0). Flooring a zero
+/// ("exact") bound at this ceiling makes a planar subject Satisfied while a
+/// coarse curved subject (β B2: ≫ 1e-5) is Violated, WITHOUT loosening any
+/// non-zero (C3) bound.
+pub const PLANAR_FLOOR: f64 = 1e-5;
+
+/// Evaluate a single `RepresentationWithin` assertion expression against the
+/// current value map and the post-tessellation achieved-repr-tol map.
+///
+/// # Contract
+///
+/// * Returns `None` when `expr` is not a `RepresentationWithin` shape (so
+///   callers can pass arbitrary constraint expressions through safely).
+/// * Returns `Some((Indeterminate, None))` when the subject cannot be resolved
+///   to a key in `achieved_repr_tol` — encodes C1 (realization not run ⇒
+///   never a false `Violated`).
+/// * Returns `Some((Satisfied, None))` when `achieved ≤ eff_bound`.
+/// * Returns `Some((Violated, Some(diag)))` when `achieved > eff_bound`;
+///   the diagnostic message follows PRD §8.3 ("sampled facet deviation"
+///   semantics — the metric is a sampled lower bound, so `Violated` means the
+///   **measured** deviation exceeded the bound, not that a tighter bound is
+///   provably unachievable).
+///
+/// # Subject → key resolution (hybrid)
+///
+/// 1. **Value-based:** look up `vcid` in `values`. If the result is a
+///    `GeometryHandle`, its `realization_ref.to_string()` is the key. If it is
+///    a `StructureInstance`, scan its `fields` for any `GeometryHandle` field.
+/// 2. **Type-name fallback:** scan `achieved_repr_tol` keys for the prefix
+///    `"{struct_name}#realization["`. If multiple keys match, take the one with
+///    the **maximum** achieved value (conservative — avoids a false `Satisfied`
+///    when a module has multiple realizations with varying quality). This path
+///    is hydration-independent and works for the post-tessellate `check()` call
+///    whose fresh `eval()` may not re-hydrate the subject's `GeometryHandle`.
+///
+/// # Zero-bound comparator (C4)
+///
+/// `eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound }`. See [`PLANAR_FLOOR`].
+pub fn eval_representation_within(
+    id: &ConstraintNodeId,
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    achieved_repr_tol: &BTreeMap<String, f64>,
+) -> Option<(Satisfaction, Option<Diagnostic>)> {
+    // Step 1: recognise the shape. None → caller should treat as non-assertion.
+    let (vcid, struct_name, bound) = match_representation_within_shape(expr)?;
+
+    // Step 2: resolve the subject to an achieved_repr_tol key.
+    let key = resolve_repr_tol_key(&vcid, &struct_name, values, achieved_repr_tol);
+
+    // Step 3: look up achieved value (absent key ⇒ Indeterminate, C1).
+    let achieved_opt = key.and_then(|k| achieved_repr_tol.get(&k).copied());
+
+    // Step 4: three-valued comparison with C4 zero-bound floor.
+    match achieved_opt {
+        None => Some((Satisfaction::Indeterminate, None)),
+        Some(achieved) => {
+            let eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound };
+            if achieved <= eff {
+                Some((Satisfaction::Satisfied, None))
+            } else {
+                // PRD §8.3: "sampled facet deviation exceeds bound" — the
+                // metric is a sampled lower bound on the achievable deviation,
+                // so this diagnostic means the measured deviation exceeded the
+                // bound, not that a tighter mesh cannot satisfy it.
+                //
+                // When the declared bound is zero (exact-representation
+                // request), the comparator uses `eff` (PLANAR_FLOOR = 1e-5 m)
+                // rather than the literal 0.0 (C4).  Report `eff` so the
+                // printed threshold matches the comparison performed; include
+                // a note so the user is not surprised by the non-zero value.
+                let floor_note = if bound <= 0.0 {
+                    " (planar floor 1e-5 m applied; zero bound interpreted as exact)"
+                } else {
+                    ""
+                };
+                let diag = Diagnostic::error(format!(
+                    "RepresentationWithin: sampled facet deviation {achieved:.3e} m \
+                     exceeds bound {eff:.3e} m{floor_note} for {}",
+                    id.entity
+                ));
+                Some((Satisfaction::Violated, Some(diag)))
+            }
+        }
+    }
+}
+
+/// Resolve the `RepresentationWithin` subject `vcid` to an
+/// `achieved_repr_tol` map key (a `"{entity}#realization[{idx}]"` string).
+///
+/// Returns `None` when neither value-based resolution nor the type-name scan
+/// finds a key — the caller interprets this as Indeterminate (C1).
+fn resolve_repr_tol_key(
+    vcid: &ValueCellId,
+    struct_name: &str,
+    values: &ValueMap,
+    achieved_repr_tol: &BTreeMap<String, f64>,
+) -> Option<String> {
+    // — Value-based resolution (hydration-dependent path) ——————————————————
+    if let Some(v) = values.get(vcid) {
+        // Direct GeometryHandle.
+        if let Some(ghr) = GeometryHandleRef::from_geometry_handle(v) {
+            return Some(ghr.realization_ref.to_string());
+        }
+        // StructureInstance: scan fields for any GeometryHandle field.
+        if let Value::StructureInstance(data) = v {
+            for field_val in data.fields.values() {
+                if let Some(ghr) = GeometryHandleRef::from_geometry_handle(field_val) {
+                    return Some(ghr.realization_ref.to_string());
+                }
+            }
+        }
+    }
+
+    // — Type-name scan fallback (hydration-independent) ————————————————————
+    // Scan achieved_repr_tol keys for the prefix "{struct_name}#realization[".
+    // If multiple keys match, take the one with the MAXIMUM achieved value
+    // (conservative — guards against a false Satisfied when a module has
+    // multiple realizations of the same type with varying quality).
+    let prefix = format!("{}#realization[", struct_name);
+    let mut best_key: Option<String> = None;
+    let mut best_val: f64 = f64::NEG_INFINITY;
+    for (k, &v) in achieved_repr_tol.iter() {
+        if k.starts_with(&prefix) && v > best_val {
+            best_val = v;
+            best_key = Some(k.clone());
+        }
+    }
+    best_key
 }
 
 /// Extract the tightest `RepresentationWithin` tolerance bound declared on
@@ -119,13 +356,11 @@ pub fn combine_demanded_tolerance(
 ///
 /// Returns `None` when no matching constraint exists.
 ///
-/// # TODO
+/// # Shared recognition (drift retired)
 ///
-/// The recognition gates are duplicated from
-/// [`crate::tolerance_scope::extract_tolerance_bindings`]. A shared helper
-/// would prevent drift between the two extractors but requires touching the
-/// `tolerance_scope` public surface — deferred to keep this task scoped to
-/// the 2650 contract.
+/// Gates 2-4 are delegated to [`match_representation_within_shape`].
+/// `crate::tolerance_scope::extract_tolerance_bindings` is now a third caller
+/// of that helper (landed as task 4542), so the two extractors cannot drift.
 pub fn extract_output_tolerance_bound(
     constraints: &PersistentMap<ConstraintNodeId, ConstraintNodeData>,
     output_template_name: &str,
@@ -133,18 +368,15 @@ pub fn extract_output_tolerance_bound(
     // Silent-skip audit (locked by `extract_output_tolerance_bound_skips_
     // non_finite_non_length_and_unrelated_entity`):
     //   Gate 1 (entity filter)        skips unrelated-entity entries
-    //   Gate 2 (UserFunctionCall +    skips non-RepresentationWithin or
-    //           name + arity)         wrong-arity outer shapes
-    //   Gate 3 (ValueRef +             skips non-ValueRef subjects or non-
-    //           StructureRef)         StructureRef result types
-    //   Gate 4a (LENGTH dimension)    skips non-LENGTH Scalar literals
-    //   Gate 4b (is_finite())         skips NaN / ±Inf tolerance literals
-    //   Gate 4c (>= 0.0)              skips negative finite tolerance
-    //                                 literals (contract symmetry with
-    //                                 `combine_demanded_tolerance`'s
-    //                                 debug-assert `is_finite() && >= 0.0`)
-    // Every non-match path uses `continue` — no `panic!`, `expect`, or
-    // `unwrap` is reachable, so a malformed graph never crashes the engine.
+    //   Gates 2-4 (shape match)       delegated to
+    //                                 `match_representation_within_shape` —
+    //                                 see that function for the per-gate
+    //                                 breakdown (UFC name+arity, ValueRef
+    //                                 :StructureRef, Literal Scalar LENGTH
+    //                                 finite≥0). Every non-match returns None
+    //                                 → `continue` here.
+    // No `panic!`, `expect`, or `unwrap` is reachable — malformed graphs
+    // are silently skipped.
     let mut tightest: Option<f64> = None;
     for (id, data) in constraints.iter() {
         // Gate 1: entity exact-match filter.
@@ -152,54 +384,15 @@ pub fn extract_output_tolerance_bound(
             continue;
         }
 
-        // Gate 2: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1]).
-        let (function_name, args) = match &data.expr.kind {
-            CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } => (function_name, args),
-            _ => continue,
+        // Gates 2-4: shared recognition shape (UFC + ValueRef:StructureRef +
+        // Literal Scalar LENGTH finite≥0). Only the bound (si_value) is needed
+        // here — subject vcid and StructureRef name are discarded (C2: public
+        // signature and behavior are byte-identical to the pre-factoring impl).
+        let Some((_vcid, _struct_name, si_value)) =
+            match_representation_within_shape(&data.expr)
+        else {
+            continue;
         };
-        if function_name != "RepresentationWithin" {
-            continue;
-        }
-        if args.len() != 2 {
-            continue;
-        }
-
-        // Gate 3: arg0 must be a ValueRef whose result_type is StructureRef(_).
-        // Note: the purpose-param-membership check from
-        // `tolerance_scope::extract_tolerance_bindings` is dropped here —
-        // output occurrences have a fixed `param subject : Structure` binding
-        // pattern at the template level, so the StructureRef type-tag gate
-        // alone is sufficient to identify the subject argument.
-        let subject_arg = &args[0];
-        if !matches!(subject_arg.kind, CompiledExprKind::ValueRef(_)) {
-            continue;
-        }
-        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
-            continue;
-        }
-
-        // Gate 4: arg1 must be a Literal(Value::Scalar { dimension == LENGTH, .. })
-        // with finite, non-negative si_value. NaN/±Inf would propagate into
-        // the bound and stick (NaN comparisons always evaluate false).
-        // Negative finite values are also silently skipped here so the
-        // extractor stays in lockstep with `combine_demanded_tolerance`'s
-        // debug-assert `is_finite() && >= 0.0` invariant — without this gate,
-        // a negative bound would survive extraction, then crash the engine in
-        // debug builds and win an `o.min(p)` race in release builds.
-        let tol_arg = &args[1];
-        let si_value = match &tol_arg.kind {
-            CompiledExprKind::Literal(Value::Scalar {
-                si_value,
-                dimension,
-            }) if *dimension == DimensionVector::LENGTH => *si_value,
-            _ => continue,
-        };
-        if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
-            continue;
-        }
 
         // Min-fold under partial-order "tighter satisfies looser" semantics.
         tightest = Some(match tightest {
@@ -382,7 +575,7 @@ mod tests {
             CompiledExpr::user_function_call(
                 "RepresentationWithin".to_string(),
                 vec![
-                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::Real),
+                    CompiledExpr::value_ref(ValueCellId::new("subject", "self"), Type::dimensionless_scalar()),
                     CompiledExpr::literal(
                         Value::Scalar {
                             si_value: 0.5e-6,
@@ -518,6 +711,592 @@ mod tests {
             combine_demanded_tolerance(None, None),
             None,
             "both None must return None — no demand contributor exists"
+        );
+    }
+
+    // ── step-1 (task 4199 γ): recognize_representation_within unit tests ───────
+    //
+    // These tests are RED until step-2 implements `recognize_representation_within`.
+
+    /// Build the canonical `RepresentationWithin(<ValueRef typed
+    /// StructureRef("Curved")>, <Scalar{1e-6, LENGTH}>)` expression used
+    /// across multiple step-1 test cases.
+    fn canonical_repr_within_expr() -> CompiledExpr {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// Canonical RepresentationWithin expression → Some((subject_vcid, "Curved", 1e-6)).
+    ///
+    /// This is the recognition-shape positive case: a well-formed
+    /// `RepresentationWithin(ValueRef(subject.self):StructureRef("Curved"),
+    /// Scalar{1e-6, LENGTH})` must yield the tuple
+    /// `(ValueCellId("subject","self"), "Curved", 1e-6)`.
+    #[test]
+    fn recognize_repr_within_returns_some_for_canonical_shape() {
+        let expr = canonical_repr_within_expr();
+        let result = recognize_representation_within(&expr);
+        assert!(
+            result.is_some(),
+            "canonical RepresentationWithin must be recognized as Some"
+        );
+        let (vcid, struct_name, bound) = result.unwrap();
+        assert_eq!(
+            vcid,
+            ValueCellId::new("subject", "self"),
+            "subject ValueCellId must match the ValueRef in arg0"
+        );
+        assert_eq!(
+            struct_name, "Curved",
+            "StructureRef inner name must be extracted from arg0.result_type"
+        );
+        assert!(
+            (bound - 1e-6).abs() < 1e-15,
+            "bound must match the Scalar si_value in arg1; got {bound}"
+        );
+    }
+
+    /// Non-RepresentationWithin function name → None (silent-skip gate 2 name check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_wrong_function_name() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationBetween".to_string(), // wrong name
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "wrong function name must return None (gate 2 name check)"
+        );
+    }
+
+    /// Arity ≠ 2 (single arg) → None (silent-skip gate 2 arity check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_wrong_arity() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg], // arity 1 — wrong
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "arity ≠ 2 must return None (gate 2 arity check)"
+        );
+    }
+
+    /// Arg0 is a Literal (not a ValueRef) → None (gate 3 ValueRef check).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_value_ref_arg0() {
+        // Use a Bool literal as arg0 — not a ValueRef.
+        let literal_arg = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![literal_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-ValueRef arg0 must return None (gate 3)"
+        );
+    }
+
+    /// Arg0 is a ValueRef but with non-StructureRef result_type (Real) → None (gate 3).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_structure_ref_result_type() {
+        // ValueRef with result_type = Real, not StructureRef.
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::dimensionless_scalar(), // wrong result_type
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-StructureRef result_type on arg0 must return None (gate 3)"
+        );
+    }
+
+    /// Arg1 has a DIMENSIONLESS dimension (not LENGTH) → None (gate 4a).
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_length_dimension() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 1e-6,
+                dimension: DimensionVector::DIMENSIONLESS, // wrong dimension
+            },
+            Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-LENGTH dimension in arg1 must return None (gate 4a)"
+        );
+    }
+
+    /// Arg1 is a NaN tolerance literal → None (gate 4b).
+    #[test]
+    fn recognize_repr_within_returns_none_for_nan_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: f64::NAN,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "NaN tolerance must return None (gate 4b)"
+        );
+    }
+
+    /// Arg1 is +Infinity tolerance literal → None (gate 4b).
+    #[test]
+    fn recognize_repr_within_returns_none_for_infinite_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: f64::INFINITY,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "+Infinity tolerance must return None (gate 4b)"
+        );
+    }
+
+    /// Arg1 is a negative (−1 mm) finite LENGTH tolerance literal → None (gate 4c).
+    #[test]
+    fn recognize_repr_within_returns_none_for_negative_tolerance() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: -1e-3, // negative finite
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "negative finite tolerance must return None (gate 4c)"
+        );
+    }
+
+    /// Non-UserFunctionCall outer kind (a Bool literal) → None.
+    ///
+    /// Pins that the matcher short-circuits on the outer kind, never reaching
+    /// the inner gates, so callers can pass arbitrary constraint expressions
+    /// through `recognize_representation_within` safely.
+    #[test]
+    fn recognize_repr_within_returns_none_for_non_ufc_outer_kind() {
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        assert_eq!(
+            recognize_representation_within(&expr),
+            None,
+            "non-UserFunctionCall outer kind must return None"
+        );
+    }
+
+    /// Zero bound (0.0) with LENGTH dimension → Some — zero is a valid non-negative
+    /// finite bound (the C4 PLANAR_FLOOR comparator handles it, not the gate).
+    ///
+    /// Mirrors the `>= 0.0` (not `> 0.0`) posture of `is_valid_tolerance_si`.
+    #[test]
+    fn recognize_repr_within_returns_some_for_zero_bound() {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef("Curved".to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        let expr = CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        );
+        let result = recognize_representation_within(&expr);
+        assert!(
+            result.is_some(),
+            "zero bound (0.0 m) is a valid non-negative finite LENGTH bound and \
+             must be recognized — the PLANAR_FLOOR comparator handles zero bounds, \
+             not the gate"
+        );
+        let (_, _, bound) = result.unwrap();
+        assert_eq!(bound, 0.0, "zero bound must be preserved exactly");
+    }
+
+    // ── step-3 (task 4199 γ): eval_representation_within unit tests ───────────
+    //
+    // These tests verify the pure assertion eval helper using synthetic ValueMap
+    // and synthetic BTreeMap<String, f64> achieved_repr_tol inputs.
+    //
+    // Note: the implementation was added in step-2's commit alongside the
+    // recognizer; tests here provide regression coverage.
+
+    use reify_core::RealizationNodeId;
+    use reify_ir::GeometryHandleId;
+
+    /// Build a canonical `RepresentationWithin(ValueRef(subject.self):StructureRef(name), bound_m)`
+    /// expression for step-3 eval tests.
+    fn eval_test_expr(struct_name: &str, bound_m: f64) -> CompiledExpr {
+        let subject_arg = CompiledExpr::value_ref(
+            ValueCellId::new("subject", "self"),
+            Type::StructureRef(struct_name.to_string()),
+        );
+        let tol_arg = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: bound_m,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+        CompiledExpr::user_function_call(
+            "RepresentationWithin".to_string(),
+            vec![subject_arg, tol_arg],
+            Type::Bool,
+        )
+    }
+
+    /// Build a `Value::GeometryHandle` for `{entity}#realization[{idx}]`.
+    fn geometry_handle_value(entity: &str, idx: u32) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new(entity, idx),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId::INVALID,
+        }
+    }
+
+    /// (a) achieved < bound → Satisfied.
+    ///
+    /// The type-name scan fallback resolves the subject to
+    /// `"Curved#realization[0]"` (struct_name == "Curved") and compares
+    /// achieved (1e-7) < bound (1e-6) → Satisfied.
+    #[test]
+    fn eval_repr_within_satisfied_when_achieved_less_than_bound() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 1e-7);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some(), "must return Some for a RepresentationWithin expr");
+        let (sat, diag) = result.unwrap();
+        assert_eq!(sat, Satisfaction::Satisfied, "achieved (1e-7) < bound (1e-6) → Satisfied");
+        assert!(diag.is_none(), "no diagnostic on Satisfied");
+    }
+
+    /// (b) achieved > bound → Violated with a diagnostic.
+    #[test]
+    fn eval_repr_within_violated_when_achieved_exceeds_bound() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-3); // 5mm ≫ 1µm
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(sat, Satisfaction::Violated, "achieved (5e-3) > bound (1e-6) → Violated");
+        assert!(diag.is_some(), "Violated must carry a diagnostic");
+        let msg = diag.unwrap().message;
+        assert!(
+            msg.contains("RepresentationWithin"),
+            "diagnostic must mention RepresentationWithin; got: {msg}"
+        );
+        assert!(
+            msg.contains("exceeds bound"),
+            "diagnostic must mention 'exceeds bound'; got: {msg}"
+        );
+    }
+
+    /// (c) Key ABSENT in map → Indeterminate (C1: realization not run → never a
+    /// false Violated).
+    #[test]
+    fn eval_repr_within_indeterminate_when_key_absent() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+        let achieved: BTreeMap<String, f64> = BTreeMap::new(); // empty
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "absent key → Indeterminate (C1: realization not run)"
+        );
+        assert!(diag.is_none(), "no diagnostic on Indeterminate");
+    }
+
+    /// (d) Subject unresolvable (no value in ValueMap, no matching key in
+    /// achieved_repr_tol for the struct_name) → Indeterminate.
+    #[test]
+    fn eval_repr_within_indeterminate_when_subject_unresolvable() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new(); // no entry for subject.self
+        // achieved_repr_tol has entries for a DIFFERENT name — no prefix match
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Other#realization[0]".to_string(), 5e-3);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "unresolvable subject (no value, no matching key) → Indeterminate"
+        );
+    }
+
+    /// (e) C4 zero-bound floor — part 1: bound=0.0 with achieved ≤ PLANAR_FLOOR
+    /// (1e-5 m) → Satisfied.
+    #[test]
+    fn eval_repr_within_zero_bound_satisfied_below_planar_floor() {
+        let id = ConstraintNodeId::new("Planar", 0);
+        let expr = eval_test_expr("Planar", 0.0); // exact / zero bound
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        // Planar box achieved ~1e-6 (β B1 validates ≤ 1e-5 m for planar).
+        achieved.insert("Planar#realization[0]".to_string(), 1e-6);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "bound=0.0 with achieved (1e-6) ≤ PLANAR_FLOOR (1e-5) → Satisfied (C4)"
+        );
+    }
+
+    /// (e) C4 zero-bound floor — part 2: bound=0.0 with achieved ≫ PLANAR_FLOOR
+    /// → Violated (coarse curved geometry, cf. β B2).
+    #[test]
+    fn eval_repr_within_zero_bound_violated_above_planar_floor() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 0.0); // exact / zero bound
+        let values = ValueMap::new();
+        let mut achieved = BTreeMap::new();
+        // Coarse curved geometry achieved ~50mm >> 1e-5 m.
+        achieved.insert("Curved#realization[0]".to_string(), 50e-3);
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, diag) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Violated,
+            "bound=0.0 with achieved (50e-3) ≫ PLANAR_FLOOR (1e-5) → Violated (C4)"
+        );
+        assert!(diag.is_some(), "Violated must carry a diagnostic");
+    }
+
+    /// (f) Value-based resolution: a `Value::GeometryHandle{realization_ref=
+    /// "Curved#realization[0]"}` subject value keys directly into
+    /// `achieved_repr_tol["Curved#realization[0]"]`.
+    #[test]
+    fn eval_repr_within_value_based_resolution_via_geometry_handle() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+
+        // Place a GeometryHandle value at subject.self.
+        let mut values = ValueMap::new();
+        values.insert(
+            ValueCellId::new("subject", "self"),
+            geometry_handle_value("Curved", 0),
+        );
+
+        // achieved_repr_tol key has a non-standard name to verify value-based
+        // resolution was used (type-name scan would also match "Curved#realization[0]"
+        // here, but the value-based path should be tried first).
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "GeometryHandle value resolves to 'Curved#realization[0]'; achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
+    /// (g) Type-name scan fallback: subject value is absent (Undef) but
+    /// `achieved_repr_tol` contains `"Curved#realization[0]"` and the
+    /// StructureRef name is `"Curved"` → resolves via type-name scan.
+    #[test]
+    fn eval_repr_within_type_name_scan_fallback_when_value_absent() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new(); // no entry — subject stays Undef
+
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // < 1e-6
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "type-name scan resolves 'Curved#realization[0]' for struct_name 'Curved'; \
+             achieved (5e-7) < bound (1e-6) → Satisfied"
+        );
+    }
+
+    /// (g) multi-key scan takes MAX achieved (conservative) — multiple
+    /// `"Curved#realization[N]"` keys; the highest (1e-2) must be used so the
+    /// assertion correctly reports Violated even if some realizations are fine.
+    #[test]
+    fn eval_repr_within_type_name_scan_uses_max_achieved_on_multiple_keys() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-6);
+        let values = ValueMap::new();
+
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 5e-7); // fine — Satisfied alone
+        achieved.insert("Curved#realization[1]".to_string(), 1e-2); // coarse — Violated
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(result.is_some());
+        let (sat, _) = result.unwrap();
+        assert_eq!(
+            sat,
+            Satisfaction::Violated,
+            "max-achieved (1e-2) wins over the finer (5e-7) — conservative, no false Satisfied"
+        );
+    }
+
+    /// Non-RepresentationWithin expr → None (pass-through posture).
+    #[test]
+    fn eval_repr_within_returns_none_for_non_repr_within_expr() {
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+        let values = ValueMap::new();
+        let achieved: BTreeMap<String, f64> = BTreeMap::new();
+
+        let result = eval_representation_within(&id, &expr, &values, &achieved);
+        assert!(
+            result.is_none(),
+            "non-RepresentationWithin expr must return None (pass-through)"
         );
     }
 }

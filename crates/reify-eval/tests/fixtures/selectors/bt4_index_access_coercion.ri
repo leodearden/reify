@@ -1,0 +1,23 @@
+// Fixture: BT4 — IndexAccess coercion realizes face geometry (fixture golden).
+// PRD: docs/prds/topology-selector-value-type.md §5 BT4
+//
+// f0 = faces(b)[0]
+//   → compile: f0.cell_type == Geometry (sel[i] is typed Geometry, never a
+//              selector); default_expr == IndexAccess { object: ResolveSelector
+//              { result_type: List<Geometry> }, index: 0 }
+//   → runtime (OCCT-gated): f0 realizes to Value::GeometryHandle with a
+//              non-zero upstream_values_hash (fixture golden, not baseline-diff;
+//              esc-4118-55 IndexAccess coverage requirement).
+//
+// The FaceSelector → List<Geometry> coercion is inserted by the compiler
+// (try_eval_resolve_selector, geometry_ops.rs) at the IndexAccess object site.
+// fillet edge-selector RUNTIME resolution is OUT OF SCOPE (esc-4118-52);
+// fillet appears only as a separate compile-only transparency fixture (BT4b).
+//
+// Pinning test:
+//   crates/reify-eval/tests/selector_boundary_gate.rs::bt4_index_access_coercion_realizes_face
+
+structure def BT4IndexAccess {
+    let b  = box(10mm, 10mm, 10mm)
+    let f0 = faces(b)[0]
+}

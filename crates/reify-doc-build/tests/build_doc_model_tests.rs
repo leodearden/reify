@@ -39,9 +39,9 @@ fn find_item<'m>(module: &'m reify_doc::model::ModuleDoc, name: &str) -> &'m rei
 fn structure_with_params_and_constraints() {
     let source = r#"
 pub structure Widget {
-    param width: Scalar = 10mm
-    param height: Scalar = 20mm
-    param depth: Scalar
+    param width: Length = 10mm
+    param height: Length = 20mm
+    param depth: Length
     constraint depth > 0mm
     constraint width >= height
 }
@@ -181,12 +181,12 @@ fn annotations_and_pragmas_lowering() {
 @deprecated("use NewWidget instead")
 structure OldWidget {
     #solver(backend="ipopt")
-    param size: Scalar = 10mm
+    param size: Length = 10mm
     constraint size > 0mm
 }
 
 @test structure TestWidget {
-    param size: Scalar = 5mm
+    param size: Length = 5mm
     constraint size > 0mm
 }
 "#;
@@ -293,12 +293,12 @@ structure OldWidget {
 fn constraint_label_from_instantiation() {
     let source = r#"
 constraint def Positive {
-    param val: Scalar
+    param val: Length
     val > 0mm
 }
 
 structure Labeled {
-    param width: Scalar = 10mm
+    param width: Length = 10mm
     constraint Positive(val: width)
 }
 "#;
@@ -591,8 +591,8 @@ purpose with_maximize(subject: Structure) {
 fn doc_model_serde_roundtrip_and_render() {
     let source = r#"
 pub structure Bracket {
-    param width: Scalar = 50mm
-    param height: Scalar = 100mm
+    param width: Length = 50mm
+    param height: Length = 100mm
     constraint width > 0mm
     constraint height > 0mm
 }
@@ -600,7 +600,7 @@ pub structure Bracket {
 fn scale(x: Real) -> Real { x }
 
 trait HasLength {
-    param length: Scalar
+    param length: Length
 }
 "#;
     let compiled = compile_source_with_stdlib(source);

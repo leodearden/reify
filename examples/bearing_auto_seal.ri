@@ -43,24 +43,24 @@ trait Seal {}
 // source-declaration order. Any regression to source order would fail.
 
 structure def NitrileSeal : Seal {
-    param durometer : Scalar = 70.0
-    param width : Scalar = 5mm
+    param durometer : Length = 70.0
+    param width : Length = 5mm
 }
 
 structure def ORingSeal : Seal {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 
 structure def GasketSeal : Seal {
-    param thickness : Scalar = 2mm
-    param outer_diameter : Scalar = 30mm
+    param thickness : Length = 2mm
+    param outer_diameter : Length = 30mm
 }
 
 // ── Parameterized template ────────────────────────────────────────────────────
 
 structure def Bearing<T: Seal> {
-    param bore_diameter : Scalar = 25mm
-    param width : Scalar = 15mm
+    param bore_diameter : Length = 25mm
+    param width : Length = 15mm
     // Constraint ensures a non-trivial Phase B check: when
     // MockConstraintChecker::with_default(Violated) is used in the
     // determinism test, this constraint is flagged Violated for every

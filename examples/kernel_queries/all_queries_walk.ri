@@ -35,7 +35,7 @@
 // Unit-qualification contract:
 //   point3() components must carry LENGTH units (e.g. 0mm, 5mm).
 //   geo_equiv tolerance must carry LENGTH units (e.g. 0.001mm).
-//   density must be a bare Real literal (compound units not yet supported, v0.3).
+//   density must be a dimensioned Density literal (e.g. 7850kg/m^3).
 //   vec3/range/tol are let-bound; ranges use unit-qualified bounds.
 //
 // center_of_mass has no prior example — this is the first fixture to exercise it.
@@ -123,13 +123,13 @@ structure def AllQueriesWalk {
 
     // 13. center_of_mass(Solid, Density) → Point3<Length>
     //     Uniform-density centroid of the box. For an axis-aligned box centred
-    //     at origin, centroid = (0, 0, 0). Density is a bare Real per v0.3.
-    let density_com = 7850.0
+    //     at origin, centroid = (0, 0, 0).
+    let density_com = 7850kg/m^3
     let com         = center_of_mass(b, density_com)
 
     // 14. moment_of_inertia(Solid, Density) → Tensor<2,3,MomentOfInertia>
     //     3×3 centroidal inertia tensor for the steel box.
-    let density_moi = 7850.0
+    let density_moi = 7850kg/m^3
     let moi         = moment_of_inertia(b, density_moi)
 
     // ── 7 SUB-HANDLE-arg helpers (compile-type pinned; Value::Undef at DSL eval) ─

@@ -52,9 +52,9 @@
 //
 //   mass    : Mass                  — total body mass; must be non-negative.
 //   com     : Point3<Length>        — centre of mass in the body frame.
-//   inertia : Matrix<3,3,Real>      — 3×3 inertia tensor (body frame, about CoM).
-//                                    Values represent moments/products of inertia
-//                                    in SI units (kg·m²). Must be PSD — validated
+//   inertia : Matrix<3,3,MomentOfInertia> — 3×3 inertia tensor (body frame, about CoM).
+//                                    Each cell is a moment/product of inertia in
+//                                    SI units (kg·m²). Must be PSD — validated
 //                                    at ctor time by the reify-eval PSD hook
 //                                    (dynamics_psd.rs); non-PSD inertia replaces
 //                                    the instance with Value::Undef and emits
@@ -71,7 +71,7 @@
 structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
-    param inertia : Matrix<3, 3, Real>
+    param inertia : Matrix<3, 3, MomentOfInertia>
     param origin : Real // TODO(frame3-type): Frame3 placeholder — see encoding note 3 above
 
     // Non-negativity guard: mass must be physically valid at construction.

@@ -386,7 +386,7 @@ mod tests {
         assert_eq!(ty, Type::Bool, "fresh insert should store the given type");
 
         // Occupied case: register_if_absent must NOT overwrite and must return Some(rejected_ty).
-        scope.register("x", Type::Real);
+        scope.register("x", Type::dimensionless_scalar());
         let rejected = scope.register_if_absent("x", Type::length());
         assert_eq!(
             rejected,
@@ -394,7 +394,7 @@ mod tests {
             "register_if_absent should hand back the rejected type on conflict"
         );
         let (_, ty, _) = scope.names["x"].clone();
-        assert_eq!(ty, Type::Real, "existing type must not be overwritten");
+        assert_eq!(ty, Type::dimensionless_scalar(), "existing type must not be overwritten");
     }
 
     /// Task 2612 step-4: registering the same cluster name twice must panic in

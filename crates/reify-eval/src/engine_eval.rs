@@ -9,13 +9,13 @@ use std::time::Instant;
 use reify_compiler::{CompiledModule, ValueCellDecl, ValueCellKind, find_template};
 use reify_core::{
     ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, FIELD_ENTITY_PREFIX, SnapshotId,
-    ValueCellId, VersionId,
+    SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
-    AutoParam, CompiledFunction, DeterminacyState, ErrorRef, Freshness, InterpolationKind,
-    PersistentMap, ResolutionProblem, SampledField, SampledGridKind, SnapshotProvenance,
-    SolveResult, Value, ValueMap,
+    AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
+    InterpolationKind, PersistentMap, ResolutionProblem, SampledField, SampledGridKind,
+    SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -70,6 +70,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
     match ty {
         // Unrepresentable: no corresponding `Value` variant.
         Type::TypeParam(_) => false,
+        // Compile-time-only — dimension-param scalar; erased before eval (D7/D1);
+        // no `Value::ScalarParam` exists (task 4234 ε).
+        Type::ScalarParam(_) => false,
         // Compile-time-only union — value cells must hold a single concrete
         // arm type post-narrowing (task 2373).
         Type::Union(_) => false,
@@ -83,7 +86,6 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // rather than silently inheriting `true`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -104,9 +106,15 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Transform(_)
         | Type::AffineMap(_) // task 3958 / α: Value::AffineMap now exists
         | Type::Selector(_) // task 4116 / α: Value::Selector now exists
+        | Type::AnySelector // task 4369 / A2: kind-agnostic selector cell (value is Value::Selector(k))
         | Type::Range(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
+        // geometric-relations γ (task 4383): Undef-backed directive type — no
+        // Value::Relation; relation cells default to Value::Undef (accepted by
+        // value_type_kind_matches for any type) until ζ supplies relate-solve.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
@@ -602,17 +610,47 @@ fn detect_scope_coupling(templates: &[reify_compiler::TopologyTemplate]) -> Vec<
 ///    structurally identical also collapse (under-reports by one).  Fixing this
 ///    would require per-call provenance tracking in the error Map; accepted as a
 ///    v0.1 limitation shared by all error-Map detectors.
+///
+/// Collect the [`SourceSpan`]s that the compiler already flagged with
+/// [`DiagnosticCode::MechanismNonDrivingJoint`].
+///
+/// Used by [`detect_nondriving_joint_errors`] to build the suppression set:
+/// if the compiler emitted a labelled `E_MECHANISM_NONDRIVING_JOINT` at a
+/// given source span, the eval pass can skip re-emitting the same diagnostic
+/// for any value cell whose `ValueCellDecl.span` matches that span.
+///
+/// Only diagnostics whose `code == Some(MechanismNonDrivingJoint)` *and* that
+/// carry at least one [`DiagnosticLabel`] contribute to the set — unlabelled
+/// diagnostics and diagnostics with a different code are ignored.  This is the
+/// exact-span join key described in the task analysis.
+fn nondriving_joint_compile_spans(diagnostics: &[Diagnostic]) -> HashSet<SourceSpan> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .flat_map(|d| d.labels.iter().map(|l| l.span))
+        .collect()
+}
+
 /// 4. Emit `Diagnostic::error(msg).with_code(code)` per surviving entry,
 ///    using `error_message` from the Map or `fallback_msg` as a constant.
 ///
 /// **No source span / [`DiagnosticLabel`]:** [`ValueCellId`] carries only
 /// `{entity, member}` strings with no source-span, so no label is attached.
+///
+/// **Span-scoped suppression:** the optional `suppress` predicate is applied
+/// BEFORE structural dedup (step 3).  When `Some(pred)` and `pred(cell_id)`
+/// is `true`, that hit is skipped entirely.  This lets [`detect_nondriving_joint_errors`]
+/// suppress cells whose `ValueCellDecl.span` already appears in the
+/// compile-time `MechanismNonDrivingJoint` diagnostic set — implementing the
+/// exact-span join described in task 4364 — while leaving
+/// [`detect_mechanism_errors`] (which passes `None`) byte-for-byte unchanged.
 fn detect_error_map_diagnostics(
     values: &ValueMap,
     kind: Option<&str>,
     discriminator: &str,
     code: DiagnosticCode,
     fallback_msg: &str,
+    suppress: Option<&dyn Fn(&ValueCellId) -> bool>,
 ) -> Vec<Diagnostic> {
     let mut hits: Vec<(&ValueCellId, &Value)> = values
         .iter()
@@ -639,7 +677,14 @@ fn detect_error_map_diagnostics(
     let msg_key = Value::String("error_message".to_string());
     let mut seen = std::collections::BTreeSet::new();
     let mut diagnostics = Vec::new();
-    for (_, value) in hits {
+    for (cid, value) in hits {
+        // Span-scoped suppression: skip this hit BEFORE the structural dedup when
+        // the cell was already flagged at compile time at the exact same source span.
+        if let Some(pred) = suppress
+            && pred(cid)
+        {
+            continue;
+        }
         if seen.insert(value.clone()) {
             let msg = match value {
                 Value::Map(m) => match m.get(&msg_key) {
@@ -678,11 +723,13 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
         "duplicate_solid",
         DiagnosticCode::MechanismDuplicateSolid,
         "duplicate solid in mechanism",
+        None,
     )
 }
 
 /// Scan top-level eval cells for `E_MECHANISM_NONDRIVING_JOINT` errors
-/// (task 4309 — α).
+/// (task 4309 — α), suppressing cells whose compile-time span was already
+/// flagged by the compiler (task 4364).
 ///
 /// Called in both `eval` and `eval_cached` outside the solver gate, mirroring
 /// [`detect_mechanism_errors`].  Delegates to [`detect_error_map_diagnostics`]
@@ -691,14 +738,140 @@ fn detect_mechanism_errors(values: &ValueMap) -> Vec<Diagnostic> {
 /// returned by `bind`/`dim`/`sweep`/`sweep_grid` when a coupling or fixed joint
 /// is passed.  `kind` is `None` because that producer builds a fresh error Map
 /// with no `"kind"` field (only `error`/`error_message`/`joint`).
-fn detect_nondriving_joint_errors(values: &ValueMap) -> Vec<Diagnostic> {
+///
+/// **Suppression predicate (task 4364):** builds the set of source spans the
+/// compiler already flagged via [`nondriving_joint_compile_spans`], then builds
+/// a `ValueCellId → vc.span` map from `module.templates[*].value_cells`.  A
+/// cell whose `ValueCellDecl.span` is in the compile-span set is suppressed —
+/// it was statically caught at compile time and re-emitting would produce a
+/// duplicate diagnostic for the user.
+///
+/// Cells whose id is absent from `value_cells` (synthetic / sub-component
+/// cells) and cells whose static type the compiler could not resolve to
+/// `Coupling` (e.g. loop-bound `List<Joint>` elements) have no matching span
+/// in the compile-span set and fall through to emit — preserving the runtime
+/// defense-in-depth guard for cases the compiler cannot see statically.
+fn detect_nondriving_joint_errors(values: &ValueMap, module: &CompiledModule) -> Vec<Diagnostic> {
+    let compile_spans = nondriving_joint_compile_spans(&module.diagnostics);
+
+    // Short-circuit: when no compile-time spans are flagged, nothing can be
+    // suppressed.  Skip building the `cell_span` HashMap — an allocation that
+    // walks every template's value_cells — and delegate directly with
+    // `suppress = None`.  This is the common path for LSP/GUI incremental
+    // eval (eval_cached runs per-keystroke; most edits don't involve a
+    // non-driving-joint diagnostic).
+    if compile_spans.is_empty() {
+        return detect_error_map_diagnostics(
+            values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "joint has no free motion variable (coupling or fixed)",
+            None,
+        );
+    }
+
+    let cell_span: HashMap<&ValueCellId, SourceSpan> = module
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .map(|vc| (&vc.id, vc.span))
+        .collect();
+    let pred = |cid: &ValueCellId| {
+        cell_span
+            .get(cid)
+            .is_some_and(|s| compile_spans.contains(s))
+    };
     detect_error_map_diagnostics(
         values,
         None,
         "nondriving_joint",
         DiagnosticCode::MechanismNonDrivingJoint,
         "joint has no free motion variable (coupling or fixed)",
+        Some(&pred),
     )
+}
+
+/// Scan the post-evaluation value map for `@face` / `@edge` ad-hoc selector
+/// cells that remain `Value::Undef`, and emit a `Diagnostic::warning` for each.
+///
+/// **Why this detector exists (task 250):** `engine.eval()` and `engine.eval_cached()`
+/// are the geometry-free evaluation path — they never execute realizations and
+/// therefore never call `post_process_ad_hoc_selectors` (the build-path resolver
+/// in engine_build.rs/geometry_ops.rs).  As a result, any `@face` or `@edge`
+/// cell whose compiled `default_expr` is `AdHocSelector{Face|Edge}` remains at
+/// the `Value::Undef` placeholder that `eval_ad_hoc_selector` (reify-expr)
+/// leaves behind, with no accompanying diagnostic.  This violates the task spec:
+/// "If selector fails … port frame becomes undef, **diagnostic emitted**."
+///
+/// **Scope:** only `SelectorKind::Face` and `SelectorKind::Edge` are checked.
+/// `@point` cells resolve to a `Value::Frame` in Layer-1 (no kernel) and never
+/// match the `Undef` filter.  Body/other kinds are skipped.
+///
+/// **Severity: Warning** — matches the build-path failure arms in the
+/// `extract_faces`/`extract_edges` error arms of `try_eval_ad_hoc_selector`
+/// (geometry_ops.rs) and does not trip the many `errors.is_empty()` /
+/// `severity == Error` guards in sibling tests, minimising fallout.
+///
+/// **Limitation — top-level exprs only:** the detector inspects only the
+/// top-level `cell.default_expr.kind`.  An `@face`/`@edge` selector nested
+/// inside a conditional, list literal, or method call is not detected.  This
+/// is an accepted coverage gap for the current task scope; prefer documenting
+/// over recursing via a full `CompiledExpr` traversal.
+///
+/// Called in both `eval()` and `eval_cached()` immediately before `EvalResult`
+/// construction, mirroring the `detect_mechanism_errors` /
+/// `detect_nondriving_joint_errors` placement.
+fn detect_unresolved_ad_hoc_selectors(
+    templates: &[reify_compiler::TopologyTemplate],
+    values: &ValueMap,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for template in templates {
+        for cell in &template.value_cells {
+            // Only care about @face and @edge selectors.
+            let selector_kind = match &cell.default_expr {
+                Some(expr) => match &expr.kind {
+                    CompiledExprKind::AdHocSelector { selector_kind, .. } => match selector_kind {
+                        SelectorKind::Face | SelectorKind::Edge => *selector_kind,
+                        // @point resolves in Layer-1 (no kernel) — skip.
+                        // Body / other kinds are not selector-frame kinds — skip.
+                        _ => continue,
+                    },
+                    _ => continue,
+                },
+                None => continue,
+            };
+
+            // Only emit when the cell is explicitly present in the value map AND
+            // equals Value::Undef.  Absent cells may belong to nested / instantiated
+            // sub-component templates whose values are keyed under instance-qualified
+            // ids; treating absence as Undef would produce spurious warnings there.
+            if !matches!(values.get(&cell.id), Some(Value::Undef)) {
+                continue;
+            }
+
+            let kind_str = match selector_kind {
+                SelectorKind::Face => "@face",
+                SelectorKind::Edge => "@edge",
+                // Already filtered above; unreachable.
+                _ => continue,
+            };
+
+            let msg = format!(
+                "{kind_str} selector could not be resolved to a frame during evaluation: \
+                 selectors are only resolved on the build()/tessellate() path \
+                 (selector frame is undef during eval)"
+            );
+            diagnostics.push(
+                Diagnostic::warning(msg)
+                    .with_label(DiagnosticLabel::new(cell.span, "selector frame is undef")),
+            );
+        }
+    }
+
+    diagnostics
 }
 
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
@@ -1157,7 +1330,7 @@ pub(crate) fn elaborate_field(
 /// - File-path change with same content → same hash → `imported_file_hash_changed` returns
 ///   `false` → cache hit.
 pub(crate) fn hash_imported_file_content(path: &str) -> std::io::Result<reify_core::ContentHash> {
-    // TODO(task-5-perf): `fs::read` allocates a `Vec<u8>` sized to the full file before
+    // TODO(#4592): `fs::read` allocates a `Vec<u8>` sized to the full file before
     // hashing.  For multi-MB .vdb assets on the hot evaluation path this is a noticeable
     // allocation per call.  If `ContentHash` (or `xxhash_rust::xxh3`) later exposes an
     // incremental/streaming constructor, replace this with `BufReader` + chunk-by-chunk
@@ -2725,7 +2898,14 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Same gate placement and rationale as detect_mechanism_errors above.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` so the compile-span suppression predicate (task 4364)
+        // can skip cells already flagged by the compiler at the same source span.
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  @face/@edge cells left at
+        // Value::Undef by the geometry-free eval path surface a warning here so the
+        // eval/check path is behaviorally consistent with the build() path (which
+        // emits a warning via geometry_ops.rs when a selector cannot be resolved).
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         EvalResult {
             values,
@@ -3332,7 +3512,12 @@ impl Engine {
         diagnostics.extend(detect_mechanism_errors(&values));
         // Non-driving-joint diagnostics (task 4309 — E_MECHANISM_NONDRIVING_JOINT).
         // Mirrors eval() call site; eval_cached is the LSP/GUI incremental path.
-        diagnostics.extend(detect_nondriving_joint_errors(&values));
+        // Passes `module` for compile-span suppression parity with eval() (task 4364).
+        diagnostics.extend(detect_nondriving_joint_errors(&values, module));
+        // Ad-hoc selector Undef diagnostics (task 250).  Mirrors eval() call site so
+        // the LSP/GUI incremental path surfaces the same selector-frame-is-undef
+        // warning as the cold-eval path.
+        diagnostics.extend(detect_unresolved_ad_hoc_selectors(&module.templates, &values));
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,
@@ -3938,12 +4123,19 @@ impl Engine {
                                 }
                                 let cancel = crate::graph::CancellationHandle::new();
 
+                                let (realization_inputs, realization_read_handles, proj_diags) =
+                                    self.build_compute_realization_inputs(
+                                        &arg_values,
+                                        &snapshot.graph,
+                                    );
+                                diagnostics.extend(proj_diags);
+
                                 snapshot.graph.insert_compute_node(
                                     crate::graph::ComputeNodeData {
                                         computation_id: c_id.clone(),
                                         target: target.clone(),
                                         value_inputs,
-                                        realization_inputs: vec![],
+                                        realization_inputs,
                                         options_hash: reify_core::ContentHash(0),
                                         cache_key: reify_core::ContentHash(0),
                                         cached_result: None,
@@ -3959,7 +4151,7 @@ impl Engine {
                                     std::slice::from_ref(&cell_id),
                                     &target,
                                     &arg_values,
-                                    &[],
+                                    &realization_read_handles,
                                     &Value::Undef,
                                     &cancel,
                                     VersionId(version_id),
@@ -4484,13 +4676,17 @@ impl Engine {
                         }
                         let cancel = crate::graph::CancellationHandle::new();
 
+                        let (realization_inputs, realization_read_handles, proj_diags) =
+                            self.build_compute_realization_inputs(&arg_values, &snapshot.graph);
+                        diagnostics.extend(proj_diags);
+
                         snapshot
                             .graph
                             .insert_compute_node(crate::graph::ComputeNodeData {
                                 computation_id: c_id.clone(),
                                 target: target.clone(),
                                 value_inputs,
-                                realization_inputs: vec![],
+                                realization_inputs,
                                 options_hash: reify_core::ContentHash(0),
                                 cache_key: reify_core::ContentHash(0),
                                 cached_result: None,
@@ -4518,7 +4714,7 @@ impl Engine {
                             std::slice::from_ref(cell_id),
                             &target,
                             &arg_values,
-                            &[],
+                            &realization_read_handles,
                             &Value::Undef,
                             &cancel,
                             VersionId(version_id),
@@ -4862,6 +5058,19 @@ mod invariant_tests {
         );
     }
 
+    /// `Type::Relation` is representable as a value cell_type (geometric-relations
+    /// γ, task 4383): it is an Undef-backed compile-time directive type with no
+    /// `Value::Relation`, admitted alongside StructureRef/TraitObject. Relation
+    /// calls type-check to Type::Relation but evaluate to Value::Undef until ζ
+    /// supplies the relate-solve. RED until step-2 adds the arm.
+    #[test]
+    fn is_representable_cell_type_admits_relation() {
+        assert!(
+            super::is_representable_cell_type(&Type::Relation),
+            "Type::Relation must be representable (Undef-backed directive type, γ)"
+        );
+    }
+
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
     /// `catch_unwind` to check all variants in a single test run, avoiding
@@ -4912,7 +5121,7 @@ mod invariant_tests {
         let mut graph = EvaluationGraph::default();
         for (entity, member, ty) in [
             ("E", "a", Type::Int),
-            ("E", "b", Type::Real),
+            ("E", "b", Type::dimensionless_scalar()),
             ("E", "c", Type::Bool),
             ("E", "d", Type::List(Box::new(Type::Int))),
             // StructureRef is permitted (task 1876): struct-typed params like
@@ -5225,6 +5434,112 @@ mod revalidation_tests {
         assert_eq!(
             revalidate_geometry_handle(&Value::Undef, &map),
             RevalidationOutcome::Fresh
+        );
+    }
+}
+
+// --- Task 4364: suppress eval-side E_MECHANISM_NONDRIVING_JOINT double-emission ---
+//
+// Unit tests for the pure helper `nondriving_joint_compile_spans` (step-1/2)
+// and the `detect_error_map_diagnostics` suppress-predicate seam (step-3/4).
+// Mirror the `revalidation_tests` pattern: hand-built fixtures, `use super::...`,
+// no .ri files or CompiledModule construction needed.
+#[cfg(test)]
+mod nondriving_joint_suppression_tests {
+    use super::{detect_error_map_diagnostics, nondriving_joint_compile_spans};
+    use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, ValueCellId};
+    use reify_ir::{Value, ValueMap};
+    use std::collections::{BTreeMap, HashSet};
+
+    /// `nondriving_joint_compile_spans` must collect only the label spans of
+    /// `MechanismNonDrivingJoint`-coded diagnostics, ignoring:
+    /// - `MechanismNonDrivingJoint` diagnostics that carry NO label,
+    /// - diagnostics with a different code that DO carry a label.
+    ///
+    /// This pins the helper's filtering contract: only matching-code labelled
+    /// spans reach the eval-side suppression predicate.
+    #[test]
+    fn compile_spans_collects_only_matching_code_labelled_spans() {
+        let span = SourceSpan::new(10, 20);
+
+        let diagnostics = vec![
+            // (a) matching code + label → span is collected
+            Diagnostic::error("a")
+                .with_code(DiagnosticCode::MechanismNonDrivingJoint)
+                .with_label(DiagnosticLabel::new(span, "x")),
+            // (b) matching code but NO label → span is NOT collected
+            Diagnostic::error("b").with_code(DiagnosticCode::MechanismNonDrivingJoint),
+            // (c) different code but HAS a label → span is NOT collected
+            Diagnostic::error("c")
+                .with_code(DiagnosticCode::MechanismDuplicateSolid)
+                .with_label(DiagnosticLabel::new(SourceSpan::new(100, 200), "y")),
+        ];
+
+        let result = nondriving_joint_compile_spans(&diagnostics);
+        let expected: HashSet<SourceSpan> = [span].iter().copied().collect();
+        assert_eq!(
+            result, expected,
+            "must collect exactly the label spans of MechanismNonDrivingJoint diagnostics; \
+             unlabelled same-code and labelled different-code diagnostics must be excluded"
+        );
+    }
+
+    /// Helper: build a `Value::Map` that looks like a `make_nondriving_joint_error`
+    /// result — `error="nondriving_joint"` with a distinct `error_message` so two
+    /// such maps are structurally unequal and the dedup step does NOT merge them.
+    fn nondriving_error_map(msg: &str) -> Value {
+        let mut m = BTreeMap::new();
+        m.insert(
+            Value::String("error".to_string()),
+            Value::String("nondriving_joint".to_string()),
+        );
+        m.insert(
+            Value::String("error_message".to_string()),
+            Value::String(msg.to_string()),
+        );
+        Value::Map(m)
+    }
+
+    /// `detect_error_map_diagnostics` with a `suppress` predicate must skip the
+    /// suppressed cell while STILL emitting for the non-suppressed cell.
+    ///
+    /// Pins the "span-scoped, not blanket" contract: the defense-in-depth
+    /// guarantee that a compile-caught cell is suppressed but a distinct
+    /// loop-bound cell (whose id is NOT in the compile-span set) still emits.
+    ///
+    /// RED until the `suppress` parameter is added to `detect_error_map_diagnostics`
+    /// (step-4).
+    #[test]
+    fn detect_error_map_suppresses_one_cell_emits_other() {
+        let keep_id = ValueCellId::new("E", "keep");
+        let drop_id = ValueCellId::new("E", "drop");
+
+        // Two structurally distinct error Maps so dedup does NOT collapse them.
+        let mut values = ValueMap::new();
+        values.insert(keep_id.clone(), nondriving_error_map("keep msg"));
+        values.insert(drop_id.clone(), nondriving_error_map("drop msg"));
+
+        // Suppress only the "drop" cell; "keep" must still emit.
+        let result = detect_error_map_diagnostics(
+            &values,
+            None,
+            "nondriving_joint",
+            DiagnosticCode::MechanismNonDrivingJoint,
+            "fallback",
+            Some(&|cid: &ValueCellId| *cid == ValueCellId::new("E", "drop")),
+        );
+
+        assert_eq!(
+            result.len(),
+            1,
+            "exactly one diagnostic must be emitted for the unsuppressed 'keep' cell; \
+             got {} diagnostic(s)",
+            result.len(),
+        );
+        assert_eq!(
+            result[0].code,
+            Some(DiagnosticCode::MechanismNonDrivingJoint),
+            "the surviving diagnostic must carry MechanismNonDrivingJoint"
         );
     }
 }

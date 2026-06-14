@@ -93,7 +93,7 @@ fn point3_length_resolves_to_typed_point() {
 /// Verify the `_with_subst` codepath for `Vector3<Q>`: define a parametric alias
 /// `type V<Q> = Vector3<Q>` and annotate a structure param as `V<Dimensionless>`.
 /// This exercises `resolve_parameterized_alias` → `resolve_type_alias_expr_with_subst` →
-/// `resolve_parameterized_builtin_type_with_subst("Vector3", ..., {Q: Scalar(DIMENSIONLESS)})`.
+/// `resolve_parameterized_builtin_type_with_subst("Vector3", ..., {Q: Scalar<Real>})`.
 ///
 /// The PRD's exact form `Vector3<Dimensionless>` is verified inside this fixture.
 const ALIAS_SUBST_SOURCE: &str = r#"
@@ -119,7 +119,7 @@ fn vector3_via_parametric_alias_resolves_through_subst_path() {
 /// Verify the `_with_subst` codepath for `Point3<Q>`: define a parametric alias
 /// `type P<Q> = Point3<Q>` and annotate a structure param as `P<Length>`.
 /// This exercises `resolve_parameterized_alias` → `resolve_type_alias_expr_with_subst` →
-/// `resolve_parameterized_builtin_type_with_subst("Point3", ..., {Q: Scalar(LENGTH)})`.
+/// `resolve_parameterized_builtin_type_with_subst("Point3", ..., {Q: Scalar<Length>})`.
 const POINT_ALIAS_SUBST_SOURCE: &str = r#"
 type P<Q> = Point3<Q>
 

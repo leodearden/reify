@@ -69,7 +69,7 @@ See `references/output-format.md` for the full JSON schema, `index.json` format,
 
 ## How the skill works
 
-1. Resolve the `reify-audit` binary (prefer `target/release/reify-audit`; fallback to `cargo run --release --quiet -p reify-audit --`).
+1. Resolve the `reify-audit` binary: source `scripts/reify-audit-freshness.sh` and call `reify_audit_guard` in **rebuild** mode to ensure `target/release/reify-audit` is fresh (rebuilds via `cargo build --release -q -p reify-audit` if stale, since `reify-audit` is absent from `scripts/release-sensitive-crates.txt`). Then prefer the freshness-checked release binary; fallback to `cargo run --release --quiet -p reify-audit --` when no binary can be built. See `references/cli-invocation.md` §1.
 2. Build the argv from the user's invocation mode (see `references/modes.md`).
 3. Shell out, capturing stderr to a tempfile (via `mktemp /tmp/reify-audit-XXXXXX.json` with an EXIT trap; see `references/cli-invocation.md` §2).
 4. Interpret the exit code (0 / 1–254 / 125) per `references/cli-invocation.md`.

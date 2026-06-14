@@ -11,18 +11,18 @@ use reify_ir::CompiledExprKind;
 // ─── Source-string constants (shared between existing and op-level tests) ─────
 
 const SRC_DIFFERENCE_LET_BOUND: &str = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let hole = cylinder(r2, h)
     let result = difference(body, hole)
 }"#;
 
 const SRC_NESTED_BOOLEAN_OPS: &str = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let a = cylinder(r, h)
     let b = cylinder(r2, h)
     let combined = difference(a, b)
@@ -31,18 +31,18 @@ const SRC_NESTED_BOOLEAN_OPS: &str = r#"structure S {
 }"#;
 
 const SRC_MIXED_LET_AND_INLINE: &str = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = difference(body, cylinder(r2, h))
 }"#;
 
 const SRC_UNION_ALL_LET_BOUND: &str = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param w: Scalar = 8mm
-    param d: Scalar = 8mm
+    param r: Length = 5mm
+    param h: Length = 10mm
+    param w: Length = 8mm
+    param d: Length = 8mm
     let a = cylinder(r, h)
     let b = sphere(r)
     let c = box(w, h, d)
@@ -50,20 +50,20 @@ const SRC_UNION_ALL_LET_BOUND: &str = r#"structure S {
 }"#;
 
 const SRC_INTERSECTION_LET_BOUND: &str = r#"structure S {
-    param w: Scalar = 10mm
-    param h: Scalar = 10mm
-    param d: Scalar = 10mm
-    param r: Scalar = 7mm
+    param w: Length = 10mm
+    param h: Length = 10mm
+    param d: Length = 10mm
+    param r: Length = 7mm
     let a = box(w, h, d)
     let b = sphere(r)
     let c = intersection(a, b)
 }"#;
 
 const SRC_INTERSECTION_ALL_LET_BOUND: &str = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param w: Scalar = 8mm
-    param d: Scalar = 8mm
+    param r: Length = 5mm
+    param h: Length = 10mm
+    param w: Length = 8mm
+    param d: Length = 8mm
     let a = cylinder(r, h)
     let b = sphere(r)
     let c = box(w, h, d)
@@ -271,8 +271,8 @@ fn geometry_let_in_scope_for_subsequent_let() {
     // The second geometry let `pattern` references `hole` (also a geometry let).
     // This should compile without errors — `hole` must be in scope.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let pattern = circular_pattern(hole, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
@@ -311,8 +311,8 @@ fn difference_with_let_bound_args() {
 #[test]
 fn union_with_let_bound_args() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let a = cylinder(r, h)
     let b = sphere(r)
     let c = union(a, b)
@@ -377,8 +377,8 @@ fn nested_boolean_ops_with_let_args() {
 fn non_geometry_let_in_boolean_op_errors() {
     // A non-geometry let (scalar) used as a boolean op argument should error.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let x = 5
     let b = cylinder(r, h)
     let c = difference(x, b)
@@ -438,8 +438,8 @@ fn mixed_let_and_inline_in_boolean_op() {
 fn cyclic_geometry_let_references_error() {
     // Mutually-recursive geometry lets should produce a cycle error, not stack overflow.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let a = difference(b, cylinder(r, h))
     let b = difference(a, cylinder(r, h))
 }"#;
@@ -552,9 +552,9 @@ fn shared_let_operand_step_indices_correct() {
     // realizations start from 0 — verifying that the compiler does not emit
     // a shared GeomRef::Step across realizations.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let hole = cylinder(r2, h)
     let result1 = difference(body, hole)
@@ -660,8 +660,8 @@ fn geometry_let_still_produces_realization() {
     // After the scope registration fix, geometry lets must still compile to
     // RealizationDecl entries (not value cells).
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let c = cylinder(r, h)
 }"#;
     let compiled = parse_and_compile(source);
@@ -710,8 +710,8 @@ fn non_geometry_let_to_let_reference_still_works() {
 fn multiple_geometry_lets_all_produce_realizations() {
     // Multiple chained geometry lets should all produce realizations and no errors.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let base = cylinder(r, h)
     let pattern = circular_pattern(base, 0, 0, 0, 0, 0, 1, 6, 360)
     let mirrored = mirror(base, 0, 0, 0, 0, 1, 0)
@@ -734,8 +734,8 @@ fn translate_let_bound_target_ops() {
     // Expected: cylinder sub-op at step 0, translate op referencing step 0.
     // Currently FAILS: translate compiles hole as scalar, no sub-op emitted.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = translate(hole, 1, 0, 0)
 }"#;
@@ -756,8 +756,8 @@ fn translate_let_bound_target_ops() {
 #[test]
 fn rotate_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = rotate(hole, 0, 0, 1, 90)
 }"#;
@@ -776,8 +776,8 @@ fn rotate_let_bound_target_ops() {
 #[test]
 fn scale_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = scale(hole, 2)
 }"#;
@@ -796,8 +796,8 @@ fn scale_let_bound_target_ops() {
 #[test]
 fn rotate_around_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = rotate_around(hole, 0, 0, 0, 0, 0, 1, 90)
 }"#;
@@ -818,8 +818,8 @@ fn rotate_around_let_bound_target_ops() {
 #[test]
 fn circular_pattern_let_bound_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = circular_pattern(hole, 0, 0, 0, 0, 0, 1, 6, 360)
 }"#;
@@ -838,8 +838,8 @@ fn circular_pattern_let_bound_ops() {
 #[test]
 fn linear_pattern_let_bound_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = linear_pattern(hole, 1, 0, 0, 3, 10)
 }"#;
@@ -858,8 +858,8 @@ fn linear_pattern_let_bound_ops() {
 #[test]
 fn mirror_let_bound_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
     let result = mirror(hole, 0, 0, 0, 0, 1, 0)
 }"#;
@@ -880,8 +880,8 @@ fn mirror_let_bound_ops() {
 #[test]
 fn extrude_let_bound_profile_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let profile = cylinder(r, h)
     let result = extrude(profile, 10)
 }"#;
@@ -900,8 +900,8 @@ fn extrude_let_bound_profile_ops() {
 #[test]
 fn revolve_let_bound_profile_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let profile = cylinder(r, h)
     let result = revolve(profile, 0, 0, 0, 0, 0, 1, 90)
 }"#;
@@ -920,8 +920,8 @@ fn revolve_let_bound_profile_ops() {
 #[test]
 fn revolve_full_let_bound_profile_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let profile = cylinder(r, h)
     let result = revolve_full(profile, 0, 0, 0, 0, 0, 1)
 }"#;
@@ -942,8 +942,8 @@ fn revolve_full_let_bound_profile_ops() {
 #[test]
 fn shell_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = shell(body, 1)
 }"#;
@@ -962,8 +962,8 @@ fn shell_let_bound_target_ops() {
 #[test]
 fn thicken_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = thicken(body, 1)
 }"#;
@@ -982,8 +982,8 @@ fn thicken_let_bound_target_ops() {
 #[test]
 fn draft_let_bound_target_ops() {
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = draft(body, 5, 0)
 }"#;
@@ -1006,8 +1006,8 @@ fn chamfer_let_bound_target_ops() {
     // chamfer(body, distance): body is a let-bound cylinder.
     // Expected: [Cylinder, Modify(Chamfer, 0)] — target resolves to Step(0).
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = chamfer(body, 2)
 }"#;
@@ -1028,8 +1028,8 @@ fn fillet_let_bound_target_ops() {
     // fillet(body, radius): body is a let-bound cylinder.
     // Expected: [Cylinder, Modify(Fillet, 0)] — target resolves to Step(0).
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = fillet(body, 2)
 }"#;
@@ -1054,8 +1054,8 @@ fn chamfer_chained_shell_ops() {
     //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
     //   chamfer receives Step(1) as its geometry target, emits Modify(Chamfer, 1) at Step(2)
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = chamfer(shell(body, 0.5), 2)
 }"#;
@@ -1079,8 +1079,8 @@ fn fillet_chained_shell_ops() {
     //   shell resolves body → Step(0), emits Modify(Shell, 0) at Step(1)
     //   fillet receives Step(1) as its geometry target, emits Modify(Fillet, 1) at Step(2)
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = fillet(shell(body, 0.5), 2)
 }"#;
@@ -1109,8 +1109,8 @@ fn chamfer_fillet_shell_chained_ops() {
     //   chamfer wraps fillet → Modify(Chamfer, 2) at Step(3)
     // Expected: [Cylinder, Modify(Shell, 0), Modify(Fillet, 1), Modify(Chamfer, 2)]
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let result = chamfer(fillet(shell(body, 0.5), 2), 1)
 }"#;
@@ -1139,9 +1139,9 @@ fn chamfer_shell_difference_chained_ops() {
     //   chamfer receives Step(3) as its target, emits Modify(Chamfer, 3) at Step(4)
     // Expected: [Cylinder, Cylinder, BoolDiff(0, 1), Modify(Shell, 2), Modify(Chamfer, 3)]
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let a = cylinder(r, h)
     let b = cylinder(r2, h)
     let result = chamfer(shell(difference(a, b), 0.5), 1)
@@ -1168,9 +1168,9 @@ fn sweep_two_let_bound_geometry_args() {
     // sweep(profile, path): both args are geometry refs.
     // Expected: [Cylinder(profile), Helix(path), Sweep(Sweep, [0, 1])]
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param pitch: Scalar = 2mm
+    param r: Length = 5mm
+    param h: Length = 10mm
+    param pitch: Length = 2mm
     let profile = cylinder(r, h)
     let path = helix(r, pitch, h)
     let result = sweep(profile, path)
@@ -1193,9 +1193,9 @@ fn loft_let_bound_profiles_ops() {
     // loft(p1, p2): both profiles are let-bound geometry refs.
     // Expected: [Cylinder(p1), Cylinder(p2), Sweep(Loft, [0, 1])]
     let source = r#"structure S {
-    param r1: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r1: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let p1 = cylinder(r1, h)
     let p2 = cylinder(r2, h)
     let result = loft(p1, p2)
@@ -1221,9 +1221,9 @@ fn cross_category_composition_ops() {
     // body and hole are let-bound cylinders; translate is inline inside boolean op.
     // Expected: [Cylinder(body), Cylinder(hole), Transform(Translate,1), BoolDiff(0,2)]
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param r2: Length = 3mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let hole = cylinder(r2, h)
     let result = difference(body, translate(hole, 1, 0, 0))
@@ -1248,8 +1248,8 @@ fn cross_category_composition_ops() {
 fn cyclic_refs_through_transforms_error() {
     // Mutually-recursive geometry lets through non-boolean ops should produce a cycle error.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let a = translate(b, 1, 0, 0)
     let b = rotate(a, 0, 0, 1, 90)
 }"#;
@@ -1278,8 +1278,8 @@ fn translate_inline_geometry_arg_ops() {
     // The generic resolution block should still compile it as a sub-op.
     // Expected: [Cylinder, Transform(Translate, 0)]
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let result = translate(cylinder(r, h), 1, 0, 0)
 }"#;
     let compiled = compile_no_errors(source);
@@ -1302,8 +1302,8 @@ fn chained_transforms_step_indices() {
     // c inlines: [Cylinder(a), Translate(0), Rotate(1)]
     // Validates that step_offset propagation works across chained non-boolean transforms.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let a = cylinder(r, h)
     let b = translate(a, 1, 0, 0)
     let c = rotate(b, 0, 0, 1, 90)
@@ -1327,8 +1327,8 @@ fn chained_transforms_step_indices() {
 fn geometry_let_not_a_value_cell() {
     // Geometry lets should produce realizations, NOT value cells.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let hole = cylinder(r, h)
 }"#;
     let compiled = parse_and_compile(source);
@@ -1355,8 +1355,8 @@ fn ident_alias_geometry_let_produces_realization() {
     // geometry let too, producing 2 realizations.
     // FAILS before fix: only body gets a realization; alias is compiled as a value cell.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
 }"#;
@@ -1375,8 +1375,8 @@ fn ident_alias_in_boolean_op() {
     // alias is an ident alias of a geometry let; difference(alias, sphere(r))
     // must resolve alias through geometry_lets HashMap.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
     let result = difference(alias, sphere(r))
@@ -1406,8 +1406,8 @@ fn chained_ident_alias_transitive() {
     // The incremental set must capture all three as geometry lets so that
     // difference(c, sphere(r)) resolves c → b → a → cylinder.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let a = cylinder(r, h)
     let b = a
     let c = b
@@ -1437,8 +1437,8 @@ fn ident_alias_not_a_value_cell() {
     // An ident alias to a geometry let must NOT appear as a value cell.
     // (Verifies the second-pass skip for ident aliases.)
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
 }"#;
@@ -1462,8 +1462,8 @@ fn ident_alias_realization_op_sequence() {
     // The alias realization's ops must equal those of the aliased geometry let.
     // compile_geometry_call resolves the Ident through geometry_lets → cylinder expr.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
 }"#;
@@ -1479,8 +1479,8 @@ fn ident_alias_with_transform() {
     // translate's geometry_arg_indices is [0], so the first arg is resolved as
     // a geometry let Ident.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
     let result = translate(alias, 1, 0, 0)
@@ -1509,11 +1509,11 @@ fn ident_alias_scope_type_is_geometry() {
     //   1. `alias` is skipped in the second pass → appears in realizations, NOT value_cells.
     //   2. `let x = alias + 1` is NOT a geometry let → x IS compiled as a value cell.
     // Together these prove the first-pass type registration correctly typed `alias` as
-    // Geometry. Without the fix, `alias` would be Type::Real and compiled as a value cell,
+    // Geometry. Without the fix, `alias` would be Type::dimensionless_scalar() and compiled as a value cell,
     // so realizations.len() would be 1 (only body), failing assertion (1).
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let body = cylinder(r, h)
     let alias = body
     let x = alias + 1
@@ -1555,8 +1555,8 @@ fn ident_alias_in_guarded_group_documents_current_behavior() {
     // This test pins the current behavior so that future changes to guarded-group
     // realization compilation have a regression signal.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     param active: Bool = true
     let body = cylinder(r, h)
     where active {
@@ -1655,10 +1655,10 @@ fn loft_three_profiles_ops() {
     // loft(p1, p2, p3) with three let-bound geometry lets.
     // Expected: [Cylinder(p1), Cylinder(p2), Cylinder(p3), Sweep(Loft, [0, 1, 2])]
     let source = r#"structure S {
-    param r1: Scalar = 5mm
-    param r2: Scalar = 3mm
-    param r3: Scalar = 1mm
-    param h: Scalar = 10mm
+    param r1: Length = 5mm
+    param r2: Length = 3mm
+    param r3: Length = 1mm
+    param h: Length = 10mm
     let p1 = cylinder(r1, h)
     let p2 = cylinder(r2, h)
     let p3 = cylinder(r3, h)
@@ -1685,9 +1685,9 @@ fn sweep_non_geometry_profile_emits_error() {
     // sweep(42, helix(5, 2, 10)): arg 0 is a literal, not a geometry expression.
     // sweep() should emit a "profile … must be a geometry expression" diagnostic.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
-    param pitch: Scalar = 2mm
+    param r: Length = 5mm
+    param h: Length = 10mm
+    param pitch: Length = 2mm
     let path = helix(r, pitch, h)
     let result = sweep(42, path)
 }"#;
@@ -1707,8 +1707,8 @@ fn sweep_non_geometry_path_emits_error() {
     // sweep(cylinder(r, h), 42): arg 1 is a literal, not a geometry expression.
     // sweep() should emit a "path … must be a geometry expression" diagnostic.
     let source = r#"structure S {
-    param r: Scalar = 5mm
-    param h: Scalar = 10mm
+    param r: Length = 5mm
+    param h: Length = 10mm
     let profile = cylinder(r, h)
     let result = sweep(profile, 42)
 }"#;
@@ -1960,7 +1960,7 @@ fn realization_span_populated_from_let_decl_span() {
     // Source is crafted so "let body = cylinder(r, h)" starts well past
     // byte-offset 0.  Three preceding lines (structure header + two params)
     // guarantee span.start > 0.
-    let source = "structure S {\n    param r: Scalar = 5mm\n    param h: Scalar = 10mm\n    let body = cylinder(r, h)\n}";
+    let source = "structure S {\n    param r: Length = 5mm\n    param h: Length = 10mm\n    let body = cylinder(r, h)\n}";
     let compiled = compile_source(source);
 
     let template = &compiled.templates[0];
@@ -2012,9 +2012,9 @@ fn realization_span_populated_from_let_decl_span() {
 fn conditional_returning_solid_in_let_emits_compile_error() {
     // box(length, od, od)  vs  cylinder(od, length): different name — not hoistable.
     let source = r#"structure AirBearing {
-    param length: Scalar = 100mm
-    param od: Scalar = 50mm
-    param axis: Scalar = 0
+    param length: Length = 100mm
+    param od: Length = 50mm
+    param axis: Length = 0
     let body = if axis == 0 then box(length, od, od) else cylinder(od, length)
 }"#;
 
@@ -2098,8 +2098,8 @@ fn conditional_returning_solid_in_let_emits_compile_error() {
 fn match_returning_solid_in_let_emits_compile_error() {
     let source = r#"enum Axis { X, Y, Z }
 structure AxisBox {
-    param length: Scalar = 100mm
-    param od: Scalar = 50mm
+    param length: Length = 100mm
+    param od: Length = 50mm
     let axis = Axis.X
     let body = match axis { X => box(length, od, od), Y => box(od, length, od), Z => box(od, od, length) }
 }"#;
@@ -2177,9 +2177,9 @@ structure AxisBox {
 #[test]
 fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
     let source = r#"structure S {
-    param length: Scalar = 100mm
-    param od: Scalar = 50mm
-    param axis: Scalar = 0
+    param length: Length = 100mm
+    param od: Length = 50mm
+    param axis: Length = 0
     let body = if axis == 0 then box(length, od, length) else box(od, length, od)
 }"#;
 
@@ -2236,11 +2236,11 @@ fn geometry_valued_if_then_else_box_lowers_to_conditional_primitive() {
 #[test]
 fn geometry_valued_if_then_else_union_tree_lowers_to_conditional_box_ops() {
     let source = r#"structure S {
-    param a: Scalar = 10mm
-    param b: Scalar = 20mm
-    param c: Scalar = 30mm
-    param d: Scalar = 40mm
-    param axis: Scalar = 0
+    param a: Length = 10mm
+    param b: Length = 20mm
+    param c: Length = 30mm
+    param d: Length = 40mm
+    param axis: Length = 0
     let body = if axis == 0 then union(box(a, a, a), box(b, b, b)) else union(box(c, c, c), box(d, d, d))
 }"#;
 
@@ -2294,10 +2294,10 @@ fn geometry_valued_if_then_else_union_tree_lowers_to_conditional_box_ops() {
 #[test]
 fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
     let source = r#"structure S {
-    param p: Scalar = 10mm
-    param q: Scalar = 20mm
-    param r: Scalar = 30mm
-    param axis: Scalar = 0
+    param p: Length = 10mm
+    param q: Length = 20mm
+    param r: Length = 30mm
+    param axis: Length = 0
     let body = if axis == 0 then box(p, p, p) else if axis == 1 then box(q, q, q) else box(r, r, r)
 }"#;
 
@@ -2345,10 +2345,10 @@ fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
 #[test]
 fn geometry_valued_if_then_else_translate_wraps_conditional_box() {
     let source = r#"structure S {
-    param a: Scalar = 10mm
-    param b: Scalar = 20mm
-    param tx: Scalar = 5mm
-    param axis: Scalar = 0
+    param a: Length = 10mm
+    param b: Length = 20mm
+    param tx: Length = 5mm
+    param axis: Length = 0
     let body = if axis == 0 then translate(box(a, a, a), tx, 0, 0) else translate(box(b, b, b), tx, 0, 0)
 }"#;
 
@@ -2458,9 +2458,9 @@ structure Note3IfSolid {
 #[test]
 fn geometry_valued_if_then_else_name_mismatch_emits_compile_error() {
     let source = r#"structure S {
-    param a: Scalar = 10mm
-    param r: Scalar = 5mm
-    param cond: Scalar = 0
+    param a: Length = 10mm
+    param r: Length = 5mm
+    param cond: Length = 0
     let body = if cond == 0 then box(a, a, a) else sphere(r)
 }"#;
 
@@ -2529,7 +2529,7 @@ fn geometry_valued_if_then_else_name_mismatch_emits_compile_error() {
 #[test]
 fn geometry_valued_if_then_else_ident_let_branches_emits_compile_error() {
     let source = r#"structure S {
-    param cond: Scalar = 0
+    param cond: Length = 0
     let a = box(10mm, 10mm, 10mm)
     let b = box(20mm, 20mm, 20mm)
     let body = if cond == 0 then a else b

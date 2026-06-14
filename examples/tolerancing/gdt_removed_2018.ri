@@ -1,0 +1,14 @@
+// gdt_removed_2018.ri — GD&T β fixture: removed-in-2018 characteristic.
+//
+// Concentricity was removed from ASME Y14.5-2018. `reify check` must emit a
+// GdtRemoved2018 warning on stderr naming Position / Profile / Runout as
+// replacements. The exit code must be 0 (warnings are non-fatal).
+// (Task 4475 β, step-10 — B7 end-to-end oracle.)
+
+structure def ConcentricityCallout {
+    let conc = Concentricity(
+        tolerance_value: 0.01mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}

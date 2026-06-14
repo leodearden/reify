@@ -20,6 +20,7 @@ function makeGuiState(entityPath: string): GuiState {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 }
 

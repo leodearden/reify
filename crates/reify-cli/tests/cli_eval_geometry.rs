@@ -14,8 +14,7 @@ mod common;
 fn eval_spec_shape_physical_surfaces_mass_and_centroid() {
     let path = common::example_path("spec-shape-physical.ri");
 
-    let (status, stdout, stderr) =
-        common::run_subcommand("eval", &path);
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
     // Exit 0 unconditionally — this is a clean file with no Error diagnostics.
     assert!(
@@ -41,18 +40,14 @@ fn eval_spec_shape_physical_surfaces_mass_and_centroid() {
         .lines()
         .find(|l| l.contains("Bracket.mass"))
         .unwrap_or_else(|| {
-            panic!(
-                "expected a 'Bracket.mass' line in stdout.\nstdout: {stdout}\nstderr: {stderr}"
-            )
+            panic!("expected a 'Bracket.mass' line in stdout.\nstdout: {stdout}\nstderr: {stderr}")
         });
 
     // RHS is everything after the '='
     let mass_rhs = mass_line
         .split_once('=')
         .map(|(_, rhs)| rhs.trim())
-        .unwrap_or_else(|| {
-            panic!("Bracket.mass line has no '=': {mass_line}")
-        });
+        .unwrap_or_else(|| panic!("Bracket.mass line has no '=': {mass_line}"));
 
     assert_ne!(
         mass_rhs, "undef",
@@ -93,9 +88,7 @@ fn eval_spec_shape_physical_surfaces_mass_and_centroid() {
     let centroid_rhs = centroid_line
         .split_once('=')
         .map(|(_, rhs)| rhs.trim())
-        .unwrap_or_else(|| {
-            panic!("Bracket.centroid line has no '=': {centroid_line}")
-        });
+        .unwrap_or_else(|| panic!("Bracket.centroid line has no '=': {centroid_line}"));
 
     assert_ne!(
         centroid_rhs, "undef",

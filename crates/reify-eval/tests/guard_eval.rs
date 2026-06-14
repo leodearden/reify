@@ -50,7 +50,7 @@ fn eval_guard_true_includes_members() {
     // Guard expression: ValueRef to 'active' (Bool)
     let guard_expr = value_ref_typed("S", "active", Type::Bool);
 
-    // Member: param x : Scalar = 5mm
+    // Member: param x : Length = 5mm
     let x_default = CompiledExpr::literal(Value::length(0.005), Type::length());
     let x_decl = ValueCellDecl {
         id: x_id.clone(),
@@ -342,7 +342,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
 
     let guard_expr = value_ref_typed("S", "active", Type::Bool);
 
-    // Member: param x : Scalar = 5mm
+    // Member: param x : Length = 5mm
     let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
 
     // Guarded constraint: x > 10mm (will be violated since x=5mm)
@@ -357,6 +357,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         span: SourceSpan::new(0, 0),
         domain: None,
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
 
     // Case 1: active=true — constraint should be checked and show Violated
@@ -409,6 +410,7 @@ fn eval_guarded_constraint_enforced_only_when_active() {
         span: SourceSpan::new(0, 0),
         domain: None,
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
 
     let template_false = TopologyTemplateBuilder::new("S")

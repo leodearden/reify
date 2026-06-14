@@ -306,7 +306,7 @@ fn range_span_int() {
 #[test]
 fn range_span_real() {
     let range = Value::range(Some(Value::Real(1.0)), Some(Value::Real(10.0)), true, true);
-    let result = eval_method(range, "span", vec![], Type::Real);
+    let result = eval_method(range, "span", vec![], Type::dimensionless_scalar());
     assert_eq!(result, Value::Real(9.0));
 }
 

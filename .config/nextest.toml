@@ -1,29 +1,32 @@
 # cargo-nextest configuration for Reify.
 #
-# scripts/verify.sh runs the NON-OCCT workspace tail through nextest
-# (`cargo nextest run --workspace --exclude <occt crates>`), which collapses
-# the hundreds of per-binary `cargo test` processes into a single scheduler
-# with one global thread pool.
+# LIVE (task 4503/γ): occt test-group cap raised 4→24, env-driven via
+# REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).  scripts/gen-nextest-config.sh
+# generates a temp copy of this file with the occt cap rewritten; verify.sh
+# passes it as `--config-file <tmp>` on the NEXTEST=1 branch.  nextest `--config`
+# overrides CARGO config only (NO-OP for test-groups — verified on 0.9.136).
+#
+# Headroom basis (task 4503/γ, supersedes task 4451 §d basis):
+#   32-core / 125 GiB host; held-slot semaphore (task β/4502) bounds concurrent
+#   verify runs to ≤2 (1 task slot at default N=1 + 1 exempt merge); worst case
+#   2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB → guaranteed no swap; cap 24 stays
+#   below nproc=32 global so it remains a real backstop.  See
+#   docs/notes/multi-process-occt-bench.md §d for full evidence.
 #
 # The OCCT-touching crates (reify-kernel-occt, reify-eval, reify-cli,
 # reify-config — authoritative list: scripts/occt-touching-crates.txt) are
-# EXCLUDED from that nextest pass and instead run via the cross-process flock
-# wrapper (scripts/cargo-test-occt-gated.sh) as a plain `cargo test`. So the
-# test-group below has NO effect on verification today: the ungated pass never
-# includes these packages, and the gated pass does not use nextest.
-#
-# It is staged here for Stage 2 (task 3767, bounded multi-process OCCT
-# concurrency): when OCCT tests move into the nextest pool, pinning them to a
-# single-threaded test-group keeps intra-process OCCT execution serialized while
-# the rest of the workspace runs at full concurrency.
+# routed through this group by the [[profile.default.overrides]] filter below.
+# scripts/cargo-test-occt-gated.sh is kept as a standalone/manual OCCT runner
+# but is NO LONGER invoked by verify.sh.
 
 [test-groups]
-occt = { max-threads = 1 }
+occt = { max-threads = 24 }
 
-# Pin the OCCT-touching packages to the single-threaded `occt` group. Kept in
-# sync with scripts/occt-touching-crates.txt by hand (these are config literals,
-# not shell). A drift here is harmless today (the packages are excluded from the
-# nextest pass) but must be revisited when Stage 2 folds them in.
+# Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
+# Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
+# literals, not shell). A drift here would let a crate escape the max-threads
+# cap and run unbounded in the nextest pool — the drift-catcher in
+# tests/infra/test_occt_gated_scope.sh catches this.
 [[profile.default.overrides]]
 filter = 'package(reify-kernel-occt) | package(reify-eval) | package(reify-cli) | package(reify-config)'
 test-group = 'occt'

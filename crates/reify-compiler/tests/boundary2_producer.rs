@@ -175,6 +175,10 @@ fn assert_no_unresolved(expr: &reify_ir::CompiledExpr) {
                 assert_no_unresolved(def);
             }
         }
+        // task 4118 (γ): recurse into the wrapped selector.
+        CompiledExprKind::ResolveSelector { selector } => {
+            assert_no_unresolved(selector);
+        }
     }
 }
 
@@ -250,7 +254,7 @@ fn type_error_dimension_mismatch() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(0, 12),
-                    content_hash: ContentHash::of_str("param thickness: Scalar = 5mm"),
+                    content_hash: ContentHash::of_str("param thickness: Length = 5mm"),
                 }),
                 MemberDecl::Let(LetDecl {
                     name: "bad".into(),
@@ -345,7 +349,7 @@ fn constraint_non_bool_produces_warning() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(0, 13),
-                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                    content_hash: ContentHash::of_str("param width: Length = 80mm"),
                 }),
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
@@ -368,7 +372,7 @@ fn constraint_non_bool_produces_warning() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(18, 34),
-                    content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                    content_hash: ContentHash::of_str("param height: Length = 100mm"),
                 }),
                 MemberDecl::Constraint(ConstraintDecl {
                     label: None,
@@ -421,8 +425,8 @@ fn constraint_non_bool_produces_warning() {
 #[test]
 fn compile_auto_param() {
     let source = r#"structure S {
-    param x: Scalar = auto
-    param y: Scalar = 5mm
+    param x: Length = auto
+    param y: Length = 5mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -468,7 +472,7 @@ fn compile_auto_param() {
 #[test]
 fn compile_auto_free_param() {
     let source = r#"structure S {
-    param x: Scalar = auto(free)
+    param x: Length = auto(free)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -504,9 +508,9 @@ fn compile_auto_free_param() {
 #[test]
 fn compile_mixed_auto_and_auto_free() {
     let source = r#"structure S {
-    param a: Scalar = auto
-    param b: Scalar = auto(free)
-    param c: Scalar = 3mm
+    param a: Length = auto
+    param b: Length = auto(free)
+    param c: Length = 3mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -551,12 +555,12 @@ fn compile_mixed_auto_and_auto_free() {
 fn compile_auto_free_in_port_param() {
     let source = r#"
 trait MyPort {
-    param foo : Scalar
+    param foo : Length
 }
 
 structure def S {
     port mount : MyPort {
-        param foo : Scalar = auto(free)
+        param foo : Length = auto(free)
     }
 }
 "#;
@@ -610,7 +614,7 @@ fn compile_auto_free_in_guarded_param() {
 structure S {
     param active : Bool = true
     where active {
-        param x : Scalar = auto(free)
+        param x : Length = auto(free)
     }
 }
 "#;
@@ -666,7 +670,7 @@ fn compiled_auto_param_span_not_zero() {
     use reify_core::SourceSpan;
 
     let source = r#"structure S {
-    param x: Scalar = auto
+    param x: Length = auto
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_auto_span"));
     assert!(
@@ -758,7 +762,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(0, 13),
-                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                    content_hash: ContentHash::of_str("param width: Length = 80mm"),
                 }),
                 MemberDecl::Param(ParamDecl {
                     name: "height".into(),
@@ -781,7 +785,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(18, 34),
-                    content_hash: ContentHash::of_str("param height: Scalar = 100mm"),
+                    content_hash: ContentHash::of_str("param height: Length = 100mm"),
                 }),
                 // let area = width * height (Length * Length → Area)
                 MemberDecl::Let(LetDecl {
@@ -861,7 +865,7 @@ fn import_compiles_into_module_imports() {
     let source = r#"import std.math
 
 structure S {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_import"));
     assert!(
@@ -887,8 +891,8 @@ fn import_produces_warning_diagnostic() {
     let source = r#"import fasteners.bolt
 
 structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     constraint w > 0mm
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_import_diag"));
@@ -932,7 +936,7 @@ structure S {
 #[test]
 fn sub_compiles_into_template_sub_components() {
     let source = r#"structure Parent {
-    param d: Scalar = 6mm
+    param d: Length = 6mm
     sub mount_hole = Hole(diameter: 6mm)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sub"));
@@ -964,7 +968,7 @@ fn sub_compiles_into_template_sub_components() {
 #[test]
 fn sub_args_reference_parent_params() {
     let source = r#"structure S {
-    param t: Scalar = 5mm
+    param t: Length = 5mm
     sub rib = Rib(height: t * 0.8)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_sub_ref"));
@@ -1021,7 +1025,7 @@ fn sub_args_reference_parent_params() {
 #[test]
 fn e2e_stdlib_function_in_let_binding() {
     let source = r#"structure S {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     let half_w = abs(w / 2)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_stdlib_e2e"));
@@ -1067,8 +1071,8 @@ fn comprehensive_all_three_features() {
     let source = r#"import std.math
 
 structure Bracket {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let diag = sqrt(w * w + h * h)
     sub base = Base(width: w)
     constraint diag > 0mm
@@ -1219,10 +1223,10 @@ fn param_default_change_changes_hash() {
     let path = reify_core::ModulePath::single("test_thickness");
 
     let source_a = r#"structure S {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
 }"#;
     let source_b = r#"structure S {
-    param thickness: Scalar = 10mm
+    param thickness: Length = 10mm
 }"#;
 
     let parsed_a = reify_syntax::parse(source_a, path.clone());
@@ -1258,14 +1262,14 @@ fn add_constraint_changes_hash() {
     let path = reify_core::ModulePath::single("test_constraints");
 
     let source_2 = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     constraint w > 0mm
     constraint h > 0mm
 }"#;
     let source_3 = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     constraint w > 0mm
     constraint h > 0mm
     constraint w > h
@@ -1302,7 +1306,7 @@ fn add_constraint_changes_hash() {
 #[test]
 fn compile_minimize_objective() {
     let source = r#"structure S {
-    param x: Scalar = auto
+    param x: Length = auto
     constraint x > 2mm
     minimize x
 }"#;
@@ -1345,8 +1349,8 @@ fn compile_minimize_objective() {
 #[test]
 fn compile_maximize_objective() {
     let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let volume = w * h
     maximize volume
 }"#;
@@ -1410,9 +1414,9 @@ fn no_objective_when_absent() {
 #[test]
 fn e2e_minimize_round_trip() {
     let source = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
-    param thickness: Scalar = auto
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = auto
     let volume = width * height * thickness
     constraint thickness > 2mm
     constraint thickness < width
@@ -1490,7 +1494,7 @@ fn e2e_minimize_round_trip() {
 #[test]
 fn compile_enum_populates_registry() {
     let source = r#"enum Direction { In, Out, Bidi }
-structure S { param x: Scalar = 5mm }"#;
+structure S { param x: Length = 5mm }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_enum_reg"));
     assert!(
         parsed.errors.is_empty(),
@@ -1634,10 +1638,10 @@ fn compile_simple_function() {
     let f = &compiled.functions[0];
     assert_eq!(f.name, "double");
     assert!(!f.is_pub);
-    assert_eq!(f.params, vec![("x".to_string(), reify_core::Type::Real)]);
-    assert_eq!(f.return_type, reify_core::Type::Real);
+    assert_eq!(f.params, vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]);
+    assert_eq!(f.return_type, reify_core::Type::dimensionless_scalar());
     assert!(f.body.let_bindings.is_empty());
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Compile a function with let bindings in body.
@@ -1663,7 +1667,7 @@ fn compile_function_with_let_bindings() {
     assert_eq!(f.body.let_bindings[0].0, "y");
     assert_eq!(f.body.let_bindings[1].0, "z");
     // result_expr should compile without unresolved name errors
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Two overloaded functions with the same name but different param types.
@@ -1689,7 +1693,7 @@ fn compile_overloaded_functions() {
     assert_eq!(compiled.functions[1].name, "convert");
     assert_eq!(
         compiled.functions[0].params,
-        vec![("x".to_string(), reify_core::Type::Real)]
+        vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
     );
     assert_eq!(
         compiled.functions[1].params,
@@ -1752,6 +1756,7 @@ fn compiled_constraint_domain_field() {
         span: SourceSpan::new(0, 0),
         domain: Some(ConstraintDomain::Dimensional),
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
     assert_eq!(manual.domain, Some(ConstraintDomain::Dimensional));
 
@@ -1766,6 +1771,7 @@ fn compiled_constraint_domain_field() {
         span: SourceSpan::new(0, 0),
         domain: None,
         optimized_target: None,
+        arg_bindings: Vec::new(),
     };
     assert!(compat.domain.is_none());
 }
@@ -1806,7 +1812,7 @@ fn scalar_plus_int_type_error() {
                     where_clause: None,
                     annotations: Vec::new(),
                     span: SourceSpan::new(0, 13),
-                    content_hash: ContentHash::of_str("param width: Scalar = 80mm"),
+                    content_hash: ContentHash::of_str("param width: Length = 80mm"),
                 }),
                 // let bad = width + 5
                 MemberDecl::Let(LetDecl {
@@ -2036,7 +2042,7 @@ fn compile_user_function_call() {
         }
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
-    assert_eq!(v_expr.result_type, reify_core::Type::Real);
+    assert_eq!(v_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Overload resolution should pick the correct overload based on argument types.
@@ -2075,7 +2081,7 @@ fn compile_overload_resolution_picks_correct() {
         other => panic!("expected UserFunctionCall, got {:?}", other),
     }
     // 3.14 is Real, so it matches the Real overload
-    assert_eq!(a_expr.result_type, reify_core::Type::Real);
+    assert_eq!(a_expr.result_type, reify_core::Type::dimensionless_scalar());
 }
 
 /// Forward reference: structure calls a function declared AFTER it.
@@ -2141,7 +2147,7 @@ fn compile_fn_body_calls_other_user_fn() {
         } => {
             assert_eq!(function_name, "double", "outer call should be double");
             assert_eq!(args.len(), 1);
-            assert_eq!(q_body.result_expr.result_type, reify_core::Type::Real);
+            assert_eq!(q_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
 
             // Inner call: double(x)
             match &args[0].kind {
@@ -2151,7 +2157,7 @@ fn compile_fn_body_calls_other_user_fn() {
                 } => {
                     assert_eq!(inner_name, "double", "inner call should be double");
                     assert_eq!(inner_args.len(), 1);
-                    assert_eq!(args[0].result_type, reify_core::Type::Real);
+                    assert_eq!(args[0].result_type, reify_core::Type::dimensionless_scalar());
                 }
                 other => panic!("expected inner UserFunctionCall, got {:?}", other),
             }
@@ -2188,14 +2194,14 @@ fn compile_fn_body_calls_user_fn_in_let_binding() {
             assert_eq!(args.len(), 1);
             assert_eq!(
                 calc_body.let_bindings[0].1.result_type,
-                reify_core::Type::Real
+                reify_core::Type::dimensionless_scalar()
             );
         }
         other => panic!("expected UserFunctionCall in let binding, got {:?}", other),
     }
 
     // result expr: y + 1 — should be BinOp with result_type Real
-    assert_eq!(calc_body.result_expr.result_type, reify_core::Type::Real);
+    assert_eq!(calc_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
     match &calc_body.result_expr.kind {
         reify_ir::CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, reify_ir::BinOp::Add);

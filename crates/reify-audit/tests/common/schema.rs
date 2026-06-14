@@ -7,6 +7,7 @@
 //! consumes only a subset — mirrors the reify-cli/reify-eval convention.
 
 use rusqlite::Connection;
+use std::path::Path;
 
 /// Minimal schema — pin reflects only the columns the production
 /// `has_task_completed_event` query reads (`events.task_id` and
@@ -40,4 +41,96 @@ pub fn insert_event(conn: &Connection, task_id: &str, event_type: &str) {
 #[allow(dead_code)]
 pub fn insert_task_completed_event(conn: &Connection, task_id: &str) {
     insert_event(conn, task_id, "task_completed");
+}
+
+// -----------------------------------------------------------------------
+// PTODO liveness lane — `.taskmaster/tasks/tasks.db` `tasks` table
+// -----------------------------------------------------------------------
+
+/// Minimal `tasks`-table schema, mirroring the live `.taskmaster/tasks/tasks.db`
+/// (`PRIMARY KEY(tag, id)`, `id INTEGER`, `status TEXT NOT NULL`). Only the
+/// columns the PTODO liveness/inverse queries read (`tag`, `id`, `status`,
+/// `metadata`) are pinned; the production table has more columns the detector
+/// ignores. The `metadata` column is nullable (defaults to NULL) so all
+/// existing `insert_task(tag, id, status)` call sites remain unaffected.
+#[allow(dead_code)]
+pub const TASKS_DB_SCHEMA: &str = r#"
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+"#;
+
+/// Open an in-memory SQLite connection and seed the `tasks`-table schema.
+/// Rows are added with [`insert_task`]. Used by `resolve_liveness` unit tests.
+#[allow(dead_code)]
+pub fn seed_tasks_db() -> Connection {
+    let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+    conn.execute_batch(TASKS_DB_SCHEMA).expect("create tasks schema");
+    conn
+}
+
+/// Seed a single `(tag, id, status)` row into the `tasks` table.
+#[allow(dead_code)]
+pub fn insert_task(conn: &Connection, tag: &str, id: i64, status: &str) {
+    conn.execute(
+        "INSERT INTO tasks (tag, id, status) VALUES (?, ?, ?)",
+        rusqlite::params![tag, id, status],
+    )
+    .unwrap();
+}
+
+/// Create an on-disk `tasks.db` at `path` (creating parent dirs), seed the
+/// `tasks` schema, and insert each `(tag, id, status)` row. Used by `check()`
+/// / CLI tests to seed the default `<root>/.taskmaster/tasks/tasks.db` so the
+/// liveness lane resolves cites against it without any env override.
+#[allow(dead_code)]
+pub fn seed_tasks_db_at(path: &Path, rows: &[(&str, i64, &str)]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create_dir_all tasks.db parent");
+    }
+    let conn = Connection::open(path).expect("open on-disk tasks.db");
+    conn.execute_batch(TASKS_DB_SCHEMA).expect("create tasks schema");
+    for (tag, id, status) in rows {
+        insert_task(&conn, tag, *id, status);
+    }
+}
+
+/// Seed a single `(tag, id, status, metadata)` row into the `tasks` table.
+/// `metadata` is a raw JSON TEXT string (e.g. `r#"{"files":["a.rs"]}"#`).
+/// Backward-compatible with the existing schema: `metadata` defaults to NULL
+/// for rows inserted via [`insert_task`].
+#[allow(dead_code)]
+pub fn insert_task_with_metadata(
+    conn: &Connection,
+    tag: &str,
+    id: i64,
+    status: &str,
+    metadata: &str,
+) {
+    conn.execute(
+        "INSERT INTO tasks (tag, id, status, metadata) VALUES (?, ?, ?, ?)",
+        rusqlite::params![tag, id, status, metadata],
+    )
+    .unwrap();
+}
+
+/// Create an on-disk `tasks.db` at `path` (creating parent dirs), seed the
+/// `tasks` schema, and insert each `(tag, id, status, metadata)` row. The
+/// `metadata` element is a raw JSON TEXT string (e.g. `r#"{"files":["a.rs"]}"#`).
+/// Used by `check()` integration tests for the ζ inverse lane (task 4558).
+#[allow(dead_code)]
+pub fn seed_tasks_db_at_with_metadata(path: &Path, rows: &[(&str, i64, &str, &str)]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create_dir_all tasks.db parent");
+    }
+    let conn = Connection::open(path).expect("open on-disk tasks.db");
+    conn.execute_batch(TASKS_DB_SCHEMA).expect("create tasks schema");
+    for (tag, id, status, metadata) in rows {
+        insert_task_with_metadata(&conn, tag, *id, status, metadata);
+    }
 }

@@ -91,9 +91,11 @@ fn check_constant(fn_name: &str, expected_dim: DimensionVector, expected_si_valu
 /// `SPEED_OF_LIGHT` must be present in `std/units`, be `pub`, take no
 /// parameters, and return `Scalar<LENGTH / TIME>`.
 ///
-/// Return type uses the `Length / Time` type-expression form (not `Velocity`)
-/// because `Velocity` is not in NAMED_DIMENSIONS — design decision recorded
-/// in plan.json for task 4026.
+/// Return type resolves to the m·s⁻¹ DimensionVector (Scalar{LENGTH/TIME}).
+/// As of task 4580, `Velocity` IS now in NAMED_DIMENSIONS, so the units.ri
+/// `pub type Velocity = Length / Time` alias is shadowed by the builtin
+/// — but both resolve to the same DimensionVector, so this assertion is
+/// unchanged.
 #[test]
 fn speed_of_light_function_present_in_std_units() {
     let module = common::units_module();
@@ -579,4 +581,75 @@ structure def EvalProbe {
             other
         ),
     }
+}
+
+// ─── Task-4580 regression guards ─────────────────────────────────────────────
+
+/// Regression guard (task 4580, suggestion 2): `pub type Velocity = Length / Time`
+/// in units.ri is now a dead alias shadowed by the NAMED_DIMENSIONS builtin.
+/// Confirm units.ri still compiles with zero errors and that SPEED_OF_LIGHT's
+/// return type equals `DimensionVector::VELOCITY` (the builtin), not a stale
+/// LENGTH/TIME expression whose identity could drift independently.
+#[test]
+fn units_ri_velocity_alias_shadowed_by_builtin_zero_errors() {
+    let module = common::units_module();
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "units.ri should compile with zero errors even with the dead Velocity alias present; got:\n{:#?}",
+        errors
+    );
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name == "SPEED_OF_LIGHT")
+        .expect("SPEED_OF_LIGHT must be present in std/units");
+    assert_eq!(
+        func.return_type,
+        Type::Scalar { dimension: DimensionVector::VELOCITY },
+        "SPEED_OF_LIGHT return type must equal Scalar{{VELOCITY}} — builtin shadows \
+         alias, both are m·s⁻¹; got {:?}",
+        func.return_type
+    );
+}
+
+/// Regression guard (task 4580, suggestion 1): adding 'Velocity' to
+/// NAMED_DIMENSIONS means LENGTH/TIME scalars now have a canonical name.
+/// A dimension mismatch between a velocity and force scalar must produce the
+/// secondary label "Velocity and Force are different dimensions…" — pinning
+/// that the rendering change is not silently reverted.
+#[test]
+fn velocity_force_mismatch_secondary_label_includes_velocity() {
+    let source = r#"
+structure def S {
+    let _x = 1m / 1s + 1N
+}
+"#;
+    let module = common::compile_with_stdlib_helper(source);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected a dimension mismatch error for `1m / 1s + 1N`"
+    );
+    let has_velocity_label = errors
+        .iter()
+        .flat_map(|d| &d.labels)
+        .any(|l| l.message.contains("Velocity") && l.message.contains("Force"));
+    assert!(
+        has_velocity_label,
+        "expected secondary label mentioning 'Velocity and Force'; got labels:\n{:#?}",
+        errors
+            .iter()
+            .flat_map(|d| &d.labels)
+            .map(|l| &l.message)
+            .collect::<Vec<_>>()
+    );
 }

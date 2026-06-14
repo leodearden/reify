@@ -60,7 +60,7 @@ fn determined_false_for_auto_param() {
     let values = eval_source(
         r#"
         structure S {
-            param b : Scalar = auto
+            param b : Length = auto
             let r = determined(b)
         }
     "#,
@@ -184,7 +184,7 @@ fn undetermined_false_for_auto_param() {
     let values = eval_source(
         r#"
         structure S {
-            param b : Scalar = auto
+            param b : Length = auto
             let r = undetermined(b)
         }
     "#,
@@ -277,7 +277,7 @@ fn constrained_true_for_auto_param() {
     let values = eval_source(
         r#"
         structure S {
-            param x : Scalar = auto
+            param x : Length = auto
             let r = constrained(x)
         }
     "#,
@@ -351,7 +351,7 @@ fn partially_determined_false_for_auto_with_constraint() {
     let values = eval_source(
         r#"
         structure S {
-            param x : Scalar = auto
+            param x : Length = auto
             constraint x > 0
             let r = partially_determined(x)
         }
@@ -483,7 +483,7 @@ fn forall_determined_mixed_false() {
         r#"
         structure S {
             param a : Length = 10mm
-            param b : Scalar = auto
+            param b : Length = auto
             let r = determined(a) && determined(b)
         }
     "#,
@@ -506,7 +506,7 @@ fn where_guard_determined_activates() {
     let values = eval_source(
         r#"
         structure S {
-            param a : Scalar = 10
+            param a : Length = 10
             where determined(a) {
                 let x = a * 2
             }
@@ -530,7 +530,7 @@ fn where_guard_determined_deactivates() {
     let values = eval_source(
         r#"
         structure S {
-            param b : Scalar = auto
+            param b : Length = auto
             where determined(b) {
                 let y = 5
             } else {

@@ -83,13 +83,13 @@ pub trait JCodemunchOps {
 
 **(c) Query mechanism — persistent `serve` over streamable-HTTP** (already decided: dark-factory parity). Confirmed `serve --transport streamable-http` exists. A dedicated `jcodemunch-serve.service` unit reads the shared on-disk index; `RealJCodemunchOps` is an HTTP client mirroring `fused_memory_client.rs`. **Not** stdio-spawn (cold-start per run) and **not** folding query-serve into the `watch-claude` watcher (different subcommand; the watcher also serves dark-factory + autopilot-video and must stay untouched).
 
-**(d) New detectors (all severity Low / log-only initially).** `P-DEAD`, `P-UNTESTED`, `P-LAYER`. They are **advisory** — Low severity, logged to `data/audit-runs/<ts>.json`, **no auto-filed follow-up tasks** — because jcodemunch's Rust accuracy is unproven and these heuristics are noisier than P1's scoped check. (This is the honest-bound discipline from the L2-chokepoint survey: ship the real signal at a severity its confidence supports; promote to Medium/auto-file only after the live corpus shows low FP.) `P-LAYER` requires reify layer rules (`.jcodemunch.jsonc`) authored first.
+**(d) New detectors (all severity Low / log-only initially).** `P-DEAD`, `P-UNTESTED`, `P-LAYER`. They are **advisory** — Low severity, logged to `data/audit-runs/<ts>.json`, **no auto-filed follow-up tasks** — because jcodemunch's Rust accuracy is unproven and these heuristics are noisier than P1's scoped check. (This is the honest-bound discipline from the L2-chokepoint survey: ship the real signal at a severity its confidence supports; promote to Medium/auto-file only after the live corpus shows low FP.) `P-LAYER` requires reify layer rules (`.jcodemunch.jsonc`) authored first. *(Assessment 2026-06-11, task 4115: this on-demand advisory status confirmed — see §10.)*
 
 **(e) Decomposition** — §8. Single-crate-file / single-skill-file leaves per the narrow-lock norm; the full trait + `Pattern` enum live in one leaf (L-TRAIT) so detector leaves never re-touch `lib.rs`'s trait; `bin/reify-audit.rs` CLI arms are serialized via dependencies.
 
 ## 5. Out of scope
 
-- **Auto-promoting P-DEAD/P-UNTESTED/P-LAYER to Medium / auto-file.** Revisit after a live corpus FP review.
+- **Auto-promoting P-DEAD/P-UNTESTED/P-LAYER to Medium / auto-file.** Revisit after a live corpus FP review. *(Task 4115 assessment 2026-06-11: NO — detectors remain opt-in via `--pattern`; see §10 for full rationale.)*
 - **Pre-done hook running P1** (slice-1 D-1 deliberately runs P5 only; jcodemunch in the hot path is out of scope).
 - **`get_dependency_graph` / `get_blast_radius` / `find_importers` as detectors** — they are lookups (building blocks), not finding-producers. May enrich existing findings (e.g. annotate a P1 orphan with its blast radius) in a future slice.
 - **`check_references` as P1's mechanism** (needs the list, not a bool — see §4-b).
@@ -136,3 +136,22 @@ DAG: `L-SERVE → {L-CLIENT, L-SMOKE}`; `L-TRAIT → L-CLIENT → L-WIRE → L-P
 - Whether `RealJCodemunchOps` should retry/backoff on a cold serve, or fail fast to exit 125 like `fused_memory_client.rs` (lean fail-fast; the sweep is human-driven and can retry).
 - Final reify `.jcodemunch.jsonc` layer-rule set — the precise forbidden edges (decide against the actual crate DAG in L-PLAYER).
 - Whether L-SMOKE lives as a committed script (always runnable) or a `#[ignore]`-by-default live integration test (run on demand) — pick whichever the slice-1 `/audit` smoke convention already uses.
+
+## 10. Assessment 2026-06-11 (task 4115): P-DEAD / P-UNTESTED / P-LAYER stay on-demand
+
+**DECISION: NO — the three advisory detectors remain opt-in (`--pattern PDEAD|PUNTESTED|PLAYER`) and are NOT folded into the no-`--pattern` default sweep.**
+
+This task was gated on 4109's graceful-degradation contract landing first; 4109 merged at commit `283432f1`, clearing the deferral gate. With that gate cleared, the full decision could be made across three inputs:
+
+**Input 1 — 4109 fail-soft contract (SATISFIED; necessary but not sufficient).**
+4109 landed a `NoopJCodemunchOps` fall-back in `bin/reify-audit.rs`: when `needs_jcodemunch` is true and `RealJCodemunchOps::new` errors (server down), the binary falls back gracefully — P2/P5 survive, P1 and all jcodemunch detectors degrade to zero findings, exit-125 is reserved for genuine arg/IO misconfiguration. `needs_jcodemunch` already returns true for the no-`--pattern` default sweep (P1 is in the default set), so the default sweep already opens and fail-softs a jcodemunch connection today. Folding PDEAD/PUNTESTED/PLAYER would add NO new connection or failure mode — only three additional repo-wide round-trips. This input removes the safety objection and satisfies the graceful-degradation precondition, but it is necessary, not sufficient.
+
+**Input 2 — live-corpus FP review (UNMET; decisive).**
+§5 explicitly gates "Auto-promoting P-DEAD/P-UNTESTED/P-LAYER … Revisit after a live corpus FP review." No such review of these three detectors on the reify corpus exists (confirmed by memory + task search at assessment time). The project's track record with sibling detectors that *were* live-corpus-reviewed is a decisive negative prior: P2 (task 4076) returned approximately all false positives across 94 Medium findings; P5 (tasks 4075/4464) scored ~96% benign / 129/129 Highs systematically false. Task 4141 confirms the established discipline — detectors undergo live-corpus FP validation *before* any promotion. P-DEAD/P-UNTESTED/P-LAYER are explicitly "noisier than P1" with "unproven" Rust accuracy per §4-d and have had no such review. Folding unvalidated, expected-noisy advisory detectors into the always-run default sweep would replicate the 4075/4076 noise problem and risk alert fatigue that erodes trust in the reliable P1/P2/P5 signal.
+
+**Input 3 — performance cost (mild negative).**
+`get_dead_code` / `get_untested_symbols` / `get_layer_violations` are repo-wide scans — the most expensive jcodemunch calls. Adding three such round-trips to the cheap always-run baseline path carries real cost with no commensurate benefit until FP is validated.
+
+**Outcome.** The NO decision is conservative, reversible, and PRD-supported; choosing YES at this point would fabricate confidence the evidence does not support and violate the PRD's own honest-bound discipline. The existing §4-d ("Low/log-only … advisory … no auto-filed follow-up") and §5 ("Revisit after a live corpus FP review") on-demand/advisory/out-of-scope prose is hereby **confirmed**, not rewritten. The on-demand invariant continues to be locked by the existing unit tests `pdead_and_puntested_not_in_default_sweep` and `player_not_in_default_sweep` (in `bin/reify-audit.rs`). No code change is needed.
+
+**Revisit condition.** Perform a live-corpus FP review for P-DEAD, P-UNTESTED, and P-LAYER, mirroring the 4075/4076/4141 suppression-pass methodology. If the FP rate is acceptably low, revisit folding them into the default sweep and/or promoting to Medium/auto-file. A follow-up task should be filed to own this FP review so the "revisit" has an explicit owner.

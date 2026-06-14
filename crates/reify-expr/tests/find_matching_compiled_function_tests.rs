@@ -100,13 +100,13 @@ fn arity_mismatch_returns_none() {
 /// When name and arity match but the parameter type differs from the arg's
 /// `result_type`, the helper returns `None`.
 ///
-/// Concretely: function expects `Type::Int`, arg carries `Type::Real`.
+/// Concretely: function expects `Type::Int`, arg carries `Type::dimensionless_scalar()`.
 #[test]
 fn param_type_mismatch_returns_none() {
     // function param is Type::Int
     let fns = vec![make_fn("foo", Type::Int)];
-    // arg result_type is Type::Real  → should not match
-    let args = [CompiledExpr::literal(Value::Real(1.0), Type::Real)];
+    // arg result_type is Type::dimensionless_scalar()  → should not match
+    let args = [CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())];
     let result = find_matching_compiled_function(&fns, "foo", &args);
     assert!(result.is_none(), "expected None for per-param type mismatch (Int param vs Real arg)");
 }

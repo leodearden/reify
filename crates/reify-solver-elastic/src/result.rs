@@ -266,6 +266,77 @@ pub fn element_stress_p2(
     ]
 }
 
+/// Compute the per-element displacement-gradient tensor for a P1
+/// tetrahedron: `(∇u)[r][c] = ∂u_r / ∂x_c`.
+///
+/// # Layout
+///
+/// Row r = displacement component (0=x, 1=y, 2=z), col c = derivative axis
+/// (0=x, 1=y, 2=z). `trace(∇u) = ∇u[0][0] + ∇u[1][1] + ∇u[2][2]` equals
+/// the volumetric strain `tr(ε)` (divergence of the displacement field).
+///
+/// # Algorithm
+///
+/// Mirrors the Jacobian → J⁻ᵀ → `grads_phys` block of [`element_stress_p1`]
+/// (result.rs:78–116), then replaces the D-matrix / Voigt steps with the
+/// purely kinematic accumulation
+/// `(∇u)[r][c] += grads_phys[k][c] · u_e[3k+r]`.
+/// No material properties are required — this function is material-independent
+/// and serves both the isotropic and anisotropic solve paths.
+///
+/// # Preconditions
+///
+/// The tet must be non-degenerate; same guard as [`element_stress_p1`].
+#[allow(clippy::needless_range_loop)]
+pub fn element_gradient_p1(phys_nodes: &[[f64; 3]; 4], u_e: &[f64; 12]) -> [[f64; 3]; 3] {
+    // Reference gradients (constant for P1 — any reference coord works).
+    let grads_ref = TetP1.shape_grad_at(ReferenceCoord::new(0.25, 0.25, 0.25));
+
+    // Forward Jacobian J_ij = Σ_k phys_nodes[k][i] · grads_ref[k][j].
+    let mut j_mat = [[0.0_f64; 3]; 3];
+    for k in 0..4 {
+        for i in 0..3 {
+            for j in 0..3 {
+                j_mat[i][j] += phys_nodes[k][i] * grads_ref[k][j];
+            }
+        }
+    }
+    let det = j_mat[0][0] * (j_mat[1][1] * j_mat[2][2] - j_mat[1][2] * j_mat[2][1])
+        - j_mat[0][1] * (j_mat[1][0] * j_mat[2][2] - j_mat[1][2] * j_mat[2][0])
+        + j_mat[0][2] * (j_mat[1][0] * j_mat[2][1] - j_mat[1][1] * j_mat[2][0]);
+    debug_assert!(
+        det.is_normal() && det.abs() > MIN_JACOBIAN_DET,
+        "degenerate tet in element_gradient_p1: |det J| = {} (must be > {} \
+         and finite — see PRD task #21 for the future diagnostic path)",
+        det.abs(),
+        MIN_JACOBIAN_DET,
+    );
+    let j_inv_t = inverse_transpose_3x3(&j_mat, det);
+
+    // Push to physical gradients: ∇x N_i = J⁻ᵀ · ∇ξ N_i.
+    let mut grads_phys = [[0.0_f64; 3]; 4];
+    for i in 0..4 {
+        for r in 0..3 {
+            let mut s = 0.0;
+            for c in 0..3 {
+                s += j_inv_t[r][c] * grads_ref[i][c];
+            }
+            grads_phys[i][r] = s;
+        }
+    }
+
+    // Kinematic displacement-gradient (∇u)[r][c] += grads_phys[k][c] · u_e[3k+r].
+    let mut grad_u = [[0.0_f64; 3]; 3];
+    for k in 0..4 {
+        for r in 0..3 {
+            for c in 0..3 {
+                grad_u[r][c] += grads_phys[k][c] * u_e[3 * k + r];
+            }
+        }
+    }
+    grad_u
+}
+
 /// Compute the volume of a P1 tetrahedron from its physical vertex
 /// positions: `V = |det M| / 6`, where
 /// `M = [v_1 − v_0 | v_2 − v_0 | v_3 − v_0]` is the 3×3 Jacobian of the
@@ -392,6 +463,101 @@ pub fn recover_nodal_stress_p1(
     }
 
     accum
+}
+
+/// Per-element gradient contribution for [`recover_nodal_gradient_p1`].
+///
+/// Mirrors [`StressElement`] for the displacement-gradient tensor.
+/// Borrows the connectivity slice from the parent mesh; carries the
+/// element's constant displacement-gradient tensor and volume by value.
+#[derive(Debug, Clone, Copy)]
+pub struct GradientElement<'a> {
+    /// Global node indices, in element-local order.
+    pub connectivity: &'a [usize],
+    /// Constant per-element displacement-gradient tensor (from
+    /// [`element_gradient_p1`]). Layout: `(∇u)[r][c] = ∂u_r/∂x_c`.
+    pub gradient: [[f64; 3]; 3],
+    /// Element volume (from [`tet_volume_p1`]).
+    pub volume: f64,
+}
+
+/// Recover a continuous nodal displacement-gradient field from per-element
+/// constant gradients via volume-weighted simple averaging.
+///
+/// Mirrors [`recover_nodal_stress_p1`] over the 3×3 gradient tensor.
+/// For each node `n`, the recovered gradient is
+///
+/// ```text
+/// (∇u)_n = (Σ_{e incident to n} V_e · (∇u)_e) / (Σ_{e incident to n} V_e)
+/// ```
+///
+/// Nodes incident to no element yield the zero tensor.
+pub fn recover_nodal_gradient_p1(
+    n_nodes: usize,
+    elements: &[GradientElement<'_>],
+) -> Vec<[[f64; 3]; 3]> {
+    let mut accum = vec![[[0.0_f64; 3]; 3]; n_nodes];
+    let mut weights = vec![0.0_f64; n_nodes];
+
+    for el in elements {
+        for &node in el.connectivity {
+            debug_assert!(
+                node < n_nodes,
+                "connectivity index {node} >= n_nodes {n_nodes} in recover_nodal_gradient_p1",
+            );
+            for (acc_cell, &grad_cell) in accum[node]
+                .iter_mut()
+                .flatten()
+                .zip(el.gradient.iter().flatten())
+            {
+                *acc_cell += el.volume * grad_cell;
+            }
+            weights[node] += el.volume;
+        }
+    }
+
+    for (node_accum, &weight) in accum.iter_mut().zip(weights.iter()) {
+        if weight > 0.0 {
+            for cell in node_accum.iter_mut().flatten() {
+                *cell /= weight;
+            }
+        }
+    }
+
+    accum
+}
+
+/// Compute the curl (∇×u) of a displacement-gradient tensor.
+///
+/// # Layout
+///
+/// The input `grad` uses the convention `(∇u)[r][c] = ∂u_r / ∂x_c`
+/// — the same layout as [`element_gradient_p1`] and [`recover_nodal_gradient_p1`].
+///
+/// # Formula
+///
+/// For the convention above the curl is the antisymmetric part:
+///
+/// ```text
+/// (∇×u)[0] = ∂u_z/∂y − ∂u_y/∂z = grad[2][1] − grad[1][2]
+/// (∇×u)[1] = ∂u_x/∂z − ∂u_z/∂x = grad[0][2] − grad[2][0]
+/// (∇×u)[2] = ∂u_y/∂x − ∂u_x/∂y = grad[1][0] − grad[0][1]
+/// ```
+///
+/// This equals **twice** the infinitesimal rotation vector ω (PRD differential-
+/// field-operators.md task β).  The result is dimensionless (Length / Length)
+/// for a displacement field over a Length domain — same as volumetric strain.
+///
+/// # See also
+///
+/// [`recover_nodal_gradient_p1`] for the nodal recovery that produces the
+/// per-node `[[f64;3];3]` tensors passed here.
+pub fn curl_from_gradient(grad: &[[f64; 3]; 3]) -> [f64; 3] {
+    [
+        grad[2][1] - grad[1][2], // ∂u_z/∂y − ∂u_y/∂z
+        grad[0][2] - grad[2][0], // ∂u_x/∂z − ∂u_z/∂x
+        grad[1][0] - grad[0][1], // ∂u_y/∂x − ∂u_x/∂y
+    ]
 }
 
 #[cfg(test)]
@@ -790,6 +956,256 @@ mod tests {
                     "zero-displacement σ[{i}][{j}] = {sij} expected 0.0",
                 );
             }
+        }
+    }
+
+    // ── step-1 (task 4564): RED — element_gradient_p1 unit tests ────────────
+    //
+    // Premise: P1 FE reproduces linear fields exactly ⇒ the recovered per-
+    // element ∇u is the exact constant gradient to machine precision.
+    // Fails to compile (fn absent) until step-2.
+
+    #[test]
+    fn element_gradient_p1_general_linear_field_recovers_exact_gradient() {
+        // General linear displacement:
+        //   u_x(x,y,z) = A·x + B·y + C·z
+        //   u_y(x,y,z) = D·x + E·y + F·z
+        //   u_z(x,y,z) = G·x + H·y + I·z
+        //
+        // Layout convention: (∇u)[r][c] = ∂u_r/∂x_c
+        //   row = displacement component, col = derivative axis.
+        let (ga, gb, gc) = (0.01_f64, 0.02, 0.03); // row 0: ∂u_x/∂(x,y,z)
+        let (gd, ge, gf) = (0.04_f64, 0.05, 0.06); // row 1: ∂u_y/∂(x,y,z)
+        let (gg, gh, gi) = (0.07_f64, 0.08, 0.09); // row 2: ∂u_z/∂(x,y,z)
+
+        let expected_grad = [
+            [ga, gb, gc],
+            [gd, ge, gf],
+            [gg, gh, gi],
+        ];
+        // Divergence = trace = ∂u_x/∂x + ∂u_y/∂y + ∂u_z/∂z.
+        let expected_trace = ga + ge + gi;
+
+        // Evaluate the linear field at each UNIT_TET_P1 node.
+        let mut u_e = [0.0_f64; 12];
+        for (k, node) in UNIT_TET_P1.iter().enumerate() {
+            let (x, y, z) = (node[0], node[1], node[2]);
+            u_e[3 * k]     = ga * x + gb * y + gc * z;
+            u_e[3 * k + 1] = gd * x + ge * y + gf * z;
+            u_e[3 * k + 2] = gg * x + gh * y + gi * z;
+        }
+
+        let grad = element_gradient_p1(&UNIT_TET_P1, &u_e);
+
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (grad[r][c] - expected_grad[r][c]).abs() < 1e-12,
+                    "∇u[{r}][{c}] = {} expected {} (general linear field, unit tet)",
+                    grad[r][c],
+                    expected_grad[r][c],
+                );
+            }
+        }
+        // Divergence = trace.
+        let trace = grad[0][0] + grad[1][1] + grad[2][2];
+        assert!(
+            (trace - expected_trace).abs() < 1e-12,
+            "trace(∇u) = {} expected {} (divergence = volumetric strain)",
+            trace,
+            expected_trace,
+        );
+    }
+
+    #[test]
+    fn element_gradient_p1_zero_displacement_yields_zero_gradient() {
+        let grad = element_gradient_p1(&UNIT_TET_P1, &[0.0_f64; 12]);
+        for (r, row) in grad.iter().enumerate() {
+            for (c, &val) in row.iter().enumerate() {
+                assert_eq!(
+                    val,
+                    0.0,
+                    "∇u[{r}][{c}] = {} expected 0.0 for zero-displacement field",
+                    val,
+                );
+            }
+        }
+    }
+
+    // ── step-3 (task 4564): RED — recover_nodal_gradient_p1 unit tests ───────
+    //
+    // (a) Uniform-strain patch test: two-element fan + uniform u(x)=(a·x,0,0)
+    //     → every element ∇u = [[a,0,0],[0,0,0],[0,0,0]]; volume-weighted
+    //     average of identical tensors = exact constant across all 5 nodes.
+    // (b) Unequal-volume weighting: shared node = volume-weighted average;
+    //     exclusive node = element's own gradient.
+    // Fails to compile (fn + struct absent) until step-4.
+
+    #[test]
+    fn recover_nodal_gradient_p1_uniform_strain_patch_test_yields_constant_field() {
+        let a = 0.01_f64;
+
+        // Two-element fan sharing a face (mirror of the stress patch test):
+        //   tet0: [(0,0,0),(1,0,0),(0,1,0),(0,0,1)]   conn = [0,1,2,3]
+        //   tet1: [(1,0,0),(0,1,0),(0,0,1),(1,1,1)]   conn = [1,2,3,4]
+        let nodes = [
+            [0.0_f64, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0],     // 1
+            [0.0, 1.0, 0.0],     // 2
+            [0.0, 0.0, 1.0],     // 3
+            [1.0, 1.0, 1.0],     // 4
+        ];
+        let tet0: [[f64; 3]; 4] = [nodes[0], nodes[1], nodes[2], nodes[3]];
+        let tet1: [[f64; 3]; 4] = [nodes[1], nodes[2], nodes[3], nodes[4]];
+        let conn0 = [0_usize, 1, 2, 3];
+        let conn1 = [1_usize, 2, 3, 4];
+
+        // Uniform u(x) = (a·x, 0, 0) at all nodes.
+        let mut u0 = [0.0_f64; 12];
+        for (i, n) in tet0.iter().enumerate() { u0[3 * i] = a * n[0]; }
+        let mut u1 = [0.0_f64; 12];
+        for (i, n) in tet1.iter().enumerate() { u1[3 * i] = a * n[0]; }
+
+        let grad0 = element_gradient_p1(&tet0, &u0);
+        let grad1 = element_gradient_p1(&tet1, &u1);
+
+        let elem0 = GradientElement {
+            connectivity: &conn0,
+            gradient: grad0,
+            volume: tet_volume_p1(&tet0),
+        };
+        let elem1 = GradientElement {
+            connectivity: &conn1,
+            gradient: grad1,
+            volume: tet_volume_p1(&tet1),
+        };
+
+        let nodal = recover_nodal_gradient_p1(5, &[elem0, elem1]);
+        assert_eq!(nodal.len(), 5, "n_nodes=5 ⇒ output length 5");
+
+        // Expected: [[a,0,0],[0,0,0],[0,0,0]] at every node.
+        let expected = [[a, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        for (n, t) in nodal.iter().enumerate() {
+            for r in 0..3 {
+                for c in 0..3 {
+                    assert!(
+                        (t[r][c] - expected[r][c]).abs() < 1e-12,
+                        "node {n} ∇u[{r}][{c}] = {} expected {} (uniform patch test)",
+                        t[r][c], expected[r][c],
+                    );
+                }
+            }
+        }
+        // Trace = divergence = a.
+        for (n, t) in nodal.iter().enumerate() {
+            let div = t[0][0] + t[1][1] + t[2][2];
+            assert!(
+                (div - a).abs() < 1e-12,
+                "node {n} trace(∇u) = {} expected {a} (uniform patch test divergence)",
+                div,
+            );
+        }
+    }
+
+    #[test]
+    fn recover_nodal_gradient_p1_volume_weighted_average_two_unequal_volume_elements() {
+        // Two elements share node 0. Gradient tensors and volumes are
+        // hand-crafted to pin volume-weighted-average behaviour.
+        //   elem_a: grad = [[1,0,0],[0,0,0],[0,0,0]], V = 1.0
+        //   elem_b: grad = [[0,2,0],[0,0,0],[0,0,0]], V = 3.0
+        // Shared node 0 → (1·grad_a + 3·grad_b)/4 = [[0.25,1.5,0],[0,0,0],[0,0,0]].
+        let grad_a = [[1.0_f64, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let grad_b = [[0.0_f64, 2.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let conn_a = [0_usize, 1, 2, 3];
+        let conn_b = [0_usize, 4, 5, 6];
+
+        let elem_a = GradientElement { connectivity: &conn_a, gradient: grad_a, volume: 1.0 };
+        let elem_b = GradientElement { connectivity: &conn_b, gradient: grad_b, volume: 3.0 };
+
+        let nodal = recover_nodal_gradient_p1(7, &[elem_a, elem_b]);
+
+        // Shared node 0: weighted average.
+        let exp0 = [[0.25_f64, 1.5, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[0][r][c] - exp0[r][c]).abs() < 1e-12,
+                    "node 0 ∇u[{r}][{c}] = {} expected {}",
+                    nodal[0][r][c], exp0[r][c],
+                );
+            }
+        }
+        // Node 1 exclusive to elem_a → recovers grad_a.
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[1][r][c] - grad_a[r][c]).abs() < 1e-12,
+                    "node 1 (only in a) ∇u[{r}][{c}] = {} expected grad_a = {}",
+                    nodal[1][r][c], grad_a[r][c],
+                );
+            }
+        }
+        // Node 4 exclusive to elem_b → recovers grad_b.
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (nodal[4][r][c] - grad_b[r][c]).abs() < 1e-12,
+                    "node 4 (only in b) ∇u[{r}][{c}] = {} expected grad_b = {}",
+                    nodal[4][r][c], grad_b[r][c],
+                );
+            }
+        }
+    }
+
+    // ── step-1 (task 4565): RED — curl_from_gradient unit tests ──────────────
+    //
+    // (a) Analytic ∇u patch test: known gradient tensor with general entries,
+    //     verifies the three-component sign convention [g[2][1]-g[1][2],
+    //     g[0][2]-g[2][0], g[1][0]-g[0][1]] to <1e-12.
+    // (b) Zero-gradient guard: zero tensor → zero curl.
+    //
+    // RED until step-2 adds `curl_from_gradient`.
+
+    /// Analytic ∇u patch test: pinning curl sign convention exactly.
+    ///
+    /// g = [[0.01,0.02,0.03],[0.04,0.05,0.06],[0.07,0.08,0.09]]
+    /// Layout: (∇u)[r][c] = ∂u_r/∂x_c
+    /// Expected: [g[2][1]-g[1][2], g[0][2]-g[2][0], g[1][0]-g[0][1]]
+    ///         = [0.08-0.06, 0.03-0.07, 0.04-0.02]
+    ///         = [0.02, -0.04, 0.02]
+    #[test]
+    fn curl_from_gradient_analytic_patch_test_pins_sign_convention() {
+        let g: [[f64; 3]; 3] = [
+            [0.01, 0.02, 0.03],
+            [0.04, 0.05, 0.06],
+            [0.07, 0.08, 0.09],
+        ];
+        let curl = curl_from_gradient(&g);
+        let expected = [
+            g[2][1] - g[1][2],  // 0.08 - 0.06 = 0.02
+            g[0][2] - g[2][0],  // 0.03 - 0.07 = -0.04
+            g[1][0] - g[0][1],  // 0.04 - 0.02 = 0.02
+        ];
+        for i in 0..3 {
+            assert!(
+                (curl[i] - expected[i]).abs() < 1e-12,
+                "curl[{i}] = {} expected {} (diff = {:e})",
+                curl[i], expected[i], (curl[i] - expected[i]).abs(),
+            );
+        }
+    }
+
+    /// Zero-gradient guard: curl of zero ∇u is the zero vector.
+    #[test]
+    fn curl_from_gradient_zero_input_yields_zero_curl() {
+        let g = [[0.0_f64; 3]; 3];
+        let curl = curl_from_gradient(&g);
+        for (i, &val) in curl.iter().enumerate() {
+            assert!(
+                val.abs() < 1e-15,
+                "curl[{i}] = {} for zero gradient, expected 0",
+                val,
+            );
         }
     }
 }

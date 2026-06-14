@@ -14,17 +14,25 @@ pub mod demand;
 pub mod deps;
 pub mod dirty;
 pub mod dispatcher;
+pub mod engine_fixpoint;
+pub use engine_fixpoint::BuildScheduler;
 mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
+pub(crate) mod realization_content;
 pub use engine_compute::{
-    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizationReadHandle,
+    ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
+    RealizationReadHandle,
 };
 pub use graph::CancellationHandle;
+pub use graph::RealizationKernelProvenance;
+pub mod solver_progress;
+pub use solver_progress::{SolverProgressSink, SolverProgressUpdate};
 pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
+pub use engine_constraints::GdtCallout;
 mod engine_edit;
 mod engine_eval;
 mod engine_helpers;
@@ -36,8 +44,13 @@ pub mod kernel_registry;
 pub use engine_eval::ASSERT_MSG_PREFIX;
 #[doc(hidden)]
 pub use engine_eval::is_representable_cell_type;
+/// Re-exported for integration tests that need to assert against the progress
+/// throttle cadence without duplicating the constant.  Hidden from public docs.
+#[doc(hidden)]
+pub use compute_targets::elastic_static::PROGRESS_STRIDE;
 mod engine_purposes;
 mod engine_tolerance;
+pub(crate) mod arg_acceptance;
 mod geometry_ops;
 pub mod trajectory_ops;
 pub mod graph;
@@ -82,6 +95,7 @@ pub use selector_vocabulary_v2::{
     faces_by_surface_kind, faces_perpendicular_to, geom_universal, has_user_label, intersect,
     owner_body_of, siblings_of_face, split_by_feature, union, user_label_eq,
 };
+pub mod feature_datum;
 pub mod topology_attribute_propagation;
 pub mod topology_attribute_resolver;
 pub mod topology_selectors;
@@ -109,6 +123,7 @@ pub use topology_attribute_propagation::{
     LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M, detect_local_index_reassignment_diagnostics,
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
+    propagate_attributes_via_local_feature_history,
 };
 pub use topology_attribute_resolver::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute,
@@ -233,8 +248,8 @@ fn value_type_kind_matches(
         // diagnostic rather than a hard error, so the kind check must not reject
         // them.  This is intentional and mirrors the pre-existing collection
         // count behaviour (see edit_param_non_int_*_count_emits_warning tests).
-        Value::Int(_) => matches!(ty, Type::Int | Type::Real),
-        Value::Real(_) => matches!(ty, Type::Real | Type::Int),
+        Value::Int(_) => matches!(ty, Type::Int | Type::Scalar { .. }),
+        Value::Real(_) => matches!(ty, Type::Scalar { .. } | Type::Int),
         Value::String(_) => matches!(ty, Type::String),
         Value::Scalar { .. } => matches!(ty, Type::Scalar { .. }),
         Value::Enum { .. } => matches!(ty, Type::Enum(_)),
@@ -254,6 +269,7 @@ fn value_type_kind_matches(
         Value::Transform { .. } => matches!(ty, Type::Transform(_)),
         Value::Plane { .. } => matches!(ty, Type::Plane),
         Value::Axis { .. } => matches!(ty, Type::Axis),
+        Value::Direction { .. } => matches!(ty, Type::Direction),
         Value::BoundingBox { .. } => matches!(ty, Type::BoundingBox),
         Value::Range { .. } => matches!(ty, Type::Range(_)),
         // SampledField is a runtime payload stored under Value::Field.lambda;
@@ -304,9 +320,15 @@ fn value_type_kind_matches(
         // step-6 so Geometry cells are accepted.
         Value::GeometryHandle { .. } => matches!(ty, Type::Geometry),
         Value::AffineMap { .. } => matches!(ty, Type::AffineMap(_)), // task 3958 / α
-        // Topology-selector value (task 4116 / α): kind must match exactly.
-        // PRD §4.4/§9: this is the β behavior, satisfied here because exhaustiveness forces it.
-        Value::Selector(sv) => matches!(ty, Type::Selector(k) if *k == sv.kind),
+        // Topology-selector value (task 4116 / α): kind must match exactly for
+        // single-kind typed cells (PRD §4.4/§9).
+        // PRD §4.2/§11.1 (task 4369/A2): a kind-agnostic `AnySelector` cell also
+        // accepts any concrete selector value — the type carries no kind constraint,
+        // so all three concrete selector kinds satisfy it.
+        Value::Selector(sv) => {
+            matches!(ty, Type::AnySelector)
+                || matches!(ty, Type::Selector(k) if *k == sv.kind)
+        }
         // If a future `Value::TraitObjectInstance` variant is added, add a
         // matching arm here AND relax the runtime assertion so the compiler
         // enforces completeness.
@@ -384,6 +406,17 @@ pub struct Engine {
     /// Consolidated evaluation state from last eval() or edit_param().
     /// None before the first eval() call; always Some after.
     eval_state: Option<EvaluationState>,
+    /// Build-time scheduler selection (task 4357 δ): the legacy multi-pass build
+    /// loop vs. the unified build-DAG `run_unified_pass` Kahn/Tarjan driver. Set
+    /// once at construction from [`BuildScheduler::from_env`] — which honours the
+    /// `unified-dag` Cargo feature + `REIFY_BUILD_SCHEDULER` env gate and defaults
+    /// to `LegacyMultiPass`, so an un-configured engine keeps byte-identical
+    /// legacy behaviour. The `#[cfg(any(test, feature = "test-instrumentation"))]`
+    /// setter `Engine::set_build_scheduler` (engine_admin.rs) overrides it
+    /// DIRECTLY so integration tests can drive the UnifiedDag `build()` path
+    /// without mutating process env. Consulted only at the δ wiring site in
+    /// `Engine::build` (engine_build.rs).
+    build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
     /// Counter for snapshot IDs.
@@ -518,6 +551,16 @@ pub struct Engine {
     /// `post_process_geometry_handle_cells`; empty before the first build.
     /// Consulted by `engine_eval::revalidate_geometry_handle` on read (S16).
     realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId>,
+    /// β (task 4508): memoization store for realized geometry content.
+    ///
+    /// Keyed by `(RealizationNodeId, ContentHash)`.  Populated by
+    /// `project_realization_read_handle` when γ/δ add per-repr projection;
+    /// consulted by that method before attempting (potentially expensive)
+    /// kernel re-projection.  Plain private field (crate-root visibility)
+    /// so `engine_compute` and `realization_content` child modules reach it
+    /// directly (same visibility model as `compute_registry` /
+    /// `realization_handles`).
+    realization_projection_store: crate::realization_content::RealizationProjectionStore,
     /// GHR-δ §5 instrumentation: count of geometry-handle revalidation
     /// SLOW-PATH firings (stale-handle re-resolution OR absent-realization →
     /// `Undef`) since the last reset. Reset to 0 at the start of each `build()`
@@ -816,6 +859,22 @@ pub struct Engine {
     /// but the test hook will be silently absent there too.
     #[cfg(any(test, feature = "test-instrumentation"))]
     panic_on_eval_cells: std::collections::HashSet<ValueCellId>,
+    /// Per-iteration solver-progress sink (task #4079).
+    ///
+    /// When `Some`, `run_compute_dispatch` installs this sink into the
+    /// thread-local `SolveDispatchContext` before invoking the trampoline, so
+    /// the elastic-static trampoline can emit `SolverProgressUpdate` events
+    /// without changing the fixed `ComputeFn` fn-pointer signature.
+    ///
+    /// Set by `set_solver_progress_sink`; cleared by setting to `None`.
+    solver_progress_sink: Option<std::sync::Arc<dyn crate::solver_progress::SolverProgressSink>>,
+    /// In-flight cancellation handle for the current solve (task #4079).
+    ///
+    /// Published by the GUI `with_solve_slot` before each `engine.check()` call
+    /// (same `Arc<AtomicBool>` as `pending_solve_cancel`) so that
+    /// `cancel_solve_impl`'s `.cancel()` propagates into the trampoline's
+    /// per-iteration poll via the thread-local context.
+    active_solve_cancel: Option<crate::graph::CancellationHandle>,
     // ── undef-self-describing α (task 4321) ──────────────────────────────────
     /// When `true`, `eval()` runs the post-eval `classify_undef_origins` pass
     /// and stores the result in `last_undef_causes`.  Defaults to `false` so
@@ -1240,7 +1299,7 @@ mod tests {
         let t = Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1262,7 +1321,7 @@ mod tests {
         let t = Type::Matrix {
             m: 3,
             n: 3,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             value_type_kind_matches(&v, &t, None),
@@ -1270,7 +1329,7 @@ mod tests {
         );
     }
 
-    /// Value::Tensor supplied to Type::Real must return false.
+    /// Value::Tensor supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path: Tensor values are rejected by
     /// non-Tensor/non-Matrix types, confirming the `matches!` guard cannot be
     /// trivially widened to `_ => true` without breaking this assertion.
@@ -1279,14 +1338,14 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Tensor(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Tensor should be rejected by Type::Real (negative kind-check path)"
+            "Value::Tensor should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
-    /// Value::Matrix supplied to Type::Real must return false.
+    /// Value::Matrix supplied to Type::dimensionless_scalar() must return false.
     /// Regression-locks the *negative* path for Matrix, symmetric to the
     /// Tensor case above — confirms the `matches!` guard is not trivially dropped.
     #[test]
@@ -1294,10 +1353,10 @@ mod tests {
         use reify_core::Type;
         use reify_ir::Value;
         let v = Value::Matrix(vec![]);
-        let t = Type::Real;
+        let t = Type::dimensionless_scalar();
         assert!(
             !value_type_kind_matches(&v, &t, None),
-            "Value::Matrix should be rejected by Type::Real (negative kind-check path)"
+            "Value::Matrix should be rejected by Type::dimensionless_scalar() (negative kind-check path)"
         );
     }
 
@@ -1359,6 +1418,85 @@ mod tests {
         assert!(
             !value_type_kind_matches(&face_selector, &Type::Geometry, None),
             "Value::Selector against Type::Geometry must be false (different outer variant)"
+        );
+    }
+
+    // ── value_type_kind_matches: Type::AnySelector acceptance (task 4369/A2) ──────────────
+
+    /// A concrete `Value::Selector` of any kind satisfies a `Type::AnySelector` cell;
+    /// non-selector values do not; exact-kind enforcement for `Type::Selector(k)` is
+    /// unchanged (regression guard).
+    ///
+    /// Step-5 contract (RED until step-6):
+    /// (a) Face-kind selector against Type::AnySelector → true
+    /// (b) Edge-kind selector against Type::AnySelector → true
+    /// (c) Body-kind selector against Type::AnySelector → true
+    /// (d) Value::Real(1.0) against Type::AnySelector → false (non-selector rejected)
+    /// (e) regression: Face-kind selector against Type::Selector(Edge) → false
+    #[test]
+    fn value_type_kind_matches_any_selector_acceptance() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{RealizationNodeId, Type};
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{GeometryHandleId, Value};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        // Face selector — uses ByNormal (Face-only query, must pair with Face kind).
+        let face_sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target.clone(),
+            LeafQuery::ByNormal { dir: [0., 0., 1.], tol_rad: 0.01 },
+        )
+        .expect("face SelectorValue must construct");
+        let face_val = Value::Selector(face_sv.clone());
+
+        // Edge selector — uses LeafQuery::All (kind-agnostic query, pairs with any kind).
+        let edge_sv = SelectorValue::leaf(
+            SelectorKind::Edge,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("edge SelectorValue must construct");
+        let edge_val = Value::Selector(edge_sv);
+
+        // Body selector — uses LeafQuery::All (kind-agnostic).
+        let body_sv = SelectorValue::leaf(
+            SelectorKind::Body,
+            target.clone(),
+            LeafQuery::All,
+        )
+        .expect("body SelectorValue must construct");
+        let body_val = Value::Selector(body_sv);
+
+        // (a) Face-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&face_val, &Type::AnySelector, None),
+            "Value::Selector(Face) against Type::AnySelector must be true (a)"
+        );
+        // (b) Edge-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&edge_val, &Type::AnySelector, None),
+            "Value::Selector(Edge) against Type::AnySelector must be true (b)"
+        );
+        // (c) Body-kind selector satisfies Type::AnySelector.
+        assert!(
+            value_type_kind_matches(&body_val, &Type::AnySelector, None),
+            "Value::Selector(Body) against Type::AnySelector must be true (c)"
+        );
+        // (d) Non-selector value is rejected by Type::AnySelector.
+        assert!(
+            !value_type_kind_matches(&Value::Real(1.0), &Type::AnySelector, None),
+            "Value::Real against Type::AnySelector must be false (d)"
+        );
+        // (e) Regression: single-kind exact match still enforced (unchanged by task 4369).
+        assert!(
+            !value_type_kind_matches(&face_val, &Type::Selector(SelectorKind::Edge), None),
+            "Value::Selector(Face) against Type::Selector(Edge) must be false (e)"
         );
     }
 
@@ -1575,7 +1713,7 @@ mod tests {
     fn value_type_kind_matches_structure_instance_into_unrelated_types_returns_false() {
         use reify_core::Type;
         let (v, reg) = structure_instance_with_registry("Steel_AISI_1045", &["ElasticMaterial"]);
-        for t in [Type::Int, Type::Real, Type::Bool, Type::String] {
+        for t in [Type::Int, Type::dimensionless_scalar(), Type::Bool, Type::String] {
             assert!(
                 !value_type_kind_matches(&v, &t, Some(&reg)),
                 "StructureInstance must be rejected by unrelated type {t:?}"
@@ -1626,7 +1764,7 @@ mod tests {
         };
         for t in [
             Type::Int,
-            Type::Real,
+            Type::dimensionless_scalar(),
             Type::StructureRef("X".to_string()),
             Type::List(Box::new(Type::Int)),
             Type::Bool,
@@ -1809,7 +1947,7 @@ structure S {
                     .param(
                         "Widget",
                         "width",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         Some(literal(Value::Real(1.0))),
                     )
                     .build(),
@@ -2245,6 +2383,87 @@ structure S {
             count_after - count_before,
             drained.len(),
             "journal must record exactly as many events as were drained"
+        );
+    }
+
+    /// β-inject pass-through proof: injecting the real `SimpleConstraintChecker`
+    /// through `compile_with_stdlib_checked` is a compile-time no-op.
+    ///
+    /// At compile time, the `ValueMap` is empty (all cells are `Undef`). Any
+    /// constraint expression referencing a cell evaluates to `Value::Undef` →
+    /// `Satisfaction::Indeterminate` under both the `CompileTimeIndeterminateChecker`
+    /// stub AND the real `SimpleConstraintChecker`. The resolver's feasibility
+    /// rule (only `Violated` rejects) treats both as feasible, so the
+    /// `auto_type_substitution` and diagnostics are byte-identical.
+    ///
+    /// This test establishes β-readiness: the seam exists and is wired through
+    /// to `phase_auto_type_param_resolution`; the real checker can be injected
+    /// without changing compile-time selection outcomes.
+    ///
+    /// Uses `reify-constraints` (dev-dep) and `compile_with_stdlib_checked` (the
+    /// new `*_checked` entry point from task 4432 step-2).
+    #[test]
+    fn compile_with_stdlib_checked_real_checker_is_noop_at_compile_time() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ModulePath;
+
+        // Fixture: an `auto:` structure with a cell-dependent constraint so
+        // that the resolver runs and produces a non-trivial substitution.
+        // Cell `d` is Undef at compile time → constraint evaluates to Undef →
+        // Indeterminate under both stub and real checker.
+        let source = r#"
+            trait Seal {}
+            structure def GasketSeal : Seal { param d : Real = 2.0 }
+            structure def Bearing<T: Seal> { param seal : T }
+            structure def Assembly { sub b = Bearing<auto: Seal>() }
+        "#;
+
+        let parsed = reify_compiler::parse_with_stdlib(
+            source,
+            ModulePath::single("test_beta_inject_noop"),
+        );
+
+        let stub_result = reify_compiler::compile_with_stdlib(&parsed);
+        let real_result =
+            reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+
+        // auto_type_substitution must be byte-identical.
+        assert_eq!(
+            real_result.auto_type_substitution,
+            stub_result.auto_type_substitution,
+            "real checker must produce identical auto_type_substitution to stub at compile time"
+        );
+
+        // Diagnostics must be identical (compare severity + message pairs).
+        let stub_diags: Vec<_> = stub_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        let real_diags: Vec<_> = real_result
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, d.message.clone()))
+            .collect();
+        assert_eq!(
+            real_diags,
+            stub_diags,
+            "real checker must produce identical diagnostics to stub at compile time"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for value_type_kind_matches ───────
+    //
+    // After α, a dimensionless cell is statically typed Scalar{DL} but holds
+    // Value::Real — the runtime bridge MUST accept this combination.
+    // RED today: Value::Real(_) matches only Type::dimensionless_scalar() | Type::Int (line 247),
+    // so value_type_kind_matches(Real, Scalar{DL}) returns false.
+    #[test]
+    fn value_real_matches_dimensionless_scalar_type() {
+        assert!(
+            value_type_kind_matches(&Value::Real(1.0), &reify_core::Type::dimensionless_scalar(), None),
+            "Value::Real must be kind-compatible with Type::dimensionless_scalar() \
+             (the runtime bridge after α)"
         );
     }
 }

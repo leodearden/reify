@@ -188,7 +188,7 @@ fn lower_param(vc: &ValueCellDecl, source: &str) -> ParamDoc {
     // Extract the default expression text from the full declaration span.
     //
     // `ValueCellDecl.span` covers the entire declaration statement, e.g.
-    // "param width: Scalar = 10mm".  `CompiledExpr` has no source span of its
+    // "param width: Length = 10mm".  `CompiledExpr` has no source span of its
     // own, so we derive the default value text by splitting at the first '='
     // separator and trimming the RHS.  This yields the actual default token(s)
     // (e.g. "10mm") rather than the full declaration string.  When no '=' is

@@ -1,5 +1,21 @@
 # PRD: `auto` Type-Parameter Resolution (`Bearing<auto: Seal>`)
 
+Status: Superseded by docs/prds/v0_3/auto-type-param-resolution-completion.md (v0.3 completion contract). Applied after residuals α/β/γ/δ landed.
+
+## §0 — Superseded by docs/prds/v0_3/auto-type-param-resolution-completion.md
+
+v0.1 shipped the per-parameter BFS `auto:` resolver: candidate enumeration,
+feasibility filtering via the trait-conformance predicate, lexicographic
+tiebreak, and a cap of 10 candidates per parameter. The combinatorial
+backtracking it deferred to v0.2, plus the substitution pass, constraint-aware
+selection, value population, and BFS-fallback soundness work that make `auto:`
+user-observable, are completed by the v0.3 completion contract (whose §0 and
+§15 name this supersession). This PRD is retired — consult the v0.3 completion
+contract (`docs/prds/v0_3/auto-type-param-resolution-completion.md`) for
+current behaviour, and the v0.2 PRD
+(`docs/prds/v0_2/auto-resolution-backtracking.md`) as the search-algorithm
+design source-of-truth.
+
 ## Goal
 
 Resolve `auto` in **type-parameter** position (e.g. `sub bearing : Bearing<auto: Seal> { bore_diameter = 25mm }`) to a concrete type at elaboration time, before value-parameter resolution. The chosen algorithm is a per-parameter BFS over in-scope candidates that satisfy the trait/kind bound, capped at 10 candidates per parameter, with deterministic lexicographic tiebreak. No cross-parameter backtracking in v0.1 — parameters resolve in declared order.

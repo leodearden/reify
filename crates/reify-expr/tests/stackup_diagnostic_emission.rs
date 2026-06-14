@@ -25,14 +25,14 @@ fn make_fn_call(name: &str, args: Vec<CompiledExpr>) -> CompiledExpr {
             },
             args,
         },
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: hash,
     }
 }
 
 /// Wrap a `Value` in a literal `CompiledExpr`.
 fn lit(v: Value) -> CompiledExpr {
-    CompiledExpr::literal(v, Type::Real)
+    CompiledExpr::literal(v, Type::dimensionless_scalar())
 }
 
 /// Build a single valid contributor Map value (LENGTH scalar nominal/tols, sign=+1).

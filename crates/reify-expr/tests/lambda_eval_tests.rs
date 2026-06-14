@@ -29,9 +29,9 @@ fn eval_lambda_simple_no_captures() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::literal(Value::Int(2), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda_expr = CompiledExpr::lambda(
         vec![("x".to_string(), None)],
@@ -39,8 +39,8 @@ fn eval_lambda_simple_no_captures() {
         body,
         vec![],
         Type::Function {
-            params: vec![Type::Real],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar()],
+            return_type: Box::new(Type::dimensionless_scalar()),
         },
     );
 
@@ -72,9 +72,9 @@ fn eval_lambda_with_captures() {
 
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::value_ref(factor_id.clone(), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda_expr = CompiledExpr::lambda(
         vec![("x".to_string(), None)],
@@ -82,8 +82,8 @@ fn eval_lambda_with_captures() {
         body,
         vec![factor_id.clone()],
         Type::Function {
-            params: vec![Type::Real],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar()],
+            return_type: Box::new(Type::dimensionless_scalar()),
         },
     );
 
@@ -119,9 +119,9 @@ fn eval_lambda_with_undef_capture() {
 
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(missing_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(missing_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda_expr = CompiledExpr::lambda(
         vec![("x".to_string(), None)],
@@ -129,8 +129,8 @@ fn eval_lambda_with_undef_capture() {
         body,
         vec![missing_id.clone()],
         Type::Function {
-            params: vec![Type::Real],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar()],
+            return_type: Box::new(Type::dimensionless_scalar()),
         },
     );
 
@@ -164,9 +164,9 @@ fn apply_lambda_simple() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::literal(Value::Int(2), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
@@ -187,9 +187,9 @@ fn apply_lambda_with_captures() {
 
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::value_ref(factor_id.clone(), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let mut captures = ValueMap::new();
@@ -213,9 +213,9 @@ fn apply_lambda_arity_mismatch_returns_undef() {
 
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
 
     let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
@@ -257,21 +257,21 @@ fn lambda_content_hash_deterministic_and_distinct() {
 
     let body1 = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::literal(Value::Int(2), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let body2 = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::literal(Value::Int(2), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let body3 = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::literal(Value::Int(1), Type::Int),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let lambda1 = make_value_lambda(vec![("x", x_id.clone())], body1, ValueMap::new());
@@ -298,9 +298,9 @@ fn lambda_content_hash_deterministic_and_distinct() {
         vec![("y", y_id)],
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
             CompiledExpr::literal(Value::Int(2), Type::Int),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         ValueMap::new(),
     );
@@ -321,14 +321,14 @@ fn lambda_content_hash_invariant_capture_insertion_order() {
 
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
         CompiledExpr::binop(
             BinOp::Add,
             CompiledExpr::value_ref(cap_a_id.clone(), Type::Int),
             CompiledExpr::value_ref(cap_b_id.clone(), Type::Int),
             Type::Int,
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let mut captures_a = ValueMap::new();
@@ -749,10 +749,10 @@ fn sample_non_field_returns_undef() {
     let expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -767,8 +767,8 @@ fn sample_non_field_returns_undef() {
 #[test]
 fn sample_field_with_undef_lambda_returns_undef() {
     let field = Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::Undef),
     };
@@ -778,13 +778,13 @@ fn sample_field_with_undef_lambda_returns_undef() {
             CompiledExpr::literal(
                 field,
                 Type::Field {
-                    domain: Box::new(Type::Real),
-                    codomain: Box::new(Type::Real),
+                    domain: Box::new(Type::dimensionless_scalar()),
+                    codomain: Box::new(Type::dimensionless_scalar()),
                 },
             ),
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+            CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -800,8 +800,8 @@ fn sample_field_with_undef_lambda_returns_undef() {
 fn gradient_non_field_returns_undef() {
     let expr = make_function_call(
         "gradient",
-        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
-        Type::Real,
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())],
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));

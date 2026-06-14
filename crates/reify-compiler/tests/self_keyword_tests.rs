@@ -148,7 +148,7 @@ fn test_assert_list_of_struct_ref_label_in_panic() {
 fn self_dot_param_resolves_to_value_ref() {
     // `self.x` inside a structure should resolve to the same value cell as `x`.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let y = self.x
 }"#;
     let compiled = parse_and_compile(source);
@@ -187,7 +187,7 @@ fn self_dot_param_resolves_to_value_ref() {
 fn self_dot_sub_dot_param_resolves() {
     // `self.bolt.d` should resolve to the sub component's member.
     let source = r#"structure Bolt {
-    param d : Scalar = 10mm
+    param d : Length = 10mm
 }
 structure S {
     sub bolt = Bolt()
@@ -235,7 +235,7 @@ structure S {
 fn self_in_let_binding_compiles() {
     // `self.a + 1mm` in a let binding should compile without errors.
     let source = r#"structure S {
-    param a : Scalar = 3mm
+    param a : Length = 3mm
     let b = self.a + 1mm
 }"#;
     let compiled = parse_and_compile(source);
@@ -258,7 +258,7 @@ fn self_in_let_binding_compiles() {
 fn self_in_constraint_compiles() {
     // `constraint self.x > 2mm` should compile without errors.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     constraint self.x > 2mm
 }"#;
     let compiled = parse_and_compile(source);
@@ -291,7 +291,7 @@ fn bare_self_as_entity_reference() {
     // Bare `self` (without `.member`) should resolve to the enclosing entity
     // as a StructureRef type. `let me = self` captures the entity itself.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let me = self
 }"#;
     let compiled = parse_and_compile(source);
@@ -328,7 +328,7 @@ fn self_in_guarded_block() {
     // `where` block should resolve to the enclosing entity's params.
     let source = r#"structure TreeBracket {
     param depth : Int = 3
-    param width : Scalar = 10mm
+    param width : Length = 10mm
 
     where depth > 0 {
         let child_depth = self.depth - 1
@@ -394,7 +394,7 @@ fn self_error_in_fn_body() {
     // `self` inside a function body is invalid — functions have no enclosing entity scope.
     // The implementation may reject this at parse time or compile time; both are valid.
     // Use the same branch-on-parse-errors pattern as self_error_at_module_scope.
-    let source = r#"fn f(x: Scalar) -> Scalar {
+    let source = r#"fn f(x: Length) -> Scalar {
     self.x
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
@@ -473,7 +473,7 @@ fn self_dot_collection_sub_resolves_to_list() {
     // `self.items` where `items` is a collection sub should resolve to a List<T> value cell,
     // mirroring bare `items`. No error should be emitted (task-1280 fix).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -523,7 +523,7 @@ fn self_dot_collection_sub_dot_member_emits_error() {
     // `self.items.diameter` where `items` is a collection sub should emit an error,
     // not silently return ValueRef(S.items, diameter) pointing at a nonexistent cell.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -558,7 +558,7 @@ fn self_dot_non_collection_sub_still_returns_structure_ref() {
     // `self.bolt` where `bolt` is a single-instance sub should still compile cleanly
     // and produce a StructureRef("Bolt") cell — regression guard for steps 2 & 4.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub bolt = Bolt()
@@ -590,7 +590,7 @@ structure S {
 fn self_param_equivalence_with_bare_param() {
     // `self.x` and bare `x` should compile to identical ValueRef(S, x) expressions.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let via_self = self.x
     let via_bare = x
 }"#;
@@ -641,10 +641,10 @@ fn self_dot_param_inside_lambda_captures_entity_param() {
     // `self.x` inside a lambda body should be captured as ValueCellId("S", "x")
     // because the lambda inherits the entity scope via scope.clone() in the compiler.
     // The lambda's captures vec is built from all body refs minus lambda params.
-    // Use `|y: Scalar|` so the addition `y + self.x` is dimensionally consistent.
+    // Use `|y: Length|` so the addition `y + self.x` is dimensionally consistent.
     let source = r#"structure S {
-    param x : Scalar = 5mm
-    let f = |y: Scalar| y + self.x
+    param x : Length = 5mm
+    let f = |y: Length| y + self.x
 }"#;
     let compiled = parse_and_compile(source);
     let s_template = compiled
@@ -693,7 +693,7 @@ fn bare_self_inside_lambda_captures_entity_ref() {
     // The lambda body's result_type should be StructureRef("S") confirming the
     // enclosing entity reference is returned.
     let source = r#"structure S {
-    param x : Scalar = 5mm
+    param x : Length = 5mm
     let f = |_unused| self
 }"#;
     let compiled = parse_and_compile(source);
@@ -739,7 +739,7 @@ fn self_inside_lambda_in_fn_body_errors() {
     // is_entity_scope=false from the enclosing fn scope (via scope.clone()), so
     // `self` falls through to the unresolved-name error path.
     // Mirror the dual-path pattern used by self_error_in_fn_body (step-7).
-    let source = r#"fn f(x: Scalar) -> Scalar {
+    let source = r#"fn f(x: Length) -> Scalar {
     let g = |y| y + self.x
     g(x)
 }"#;
@@ -789,7 +789,7 @@ fn self_dot_collection_sub_equivalence_with_bare() {
     // ValueRef, mirroring how `self.param` ≡ bare `param` (step-11).
     // Both should resolve to S.__list_bolts__diameter with type List<T>.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub bolts : List<Bolt>
@@ -874,8 +874,8 @@ fn self_dot_collection_sub_picks_lexicographic_first_member() {
     // Lexicographically "diameter" < "length" (d < l), so the resolver must pick
     // `diameter` as the representative member — both via `self.bolts` and bare `bolts`.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
-    param length : Scalar = 50mm
+    param diameter : Length = 10mm
+    param length : Length = 50mm
 }
 structure S {
     sub bolts : List<Bolt>
@@ -1011,7 +1011,7 @@ fn collection_sub_fallback_forward_ref_uses_type_name() {
     let x = self.bolts
 }
 structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }"#;
     let compiled = parse_and_compile(source);
     let s_template = compiled
@@ -1130,9 +1130,9 @@ structure S {
 fn self_dot_collection_sub_member_error_has_correct_fallback_type() {
     // `self.items.diameter` where `items` is List<Bolt> should emit an error AND
     // have a cell type matching Bolt's diameter type (Scalar with length dimension),
-    // NOT Type::Real.
+    // NOT Type::dimensionless_scalar().
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1179,7 +1179,7 @@ fn self_dot_collection_sub_aggregation_recommends_drop_self() {
     // `self.items.count` should emit an error recommending `items.count`
     // (drop self.), NOT `items[i].count` (the per-instance recommendation).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1221,9 +1221,9 @@ structure S {
 fn self_dot_collection_sub_no_cascading_diagnostics() {
     // `self.items.diameter` used in a constraint should produce exactly 1 error
     // (the collection sub error), not additional type-mismatch diagnostics from
-    // d being Type::Real and then being compared with 5mm (Scalar{Length}).
+    // d being Type::dimensionless_scalar() and then being compared with 5mm (Scalar{Length}).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1254,7 +1254,7 @@ fn self_dot_collection_sub_sum_aggregation_recommends_drop_self() {
     // This guards against partial regressions in the aggregation-member list
     // (e.g. if a new aggregation is added only to one branch).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1296,7 +1296,7 @@ fn self_dot_collection_sub_aggregation_no_cascading_diagnostics() {
     // (the collection sub aggregation error), not additional type-mismatch
     // diagnostics from the fallback type being wrong (e.g. Real vs Int).
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>
@@ -1326,7 +1326,7 @@ fn self_dot_collection_sub_unknown_member_error() {
     // nor a field of the element struct should emit an "unknown member" error,
     // NOT suggest indexed access to a field that doesn't exist.
     let source = r#"structure Bolt {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 structure S {
     sub items : List<Bolt>

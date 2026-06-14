@@ -24,7 +24,7 @@
 // growing prelude for the future task that tightens trajectory.ri to consume
 // `ModalResult.modes` (kinematic-completion PRD; not yet landed).
 //
-// `trait Support` from the much-earlier `std.fea.multi_case` is already in
+// `trait Support` from the much-earlier `std.fea.types` is already in
 // the growing prelude at this point, so `List<Support>` resolves on both
 // `ModalResult.boundary_conditions` and `ModalOptions.boundary_conditions`.
 //
@@ -33,14 +33,17 @@
 //      The PRD's `1e-9` default for `tol` therefore appears here as
 //      `0.000000001`, same convention as `solver_buckling.ri`'s `tol = 1e-8`
 //      → `0.00000001`.
-//   2. `ModalResult.part : String` is a PLACEHOLDER for the future `Part`
-//      structure_def from the v0.3 solver-elastic PRD (not yet landed; see
-//      `fea_multi_case.ri:269-273` placeholder convention). A FIXME comment
-//      on the param flags the future tighten target.
-//   3. `Mode.frequency : Real` is a placeholder for `Scalar<Frequency>` —
-//      `Frequency` (= s⁻¹) is an SI-derived dimension but has no named scalar
-//      alias yet. Same placeholder pattern as `fea_multi_case.ri::Load.force
-//      : Real` waiting for `Vector3<Force>`.
+//   2. `ModalResult.part`, `ForcingTimeHistory.part`, and
+//      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
+//      marker declared in this module (task 4578, per PRD §12 OQ3). `Part`
+//      will be grown into a full geometry+material+topology structure in a
+//      later task; the single-module opaque form is non-blocking for task ζ.
+//   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
+//      (`Frequency` = s⁻¹, a registered named dimension). Tightened from the
+//      former `Real` placeholder once `Frequency` gained a named scalar alias
+//      (task 4548); the producer (modal_ops.rs) emits a dimensioned
+//      `Value::Scalar { FREQUENCY }`. Contrast `fea_multi_case.ri::Load.force
+//      : Real`, still a placeholder waiting for `Vector3<Force>`.
 //   4. `Mode.shape : List<Vector3<Dimensionless>>` encodes mass-normalized
 //      eigenvectors. Strictly, components of a mass-orthonormal mode shape
 //      carry units of 1/√mass — only the modal-mass scalar
@@ -78,7 +81,7 @@
 // per-strategy fields; the trait exists only to give the `damping` param on
 // `ModalResult` / `ModalOptions` a single nominal type, so the eval-time
 // dispatch matches via the SIR-α nominal type-tag. Same pattern as
-// `trait Support { }` (fea_multi_case.ri:288) and `trait BoundaryCondition
+// `trait Support { }` (fea_types.ri) and `trait BoundaryCondition
 // { }` (trajectory.ri).
 trait DampingDescriptor { }
 
@@ -142,12 +145,13 @@ structure def RayleighDamping : DampingDescriptor {
 // plan design-decision-6.
 //
 // Field semantics (PRD §4.1):
-//   frequency          — natural frequency ω/(2π) in Hz. Encoded as `Real`
-//                        as a PLACEHOLDER for `Scalar<Frequency>` — the
-//                        named-frequency scalar alias has not landed yet.
-//                        Same placeholder convention as `Load.force : Real`
-//                        waiting for `Vector3<Force>` in
-//                        `fea_multi_case.ri:269-296`.
+//   frequency          — natural frequency ω/(2π) in Hz. Encoded as
+//                        `Frequency` (= s⁻¹, bare dimension name per the
+//                        `HarmonicForce.frequency : Frequency` precedent
+//                        below). Tightened from the former `Real` placeholder
+//                        now that `Frequency` is a registered named dimension
+//                        (task 4548); the modal producer (modal_ops.rs) emits
+//                        a dimensioned `Value::Scalar { FREQUENCY }`.
 //   shape              — mass-normalized eigenvector (Φᵀ·M·Φ = I) reshaped
 //                        as per-node displacement-shaped vectors. Encoded
 //                        as `List<Vector3<Dimensionless>>` as the closest
@@ -177,20 +181,31 @@ structure def RayleighDamping : DampingDescriptor {
 //                        dimension of mass (kg under SI), but the
 //                        named-scalar `Scalar<X>` alias has not landed
 //                        anywhere in the stdlib yet. Same placeholder
-//                        convention as `Mode.frequency` waiting for
-//                        `Scalar<Frequency>`, and `Load.force : Real`
-//                        waiting for `Vector3<Force>` in
-//                        `fea_multi_case.ri:269-296`.
+//                        convention as `Load.force : Real` waiting for
+//                        `Vector3<Force>` in `fea_multi_case.ri:269-296`.
+//                        (`Mode.frequency` shared this convention until it was
+//                        tightened to `Frequency` in task 4548.)
 //   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
 //                        (`damping = NoDamping()`) or
 //                        (α + β·ω_i²) / (2·ω_i) for proportional damping
 //                        (`damping = RayleighDamping(α, β)`).
 structure def Mode {
-    param frequency : Real
+    param frequency : Frequency
     param shape : List<Vector3<Dimensionless>>
     param participation_mass : Real
     param damping_ratio : Real
 }
+
+// ── Part ─────────────────────────────────────────────────────────────────────
+
+// `Part` is a minimal opaque marker structure for the analysed part handle.
+// Per PRD §12 open-question-3 ("minimal opaque structure_def first, then grow"):
+// declared zero-field here so all three `part : Part` params (ModalResult,
+// ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
+// within this module, without depending on the F foundation / task 4574. The
+// actual geometry+material+topology fields will be grown in a later task.
+// Single-module (modal_analysis.ri only); cite task 4578.
+structure def Part { }
 
 // ── ModalResult ──────────────────────────────────────────────────────────────
 
@@ -210,24 +225,17 @@ structure def Mode {
 // `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
 //
 // Field semantics (PRD §4.1):
-//   part                 — the analysed part. FIXME(part-structdef): encoded
-//                          as `String` PLACEHOLDER for the future `Part`
-//                          structure_def from the v0.3 solver-elastic PRD
-//                          (not yet landed). `String` (not `Real`) because
-//                          `Part` semantically denotes a named entity /
-//                          handle, consistent with the `FixedSupport.target
-//                          : String` selector-placeholder precedent
-//                          (fea_multi_case.ri:269-273 placeholder
-//                          convention). Tightens to the `Part` type once it
-//                          lands; consumer task ζ reads `.modes`, not
-//                          `.part`, so this placeholder is non-blocking.
+//   part                 — the analysed part. Typed `Part` (declared in this
+//                          module, task 4578). Opaque marker in this phase;
+//                          grows to full geometry+material+topology later.
+//                          Consumer task ζ reads `.modes`, not `.part`.
 //   modes                — the computed modal eigenpairs, one `Mode` per
 //                          extracted mode, ordered ascending by frequency.
 //                          `Mode` is module-local so this resolves to
 //                          `List<StructureRef("Mode")>`.
 //   boundary_conditions  — the support set the solve was constrained with.
 //                          `Support` is the marker trait from
-//                          `std.fea.multi_case`, already in the growing
+//                          `std.fea.types`, already in the growing
 //                          prelude at modal-compile time, so this resolves
 //                          to `List<TraitObject("Support")>` (same shape as
 //                          trajectory's `List<BoundaryCondition>`).
@@ -239,7 +247,7 @@ structure def Mode {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.1.
 structure def ModalResult {
-    param part : String
+    param part : Part
     param modes : List<Mode>
     param boundary_conditions : List<Support>
     param damping : DampingDescriptor
@@ -279,7 +287,7 @@ structure def ModalResult {
 //                          `BucklingOptions.n_modes`.
 //   boundary_conditions — the support set constraining the eigenproblem.
 //                          `Support` is the marker trait from
-//                          `std.fea.multi_case`, in the growing prelude at
+//                          `std.fea.types`, in the growing prelude at
 //                          modal-compile time → `List<TraitObject("Support")>`.
 //                          Required at construction (no default).
 //   damping             — damping strategy (`NoDamping` for an undamped
@@ -422,7 +430,7 @@ structure def ModalOptions {
 // time and the eval-time dispatch matches via the SIR-α nominal type-tag.
 //
 // Same marker-trait pattern as `trait DampingDescriptor { }` (line 82) and
-// `trait Support { }` (fea_multi_case.ri:288).
+// `trait Support { }` (fea_types.ri).
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 trait ForcingFunction { }
@@ -435,11 +443,10 @@ trait ForcingFunction { }
 //
 // Param semantics (PRD §5.1):
 //   at         — the location on the part where the force is applied.
-//                FIXME(location-id-type): encoded as `String` PLACEHOLDER for
+//                FIXME(location-id-type, #4577): encoded as `String` PLACEHOLDER for
 //                the future `LocationId` topology-selector type (not yet landed
 //                in Reify v0.3). Consistent with `FixedSupport.target : String`
-//                (fea_multi_case.ri:309) and `ModalResult.part : String`
-//                (modal_analysis.ri:241) using `String` as a selector/name
+//                (fea_multi_case.ri:309) using `String` as a selector/name
 //                placeholder. Consumer tasks θ/ι read `.magnitude` and
 //                `.direction`, not `.at` directly, so this placeholder is
 //                non-blocking.
@@ -503,23 +510,18 @@ structure def StepForce : ForcingFunction {
 // momentum: F(t) = impulse · δ(t − time), where δ is the Dirac delta.
 //
 // Param semantics (PRD §5.1):
-//   at       — the location on the part. FIXME(location-id-type): `String`
+//   at       — the location on the part. FIXME(location-id-type, #4577): `String`
 //              PLACEHOLDER for the future `LocationId` type (same convention
 //              as `StepForce.at` above).
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //              `ModalOptions.reference_direction` precedent. The `direction`
 //              unit-vector carries the sign; `impulse` carries the positive
 //              scalar magnitude.
-//   impulse  — the positive scalar impulse (momentum transfer).
-//              FIXME(impulse-dim): encoded as `Real` PLACEHOLDER for the
-//              unrepresentable `ImpulseDim` = N·s = momentum =
-//              MASS·LENGTH·TIME⁻¹ (not in NAMED_DIMENSIONS —
-//              reify-types/src/dimension.rs:444-505 scanned). Same
-//              placeholder convention as `Mode.frequency : Real` (modal_
-//              analysis.ri:188) waiting for `Scalar<Frequency>`. The
-//              constraint `impulse > 0` (bare `0`, not `0unit`, because
-//              `impulse : Real`) works per the `n_modes > 0` precedent on
-//              `Int`-typed `n_modes`.
+//   impulse  — the positive scalar impulse (momentum transfer). Typed as
+//              `Impulse` = N·s = momentum = kg·m·s⁻¹, registered in
+//              NAMED_DIMENSIONS (crates/reify-core/src/dimension.rs, task 4548).
+//              The `direction` unit-vector carries the sign; `impulse` carries
+//              the positive scalar magnitude.
 //   time     — the time of the delta-function impulse application. Any real
 //              time is valid; negative values support pre-loaded-history
 //              simulations.
@@ -528,17 +530,17 @@ structure def StepForce : ForcingFunction {
 structure def ImpulseForce : ForcingFunction {
     param at : String
     param direction : Vector3<Dimensionless>
-    param impulse : Real
+    param impulse : Impulse
     param time : Time
 
-    // `impulse : Real` (PLACEHOLDER for ImpulseDim = N·s) uses bare `0`
-    // because the field is Real-typed — same shape as `n_modes > 0` on
-    // Int-typed `n_modes` (modal_analysis.ri:365). By convention, `direction`
-    // carries the sign (unit vector); `impulse` carries the positive scalar
-    // magnitude. Declaring the lower bound at the structure-def level follows
-    // the task-2544 explicit-contract convention (same rationale as
-    // `StepForce.magnitude > 0N` above).
-    constraint impulse > 0
+    // `impulse : Impulse` uses the dimensioned-zero form `0 * 1N * 1s`
+    // (N·s = kg·m·s⁻¹ = Impulse) because polymorphic-zero has not landed —
+    // same convention as `frequency > 0Hz` on the Frequency-typed
+    // HarmonicForce.frequency and `StepForce.magnitude > 0N` above. By
+    // convention, `direction` carries the sign (unit vector); `impulse` carries
+    // the positive scalar magnitude. Declaring the lower bound at the
+    // structure-def level follows the task-2544 explicit-contract convention.
+    constraint impulse > 0 * 1N * 1s
 
     // NOTE — explicitly NOT constrained:
     //   at        : String — no scalar invariant expressible on a String placeholder
@@ -555,7 +557,7 @@ structure def ImpulseForce : ForcingFunction {
 //     F(t) = amplitude · sin(2π · frequency · t + phase)
 //
 // Param semantics (PRD §5.1):
-//   at        — the application location. FIXME(location-id-type): `String`
+//   at        — the application location. FIXME(location-id-type, #4577): `String`
 //               PLACEHOLDER per the StepForce/ImpulseForce precedent.
 //   direction — unit excitation vector. `Vector3<Dimensionless>` per the
 //               `ModalOptions.reference_direction` precedent. Direction carries
@@ -620,7 +622,7 @@ structure def HarmonicForce : ForcingFunction {
 // timestep.
 //
 // Param semantics (PRD §5.1 / §5.3):
-//   at           — application location. FIXME(location-id-type): `String`
+//   at           — application location. FIXME(location-id-type, #4577): `String`
 //                  PLACEHOLDER per the StepForce precedent.
 //   direction    — unit excitation vector. `Vector3<Dimensionless>` per the
 //                  `ModalOptions.reference_direction` precedent. Direction
@@ -680,13 +682,10 @@ structure def SampledForce : ForcingFunction {
 // HarmonicForce, SampledForce, or any future conformer) at the per-Part layer.
 //
 // Param semantics (PRD §5.1):
-//   part    — the Part on which the forcing history acts.
-//             FIXME(part-structdef): encoded as `String` PLACEHOLDER for the
-//             future `Part` topology type (not yet landed in Reify v0.3).
-//             Consistent with `ModalResult.part : String` (modal_analysis.ri:
-//             241) and `ModalOptions.part : String` using `String` as a
-//             selector/name placeholder. Consumer tasks θ/ι locate the DOF
-//             assembly via this string at runtime.
+//   part    — the Part on which the forcing history acts. Typed `Part`
+//             (declared in this module, task 4578); opaque marker in this
+//             phase, grown later. Consumer tasks θ/ι locate the DOF assembly
+//             via this Part at runtime.
 //   sources — list of forcing sources that sum linearly at each (t, location)
 //             pair per PRD §12.5 resolved-question ("sources sum linearly; no
 //             cross-source coupling in modal superposition"). Encoded as
@@ -708,7 +707,7 @@ structure def SampledForce : ForcingFunction {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
 structure def ForcingTimeHistory {
-    param part : String
+    param part : Part
     param sources : List<ForcingFunction>
 
     // An empty `sources` list corresponds exactly to the PRD §1
@@ -723,8 +722,7 @@ structure def ForcingTimeHistory {
     constraint sources.count > 0
 
     // NOTE — explicitly NOT constrained:
-    //   part : String — no scalar invariant expressible on a String placeholder;
-    //                   the future `Part` tighten target does not change this.
+    //   part : Part — opaque marker; no scalar invariant expressible.
     //   Cross-source temporal-overlap semantics (sources summing linearly at
     //   each (t, location) per PRD §12.5 resolved-question) are runtime
     //   semantics, not a structure-def scalar predicate; deferred to the
@@ -753,11 +751,8 @@ structure def ForcingTimeHistory {
 // (task ι), mirroring the `ModalResult.modes` discipline.
 //
 // Field semantics (PRD §5.2):
-//   part         — the analysed part. FIXME(part-structdef): encoded as `String`
-//                  PLACEHOLDER for the future `Part` type, identical to
-//                  `ModalResult.part` (modal_analysis.ri:241) and
-//                  `ForcingTimeHistory.part`. The trampoline echoes it from the
-//                  modal result (currently the `""` placeholder).
+//   part         — the analysed part. Typed `Part` (declared in this module,
+//                  task 4578). Echoed from the modal result by the trampoline.
 //   modal_result — the `ModalResult` the response was integrated against, echoed
 //                  verbatim so `displacement_at` can read each mode's `shape`
 //                  (Φ_i) for the projection coefficient Φ_i[node]·direction
@@ -783,14 +778,12 @@ structure def ForcingTimeHistory {
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.2.
 structure def DisplacementTimeHistory {
-    param part : String
+    param part : Part
     param modal_result : ModalResult
     param t_samples : List<Time>
     param mode_coords : List<List<Real>>
     // NOTE — explicitly NOT constrained:
-    //   part         : String      — no scalar invariant expressible on a String
-    //                                 placeholder; the future `Part` tighten
-    //                                 target does not change this.
+    //   part         : Part        — opaque marker; no scalar invariant expressible.
     //   modal_result : ModalResult — struct-typed; not scalar-predicable.
     //   t_samples / mode_coords    — collection invariants (`mode_coords` outer
     //                                 length == modes count, each inner length ==

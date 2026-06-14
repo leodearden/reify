@@ -1,10 +1,11 @@
 import { onMount, onCleanup, createEffect, createMemo, createSignal, untrack, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createWireManager } from './wireManager';
+import { createSurfaceManager } from './surfaceManager';
 import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
@@ -60,6 +61,11 @@ export interface ViewportProps {
    * struts and cables as fat-line objects with distinct colour and linewidth.
    */
   tensegrityWires?: TensegrityWireData[];
+  /**
+   * Optional tensegrity surface data. When provided, the surface manager renders
+   * membrane facets as filled translucent Mesh objects with distinct colour.
+   */
+  tensegritySurfaces?: TensegritySurfaceData[];
 }
 
 export function Viewport(props: ViewportProps) {
@@ -89,6 +95,7 @@ export function Viewport(props: ViewportProps) {
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
     wireManager.setResolution(width, height);
+    const surfaceManager = createSurfaceManager(scene);
 
     // Create selection system
     const selection = createSelection({
@@ -289,6 +296,12 @@ export function Viewport(props: ViewportProps) {
       requestRender();
     });
 
+    // Sync tensegrity surface facets reactively
+    createEffect(() => {
+      surfaceManager.sync(props.tensegritySurfaces ?? []);
+      requestRender();
+    });
+
     // Sync meshes reactively
     createEffect(() => {
       meshManager.sync(props.meshes);
@@ -398,6 +411,7 @@ export function Viewport(props: ViewportProps) {
       controls.dispose();
       meshManager.dispose();
       wireManager.dispose();
+      surfaceManager.dispose();
       disposeAxisLabels();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {

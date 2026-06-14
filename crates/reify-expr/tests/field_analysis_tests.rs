@@ -119,7 +119,7 @@ fn make_constant_stress_field(tensor: Value) -> (Value, Type) {
         ValueMap::new(),
     );
 
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     let codomain = pressure_matrix_type();
     make_analytical_field(domain, codomain, lambda)
 }
@@ -138,7 +138,7 @@ fn von_mises_field_returns_field_with_von_mises_source() {
 
     // Call von_mises(field)
     let result_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(pressure_scalar_type()),
     };
     let vm_expr = make_function_call(
@@ -164,11 +164,11 @@ fn von_mises_field_returns_field_with_von_mises_source() {
     // Domain preserved: Point3(Real)
     assert_eq!(
         *domain_type,
-        Type::point3(Type::Real),
+        Type::point3(Type::dimensionless_scalar()),
         "domain should be Point3(Real)"
     );
 
-    // Codomain: Scalar with PRESSURE dimension (same as tensor elements)
+    // Codomain: Length with PRESSURE dimension (same as tensor elements)
     assert_eq!(
         *codomain_type,
         pressure_scalar_type(),
@@ -192,7 +192,7 @@ fn von_mises_field_stores_original_field_in_lambda_slot() {
     let (field, field_type) = make_constant_stress_field(tensor);
 
     let result_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(pressure_scalar_type()),
     };
     let vm_expr = make_function_call(
@@ -236,7 +236,7 @@ fn sample_von_mises_field_uniaxial_returns_sigma() {
 
     // Build: von_mises(field)
     let vm_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(pressure_scalar_type()),
     };
     let vm_expr = make_function_call(
@@ -254,7 +254,7 @@ fn sample_von_mises_field_uniaxial_returns_sigma() {
         "sample",
         vec![
             CompiledExpr::literal(vm_field, vm_field_type),
-            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(sample_point, Type::point3(Type::dimensionless_scalar())),
         ],
         pressure_scalar_type(),
     );
@@ -295,7 +295,7 @@ fn sample_von_mises_field_hydrostatic_returns_zero() {
     let (field, field_type) = make_constant_stress_field(tensor);
 
     let vm_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(pressure_scalar_type()),
     };
     let vm_expr = make_function_call(
@@ -312,7 +312,7 @@ fn sample_von_mises_field_hydrostatic_returns_zero() {
         "sample",
         vec![
             CompiledExpr::literal(vm_field, vm_field_type),
-            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(sample_point, Type::point3(Type::dimensionless_scalar())),
         ],
         pressure_scalar_type(),
     );
@@ -353,7 +353,7 @@ fn assert_analysis_wrapper(
     let (field, field_type) = make_constant_stress_field(tensor);
 
     let result_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(expected_codomain.clone()),
     };
 
@@ -375,7 +375,7 @@ fn assert_analysis_wrapper(
 
     assert_eq!(
         *domain_type,
-        Type::point3(Type::Real),
+        Type::point3(Type::dimensionless_scalar()),
         "{op_name}: domain should be Point3(Real)"
     );
     assert_eq!(
@@ -431,8 +431,8 @@ fn safety_factor_field_returns_field_with_correct_source() {
     };
 
     let result_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
 
     let expr = make_function_call(
@@ -460,10 +460,10 @@ fn safety_factor_field_returns_field_with_correct_source() {
         );
     };
 
-    assert_eq!(*domain_type, Type::point3(Type::Real));
+    assert_eq!(*domain_type, Type::point3(Type::dimensionless_scalar()));
     assert_eq!(*source, FieldSourceKind::SafetyFactor);
     // Safety factor is dimensionless (yield / von_mises cancels PRESSURE dims)
-    assert_eq!(*codomain_type, Type::Real);
+    assert_eq!(*codomain_type, Type::dimensionless_scalar());
 }
 
 // ── Sampling tests for principal_stresses, max_shear, safety_factor ─────────
@@ -478,7 +478,7 @@ fn sample_principal_stresses_field_diagonal_returns_sorted_list() {
     let (field, field_type) = make_constant_stress_field(tensor);
 
     let ps_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(Type::List(Box::new(pressure_scalar_type()))),
     };
     let ps_expr = make_function_call(
@@ -495,7 +495,7 @@ fn sample_principal_stresses_field_diagonal_returns_sorted_list() {
         "sample",
         vec![
             CompiledExpr::literal(ps_field, ps_field_type),
-            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(sample_point, Type::point3(Type::dimensionless_scalar())),
         ],
         Type::List(Box::new(pressure_scalar_type())),
     );
@@ -539,7 +539,7 @@ fn sample_max_shear_field_uniaxial_returns_half_sigma() {
     let (field, field_type) = make_constant_stress_field(tensor);
 
     let ms_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
         codomain: Box::new(pressure_scalar_type()),
     };
     let ms_expr = make_function_call(
@@ -556,7 +556,7 @@ fn sample_max_shear_field_uniaxial_returns_half_sigma() {
         "sample",
         vec![
             CompiledExpr::literal(ms_field, ms_field_type),
-            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(sample_point, Type::point3(Type::dimensionless_scalar())),
         ],
         pressure_scalar_type(),
     );
@@ -599,8 +599,8 @@ fn sample_safety_factor_field_returns_yield_over_von_mises() {
     };
 
     let sf_field_type = Type::Field {
-        domain: Box::new(Type::point3(Type::Real)),
-        codomain: Box::new(Type::Real),
+        domain: Box::new(Type::point3(Type::dimensionless_scalar())),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     let sf_expr = make_function_call(
         "safety_factor",
@@ -619,9 +619,9 @@ fn sample_safety_factor_field_returns_yield_over_von_mises() {
         "sample",
         vec![
             CompiledExpr::literal(sf_field, sf_field_type),
-            CompiledExpr::literal(sample_point, Type::point3(Type::Real)),
+            CompiledExpr::literal(sample_point, Type::point3(Type::dimensionless_scalar())),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let result = eval_expr(&sample_expr, &EvalContext::simple(&values));

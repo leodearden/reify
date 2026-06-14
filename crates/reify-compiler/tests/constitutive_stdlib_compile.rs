@@ -117,12 +117,18 @@ fn std_constitutive_module_loads_with_no_errors() {
 
 #[test]
 fn constitutive_law_trait_is_empty_marker() {
-    let module = load_stdlib_module();
-    let trait_def = module
+    // ConstitutiveLaw was relocated to std/materials/fea (above ElasticMaterial)
+    // in task γ (PRD §4.2) so that `trait ElasticMaterial : ConstitutiveLaw` is
+    // not a forward-reference. Look it up there.
+    let fea_module = stdlib_loader::load_stdlib()
+        .iter()
+        .find(|m| m.path.to_string() == "std/materials/fea")
+        .expect("stdlib should contain std/materials/fea module");
+    let trait_def = fea_module
         .trait_defs
         .iter()
         .find(|t| t.name == "ConstitutiveLaw")
-        .expect("expected ConstitutiveLaw trait in std/constitutive");
+        .expect("expected ConstitutiveLaw trait in std/materials/fea (relocated from std/constitutive in task γ)");
     assert!(
         trait_def.required_members.is_empty() && trait_def.defaults.is_empty(),
         "ConstitutiveLaw trait should be an empty marker (body intentionally \
@@ -164,9 +170,9 @@ fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance(
         ("g12", pressure_ty.clone()),
         ("g13", pressure_ty.clone()),
         ("g23", pressure_ty.clone()),
-        ("nu12", Type::Real),
-        ("nu13", Type::Real),
-        ("nu23", Type::Real),
+        ("nu12", Type::dimensionless_scalar()),
+        ("nu13", Type::dimensionless_scalar()),
+        ("nu23", Type::dimensionless_scalar()),
         ("density", density_ty),
         ("e1_provenance", provenance_ty.clone()),
         ("e2_provenance", provenance_ty.clone()),

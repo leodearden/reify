@@ -397,13 +397,13 @@ mod tests {
     /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
     // Post-GHR-α (task 3603): Physical is spec-shape (geometry : Solid +
     // material : Material struct slot); the legacy flat-scalar
-    // density/volume/centroid_x/y/z params were retired. Rigid still refines
-    // Physical and adds moment_of_inertia. Mirrors the canonical spec-shape
-    // fixture in structural_physical_tests.rs.
+    // density/volume/centroid_x/y/z params were retired. Rigid refines Physical;
+    // moment_of_inertia is now auto-derived (task 4229 Option A — no longer a
+    // required param). Dimensioned density (7850kg/m^3) required so body_density
+    // let resolves to a clean Density (avoids resolve_density_arg Warning).
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
-    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
-    param moment_of_inertia: MomentOfInertia = 1.0 * 1kg * 1m * 1m
+    param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
 
     #[test]
@@ -1177,11 +1177,11 @@ structure S {
 
     /// Shared setup for the two param-override emitter tests.
     ///
-    /// Parses and compiles `"structure S { param width: Scalar = 100mm }"`, does an initial
+    /// Parses and compiles `"structure S { param width: Length = 100mm }"`, does an initial
     /// eval to warm the engine state, then overrides `width` with `override_value` and returns
     /// the diagnostics from the second eval.
     fn build_param_override_diags(override_value: Value) -> Vec<Diagnostic> {
-        let source = "structure S { param width: Scalar = 100mm }";
+        let source = "structure S { param width: Length = 100mm }";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
@@ -1198,7 +1198,7 @@ structure S {
     fn run_solver_on_constrained_auto_param(
         solver: MockConstraintSolver,
     ) -> (Arc<AtomicUsize>, Vec<Diagnostic>) {
-        let source = "structure S {\n    param x: Scalar = auto\n    constraint x > 1mm\n}";
+        let source = "structure S {\n    param x: Length = auto\n    constraint x > 1mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let counter = solver.counter_handle();

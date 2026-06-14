@@ -38,8 +38,8 @@ pub use ast::{
 // form `reify_ast::decl::ParsedModule`.
 pub use decl::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConnectOp, ConstraintDecl,
-    ConstraintDef, ConstraintInstDecl, Declaration, EnumDecl, EnumVariantDecl, FieldDef,
-    FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
+    ConstraintDef, ConstraintInstDecl, Declaration, DefaultDecl, EnumDecl, EnumVariantDecl,
+    FieldDef, FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
     ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,

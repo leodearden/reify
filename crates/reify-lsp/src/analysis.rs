@@ -293,6 +293,24 @@ impl AnalysisContext {
             _ => None,
         })
     }
+
+    /// Surface the ΔDOF contract for a geometric-relation builtin call named
+    /// `name`, scoped to the enclosing declaration (the structure/occurrence the
+    /// hover cursor sits in). Returns `name(ArgTys) -> Relation removes N`, or
+    /// `None` if no such relation call is present in that scope
+    /// (geometric-relations γ, task 4383).
+    ///
+    /// A thin pass-through to the compiler-side traversal
+    /// [`reify_compiler::relation_signatures::relation_contract_for_call`], which
+    /// keeps `CompiledExprKind` matching inside reify-compiler rather than
+    /// exposing the IR's expression internals across the crate boundary.
+    pub fn relation_contract(&self, name: &str, enclosing_decl: Option<&str>) -> Option<String> {
+        reify_compiler::relation_signatures::relation_contract_for_call(
+            &self.compiled,
+            name,
+            enclosing_decl,
+        )
+    }
 }
 
 /// Return the declaration whose span contains `offset`,
@@ -316,6 +334,7 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
             Declaration::Constraint(c) => c.span,
             Declaration::Unit(u) => u.span,
             Declaration::TypeAlias(t) => t.span,
+            Declaration::Default(d) => d.span,
             Declaration::Module(m) => m.span,
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
@@ -747,13 +766,13 @@ mod tests {
     /// Shared across all task-2176 stdlib-resolution tests to avoid tripling the literal.
     // Post-GHR-α (task 3603): Physical is spec-shape (geometry : Solid +
     // material : Material struct slot); the legacy flat-scalar
-    // density/volume/centroid_x/y/z params were retired. Rigid still refines
-    // Physical and adds moment_of_inertia. Mirrors the canonical spec-shape
-    // fixture in structural_physical_tests.rs.
+    // density/volume/centroid_x/y/z params were retired. Rigid refines Physical;
+    // moment_of_inertia is now auto-derived (task 4229 Option A — no longer a
+    // required param). Dimensioned density (7850kg/m^3) required so body_density
+    // let resolves to a clean Density (avoids resolve_density_arg Warning).
     const STDLIB_PROBE_SRC: &str = r#"structure S : Rigid {
     param geometry: Solid = box(10mm, 20mm, 30mm)
-    param material: Material = Material(name: "steel", density: 7850.0, youngs_modulus: 200000000000.0)
-    param moment_of_inertia: MomentOfInertia = 1.0 * 1kg * 1m * 1m
+    param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
 
     // --- module_name_from_uri tests ---
@@ -851,7 +870,7 @@ mod tests {
         assert_eq!(info.name, "width");
         assert_eq!(info.kind, ValueCellKind::Param);
         assert_eq!(*info.cell_type, Type::length());
-        // Span starts at the 'p' in 'param width: Scalar = 80mm'
+        // Span starts at the 'p' in 'param width: Length = 80mm'
         assert_eq!(info.span.start, 24);
         // Verify span covers the full declaration text
         let decl_text = &source[info.span.start as usize..info.span.end as usize];
@@ -876,7 +895,7 @@ mod tests {
 
     #[test]
     fn find_member_decl_occurrence_param() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("diameter", None)
@@ -929,7 +948,7 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param guarded_x : Scalar = 5mm
+        param guarded_x : Length = 5mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -963,9 +982,9 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param when_true : Scalar = 1mm
+        param when_true : Length = 1mm
     } else {
-        param when_false : Scalar = 2mm
+        param when_false : Length = 2mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1029,7 +1048,7 @@ mod tests {
 
     #[test]
     fn entity_names_includes_occurrence() {
-        let source = "structure Bracket {\n    param width: Scalar = 80mm\n}\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
+        let source = "structure Bracket {\n    param width: Length = 80mm\n}\noccurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n    constraint diameter > 5mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let entities = ctx.entity_names();
         assert_eq!(entities.len(), 2, "should have Bracket and Joint");
@@ -1076,7 +1095,7 @@ mod tests {
     param b : Bool = true
     where a {
         where b {
-            param deep : Scalar = 1mm
+            param deep : Length = 1mm
         }
     }
 }"#;
@@ -1096,7 +1115,7 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param when_true : Scalar = 1mm
+        param when_true : Length = 1mm
     } else {
         let fallback = 2
     }
@@ -1125,9 +1144,9 @@ mod tests {
         // inside where-blocks. This test expects the CORRECT (recursive) counts.
         let source = r#"structure S {
     param a : Bool = true
-    param b : Scalar = 1mm
+    param b : Length = 1mm
     where a {
-        param guarded_x : Scalar = 5mm
+        param guarded_x : Length = 5mm
         let guarded_y = 2
     }
     constraint b > 0mm
@@ -1182,7 +1201,7 @@ mod tests {
     fn get_value_multi_declaration_scoped_correctly() {
         // Two structures with same-named param 'x' but different default values.
         // get_value must return the correct value scoped to each declaration.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Scalar = 20mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Length = 20mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
 
         // A's x should be 0.005 m (5mm in SI)
@@ -1222,7 +1241,7 @@ mod tests {
 
     #[test]
     fn find_entity_doc_returns_doc_for_documented_structure() {
-        let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// A bracket.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Bracket"), Some("A bracket."));
     }
@@ -1230,7 +1249,7 @@ mod tests {
     #[test]
     fn find_entity_doc_returns_doc_for_occurrence() {
         let source =
-            "/// A joint process.\noccurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+            "/// A joint process.\noccurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
     }
@@ -1244,14 +1263,14 @@ mod tests {
 
     #[test]
     fn find_entity_doc_returns_none_for_undocumented_occurrence() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         assert_eq!(ctx.find_entity_doc("Joint"), None);
     }
 
     #[test]
     fn member_info_includes_doc_for_documented_param() {
-        let source = "structure Bracket {\n    /// The width.\n    param width: Scalar = 80mm\n}";
+        let source = "structure Bracket {\n    /// The width.\n    param width: Length = 80mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("width", None)
@@ -1266,7 +1285,7 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param guarded_x : Scalar = 5mm
+        param guarded_x : Length = 5mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1302,7 +1321,7 @@ mod tests {
     param b : Bool = true
     where a {
         where b {
-            param deep_x : Scalar = 1mm
+            param deep_x : Length = 1mm
         }
     }
 }"#;
@@ -1338,7 +1357,7 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param a : Scalar = 1mm
+        param a : Length = 1mm
     } else {
         let fallback = 2
     }
@@ -1379,9 +1398,9 @@ mod tests {
         let source = r#"structure S {
     param cond : Bool = true
     where cond {
-        param only_when_true : Scalar = 1mm
+        param only_when_true : Length = 1mm
     } else {
-        param only_in_else : Scalar = 7mm
+        param only_in_else : Length = 7mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1419,13 +1438,13 @@ mod tests {
         // AND a guarded-group param; every MemberInfo field is asserted.
         let source = r#"structure S {
     /// top-level param
-    param top_p : Scalar = 3mm
+    param top_p : Length = 3mm
     /// top-level let
     let top_l = 9
     param cond : Bool = true
     where cond {
         /// guarded param
-        param guarded_p : Scalar = 4mm
+        param guarded_p : Length = 4mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1478,7 +1497,7 @@ mod tests {
 
     #[test]
     fn find_member_decl_decl_name_populated() {
-        let source = "structure Foo {\n    param x: Scalar = 1mm\n}";
+        let source = "structure Foo {\n    param x: Length = 1mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("x", None).expect("x should exist");
         assert_eq!(info.decl_name, "Foo");
@@ -1488,7 +1507,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_inside_second() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B: 'y' in "param y: Bool = true"
         let b_y_offset = source.find("param y").unwrap() + 6;
@@ -1497,7 +1516,7 @@ mod tests {
             Some("B"),
             "offset inside B should return Some(\"B\")"
         );
-        // Offset inside A: 'x' in "param x: Scalar = 5mm"
+        // Offset inside A: 'x' in "param x: Length = 5mm"
         let a_x_offset = source.find("param x").unwrap() + 6;
         assert_eq!(
             ctx.enclosing_decl_name_at(a_x_offset),
@@ -1515,7 +1534,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_inside_occurrence() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let offset = source.find("diameter").unwrap();
         assert_eq!(
@@ -1527,7 +1546,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_inside_enum_returns_none() {
-        let source = "enum Color { Red, Green }\nstructure S {\n    param x: Scalar = 5mm\n}";
+        let source = "enum Color { Red, Green }\nstructure S {\n    param x: Length = 5mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside enum body: 'Red' variant
         let red_offset = source.find("Red").unwrap();
@@ -1540,7 +1559,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_inside_trait() {
-        let source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let source = "trait Rigid {\n    param mass: Length = 5mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let offset = source.find("mass").unwrap();
         assert_eq!(
@@ -1566,7 +1585,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_name_at_delegates_to_free_function() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         // Offset inside B
         let b_y_offset = source.find("param y").unwrap() + 6;
@@ -1585,7 +1604,7 @@ mod tests {
 
     #[test]
     fn find_member_decl_scoped_to_second_structure() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("x", Some("B"))
@@ -1611,7 +1630,7 @@ mod tests {
     fn find_member_decl_ambiguous_name_returns_first_decl_consistently() {
         // Two structures with identically-named params but different types.
         // find_member_decl must return span AND type from the same declaration.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("x", None).expect("x should exist");
         // Should return type from A (first match) — Scalar with LENGTH dimension
@@ -1633,7 +1652,7 @@ mod tests {
     #[test]
     fn find_member_decl_ambiguous_name_second_decl_type_not_leaked() {
         // Verify the returned cell_type is NOT Bool (proving type didn't leak from B).
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx.find_member_decl("x", None).expect("x should exist");
         assert_ne!(
@@ -1648,7 +1667,7 @@ mod tests {
         // "y" exists only in B (the second declaration).
         // find_member_decl("y", None) must iterate past A and find y in B,
         // returning decl_name="B" (not "A") and a span within B's byte range.
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Scalar = 10mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Length = 10mm\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let info = ctx
             .find_member_decl("y", None)
@@ -1670,7 +1689,7 @@ mod tests {
 
     #[test]
     fn member_names_for_structure_returns_scoped_members() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let ctx = AnalysisContext::new(source, &test_uri());
         let a_members = ctx.member_names_for_structure("A");
         let a_names: Vec<&str> = a_members.iter().map(|(n, _, _)| *n).collect();
@@ -1849,7 +1868,7 @@ mod tests {
     param cond : Bool = true
     port x : MechPort { param d : Length = 10mm  constraint d > 0mm }
     where cond {
-        param guarded_p : Scalar = 5mm
+        param guarded_p : Length = 5mm
     }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1899,7 +1918,7 @@ mod tests {
     #[test]
     fn entity_names_counts_port_internal_members() {
         let source = r#"structure S {
-    param a : Scalar = 1mm
+    param a : Length = 1mm
     port x : MechPort { param d : Length = 10mm  let ratio = 2  constraint d > 0mm }
 }"#;
         let ctx = AnalysisContext::new(source, &test_uri());
@@ -1932,9 +1951,9 @@ mod tests {
 
     #[test]
     fn enclosing_decl_at_returns_structure_for_offset_inside() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
-        // Offset inside A: 'x' in "param x: Scalar = 5mm"
+        // Offset inside A: 'x' in "param x: Length = 5mm"
         let a_x_offset = source.find("param x").unwrap() + 6;
         let decl = enclosing_decl_at(&parsed.declarations, a_x_offset);
         assert!(decl.is_some(), "offset inside A should return Some");
@@ -1946,7 +1965,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_at_returns_correct_structure_for_second_decl() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         // Offset inside B: 'y' in "param y: Bool = true"
         let b_y_offset = source.find("param y").unwrap() + 6;
@@ -1960,7 +1979,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_at_returns_occurrence() {
-        let source = "occurrence def Joint {\n    param diameter: Scalar = 10mm\n}";
+        let source = "occurrence def Joint {\n    param diameter: Length = 10mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let offset = source.find("diameter").unwrap();
         let decl = enclosing_decl_at(&parsed.declarations, offset);
@@ -1976,7 +1995,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_at_returns_none_between_declarations() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param y: Bool = true\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         // Offset between A and B (the newline between them)
         let between_offset = source.find("\nstructure B").unwrap();
@@ -1989,7 +2008,7 @@ mod tests {
 
     #[test]
     fn enclosing_decl_at_returns_none_for_offset_past_end() {
-        let source = "structure A {\n    param x: Scalar = 5mm\n}";
+        let source = "structure A {\n    param x: Length = 5mm\n}";
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         let decl = enclosing_decl_at(&parsed.declarations, source.len() + 100);
         assert!(decl.is_none(), "offset past end should return None");
@@ -2092,7 +2111,7 @@ mod tests {
     #[test]
     fn compute_document_symbols_single_structure_top_level() {
         use tower_lsp::lsp_types::SymbolKind;
-        let source = "structure Bracket { param width: Scalar = 80mm }";
+        let source = "structure Bracket { param width: Length = 80mm }";
         let symbols = compute_document_symbols(source, &test_uri());
         assert_eq!(
             symbols.len(),
@@ -2216,7 +2235,7 @@ mod tests {
 
         // --- occurrence → CLASS with param FIELD + let VARIABLE children ---
         let occ_source =
-            "occurrence def Joint {\n    param diameter: Scalar = 10mm\n    let radius = diameter / 2\n}";
+            "occurrence def Joint {\n    param diameter: Length = 10mm\n    let radius = diameter / 2\n}";
         let occ_symbols = compute_document_symbols(occ_source, &test_uri());
         assert_eq!(occ_symbols.len(), 1, "one occurrence → one top-level symbol");
         let joint = &occ_symbols[0];
@@ -2237,7 +2256,7 @@ mod tests {
         }
 
         // --- trait → INTERFACE with param FIELD child ---
-        let trait_source = "trait Rigid {\n    param mass: Scalar = 5mm\n}";
+        let trait_source = "trait Rigid {\n    param mass: Length = 5mm\n}";
         let trait_symbols = compute_document_symbols(trait_source, &test_uri());
         assert_eq!(trait_symbols.len(), 1, "one trait → one top-level symbol");
         let rigid = &trait_symbols[0];
@@ -2288,7 +2307,7 @@ mod tests {
     #[test]
     fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
         use tower_lsp::lsp_types::SymbolKind;
-        let source = "import std.math\nunit meter : Length\nfn area(w: Scalar) -> Scalar { w }";
+        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Scalar { w }";
         let symbols = compute_document_symbols(source, &test_uri());
         // import + unit are NOT navigable symbols; only the fn is.
         assert_eq!(
@@ -2315,7 +2334,7 @@ mod tests {
     sub motor = Motor()
     port intake : MechPort { param d : Length = 5mm }
     where cond {
-        param guarded_x : Scalar = 1mm
+        param guarded_x : Length = 1mm
     }
 }"#;
         let symbols = compute_document_symbols(source, &test_uri());
@@ -2366,17 +2385,17 @@ mod tests {
         // members, so the equivalence covers names, kinds, ranges, and the
         // nested children tree — not just the top-level list.
         let source = r#"structure Bracket {
-    param width : Scalar = 80mm
+    param width : Length = 80mm
     sub motor = Motor()
 }
 occurrence def Joint {
-    param diameter : Scalar = 10mm
+    param diameter : Length = 10mm
 }
 trait Rigid {
-    param mass : Scalar = 5mm
+    param mass : Length = 5mm
 }
 enum Shape { Circle, Square }
-fn area(w: Scalar) -> Scalar { w }"#;
+fn area(w: Length) -> Scalar { w }"#;
         let uri = test_uri();
 
         let parsed = reify_compiler::parse_with_stdlib(
@@ -2405,7 +2424,7 @@ fn area(w: Scalar) -> Scalar { w }"#;
 
     #[test]
     fn name_token_span_param_width_covers_just_the_name() {
-        let source = "param width: Scalar = 80mm";
+        let source = "param width: Length = 80mm";
         let member_span = SourceSpan::new(0, source.len() as u32);
         let span = name_token_span(source, member_span, "width");
         let start = source.find("width").unwrap() as u32;
@@ -2430,7 +2449,7 @@ fn area(w: Scalar) -> Scalar { w }"#;
         // A guarded member's statement span begins at the indented `param`
         // keyword. name_token_span must still land on the identifier token,
         // searching forward from the (non-zero) member-span start.
-        let source = "        param guarded_x : Scalar = 5mm";
+        let source = "        param guarded_x : Length = 5mm";
         let decl_start = source.find("param").unwrap() as u32;
         let member_span = SourceSpan::new(decl_start, source.len() as u32);
         let span = name_token_span(source, member_span, "guarded_x");
@@ -2451,7 +2470,7 @@ fn area(w: Scalar) -> Scalar { w }"#;
         // member start rather than borrowing the sibling's `beta` token — a
         // malformed/recovered node whose span lacks its own name must not match a
         // same-named token elsewhere in the source.
-        let source = "param alpha: Scalar = 1mm\nlet beta = alpha";
+        let source = "param alpha: Length = 1mm\nlet beta = alpha";
         let member_end = source.find('\n').unwrap() as u32; // end of `param alpha …`
         let member_span = SourceSpan::new(0, member_end);
 

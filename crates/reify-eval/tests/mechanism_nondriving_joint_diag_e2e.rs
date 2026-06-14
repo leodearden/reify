@@ -112,18 +112,17 @@ fn eval_emits_nondriving_joint_error_for_bind_coupling() {
         compiled.diagnostics,
     );
 
-    // Eval-time: exercise the full pipeline and document eval-side emission
-    // count.  The eval pass currently re-emits E_MECHANISM_NONDRIVING_JOINT
-    // (one additional diagnostic), because the eval-side `detect_nondriving_joint_errors`
-    // check has not yet been made conditional on the compile-time check already
-    // having fired.  The assertion below pins the *current* behaviour (== 1) so
-    // any future change in either direction (eval stops re-emitting → 0, or eval
-    // starts emitting more → 2) causes an explicit test failure and requires a
-    // conscious decision.
+    // Eval-time: the full compile+eval pipeline must yield ZERO additional
+    // E_MECHANISM_NONDRIVING_JOINT diagnostics from the eval pass.  The
+    // compile-time check (task 4310/γ) already fired and labelled the offending
+    // value cell's span; `detect_nondriving_joint_errors` is suppressed at that
+    // exact span via the compile-span predicate (task 4364/step-6), so the user
+    // sees exactly one diagnostic overall — emitted at compile time, not doubled
+    // at eval time.
     //
-    // TODO: once the eval-side detection is suppressed when compile already caught
-    // it, update this assertion to `eval_matching.len() == 0` to pin the
-    // no-double-emission contract.
+    // If this assertion fires with == 1 the suppression wiring is missing or
+    // broken; if it fires with == 2 both the compiler AND the eval pass fired
+    // without suppression (double-emission).
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
     let eval_matching: Vec<_> = eval_result
@@ -134,10 +133,10 @@ fn eval_emits_nondriving_joint_error_for_bind_coupling() {
 
     assert_eq!(
         eval_matching.len(),
-        1,
-        "eval currently re-emits exactly one E_MECHANISM_NONDRIVING_JOINT diagnostic \
-         (known double-emission: compile + eval both fire); got {} eval-side diagnostic(s) \
-         out of {} total.\n\
+        0,
+        "eval must emit ZERO E_MECHANISM_NONDRIVING_JOINT diagnostics when the \
+         compile-time check already fired at the same span (no-double-emission contract); \
+         got {} eval-side diagnostic(s) out of {} total.\n\
          All eval diagnostics: {:#?}",
         eval_matching.len(),
         eval_result.diagnostics.len(),
@@ -180,11 +179,18 @@ fn eval_emits_no_nondriving_joint_error_for_bind_prismatic() {
 /// compilation.  The source has a single offending cell (`let d`), so exactly
 /// one diagnostic is expected — `== 1` (not `>= 1`) also pins dedup behaviour
 /// so an accidental double-emission would fail the test.
+///
+/// Also runs the full compile+eval pipeline: the eval pass must emit ZERO
+/// `E_MECHANISM_NONDRIVING_JOINT` diagnostics because the compiler already
+/// flagged the offending cell at the exact same source span (task 4364).  A
+/// divergence between the compile-time label span and the `ValueCellDecl.span`
+/// for the `dim` emission site would silently reintroduce double-emission on
+/// this path; this assertion catches that immediately.
 #[test]
 fn eval_emits_nondriving_joint_error_for_dim_coupling() {
     let compiled = compile_source_with_stdlib(NONDRIVING_DIM_SOURCE);
 
-    let matching: Vec<_> = compiled
+    let compile_matching: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
@@ -194,14 +200,42 @@ fn eval_emits_nondriving_joint_error_for_dim_coupling() {
         .collect();
 
     assert_eq!(
-        matching.len(),
+        compile_matching.len(),
         1,
         "compiler must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
          for dim(coupling, range, steps); got {} matching diagnostic(s) out of {} total.\n\
          All diagnostics: {:#?}",
-        matching.len(),
+        compile_matching.len(),
         compiled.diagnostics.len(),
         compiled.diagnostics,
+    );
+
+    // Eval-time: the compile+eval pipeline must yield ZERO additional
+    // E_MECHANISM_NONDRIVING_JOINT diagnostics from the eval pass.  The
+    // compile-time check already fired at the value cell's span; the
+    // compile-span predicate suppresses re-emission at that exact site.
+    //
+    // If this fires with == 1, the span-join is broken for the dim emission
+    // path (double-emission reintroduced); if it fires with == 2, both phases
+    // fired without suppression.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    let eval_matching: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+
+    assert_eq!(
+        eval_matching.len(),
+        0,
+        "eval must emit ZERO E_MECHANISM_NONDRIVING_JOINT diagnostics when the \
+         compile-time check already fired at the same span (dim emission site); \
+         got {} eval-side diagnostic(s) out of {} total.\n\
+         All eval diagnostics: {:#?}",
+        eval_matching.len(),
+        eval_result.diagnostics.len(),
+        eval_result.diagnostics,
     );
 }
 
@@ -212,11 +246,18 @@ fn eval_emits_nondriving_joint_error_for_dim_coupling() {
 /// With β's joint type signatures, `couple(...)` now resolves to
 /// `Type::StructureRef("Coupling")` at compile time, so the check fires during
 /// compilation rather than at eval.
+///
+/// Also runs the full compile+eval pipeline: the eval pass must emit ZERO
+/// `E_MECHANISM_NONDRIVING_JOINT` diagnostics because the compiler already
+/// flagged the offending cell at the exact same source span (task 4364).  A
+/// divergence between the compile-time label span and the `ValueCellDecl.span`
+/// for the `sweep` emission site would silently reintroduce double-emission on
+/// this path; this assertion catches that immediately.
 #[test]
 fn eval_emits_nondriving_joint_error_for_sweep_coupling() {
     let compiled = compile_source_with_stdlib(NONDRIVING_SWEEP_SOURCE);
 
-    let matching: Vec<_> = compiled
+    let compile_matching: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| {
@@ -226,13 +267,41 @@ fn eval_emits_nondriving_joint_error_for_sweep_coupling() {
         .collect();
 
     assert_eq!(
-        matching.len(),
+        compile_matching.len(),
         1,
         "compiler must emit exactly one E_MECHANISM_NONDRIVING_JOINT Error diagnostic \
          for sweep(m, coupling, range, steps); got {} matching diagnostic(s) out of {} total.\n\
          All diagnostics: {:#?}",
-        matching.len(),
+        compile_matching.len(),
         compiled.diagnostics.len(),
         compiled.diagnostics,
+    );
+
+    // Eval-time: the compile+eval pipeline must yield ZERO additional
+    // E_MECHANISM_NONDRIVING_JOINT diagnostics from the eval pass.  The
+    // compile-time check already fired at the value cell's span; the
+    // compile-span predicate suppresses re-emission at that exact site.
+    //
+    // If this fires with == 1, the span-join is broken for the sweep emission
+    // path (double-emission reintroduced); if it fires with == 2, both phases
+    // fired without suppression.
+    let mut engine = make_simple_engine();
+    let eval_result = engine.eval(&compiled);
+    let eval_matching: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::MechanismNonDrivingJoint))
+        .collect();
+
+    assert_eq!(
+        eval_matching.len(),
+        0,
+        "eval must emit ZERO E_MECHANISM_NONDRIVING_JOINT diagnostics when the \
+         compile-time check already fired at the same span (sweep emission site); \
+         got {} eval-side diagnostic(s) out of {} total.\n\
+         All eval diagnostics: {:#?}",
+        eval_matching.len(),
+        eval_result.diagnostics.len(),
+        eval_result.diagnostics,
     );
 }

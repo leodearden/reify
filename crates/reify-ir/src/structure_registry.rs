@@ -117,7 +117,7 @@ mod tests {
             version,
             declared_trait_bounds: bounds.iter().map(|s| s.to_string()).collect(),
             source: None,
-            field_layout: vec![("youngs_modulus".to_string(), Type::Real)],
+            field_layout: vec![("youngs_modulus".to_string(), Type::dimensionless_scalar())],
         }
     }
 

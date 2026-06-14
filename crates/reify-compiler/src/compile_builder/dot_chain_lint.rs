@@ -159,6 +159,9 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         Declaration::TypeAlias(t) => walk_annotations(&t.annotations, diagnostics),
         // A module declaration has no annotations and no embedded expressions.
         Declaration::Module(_) => {}
+        // A default declaration has no annotations and no embedded dot-chain expressions
+        // to walk in task A (the RHS is accepted but not compiled; task B).
+        Declaration::Default(_) => {}
     }
 }
 
@@ -692,6 +695,7 @@ mod tests {
                 ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![leaf],
+                    arg_names: vec![None],
                 },
                 ArmKind::ConditionalCondition => ExprKind::Conditional {
                     condition: Box::new(leaf),
@@ -793,6 +797,7 @@ mod tests {
                 ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![shallow_leaf(span), leaf],
+                    arg_names: vec![None, None],
                 },
                 ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
                 ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),

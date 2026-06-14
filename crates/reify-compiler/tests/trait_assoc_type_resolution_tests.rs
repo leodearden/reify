@@ -14,7 +14,7 @@ use reify_test_support::{compile_source, errors_only};
 ///
 /// Fails today: `Material` is not a declared structure name, so
 /// `resolve_type_with_aliases` returns `None`, the param arm emits
-/// `UnresolvedType` and falls back to `Type::Real`.
+/// `UnresolvedType` and falls back to `Type::dimensionless_scalar()`.
 #[test]
 fn bound_assoc_type_resolves_in_param_annotation() {
     let source = r#"
@@ -61,7 +61,7 @@ structure def Beam : HasMaterial {
 /// `param mass : Material` to `Type::StructureRef("Steel")`.
 ///
 /// Fails after step-2: the own-binding scope is empty for `Bar`, so `Material`
-/// resolves to `None` → `UnresolvedType` → `Type::Real`.
+/// resolves to `None` → `UnresolvedType` → `Type::dimensionless_scalar()`.
 #[test]
 fn inherited_default_assoc_type_resolves_in_param_annotation() {
     let source = r#"

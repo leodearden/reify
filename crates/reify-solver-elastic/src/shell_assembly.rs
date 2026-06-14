@@ -215,6 +215,44 @@ const NDP_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_DOFS_PER_NODE;
 /// Lagrangian nodes per element (3).
 const NN_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_NODES;
 
+/// Constant-strain-triangle membrane strain-displacement node-pair block:
+/// the 2×2 `Bₘᵢᵀ·(t·D_pl)·Bₘⱼ` (force/displacement, **before** the area
+/// weight), indexed `[a][b]` for in-plane components `a, b ∈ {u_x, u_y}`.
+///
+/// With per-node constant shape gradient `dn = [∂N/∂x, ∂N/∂y]` the membrane
+/// B-matrix column block is `Bₘ = [[dn_x, 0], [0, dn_y], [dn_y, dn_x]]` (rows =
+/// Voigt strains `[ε_xx, ε_yy, γ_xy]`). This is the single strain-displacement
+/// core shared — bit-identically — by the MITC3 / MITC3+ shell membrane block
+/// ([`accumulate_membrane_k`], per-node DOF stride 6) and the dedicated 3-DOF/node
+/// CST membrane element
+/// ([`crate::elements::membrane_cst::element_stiffness_membrane_cst`], stride 3).
+/// Both callers multiply the returned block by the element area and scatter it
+/// at their own per-node DOF stride, so the inner triple-product is identical
+/// regardless of element kind.
+#[inline]
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn membrane_node_pair_block(
+    dn_i: [f64; 2],
+    dn_j: [f64; 2],
+    t_dpl: &[[f64; 3]; 3],
+) -> [[f64; 2]; 2] {
+    let bmi = [[dn_i[0], 0.0], [0.0, dn_i[1]], [dn_i[1], dn_i[0]]];
+    let bmj = [[dn_j[0], 0.0], [0.0, dn_j[1]], [dn_j[1], dn_j[0]]];
+    let mut blk = [[0.0_f64; 2]; 2];
+    for a in 0..2 {
+        for b in 0..2 {
+            let mut v = 0.0;
+            for rr in 0..3 {
+                for s in 0..3 {
+                    v += bmi[rr][a] * t_dpl[rr][s] * bmj[s][b];
+                }
+            }
+            blk[a][b] = v;
+        }
+    }
+    blk
+}
+
 /// Accumulate the membrane block `Bₘᵀ·(t·D)·Bₘ·A` into the nodal DOFs of `k`.
 ///
 /// Shared verbatim by the bare-MITC3 [`shell_element_stiffness`] and the MITC3+
@@ -223,6 +261,11 @@ const NN_ELEM: usize = crate::elements::mitc3_plus::Mitc3Plus::N_NODES;
 /// matrix size `N ∈ {18 (bare), 20 (MITC3+ uncondensed)}`. Sharing one body
 /// makes the "membrane is bit-identical to bare MITC3" guarantee structural
 /// rather than a property of two copies staying in lockstep.
+///
+/// The per-node-pair strain-displacement core is delegated to
+/// [`membrane_node_pair_block`] (per-node DOF stride 6 here; the CST membrane
+/// element reuses the same core at stride 3), so the inner triple-product is
+/// bit-identical across both element kinds.
 ///
 /// `t_dpl` is the pre-scaled `t · D_pl`; `dn` are the constant shape gradients.
 #[inline]
@@ -237,17 +280,10 @@ fn accumulate_membrane_k<const N: usize>(
         for nj in 0..NN_ELEM {
             let doi = [NDP_ELEM * ni, NDP_ELEM * ni + 1];
             let doj = [NDP_ELEM * nj, NDP_ELEM * nj + 1];
-            let bmi = [[dn[ni][0], 0.0], [0.0, dn[ni][1]], [dn[ni][1], dn[ni][0]]];
-            let bmj = [[dn[nj][0], 0.0], [0.0, dn[nj][1]], [dn[nj][1], dn[nj][0]]];
+            let blk = membrane_node_pair_block(dn[ni], dn[nj], t_dpl);
             for a in 0..2 {
                 for b in 0..2 {
-                    let mut v = 0.0;
-                    for rr in 0..3 {
-                        for s in 0..3 {
-                            v += bmi[rr][a] * t_dpl[rr][s] * bmj[s][b];
-                        }
-                    }
-                    k[doi[a]][doj[b]] += v * area;
+                    k[doi[a]][doj[b]] += blk[a][b] * area;
                 }
             }
         }
@@ -310,21 +346,30 @@ fn symmetrize_in_place(k_loc: &mut [[f64; NDOF_ELEM]; NDOF_ELEM]) {
     }
 }
 
-/// Rotate a local-frame 18×18 element matrix into the global frame:
-/// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
+/// Rotate a local-frame element matrix into the global frame by a `blockdiag(R)`
+/// congruence: `K_glob[3a..3a+3, 3b..3b+3] = Rᵀ · K_loc[3a.., 3b..] · R` over each
+/// 3-DOF nodal block.
 ///
-/// `T = blkdiag(R, …, R)` over the 2·N_NODES three-DOF blocks (a displacement
-/// triple and a rotation triple per node). Shared verbatim by both element
-/// variants — the only thing that differs between bare MITC3 and MITC3+ is the
-/// transverse-shear treatment that produced `k_loc`, not this rotation.
+/// `N` is the matrix dimension and must be a multiple of 3; the block count is
+/// `N / 3` and `T = blkdiag(R, …, R)` over those blocks. Shared by the MITC3
+/// shell (`N = 18` ⇒ six displacement/rotation triples) and the CST membrane
+/// (`N = 9` ⇒ three translation triples), so the block-rotation arithmetic lives
+/// in exactly one place. Each per-block `Rᵀ·sub·R` uses the same `mat3_mul`
+/// order as the original per-element code, so callers stay bit-identical.
 #[inline]
 #[allow(clippy::needless_range_loop)]
-fn rotate_local_to_global(
-    k_loc: &[[f64; NDOF_ELEM]; NDOF_ELEM],
+pub(crate) fn rotate_blockdiag<const N: usize>(
+    k_loc: &[[f64; N]; N],
     r: &[[f64; 3]; 3],
-) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
-    let n_blocks = 2 * NN_ELEM; // displacement triple + rotation triple per node
-    let mut k_glob = [[0.0_f64; NDOF_ELEM]; NDOF_ELEM];
+) -> [[f64; N]; N] {
+    let n_blocks = N / 3;
+    // Rᵀ (local→global), built once and reused across every nodal block.
+    let rt = [
+        [r[0][0], r[1][0], r[2][0]],
+        [r[0][1], r[1][1], r[2][1]],
+        [r[0][2], r[1][2], r[2][2]],
+    ];
+    let mut k_glob = [[0.0_f64; N]; N];
     for bi in 0..n_blocks {
         for bj in 0..n_blocks {
             let row_off = 3 * bi;
@@ -335,14 +380,7 @@ fn rotate_local_to_global(
                     sub[p][q] = k_loc[row_off + p][col_off + q];
                 }
             }
-            let rt_sub = mat3_mul(
-                &[
-                    [r[0][0], r[1][0], r[2][0]],
-                    [r[0][1], r[1][1], r[2][1]],
-                    [r[0][2], r[1][2], r[2][2]],
-                ],
-                &sub,
-            );
+            let rt_sub = mat3_mul(&rt, &sub);
             let rt_sub_r = mat3_mul(&rt_sub, r);
             for p in 0..3 {
                 for q in 0..3 {
@@ -352,6 +390,21 @@ fn rotate_local_to_global(
         }
     }
     k_glob
+}
+
+/// Rotate a local-frame 18×18 shell element matrix into the global frame:
+/// `K_glob[a..a+3, b..b+3] = Rᵀ · K_loc[a..a+3, b..b+3] · R`.
+///
+/// Thin wrapper over [`rotate_blockdiag`] at `N = NDOF_ELEM` (the `2·N_NODES`
+/// three-DOF displacement/rotation blocks). Shared verbatim by both shell
+/// variants — the only thing that differs between bare MITC3 and MITC3+ is the
+/// transverse-shear treatment that produced `k_loc`, not this rotation.
+#[inline]
+fn rotate_local_to_global(
+    k_loc: &[[f64; NDOF_ELEM]; NDOF_ELEM],
+    r: &[[f64; 3]; 3],
+) -> [[f64; NDOF_ELEM]; NDOF_ELEM] {
+    rotate_blockdiag::<NDOF_ELEM>(k_loc, r)
 }
 
 /// Compute the 18×18 element stiffness matrix for a MITC3 shell element.

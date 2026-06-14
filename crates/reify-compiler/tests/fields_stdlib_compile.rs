@@ -11,6 +11,7 @@
 //! `process_stdlib_compile.rs` and `constants_example_tests.rs`.
 
 use reify_core::{ModulePath, Severity};
+use reify_test_support::errors_only;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -125,5 +126,44 @@ fn example_fields_ri_compiles_clean_with_imported_module() {
         codomain_display.contains("Scalar"),
         "temp field codomain_type should contain 'Scalar', got '{}'",
         codomain_display
+    );
+}
+
+// ─── InterpolationMethod enum resolves in user source (task 4221 γ) ─────────
+
+/// Behavioral (B-signal): `InterpolationMethod.Linear` must resolve as an
+/// enum-access expression in user source compiled with the stdlib.
+///
+/// A structure that uses `InterpolationMethod.Linear` as a `let` binding
+/// default must compile with zero `Severity::Error` diagnostics once
+/// `enum InterpolationMethod` is declared in `fields.ri` and flattened
+/// into the prelude `enum_defs`.
+///
+/// **RED before step-2**: `InterpolationMethod` is undeclared → `EnumAccess`
+/// poisons with "unknown enum type 'InterpolationMethod'" → Error diagnostics.
+///
+/// **GREEN after step-2**: the enum is declared in fields.ri, flattened into
+/// the prelude by `enums_phase::flatten_prelude_enum_defs`, and resolves
+/// from any user file without an explicit import — same as `InfillPattern`
+/// (fdm.ri) and `SignalKind` (ports).
+///
+/// Also de-risks the `#no_prelude` prelude-export premise: fields.ri's
+/// `#no_prelude` only suppresses what fields.ri itself sees during its OWN
+/// compilation; it does NOT remove fields.ri's own enums from the exported
+/// prelude.
+#[test]
+fn interpolation_method_linear_resolves_in_user_source() {
+    let source = r#"
+structure def InterpolationDemo {
+    let method = InterpolationMethod.Linear
+}
+"#;
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+
+    let errors = errors_only(&compiled);
+    assert!(
+        errors.is_empty(),
+        "structure using InterpolationMethod.Linear should compile without errors; got: {:?}",
+        errors
     );
 }

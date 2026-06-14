@@ -17,17 +17,13 @@
 //
 // Encoding deviations from the PRD:
 //   1. PRD writes `loads : List<Load>` and `supports : List<Support>`.
-//      `Load` and `Support` are not statically-typed structs in the current
-//      stdlib: runtime load/support instances are kind-tagged `Value::Map`s
-//      produced by `point_load`, `fixed_support`, `pinned_support`, etc.
-//      (name-dispatched builtins) or `PointLoad`, `PressureLoad`, `FixedSupport`
-//      (structure defs — SIR-α/β). Using
-//      `List<Real>` here is a placeholder pending a `trait def Load` /
-//      `trait def Support` marker that all kind-constructors satisfy;
-//      a `TODO(load-trait)` note on each field tracks the future tightening.
-//      Runtime type-checking is shallow kind-match only, so `List<Real>`
-//      silently accepts a `Value::List` of load/support `Value::Map`s
-//      without runtime rejection.
+//      The `Load` and `Support` marker traits are declared in the dedicated
+//      earlier module `std.fea.types` (loaded before `std.solver.elastic`
+//      in `stdlib_loader.rs`).  `LoadCase.loads` and `LoadCase.supports` are
+//      now typed `List<Load>` and `List<Support>` respectively (task ζ/4444),
+//      matching the PRD.  Conformance is enforced at compile time: a non-`Load`
+//      element in `loads` or a non-`Support` element in `supports` emits
+//      `TypeNotConformingToTrait`.
 //   2. `LoadCase` has no `constraint` blocks: neither `loads` nor `supports`
 //      can be validated for non-emptiness or uniqueness at the struct level
 //      (constraint clauses evaluate per-instance scalar predicates; they
@@ -60,14 +56,13 @@
 //                No constraint here because collection-invariants can't be
 //                expressed as per-instance scalar predicates.
 //   `loads`    — list of applied loads (point loads, pressure loads, etc.)
-//                produced by the runtime load constructors `point_load`,
-//                `pressure_load`, etc. Typed `List<Real>` as a placeholder
-//                pending `trait def Load` (see header note 1 and
-//                TODO(load-trait) below).
+//                typed `List<Load>`.  Each element must conform to `trait Load`
+//                (e.g. `PointLoad`, `PressureLoad`, `Gravity`).  Conformance
+//                is enforced at compile time (task ζ/4444).
 //   `supports` — list of boundary-condition supports (fixed, pinned, etc.)
-//                produced by the runtime support constructors `fixed_support`,
-//                `pinned_support`, etc. Typed `List<Real>` as a placeholder
-//                pending `trait def Support` (TODO(load-trait)).
+//                typed `List<Support>`.  Each element must conform to `trait
+//                Support` (e.g. `FixedSupport`).  Conformance is enforced at
+//                compile time (task ζ/4444).
 //   `options`  — optional solver-knob override; `none` uses the
 //                solver-default `ElasticOptions()` for this case.  Providing
 //                per-case options lets callers vary mesh size or iteration
@@ -79,23 +74,18 @@ structure def LoadCase {
     // task #2).
     param name : String
 
-    // Applied loads for this case.  Each element is a `Value::StructureInstance`
-    // produced by `PointLoad(...)`, `PressureLoad(...)`, etc. (structure defs
-    // declared below — SIR-α/β wave-1/2) or a kind-tagged Map from remaining
-    // name-dispatched builtins (`traction_load`, `body_force`, `gravity`).
-    //
-    // TODO(load-trait): replace `List<Real>` with `List<Load>` once all
-    // load constructors are migrated to structure defs conforming to
-    // `trait Load { }` and the solver wiring (PRD task 16) is ready.
-    param loads : List<Real>
+    // Applied loads for this case.  Each element must conform to `trait Load`
+    // (e.g. `PointLoad(...)`, `PressureLoad(...)`, `Gravity(...)`).  Structure
+    // defs conforming to `Load` are declared below (SIR-α/β wave-1/2).
+    // Conformance is enforced at compile time: a non-`Load` element emits
+    // `TypeNotConformingToTrait` (task ζ/4444).
+    param loads : List<Load>
 
-    // Boundary-condition supports for this case.  Each element is a runtime
-    // kind-tagged Map produced by `fixed_support`, `pinned_support`, etc.
-    //
-    // TODO(load-trait): replace `List<Real>` with `List<Support>` once
-    // `trait def Support` is declared and the kind-constructor builtins
-    // are annotated.
-    param supports : List<Real>
+    // Boundary-condition supports for this case.  Each element must conform
+    // to `trait Support` (e.g. `FixedSupport(...)`).  Conformance is enforced
+    // at compile time: a non-`Support` element emits `TypeNotConformingToTrait`
+    // (task ζ/4444).
+    param supports : List<Support>
 
     // Optional solver-knob override for this case.  `none` instructs
     // `solve_load_cases` to apply the solver-default `ElasticOptions()`
@@ -268,7 +258,7 @@ structure def MultiCaseResult {
 // task 3544's plan): PressureLoad's natural fields (magnitude/face/direction)
 // don't match PointLoad's force/point shape, and carrying dead fields on every
 // pressure load would violate Q-SIR-4 (preserve-don't-redesign). The
-// empty-marker form parallels `trait Support { }` already in this file, and
+// empty-marker form parallels `trait Support { }` in std.fea.types (fea_types.ri), and
 // is a strict relaxation for PointLoad (its structure def already declares
 // `point` and `force` explicitly so removing them from the trait body doesn't
 // break conformance).  Future wave-2 loads (TractionLoad, BodyForce, Gravity)
@@ -280,19 +270,13 @@ structure def MultiCaseResult {
 // field shapes against the existing `loads.rs` / `supports.rs` Map-shape
 // consumers).
 //
-// Trait surface — `Load` and `Support` are empty marker traits; each conforming
-// structure def declares its own natural fields. `Real`/`String` placeholders
-// in the structure defs follow the precedent set by `LoadCase.loads : List<Real>`
-// (header note 1 above) — dimension-typed slots tighten in follow-up waves once
-// the dimensional type aliases land.
-
-// Empty-marker Load trait (relaxed from the wave-1 point-load-centric body in
-// task 3544 DD1). Each conforming structure def declares its own natural field
-// shapes; the trait provides only nominal-conformance identity, not a shared
-// field contract. Parallels `trait Support { }` below.
-trait Load { }
-
-trait Support { }
+// Trait surface — `Load` and `Support` are empty marker traits declared in
+// the earlier module `std.fea.types` (loaded before `std.solver.elastic`
+// in `stdlib_loader.rs`).  Conforming structure defs in THIS file get their
+// trait bindings from the growing prelude which carries `std.fea.types` by
+// the time `std.fea.multi_case` compiles.  `Real`/`String` placeholders in
+// the structure defs are dimension-typed slots that tighten in follow-up waves
+// once the dimensional type aliases land.
 
 // PointLoad — wave-1 replacement for the `point_load` builtin (loads.rs).
 // Field defaults let bare `PointLoad()` calls succeed (covers SIR-α boundary
@@ -318,7 +302,7 @@ structure def PointLoad : Load {
     // (task 3015's non-colinear superposition). Inserting `direction` first
     // would shift `point`/`force` and silently mis-bind every existing caller.
     //
-    // TODO(vec3-type): tighten to `Vec3` once a real 3-vector type exists.
+    // TODO(vec3-type, #4575): tighten to `Vec3` once a real 3-vector type exists.
     // Vec3 is currently a scalar alias (trajectory.ri:96) and is declared in
     // std.trajectory which loads after std.fea — both make it unusable here.
     param direction : List<Real> = [0.0, 0.0, -1.0]
@@ -426,6 +410,40 @@ structure def TractionLoad : Load {
 structure def BodyForce : Load {
     param body          : String = ""
     param force_density : Real   = 0.0
+}
+
+// Gravity — typed home for self-weight (body-gravity) loads (typed-fea-authoring α,
+// docs/prds/v0_6/typed-fea-authoring-surface.md §4.1).
+//
+// Shape mirrors PointLoad: scalar dimensional magnitude + dimensionless
+// `direction : List<Real>`.  NOT `Vector3<Acceleration>` — `vec3(0 m/s^2, …)`
+// fails to parse (acceleration has no compound m/s² literal; only the
+// `1m/(1s*1s)` build form works).  The scalar form composes cleanly with
+// `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps `direction`
+// general (centrifuge, lateral-g).
+//
+//   `magnitude`  — gravitational acceleration applied to the body.
+//                  `Acceleration` resolves to the built-in `DimensionVector::ACCELERATION`
+//                  (crates/reify-core/src/dimension.rs:508).  Defaults to
+//                  `STANDARD_GRAVITY()` (units.ri:133) = 9.80665 m/s²
+//                  (standard Earth surface gravity, ISO 80000-3).
+//                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
+//   `direction`  — unit vector pointing in the direction gravity acts.
+//                  `List<Real>` is a placeholder for `Vec3` until a real
+//                  dimensionless 3-vector type is available (TODO(vec3-type, #4575)).
+//                  Default [0, 0, -1] = −Z (canonical downward direction).
+//                  Caller is responsible for supplying a unit vector; non-unit
+//                  vectors silently scale effective gravity by |direction|.
+//                  `direction` is declared LAST (same rationale as PointLoad:
+//                  positional binding preserves existing callers that omit it).
+//
+// Future solver bridge (leaf β): body force contribution = ρ · magnitude · direction
+// component-wise per integration point (see docs/prds/v0_6 §4.2).
+//
+// PRD: docs/prds/v0_6/typed-fea-authoring-surface.md §4.1 task α.
+structure def Gravity : Load {
+    param magnitude : Acceleration = STANDARD_GRAVITY()
+    param direction : List<Real>   = [0.0, 0.0, -1.0]
 }
 
 // ── SIR-β-mlcfea wave-2 closure ──────────────────────────────────────────────

@@ -448,7 +448,7 @@ mod tests {
     // ---- resolve_entity_at_source_position tests ----
 
     // (a) cursor mid-"width" identifier → Some("Bracket.width")
-    //     bracket_source() line 2: "    param width: Scalar = 80mm"
+    //     bracket_source() line 2: "    param width: Length = 80mm"
     //     col 11 (1-based) = 'w' in "width" — inside the width cell span.
     #[test]
     fn entity_at_source_position_width_cell_returns_bracket_width() {
@@ -465,7 +465,7 @@ mod tests {
     }
 
     // (b) cursor mid-"thickness" identifier → Some("Bracket.thickness")
-    //     bracket_source() line 4: "    param thickness: Scalar = 5mm"
+    //     bracket_source() line 4: "    param thickness: Length = 5mm"
     //     col 11 (1-based) = 't' in "thickness" — inside the thickness cell span.
     #[test]
     fn entity_at_source_position_thickness_cell_returns_bracket_thickness() {
@@ -631,7 +631,7 @@ mod tests {
     //     `line_col_to_byte_offset_with_offsets` (introduced when the helper was
     //     moved from engine.rs to reify-types).
     //
-    //     bracket_source() line 2: "    param width: Scalar = 80mm" (30 chars).
+    //     bracket_source() line 2: "    param width: Length = 80mm" (30 chars).
     //     col=99 is past the end of that line.  The new helper clamps to the byte
     //     offset of the trailing '\n', which falls in the gap between the width cell
     //     span and the height cell span → the narrow step misses all cells and
@@ -646,7 +646,7 @@ mod tests {
         let (parsed, compiled) = bracket_parsed_and_compiled();
         let source = reify_test_support::bracket_source();
         let line_offsets = reify_core::build_line_offsets(source);
-        // line 2 = "    param width: Scalar = 80mm" (30 chars).
+        // line 2 = "    param width: Length = 80mm" (30 chars).
         // col=99 is well past the end; new helper clamps to the trailing '\n' of line 2,
         // which falls outside any value cell → enclosing template name.
         let result =
@@ -666,15 +666,15 @@ mod tests {
     //
     //     Source layout (1-based lines):
     //       1: pub structure First {
-    //       2:     param a: Scalar = 1mm
+    //       2:     param a: Length = 1mm
     //       3: }
     //       4: (blank)
     //       5: pub structure Middle {
-    //       6:     param b: Scalar = 2mm
+    //       6:     param b: Length = 2mm
     //       7: }
     //       8: (blank)
     //       9: pub structure Last {
-    //      10:     param c: Scalar = 3mm
+    //      10:     param c: Length = 3mm
     //      11: }
     //
     //     Under the CURRENT resolver (member-span approximation only), the Middle
@@ -686,15 +686,15 @@ mod tests {
     fn entity_at_source_position_multi_structure_header_line_in_second_structure_returns_second_template_name()
      {
         const THREE_STRUCT_SOURCE: &str = r#"pub structure First {
-    param a: Scalar = 1mm
+    param a: Length = 1mm
 }
 
 pub structure Middle {
-    param b: Scalar = 2mm
+    param b: Length = 2mm
 }
 
 pub structure Last {
-    param c: Scalar = 3mm
+    param c: Length = 3mm
 }
 "#;
         let parsed =

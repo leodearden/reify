@@ -4,7 +4,7 @@
 //! BOTH as a `ValueCellDecl{cell_type: Type::Geometry}` AND as a `RealizationDecl`.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, PrimitiveKind, ValueCellKind};
-use reify_core::{RealizationNodeId, Severity, Type};
+use reify_core::{DiagnosticCode, RealizationNodeId, Severity, Type};
 use reify_ir::CompiledExprKind;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -555,32 +555,26 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
 
 // ─── coverage: Solid param with non-geometry default (pin-down) ───────────────
 
-/// PIN-DOWN REGRESSION LOCK (task 1878).
+/// REJECTION GUARD (task 4584 — intentional flip of the task-1878 pin-down).
 ///
-/// Documents and locks the currently-observed *silent-accept* behavior when a
-/// `Solid`-typed param is given a non-geometry default (`42`).
+/// Documents that `param g : Solid = 42` produces exactly one Error-severity
+/// `TypeNotConformingToStructureRef` diagnostic: `42` is an integer, not a
+/// geometry-producing expression, so it is rejected for a `Geometry`-typed param.
 ///
-/// Currently-observed behavior (verified via probe harness before planning):
-///   - The compiler emits **no Error-severity diagnostics** — the mismatch is
-///     silently accepted.
-///   - `is_geometry_let(42, ...)` returns `false`, so the param is NOT inserted
-///     into `known_geometry_lets` and NOT added to the `geometry_lets` map.
-///   - As a result **no RealizationDecl** is emitted for `g`.
-///   - The param falls through to the `ValueCellDecl` path with
-///     `cell_type = Type::Geometry` and `kind = ValueCellKind::Param`.
+/// Previously locked as `solid_param_with_non_geometry_default_silently_accepts`
+/// (task 1878) with an `errors.is_empty()` assertion; flipped intentionally per
+/// that test's own contract ("Any such change MUST update this test intentionally").
 ///
-/// KNOWN QUIRKY: this is not necessarily correct behavior — a future change
-/// (e.g. diagnosing `Solid = <non-geometry>` as an error) would be desirable.
-/// Any such change MUST update this test intentionally so that the regression
-/// guard remains accurate rather than becoming stale.
+/// RED until step-8 (impl): the Geometry branch of check_param_default_conformance
+/// does not yet exist. GREEN once step-8 adds the geometry-aware predicate.
+///
+/// Structural assertions (b) no-realization, (c) ValueCellDecl shape are
+/// preserved — both still hold after the flip (42 is not geometry-producing).
 #[test]
-fn solid_param_with_non_geometry_default_silently_accepts() {
+fn solid_param_with_non_geometry_default_rejected() {
     let source = r#"structure def W3 {
     param g : Solid = 42
 }"#;
-    // pin-down: parse+compile without asserting absence of diagnostics — the test
-    // intentionally inspects whatever diagnostic behavior the compiler currently
-    // exhibits so any future change becomes a deliberate, reviewable test update.
     let compiled = parse_and_compile(source);
     let template = compiled
         .templates
@@ -588,20 +582,24 @@ fn solid_param_with_non_geometry_default_silently_accepts() {
         .find(|t| t.name == "W3")
         .expect("W3 template not found");
 
-    // (a) Currently no Error-severity diagnostics are emitted — the compiler
-    //     silently accepts the type mismatch.  If this changes (e.g. a Warning
-    //     or Error is added), update this assertion intentionally.
+    // (a) Exactly one Error-severity TypeNotConformingToStructureRef diagnostic.
     let error_diags: Vec<_> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(
-        error_diags.is_empty(),
-        "pin-down: expected no Error-severity diagnostics for `param g : Solid = 42`, \
-         got: {:#?}\n\
-         If the compiler now diagnoses this mismatch, update this test to reflect the new behavior.",
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic for `param g : Solid = 42`, \
+         got: {:#?}",
         error_diags
+    );
+    assert_eq!(
+        error_diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        error_diags[0].code,
     );
 
     // (b) No realization is emitted — `g` is not inserted into geometry_lets

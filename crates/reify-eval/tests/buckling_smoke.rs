@@ -170,7 +170,7 @@ fn e2e_buckling_critical_load_within_ten_percent() {
         errors
     );
 
-    // (b) `crit` cell: Scalar with dimension FORCE, within 10% of P_cr.
+    // (b) `crit` cell: Length with dimension FORCE, within 10% of P_cr.
     let crit_cell = ValueCellId::new("BucklingColumnSmoke", "crit");
     let crit_val = eval_result
         .values

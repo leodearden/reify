@@ -142,6 +142,11 @@ impl DimensionVector {
     pub const FREQUENCY: DimensionVector = DimensionVector::from_exps(&[(2, -1)]);
     /// Force: kg·m·s⁻² (same as module-scope `FORCE` — kept in parallel for ergonomics).
     pub const FORCE: DimensionVector = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -2)]);
+    /// Impulse: N·s = momentum = kg·m·s⁻¹ (Force × Time, equivalently Mass × Velocity).
+    /// Distinct from FORCE (kg·m·s⁻²) by one s-exponent. Registered under TWO
+    /// names in `NAMED_DIMENSIONS` ("Impulse" canonical, "Momentum" alias) since
+    /// impulse (J = ∫F dt) and momentum (p = m·v) are dimensionally identical.
+    pub const IMPULSE: DimensionVector = DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -1)]);
     /// Energy: kg·m²·s⁻²
     pub const ENERGY: DimensionVector = DimensionVector::from_exps(&[(0, 2), (1, 1), (2, -2)]);
     /// Power: kg·m²·s⁻³
@@ -196,6 +201,8 @@ impl DimensionVector {
     /// `"Density"` — the natural spelling at call sites like
     /// `density: Density`.
     pub const MASS_DENSITY: DimensionVector = DimensionVector::from_exps(&[(0, -3), (1, 1)]);
+    /// Velocity: m·s⁻¹ (LENGTH / TIME)
+    pub const VELOCITY: DimensionVector = DimensionVector::from_exps(&[(0, 1), (2, -1)]);
     /// Acceleration: m·s⁻² (LENGTH / TIME²)
     pub const ACCELERATION: DimensionVector = DimensionVector::from_exps(&[(0, 1), (2, -2)]);
     /// Force density (force per unit volume): N/m³ = kg·m⁻²·s⁻² (FORCE / VOLUME,
@@ -505,6 +512,7 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     (DimensionVector::DYNAMIC_VISCOSITY, "DynamicViscosity"),
     (DimensionVector::MOMENT_OF_INERTIA, "MomentOfInertia"),
     (DimensionVector::MASS_DENSITY, "Density"),
+    (DimensionVector::VELOCITY, "Velocity"),
     (DimensionVector::ACCELERATION, "Acceleration"),
     (DimensionVector::FORCE_DENSITY, "ForceDensity"),
     // ── Composite-quantity aliases added by task #3115 (see task-E in the audit) ──
@@ -539,6 +547,16 @@ pub static NAMED_DIMENSIONS: &[(DimensionVector, &str)] = &[
     // says `Curvature`.
     (DimensionVector::CURVATURE, "Curvature"),
     (DimensionVector::FRACTURE_TOUGHNESS, "FractureToughness"),
+    // Task 4548 / stdlib placeholder registry B: `Impulse` (N·s = momentum =
+    // kg·m·s⁻¹) registered for `ImpulseForce.impulse`. `Momentum` is
+    // dimensionally identical (p = m·v); placed AFTER "Impulse" so the
+    // first-match scan in `canonical_name` returns "Impulse" for the shared
+    // dim (Impulse is the only current consumer). The name→dim direction
+    // (resolve_dimension_type / resolve_type_name) finds the "Momentum" entry
+    // when source syntax says `Momentum`. Mirrors the Curvature/AbsorptionCoeff
+    // and TranslationalStiffness/Stiffness alias precedent.
+    (DimensionVector::IMPULSE, "Impulse"),
+    (DimensionVector::IMPULSE, "Momentum"),
 ];
 
 impl fmt::Display for DimensionVector {
@@ -1120,6 +1138,51 @@ mod tests {
         // ENERGY is kg·m²·s⁻²; MOMENT_OF_INERTIA is kg·m². The s-slot distinction
         // is the whole reason MOMENT_OF_INERTIA needs its own constant.
         assert_ne!(DimensionVector::MOMENT_OF_INERTIA, DimensionVector::ENERGY);
+    }
+
+    #[test]
+    fn impulse_has_kg_m_per_s_exponents() {
+        // Impulse = N·s = momentum = kg·m·s⁻¹. Mirrors the
+        // moment_of_inertia_has_kg_m_squared_exponents / mass_density_* shape.
+        let imp = DimensionVector::IMPULSE;
+        assert_eq!(imp, DimensionVector::from_exps(&[(0, 1), (1, 1), (2, -1)]));
+        assert_eq!(imp.canonical_name(), Some("Impulse"));
+    }
+
+    #[test]
+    fn impulse_is_distinct_from_force_and_energy() {
+        // FORCE is kg·m·s⁻²; ENERGY is kg·m²·s⁻²; IMPULSE is kg·m·s⁻¹. The
+        // s-exponent (and, for energy, the m-exponent) distinguishes them —
+        // pin the distinction so a future edit cannot silently collapse them.
+        assert_ne!(DimensionVector::IMPULSE, DimensionVector::FORCE);
+        assert_ne!(DimensionVector::IMPULSE, DimensionVector::ENERGY);
+    }
+
+    #[test]
+    fn impulse_and_momentum_are_registered_as_dimension_aliases() {
+        // Impulse (J = ∫F dt) and momentum (p = m·v) are dimensionally identical
+        // (kg·m·s⁻¹): ONE DimensionVector, two registered names. Both names must
+        // map to IMPULSE in NAMED_DIMENSIONS. "Impulse" is canonical (placed
+        // first); "Momentum" is the dimension-alias (placed after), so the
+        // first-match scan in canonical_name() returns "Impulse". Mirrors the
+        // Curvature/AbsorptionCoeff and TranslationalStiffness/Stiffness
+        // alias precedent.
+        let impulse_registered = NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "Impulse" && *dim == DimensionVector::IMPULSE);
+        let momentum_registered = NAMED_DIMENSIONS
+            .iter()
+            .any(|(dim, name)| *name == "Momentum" && *dim == DimensionVector::IMPULSE);
+        assert!(
+            impulse_registered,
+            "NAMED_DIMENSIONS must contain (DimensionVector::IMPULSE, \"Impulse\")"
+        );
+        assert!(
+            momentum_registered,
+            "NAMED_DIMENSIONS must contain (DimensionVector::IMPULSE, \"Momentum\")"
+        );
+        // First-match scan order → canonical name is "Impulse", not "Momentum".
+        assert_eq!(DimensionVector::IMPULSE.canonical_name(), Some("Impulse"));
     }
 
     #[test]
@@ -1811,5 +1874,39 @@ mod tests {
             Some("Stiffness"),
             "STIFFNESS canonical_name must remain 'Stiffness' after TranslationalStiffness alias is added"
         );
+    }
+
+    /// Pins the VELOCITY named dimension: m·s⁻¹ (LENGTH / TIME).
+    ///
+    /// Mirrors the canonical_name_force_returns_force (:987) and
+    /// acceleration_canonical_name_is_acceleration (:1394) test patterns.
+    /// Exponent shape: index 0 (Length) = +1, index 2 (Time) = -1.
+    #[test]
+    fn velocity_canonical_name_is_velocity() {
+        let v = DimensionVector::VELOCITY;
+        assert_eq!(v.canonical_name(), Some("Velocity"));
+    }
+
+    #[test]
+    fn velocity_equals_length_div_time() {
+        assert_eq!(
+            DimensionVector::VELOCITY,
+            DimensionVector::from_exps(&[(0, 1), (2, -1)]),
+            "VELOCITY must be m·s⁻¹ (index 0=Length +1, index 2=Time -1)"
+        );
+    }
+
+    #[test]
+    fn velocity_is_distinct_from_acceleration() {
+        // ACCELERATION is m·s⁻²; VELOCITY is m·s⁻¹.
+        // One extra negative time power separates them; pin the distinction.
+        assert_ne!(DimensionVector::VELOCITY, DimensionVector::ACCELERATION);
+    }
+
+    #[test]
+    fn velocity_is_distinct_from_angular_velocity() {
+        // ANGULAR_VELOCITY is rad·s⁻¹ (slot 2=-1, slot 7=+1);
+        // VELOCITY is m·s⁻¹ (slot 0=+1, slot 2=-1, no angle slot).
+        assert_ne!(DimensionVector::VELOCITY, DimensionVector::ANGULAR_VELOCITY);
     }
 }

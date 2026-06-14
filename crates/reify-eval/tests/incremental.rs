@@ -243,22 +243,22 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
     // let x = a - a (always 0.0 regardless of a)
     let x_expr = binop(
         BinOp::Sub,
-        value_ref_typed(e, "a", Type::Real),
-        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
     );
     // let y = x + 1.0
     let y_expr = binop(
         BinOp::Add,
-        value_ref_typed(e, "x", Type::Real),
+        value_ref_typed(e, "x", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
-                .let_binding(e, "x", Type::Real, x_expr)
-                .let_binding(e, "y", Type::Real, y_expr)
+                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
+                .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
         )
         .build();
@@ -402,22 +402,22 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
     // let x = a - a (always 0.0 regardless of a)
     let x_expr = binop(
         BinOp::Sub,
-        value_ref_typed(e, "a", Type::Real),
-        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
     );
     // let y = x + 1.0
     let y_expr = binop(
         BinOp::Add,
-        value_ref_typed(e, "x", Type::Real),
+        value_ref_typed(e, "x", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
-                .let_binding(e, "x", Type::Real, x_expr)
-                .let_binding(e, "y", Type::Real, y_expr)
+                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
+                .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
         )
         .build();
@@ -968,22 +968,22 @@ fn linear_chain_early_cutoff_still_skips_after_fix() {
     // let x = a - a (always 0.0)
     let x_expr = binop(
         BinOp::Sub,
-        value_ref_typed(e, "a", Type::Real),
-        value_ref_typed(e, "a", Type::Real),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
+        value_ref_typed(e, "a", Type::dimensionless_scalar()),
     );
     // let y = x + 1.0
     let y_expr = binop(
         BinOp::Add,
-        value_ref_typed(e, "x", Type::Real),
+        value_ref_typed(e, "x", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "a", Type::Real, Some(literal(Value::Real(5.0))))
-                .let_binding(e, "x", Type::Real, x_expr)
-                .let_binding(e, "y", Type::Real, y_expr)
+                .param(e, "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+                .let_binding(e, "x", Type::dimensionless_scalar(), x_expr)
+                .let_binding(e, "y", Type::dimensionless_scalar(), y_expr)
                 .build(),
         )
         .build();
@@ -2331,9 +2331,9 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
     let x_expr = binop(BinOp::Sub, value_ref("S", "a"), value_ref("S", "a"));
 
     let template = TopologyTemplateBuilder::new("S")
-        .param("S", "a", Type::Real, Some(literal(Value::Real(5.0))))
-        .let_binding("S", "y", Type::Real, y_expr) // y first (forward ref to x)
-        .let_binding("S", "x", Type::Real, x_expr) // x second (always 0.0)
+        .param("S", "a", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
+        .let_binding("S", "y", Type::dimensionless_scalar(), y_expr) // y first (forward ref to x)
+        .let_binding("S", "x", Type::dimensionless_scalar(), x_expr) // x second (always 0.0)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))

@@ -83,6 +83,10 @@ struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
+/// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
+/// defined by the cxx bridge (ffi.rs). Forward-declared here for the signatures below.
+struct AnalyticSurfaceDatum;
+struct AnalyticCurveDatum;
 
 // --- Foundation constants ---
 
@@ -632,6 +636,18 @@ struct LocalFeatureOpHistory {
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
     const OcctShape& shape, double radius);
 
+/// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius` applied to
+/// ONLY the selected edges, identified by 0-based `edge_indices` into the
+/// canonical `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration (the same order
+/// `get_edges` / `OcctShape::edge_map()` use, so a `GeometryHandleId` resolved
+/// via `extract_edges` maps to the matching index). Materializes the result
+/// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
+/// identically to `make_fillet_with_history` — the curated path preserves the
+/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// function requires a non-empty `edge_indices`.
+std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
+    const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
+
 /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance` applied
 /// to every edge, materializing the result shape AND the Modified/Generated/Deleted
 /// records into a single `LocalFeatureOpHistory`. Identical structure to
@@ -706,9 +722,13 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
 std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     const rust::Vec<double>& flat_transforms, uint32_t num_transforms);
 
-// --- Thicken / Shell ---
+// --- Thicken / Shell / Offset Solid ---
+
+std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance);
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset);
+
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
 
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices);
@@ -718,6 +738,12 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape);
 
+/// Apply `BRepOffsetAPI_DraftAngle` to a curated subset of faces, identified
+/// by 0-based canonical-order face indices (same order as `get_faces`).
+/// Requires non-empty `face_indices`; the all-faces path uses `draft_shape`.
+std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices);
+
 // --- Wire helpers / Loft ---
 
 /// Create a circular wire profile at a given Z height (for loft profiles).
@@ -725,6 +751,11 @@ std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height);
 
 /// Create a flat circular face (disk) at a given Z height (for extrude profiles).
 std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height);
+
+/// Create an open lateral cylindrical face (no caps) centred on the Z axis with
+/// base at the origin.  U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+/// Both radius and height must be finite and positive.
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height);
 
 /// Create a flat axis-aligned rectangular face centred at origin in the XY plane
 /// at the given Z height (for extrude profiles).
@@ -1154,6 +1185,32 @@ rust::String face_surface_kind(const OcctShape& shape);
 ///
 /// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE`.
 rust::String edge_curve_kind(const OcctShape& shape);
+
+/// Project a face's underlying analytic surface to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Surface::GetType()` switch: Cylinder → `Cylinder().Axis()`
+/// location/direction + `.Radius()`; Cone → `Cone().Axis()` + `.SemiAngle()`;
+/// Sphere → `Sphere().Location()` + `.Radius()`; Plane → `Plane().Axis()`
+/// location/direction. The `kind` byte records the GeomAbs classification so
+/// the Rust dispatch composes the correct projected `Value`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_FACE` or the
+/// surface is non-analytic.
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape);
+
+/// Project an edge's underlying analytic curve to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Curve::GetType()` switch: Line → `Line().Position()`/`.Direction()`;
+/// Circle → `Circle().Axis()` + `.Location()` + `.Radius()`; Ellipse →
+/// `Ellipse().Axis()` + `.Location()` + `.MajorRadius()`/`.MinorRadius()`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE` or the curve
+/// is non-analytic.
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape);
+
+/// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+/// (geometric-relations ε). Returns the tolerance in kernel-native units (metres).
+double shape_local_tolerance(const OcctShape& shape);
 
 /// Unit outward normal at the parametric point `(u, v)` on `face`.
 ///

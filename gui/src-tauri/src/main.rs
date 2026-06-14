@@ -20,6 +20,7 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
+use reify_eval::SolverProgressSink;
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -159,6 +160,34 @@ impl ModeShapeFrameEmitter for TauriModeShapeFrameEmitter {
     fn frame(&self, payload: reify_gui::types::ModeShapeFrame) {
         if let Err(e) = emit_typed(&self.app, "mode-shape-frame", &payload) {
             warn!("mode-shape-frame emit failed: {}", e);
+        }
+    }
+}
+
+/// Tauri implementation of `SolverProgressSink` (task 4079).
+///
+/// Maps `SolverProgressUpdate` → `types::SolverProgress` and emits it on the
+/// `"solver-progress"` IPC channel.  `eta_ms` is left `None` — ETA estimation
+/// is deferred to a follow-up task.
+///
+/// Installed during `setup()` alongside other emitters.  The production path:
+/// 1. `with_solve_slot` installs a fresh handle on the engine.
+/// 2. `run_compute_dispatch` reads the sink + cancel from the thread-local.
+/// 3. The elastic_static trampoline emits one update per CG iteration.
+struct TauriSolverProgressEmitter {
+    app: tauri::AppHandle,
+}
+
+impl SolverProgressSink for TauriSolverProgressEmitter {
+    fn on_iteration(&self, update: &reify_eval::SolverProgressUpdate) {
+        let payload = reify_gui::types::SolverProgress {
+            solver_kind: update.solver_kind.to_string(),
+            iter: update.iter,
+            residual: update.residual,
+            eta_ms: None,
+        };
+        if let Err(e) = emit_typed(&self.app, "solver-progress", &payload) {
+            warn!("solver-progress emit failed: {}", e);
         }
     }
 }
@@ -730,6 +759,15 @@ fn main() {
                 session.set_solve_cancel_sink(solve_cancel_sink);
             }
 
+            // Install the solver-progress sink so the frontend receives per-CG-iteration
+            // progress events on the "solver-progress" IPC channel (task 4079).
+            let solver_progress_emitter = Arc::new(TauriSolverProgressEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_solver_progress_sink(solver_progress_emitter);
+            }
+
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
             let debug_bridge = Arc::new(reify_gui::debug::DebugBridge::new(app.handle().clone()));
             app.manage(debug_bridge.clone());
@@ -749,7 +787,7 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on {}", crate::debug_server::debug_endpoint_url(crate::debug_server::resolve_debug_port()));
+                eprintln!("REIFY_DEBUG=1: debug server starting on {}", reify_gui::debug_server::debug_endpoint_url(reify_gui::debug_server::resolve_debug_port()));
             }
 
             // Notify the frontend of the kernel availability at startup.

@@ -192,7 +192,7 @@ fn elastic_material_trait_has_four_dimensioned_members() {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("poisson_ratio", Type::Real),
+        ("poisson_ratio", Type::dimensionless_scalar()),
         (
             "density",
             Type::Scalar {
@@ -407,7 +407,6 @@ fn assert_property_si_value(
                 template.name, member, other
             ),
         },
-        Type::Real => DimensionVector::DIMENSIONLESS,
         other => panic!(
             "{}.{} default_expr result_type is not Scalar/Option<Scalar>/Real: {:?}",
             template.name, member, other
@@ -522,7 +521,7 @@ fn assert_fea_material_template_shape(name: &str) {
                 dimension: DimensionVector::PRESSURE,
             },
         ),
-        ("poisson_ratio", Type::Real),
+        ("poisson_ratio", Type::dimensionless_scalar()),
         (
             "density",
             Type::Scalar {
@@ -662,14 +661,19 @@ fn abs_plastic_structure_conforms_with_correct_property_values_and_provenance() 
 
 /// Final regression covering the std/materials/fea module's overall shape.
 /// At this point the previous tests already check each entity in detail; this
-/// test exists to lock in the module's *cardinality* — exactly one trait,
-/// exactly five top-level structures (one provenance record + four materials),
-/// zero error diagnostics, every material carries the `ElasticMaterial` trait
-/// bound. Adding or removing a top-level entity from `materials_fea.ri` will
-/// fail this test, which is the intended behaviour: any future expansion should
-/// be expressed as a deliberate update here, not silently introduced.
+/// test exists to lock in the module's *cardinality* — exactly two traits
+/// (`ConstitutiveLaw` marker + `ElasticMaterial`), exactly five top-level
+/// structures (one provenance record + four materials), zero error diagnostics,
+/// every material carries the `ElasticMaterial` trait bound. Adding or removing
+/// a top-level entity from `materials_fea.ri` will fail this test, which is the
+/// intended behaviour: any future expansion should be expressed as a deliberate
+/// update here, not silently introduced.
+///
+/// `ConstitutiveLaw` is declared here (task γ relocated it from constitutive.ri)
+/// so that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
+/// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
 #[test]
-fn std_materials_fea_module_summary_has_one_trait_one_provenance_struct_and_four_materials() {
+fn std_materials_fea_module_summary_has_two_traits_one_provenance_struct_and_four_materials() {
     let module = load_stdlib_module();
 
     // Zero error diagnostics is also asserted in step-1; repeat here so this
@@ -686,12 +690,22 @@ fn std_materials_fea_module_summary_has_one_trait_one_provenance_struct_and_four
         errors
     );
 
-    // Exactly one trait — `ElasticMaterial`.
+    // Exactly two traits: `ConstitutiveLaw` (relocated marker, task γ) and
+    // `ElasticMaterial` (dimensioned FEA trait).
     let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
-        1,
-        "std/materials/fea should declare exactly 1 trait, got: {:?}",
+        2,
+        "std/materials/fea should declare exactly 2 traits \
+         (ConstitutiveLaw + ElasticMaterial), got: {:?}",
+        trait_names
+    );
+    assert!(
+        module
+            .trait_defs
+            .iter()
+            .any(|t| t.name == "ConstitutiveLaw"),
+        "std/materials/fea should contain the 'ConstitutiveLaw' marker trait, got: {:?}",
         trait_names
     );
     assert!(

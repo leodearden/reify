@@ -1,0 +1,39 @@
+// examples/imported_field/openvdb_stress.ri
+//
+// Demonstrates `source = imported { format = OpenVDB }` for a volumetric
+// scalar field (PRD docs/prds/v0_3/multi-kernel-phase-3.md §8 Phase 4 task θ).
+//
+// # Fixture
+//
+// `fixtures/sample.vdb` is a cube signed-distance OpenVDB FloatGrid stored
+// under grid name "vonMises" (half-extent 1.0, voxel_size 0.1, half_width 3.0).
+// It is NOT checked in — the repo has zero committed binary fixtures.
+// See examples/imported_field/README.md for the generation step and
+// crates/reify-cli/tests/cli_imported_field_eval.rs for the canonical generator
+// (the cfg(has_openvdb) smoke test writes the fixture to a tempdir automatically).
+//
+// # Graceful degradation
+//
+// Without the fixture, `reify eval` emits a FieldImportFailed runtime diagnostic
+// and the sample cells resolve to Undef — the file still compiles clean.
+// No `constraint` declarations are present here: `reify check` would fail if it
+// tried to evaluate a constraint whose sub-expressions depend on Undef samples.
+
+field def fea_stress : Point3 -> Real {
+    source = imported {
+        path = "fixtures/sample.vdb"
+        format = OpenVDB
+        grid = "vonMises"
+    }
+}
+
+structure def StressProbe {
+    // Probe coordinates are near-surface points on the cube's +X face
+    // (surface at x = 1.0, narrow band ≈ 0.3):
+    //   s_inside (x = 0.85): 0.15 inside the surface → SDF < 0
+    //   s_surface (x = 1.0): at the surface → SDF ≈ 0
+    //   s_outside (x = 1.15): 0.15 outside the surface → SDF > 0
+    let s_inside = sample(fea_stress, point3(0.85, 0.0, 0.0))
+    let s_surface = sample(fea_stress, point3(1.0, 0.0, 0.0))
+    let s_outside = sample(fea_stress, point3(1.15, 0.0, 0.0))
+}

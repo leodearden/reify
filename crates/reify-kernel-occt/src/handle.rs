@@ -108,6 +108,18 @@ enum OcctRequest {
         reply:
             oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
+    /// Curated per-edge fillet (task 3205): apply `BRepFilletAPI_MakeFillet` to
+    /// ONLY the selected `edges` of `shape` with the given `radius`, capturing
+    /// Modified/Generated/Deleted records. Mirrors `FilletWithHistory` but
+    /// carries the curated edge subset. An empty `edges` vector is rejected by
+    /// the kernel — the all-edges path is `FilletWithHistory` / `fillet_all_edges`.
+    FilletEdgesWithHistory {
+        shape: GeometryHandleId,
+        radius: f64,
+        edges: Vec<GeometryHandleId>,
+        reply:
+            oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
+    },
     /// v0.2 persistent-naming-v2 local-feature history: apply
     /// `BRepFilletAPI_MakeChamfer` to every edge of `shape` with the given
     /// `distance`, capturing Modified/Generated/Deleted records. Mirrors
@@ -546,6 +558,40 @@ impl OcctKernelHandle {
             |reply| OcctRequest::FilletWithHistory {
                 shape,
                 radius,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
+    /// Apply `BRepFilletAPI_MakeFillet` to ONLY the selected `edges` of `shape`
+    /// (a curated subset) with the given `radius`, returning the
+    /// modified-result handle id alongside the per-parent face/edge history
+    /// records (Modified / Generated / Deleted) emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::fillet_edges_with_history`] across the
+    /// kernel-thread channel. Result handle is registered with
+    /// `BRepKind::Solid`. An empty `edges` slice is rejected — the all-edges
+    /// path is [`Self::fillet_with_history`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Curated edge-selection seam (task 3205).
+    pub fn fillet_edges_with_history(
+        &self,
+        shape: GeometryHandleId,
+        radius: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        let edges = edges.to_vec();
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::FilletEdgesWithHistory {
+                shape,
+                radius,
+                edges,
                 reply,
             },
             || GeometryError::OperationFailed("kernel thread died".into()),
@@ -1023,6 +1069,15 @@ impl OcctKernelHandle {
                         let result = kernel.fillet_with_history(shape, radius);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::FilletEdgesWithHistory {
+                        shape,
+                        radius,
+                        edges,
+                        reply,
+                    } => {
+                        let result = kernel.fillet_edges_with_history(shape, radius, &edges);
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::ChamferWithHistory {
                         shape,
                         distance,
@@ -1087,6 +1142,40 @@ impl OcctKernelHandle {
                             GeometryOp::Intersection { left, right } => kernel
                                 .boolean_common_with_history(*left, *right)
                                 .map(|(h, recs)| (h, AttributeHistory::Boolean(recs))),
+                            // Task 7b (#2831): Fillet branches on
+                            // edges.is_empty() — all-edges vs curated-edge —
+                            // mirroring OcctKernel::execute (lib.rs Fillet arm).
+                            // Both producers return (GeometryHandle,
+                            // LocalFeatureOpHistoryRecords) and map uniformly
+                            // to AttributeHistory::LocalFeature.
+                            GeometryOp::Fillet {
+                                target,
+                                edges,
+                                radius,
+                            } => match radius.as_f64() {
+                                Some(r) => (if edges.is_empty() {
+                                    kernel.fillet_with_history(*target, r)
+                                } else {
+                                    kernel.fillet_edges_with_history(*target, r, edges)
+                                })
+                                .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
+                                None => Err(GeometryError::OperationFailed(
+                                    "fillet radius must be numeric".into(),
+                                )),
+                            },
+                            // Task 7b (#2831): Chamfer has no edges field
+                            // (GeometryOp::Chamfer{target,distance}), so
+                            // always routes to chamfer_with_history.
+                            GeometryOp::Chamfer { target, distance } => {
+                                match distance.as_f64() {
+                                    Some(d) => kernel
+                                        .chamfer_with_history(*target, d)
+                                        .map(|(h, recs)| (h, AttributeHistory::LocalFeature(recs))),
+                                    None => Err(GeometryError::OperationFailed(
+                                        "chamfer distance must be numeric".into(),
+                                    )),
+                                }
+                            }
                             // Default arm: no history-aware primitive yet for
                             // this op. Forward to plain `execute` and emit
                             // `AttributeHistory::None`.
@@ -1328,7 +1417,7 @@ impl OcctKernelHandle {
     ///
     /// Safe to call from within a tokio async execution context.
     ///
-    /// # TODO
+    /// # Design note
     ///
     /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
     /// because its channel-death semantics differ: a dead kernel is treated as
@@ -1348,7 +1437,7 @@ impl OcctKernelHandle {
     ///
     /// Safe to call from within a tokio async execution context.
     ///
-    /// # TODO
+    /// # Design note
     ///
     /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
     /// because its channel-death semantics differ: failure is silently ignored
@@ -1911,6 +2000,7 @@ mod tests {
         let fillet_h = handle
             .execute(&GeometryOp::Fillet {
                 target: union_h.id,
+                edges: vec![],
                 radius: Value::Real(2.0),
             })
             .unwrap();
@@ -2084,6 +2174,7 @@ mod tests {
         let fillet_h = handle
             .execute_async(&GeometryOp::Fillet {
                 target: union_h.id,
+                edges: vec![],
                 radius: Value::Real(2.0),
             })
             .await

@@ -161,7 +161,7 @@ pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPu
 /// precedent used elsewhere in this file.
 pub fn my_design_template_with_subs(subs: &[(&str, &str)]) -> TopologyTemplate {
     let mut builder =
-        TopologyTemplateBuilder::new("MyDesign").param("MyDesign", "thickness", Type::Real, None);
+        TopologyTemplateBuilder::new("MyDesign").param("MyDesign", "thickness", Type::dimensionless_scalar(), None);
     for (name, kind) in subs {
         builder = builder.sub_component(*name, *kind, Vec::new());
     }
@@ -253,7 +253,7 @@ mod tests {
             "arg[0] result_type must be StructureRef(\"Structure\")"
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let arg1 = &args[1];
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
@@ -438,7 +438,7 @@ mod tests {
             Type::StructureRef("Structure".to_string())
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
             dimension,
@@ -508,7 +508,7 @@ mod tests {
             "arg[0] result_type must be StructureRef(\"Bracket\"), NOT StructureRef(\"Structure\")"
         );
 
-        // arg[1]: Scalar literal si=1e-6 dim=LENGTH
+        // arg[1]: Length literal si=1e-6 dim=LENGTH
         let CompiledExprKind::Literal(Value::Scalar {
             si_value,
             dimension,
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(cell.id, ValueCellId::new("MyDesign", "thickness"));
         assert_eq!(
             cell.cell_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "thickness param type must be Real"
         );
         assert!(cell.default_expr.is_none(), "thickness has no default");

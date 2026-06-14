@@ -15,8 +15,12 @@
 // The integration test at `crates/reify-eval/tests/solve_elastic_static_pressure_e2e.rs`
 // checks that solve completes without errors and max_von_mises is positive and finite.
 //
-// Type-coercion notes: see `fea_cantilever_smoke.ri` header for the rationale
-// behind ConstitutiveLawInput and LoadCase wrappers.
+// Type-coercion notes: `solve_elastic_static` declares `material: ConstitutiveLaw`.
+// `Steel_AISI_1045` conforms transitively via `ElasticMaterial : ConstitutiveLaw`
+// (task γ/4441); the `ConstitutiveLawInput` shim was retired in task δ/4442, so
+// `material` is passed directly.  The LoadCase bundle is no longer needed —
+// `solve_elastic_static` now declares `loads: List<Load>` /
+// `supports: List<Support>` (task 4093), so direct list literals type-check.
 
 structure FeaPressureSmoke {
     // Geometry: 1 m long beam with 100 mm × 100 mm square cross-section.
@@ -34,17 +38,10 @@ structure FeaPressureSmoke {
     // Supports: fully clamped (fixed) at the beam root (x_min face).
     let mount = FixedSupport(target: "root")
 
-    // Bundle loads + supports via LoadCase so that member-access .loads / .supports
-    // has compile-time type `List<Real>` (matching the fn param type).
-    let lc = LoadCase(name: "pressure_case", loads: [pressure], supports: [mount])
-
-    // Wrap material in ConstitutiveLawInput so that member-access .law has
-    // compile-time type ConstitutiveLaw (matching the fn param type, task δ/3780).
-    let ci = ConstitutiveLawInput(law: material)
-
     // FEA solve via the @optimized trampoline.
+    // Direct list literals type-check against List<Load> / List<Support> (task 4093).
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports, ElasticOptions()
+        material, length, width, height, [pressure], [mount], ElasticOptions()
     )
 
     // Geometry realization (deferred — no kernel call at eval time).

@@ -85,8 +85,8 @@ mod tests {
 
     #[test]
     fn whitespace_change_changes_hash() {
-        let a = ContentHash::of_str("param width: Scalar = 80mm");
-        let b = ContentHash::of_str("param width:  Scalar = 80mm");
+        let a = ContentHash::of_str("param width: Length = 80mm");
+        let b = ContentHash::of_str("param width:  Length = 80mm");
         assert_ne!(a, b);
     }
 

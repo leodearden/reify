@@ -170,7 +170,7 @@ fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
         let t = try_infer_traits_for_function_call(name, &[box_g(), box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
-    for name in ["fillet", "shell"] {
+    for name in ["fillet", "shell", "chamfer", "draft", "thicken", "offset_solid"] {
         let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }

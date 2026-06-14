@@ -135,6 +135,11 @@ pub(crate) fn collect_body_refs_inner(expr: &CompiledExpr, refs: &mut Vec<ValueC
                 collect_body_refs_inner(def, refs);
             }
         }
+        // task 4118 (γ): recurse into the wrapped selector so guarded-group
+        // ref collection sees through the Selector→List<Geometry> coercion.
+        CompiledExprKind::ResolveSelector { selector } => {
+            collect_body_refs_inner(selector, refs);
+        }
     }
 }
 
@@ -151,6 +156,7 @@ pub(crate) fn register_guarded_names<'a>(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &mut HashSet<&'a str>,
+    known_selector_lets: &mut HashSet<&'a str>,
 ) {
     for member in members {
         match member {
@@ -173,10 +179,10 @@ pub(crate) fn register_guarded_names<'a>(
                                     "unknown type name",
                                 )),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     })
                 } else {
-                    Type::Real
+                    Type::dimensionless_scalar()
                 };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets (mirrors entity.rs pre-pass).
@@ -185,7 +191,7 @@ pub(crate) fn register_guarded_names<'a>(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, known_geometry_lets))
+                        .map(|e| is_geometry_let(e, functions, known_geometry_lets, known_selector_lets))
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -194,11 +200,16 @@ pub(crate) fn register_guarded_names<'a>(
                 scope.register(&param.name, ty);
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, known_geometry_lets, known_selector_lets) {
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
                 } else {
-                    scope.register(&let_decl.name, Type::Real);
+                    scope.register(&let_decl.name, Type::dimensionless_scalar());
+                    // Track selector lets so subsequent all-ident compositions
+                    // are correctly classified. Mirrors entity.rs pre-pass. (task 4527)
+                    if is_selector_expr(&let_decl.value, functions, known_selector_lets) {
+                        known_selector_lets.insert(let_decl.name.as_str());
+                    }
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
@@ -209,6 +220,7 @@ pub(crate) fn register_guarded_names<'a>(
                 // if the aliased name appeared in the if-branch. Fixing this would
                 // require snapshotting both `scope` and `known_geometry_lets` atomically
                 // for each branch — a larger change that is deferred until needed.
+                // The same sharing applies to `known_selector_lets`. (task 4527)
                 register_guarded_names(
                     &g.members,
                     scope,
@@ -219,6 +231,7 @@ pub(crate) fn register_guarded_names<'a>(
                     structure_names,
                     trait_names,
                     known_geometry_lets,
+                    known_selector_lets,
                 );
                 register_guarded_names(
                     &g.else_members,
@@ -230,6 +243,7 @@ pub(crate) fn register_guarded_names<'a>(
                     structure_names,
                     trait_names,
                     known_geometry_lets,
+                    known_selector_lets,
                 );
             }
             _ => {}
@@ -259,6 +273,7 @@ pub(crate) fn compile_block_guard(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
 ) {
     let inner_condition = compile_expr(&g.condition, scope, enum_defs, functions, diagnostics);
 
@@ -297,6 +312,7 @@ pub(crate) fn compile_block_guard(
         structure_names,
         trait_names,
         known_geometry_lets,
+        known_selector_lets,
     );
 
     let mut else_members = Vec::new();
@@ -323,6 +339,7 @@ pub(crate) fn compile_block_guard(
             structure_names,
             trait_names,
             known_geometry_lets,
+            known_selector_lets,
         );
     }
 
@@ -367,6 +384,7 @@ pub(crate) fn compile_guarded_members(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
 ) {
     let guard_ctx = Some(current_guard);
     for member in ast_members {
@@ -426,7 +444,7 @@ pub(crate) fn compile_guarded_members(
                 members.push(decl);
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value, functions, known_geometry_lets) {
+                if is_geometry_let(&let_decl.value, functions, known_geometry_lets, known_selector_lets) {
                     continue;
                 }
                 let mut compiled_expr = {
@@ -506,6 +524,7 @@ pub(crate) fn compile_guarded_members(
                     span: constraint.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 });
                 *constraint_index += 1;
             }
@@ -528,6 +547,7 @@ pub(crate) fn compile_guarded_members(
                     structure_names,
                     trait_names,
                     known_geometry_lets,
+                    known_selector_lets,
                 );
             }
             reify_ast::MemberDecl::Sub(s) => {

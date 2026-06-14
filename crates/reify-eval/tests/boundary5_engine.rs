@@ -175,8 +175,8 @@ fn e2e_parse_compile_eval_auto_param() {
     use reify_ir::{DeterminacyState, Satisfaction};
 
     let source = r#"structure S {
-    param x : Scalar = auto
-    param y : Scalar = 5mm
+    param x : Length = auto
+    param y : Length = 5mm
     let z = y * 2
     constraint x > 2mm
 }"#;
@@ -376,30 +376,30 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
         .param(
             "S",
             "p",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(CompiledExpr::literal(
                 reify_ir::Value::Real(3.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
         .let_binding(
             "S",
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             binop(
                 BinOp::Add,
                 value_ref("S", "b"),
-                CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::dimensionless_scalar()),
             ),
         )
         .let_binding(
             "S",
             "b",
-            Type::Real,
+            Type::dimensionless_scalar(),
             binop(
                 BinOp::Mul,
                 value_ref("S", "p"),
-                CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::dimensionless_scalar()),
             ),
         )
         .build();
@@ -694,8 +694,8 @@ fn engine_eval_stdlib_function_in_let() {
     use reify_core::{ModulePath, ValueCellId};
 
     let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let diag = sqrt(w * w + h * h)
 }"#;
     let parsed = reify_syntax::parse(source, ModulePath::single("stdlib_test"));
@@ -773,12 +773,12 @@ fn e2e_all_three_features_through_engine() {
     let source = r#"import std.math
 
 structure Child {
-    param size: Scalar = 10mm
+    param size: Length = 10mm
     let half = size / 2
 }
 
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     let diag = sqrt(w * w)
     sub part = Child(size: w / 2)
     constraint diag > 0mm

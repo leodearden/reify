@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -143,6 +143,17 @@ vi.mock('../../viewport/wireManager', () => ({
     sync: mockWireSync,
     dispose: mockWireDispose,
     setResolution: mockWireSetResolution,
+  })),
+}));
+
+// ── surfaceManager mock (β) ───────────────────────────────────────────────────
+const mockSurfaceSync = vi.fn();
+const mockSurfaceDispose = vi.fn();
+
+vi.mock('../../viewport/surfaceManager', () => ({
+  createSurfaceManager: vi.fn(() => ({
+    sync: mockSurfaceSync,
+    dispose: mockSurfaceDispose,
   })),
 }));
 
@@ -1272,5 +1283,60 @@ describe('Viewport FEA auto-enable determinism', () => {
 
     expect(store.state.enabled).toBe(true);
     expect(store.state.channel).toBe('vonMises_top');
+  });
+});
+
+// ── β: surfaceManager integration ─────────────────────────────────────────────
+//
+// Verifies that Viewport.tsx creates a surfaceManager and drives surfaceManager.sync
+// reactively from props.tensegritySurfaces.
+//
+// RED until Viewport.tsx adds createSurfaceManager + the reactive sync effect
+// (step-12).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Viewport surfaceManager integration (β)', () => {
+  function makeSurface(overrides?: Partial<TensegritySurfaceData>): TensegritySurfaceData {
+    return {
+      entity_path: 'Patch',
+      kind: 'membrane',
+      i0: 0, i1: 1, i2: 2,
+      x0: 0.0, y0: 0.0, z0: 0.0,
+      x1: 1.0, y1: 0.0, z1: 0.0,
+      x2: 0.5, y2: 0.866, z2: 0.0,
+      ...overrides,
+    };
+  }
+
+  it('rendering Viewport with tensegritySurfaces calls surfaceManager.sync', () => {
+    const surfaces: TensegritySurfaceData[] = [makeSurface()];
+    render(() => <Viewport meshes={{}} viewportId="test-sm-vp" tensegritySurfaces={surfaces} />);
+    // surfaceManager.sync must have been called at least once via createEffect on mount.
+    expect(mockSurfaceSync).toHaveBeenCalled();
+    const lastCall = mockSurfaceSync.mock.calls[mockSurfaceSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual(surfaces);
+  });
+
+  it('updating tensegritySurfaces prop re-syncs the surfaceManager', () => {
+    const [surfaces, setSurfaces] = createSignal<TensegritySurfaceData[]>([makeSurface()]);
+    render(() => <Viewport meshes={{}} viewportId="test-sm-vp2" tensegritySurfaces={surfaces()} />);
+    const callCountAfterMount = mockSurfaceSync.mock.calls.length;
+
+    // Update the prop to an empty array.
+    setSurfaces([]);
+
+    // sync must have been called again after the prop update.
+    expect(mockSurfaceSync.mock.calls.length).toBeGreaterThan(callCountAfterMount);
+    const lastCall = mockSurfaceSync.mock.calls[mockSurfaceSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual([]);
+  });
+
+  it('unmounting Viewport disposes the surfaceManager', () => {
+    const { unmount } = render(() => <Viewport meshes={{}} viewportId="test-sm-vp3" tensegritySurfaces={[]} />);
+    mockSurfaceDispose.mockClear();
+
+    unmount();
+
+    expect(mockSurfaceDispose).toHaveBeenCalled();
   });
 });

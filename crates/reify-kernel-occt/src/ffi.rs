@@ -110,6 +110,39 @@ pub mod ffi {
         dir_max: Point3,
     }
 
+    /// Analytic datum projected from a face's underlying analytic surface.
+    ///
+    /// Returned by `face_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` surface produced the datum so the Rust
+    /// dispatch can compose the correct projected `Value` (Axis for
+    /// Cylinder/Cone, Plane for Plane, Point for the Sphere centre). `origin`
+    /// and `direction` carry the datum's location + axis direction;
+    /// `scalar1`/`scalar2` carry the analytic parameters (radius / semi-angle;
+    /// apex-distance / —) retained in the bundle's trait record but not
+    /// consumed by the `.axis`/`.plane`/`.point` projections in this task.
+    struct AnalyticSurfaceDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
+    /// Analytic datum projected from an edge's underlying analytic curve.
+    ///
+    /// Returned by `edge_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` curve produced the datum. `origin` and
+    /// `direction` carry the line position + direction or the circle/ellipse
+    /// centre + axis direction; `scalar1`/`scalar2` carry radius / major-radius
+    /// and minor-radius.
+    struct AnalyticCurveDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -394,6 +427,21 @@ pub mod ffi {
             radius: f64,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
+        /// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius`
+        /// applied to ONLY the selected edges. `edge_indices` are 0-based
+        /// positions into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)`
+        /// enumeration — the same order `extract_edges` mints edge handles in —
+        /// so a `GeometryHandleId` resolved via the `extracted_edges` cache maps
+        /// to the matching index. Eagerly captures the per-parent face/edge
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Requires a non-empty `edge_indices`; the
+        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        fn make_fillet_edges_with_history(
+            shape: &OcctShape,
+            radius: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
         /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
         /// applied to every edge, eagerly capturing the per-parent face/edge
         /// Modified/Generated/Deleted records alongside the modified result shape.
@@ -583,8 +631,20 @@ pub mod ffi {
             plane_shape: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
-        // --- Thicken / Shell ---
+        /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
+        /// identified by 0-based canonical-order face indices. Requires
+        /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        fn draft_faces_shape(
+            shape: &OcctShape,
+            angle_rad: f64,
+            plane_shape: &OcctShape,
+            face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Thicken / Shell / Offset Solid ---
+        fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
+        fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
             shape: &OcctShape,
             thickness: f64,
@@ -594,6 +654,7 @@ pub mod ffi {
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_cylindrical_face(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_rectangle_face(
             width: f64,
             height: f64,
@@ -939,6 +1000,29 @@ pub mod ffi {
         /// `reify_types::EdgeCurveKind::try_from_str` on the Rust side.
         /// Errors if `shape` is not a `TopAbs_EDGE`.
         fn edge_curve_kind(shape: &OcctShape) -> Result<String>;
+
+        /// Project a face's underlying analytic surface to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Surface::GetType()` switch:
+        /// Cylinder/Cone → axis datum (`Axis().Location()`/`.Direction()` +
+        /// radius / semi-angle), Plane → plane datum, Sphere → centre-point
+        /// datum. The `kind` byte in the returned `AnalyticSurfaceDatum`
+        /// records the GeomAbs classification for Rust-side `Value` composition.
+        /// Errors if `shape` is not a `TopAbs_FACE` or the surface is
+        /// non-analytic (e.g. `GeomAbs_SurfaceOfRevolution`, B-spline).
+        fn face_analytic_datum(shape: &OcctShape) -> Result<AnalyticSurfaceDatum>;
+
+        /// Project an edge's underlying analytic curve to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Curve::GetType()` switch:
+        /// Line → axis datum (`Position()`/`.Direction()`), Circle/Ellipse →
+        /// centre + axis datum (`Axis()` + `.Location()` + radius). Errors if
+        /// `shape` is not a `TopAbs_EDGE` or the curve is non-analytic.
+        fn edge_analytic_datum(shape: &OcctShape) -> Result<AnalyticCurveDatum>;
+
+        /// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+        /// (geometric-relations ε). Returns the face/edge/vertex tolerance in
+        /// kernel-native units (metres) — feeds the feature-datum dedup
+        /// tolerance formula `max(confusion_floor, localTol(A), localTol(B))`.
+        fn shape_local_tolerance(shape: &OcctShape) -> Result<f64>;
 
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).

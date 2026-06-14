@@ -25,13 +25,12 @@ fn pressure_smoke_source() -> &'static str {
 /// is also exercised).
 const PRESSURE_MULTI_CASE_SOURCE: &str = r#"
 structure def PressureMultiCaseFixture {
-    let ci  = ConstitutiveLawInput(law: Steel_AISI_1045())
     let lc1 = LoadCase(
         name:     "pressure_case",
         loads:    [PressureLoad(magnitude: 1.0e6, face: "x_max", direction: "normal")],
         supports: [FixedSupport(target: "root")],
     )
-    let result = solve_load_cases(ci.law, 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
+    let result = solve_load_cases(Steel_AISI_1045(), 1000mm, 100mm, 100mm, [lc1], ElasticOptions())
 }
 "#;
 

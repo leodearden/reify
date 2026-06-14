@@ -14,15 +14,16 @@
 //! # Public non-trait methods
 //!
 //! `realize_voxel_from_mesh`, `active_voxel_count`, `sample_sdf_at`,
-//! `write_vdb_grid`, and `open_vdb_grid_for_test` are additional public
-//! surface area exposed for the v0.4 shells use-case (direct callers) and
-//! for integration tests. They are NOT part of the `GeometryKernel` trait —
-//! trait dispatch routes through `execute()` / `query()`.
+//! `write_vdb_grid`, `open_vdb_grid_for_test`, and `densify_grid_to_sampled`
+//! are additional public surface area exposed for the v0.4 shells use-case
+//! (direct callers) and for integration tests. They are NOT part of the
+//! `GeometryKernel` trait — trait dispatch routes through `execute()` / `query()`.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+use reify_core::Type;
+use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, SampledField, TessError, Value};
 
 use crate::ffi::ffi as openvdb_ffi;
 use crate::init::ensure_initialized;
@@ -297,7 +298,14 @@ impl OpenVdbKernel {
             .ok_or(QueryError::InvalidHandle(handle))?;
         Ok(openvdb_ffi::grid_name(grid))
     }
+
 }
+
+/// Fixed field name used by `densify_grid_to_sampled`.
+///
+/// The name feeds the `W_FIELD_OUT_OF_BOUNDS` diagnostic message only —
+/// it has no semantic significance for the densified SDF.
+const SDF_FIELD_NAME: &str = "openvdb_voxel_sdf";
 
 impl Default for OpenVdbKernel {
     fn default() -> Self {
@@ -330,9 +338,17 @@ impl Default for OpenVdbKernel {
 //   - `grid_name_for_test` → `grid_name` → `Grid::getName()`: pure read
 //     of the cached `MetaMap` entry, no lazy init, no tree walk.
 //
-// Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`)
-// take `&mut self` and rely on Rust's borrow checker for exclusive
-// access, NOT on `Sync`.
+// Mutating methods (`realize_voxel_from_mesh`, `open_vdb_grid_for_test`,
+// `densify_grid_to_sampled`) take `&mut self` and rely on Rust's borrow
+// checker for exclusive access, NOT on `Sync`.
+//
+// `densify_grid_to_sampled` uses `&mut self` rather than the PRD §7.1 `&self`
+// because it calls `grid_bbox_min` / `grid_bbox_max` / `grid_densify_to_buffer`,
+// all of which invoke `h.grid->evalActiveVoxelBoundingBox()` — the exact API
+// this comment lists below as prohibited for new `&self` methods.  Using
+// `&mut self` is the established safe pattern (borrow-checker exclusivity).
+// Condition to relax: confirm evalActiveVoxelBoundingBox() is non-caching on
+// libopenvdb 13.x, OR migrate to Mutex<HashMap<…>>.
 //
 // DO NOT add a new `&self` method that internally calls any of the
 // following OpenVDB APIs without first replacing this `unsafe impl Sync`
@@ -399,6 +415,64 @@ impl GeometryKernel for OpenVdbKernel {
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
 
+    /// Convert a triangle-soup [`Mesh`] to a narrow-band SDF `FloatGrid` via
+    /// [`Self::realize_voxel_from_mesh_with_options`] (done #3095) and register
+    /// the result as a new `GeometryHandle`.
+    ///
+    /// # Resolution policy (PRD §3b honest-floor)
+    ///
+    /// Options are derived from the mesh bounding box via
+    /// [`crate::MeshToVoxelOptions::honest_floor`]:
+    /// - `voxel_size = h = longest_extent / VOXELS_PER_LONGEST_AXIS` — scales
+    ///   with the part so resolution is meaningful across unit systems.
+    /// - `narrow_band` wide enough that the level-set band covers the full
+    ///   interior (`narrow_band × h ≥ longest_extent/2`), preventing the
+    ///   interior-saturation artefact where deep-interior voxels read
+    ///   `-half_width × voxel_size` instead of the true SDF value.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(GeometryHandle { id, repr: None })` — `repr` is `None` because
+    ///   the Voxel kernel has no BRep sub-shape (mirrors the
+    ///   `GeometryHandle` contract at `geometry.rs:121-128`).
+    /// - `Err(GeometryError::OperationFailed(_))` for:
+    ///   - malformed flat buffers (`vertices.len()` or `indices.len()` not
+    ///     a multiple of 3) — validated here before calling `honest_floor`
+    ///     so the diagnostic names the actual cause (buffer layout) rather
+    ///     than the misleading "bbox extent" message that `honest_floor`
+    ///     would produce (it uses `chunks_exact(3)` which drops the trailing
+    ///     partial triplet);
+    ///   - empty / degenerate / non-finite meshes (honest_floor returns None);
+    ///   - invalid opts or FFI failure (propagated from
+    ///     `realize_voxel_from_mesh_with_options`).
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        // Validate flat-buffer lengths before calling honest_floor so the error
+        // message names the true cause.  honest_floor's chunks_exact(3) silently
+        // drops a trailing partial triplet and would return None with the generic
+        // "bbox extent" message instead of the precise layout error below.
+        if !mesh.vertices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.vertices length {} is not a multiple of 3 (expected flat xyz layout)",
+                mesh.vertices.len(),
+            )));
+        }
+        if !mesh.indices.len().is_multiple_of(3) {
+            return Err(GeometryError::OperationFailed(format!(
+                "mesh.indices length {} is not a multiple of 3 (expected flat triangle layout)",
+                mesh.indices.len(),
+            )));
+        }
+        let opts = crate::MeshToVoxelOptions::honest_floor(mesh).ok_or_else(|| {
+            GeometryError::OperationFailed(
+                "OpenVdbKernel::ingest_mesh: cannot derive honest-floor voxel size \
+                 — mesh has zero or non-finite bounding-box extent"
+                    .into(),
+            )
+        })?;
+        let id = self.realize_voxel_from_mesh_with_options(mesh, &opts)?;
+        Ok(GeometryHandle { id, repr: None })
+    }
+
     fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
         Err(QueryError::QueryFailed(VOXEL_BOOL_STUB_MSG.into()))
     }
@@ -414,5 +488,50 @@ impl GeometryKernel for OpenVdbKernel {
 
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(VOXEL_BOOL_STUB_MSG.into()))
+    }
+
+    /// Densify the registered SDF grid into a flat f64 buffer and lower it to
+    /// a [`SampledField`] via the shared `lower_to_sampled` pipeline.
+    ///
+    /// Moved from `impl OpenVdbKernel` into this trait override so the Engine
+    /// can dispatch through `Box<dyn GeometryKernel>` (realization-read-api.md
+    /// §3.3 δ, D4 reuse — verbatim body, no parallel path).
+    ///
+    /// `&mut self` avoids the `evalActiveVoxelBoundingBox` `&self`-aliasing
+    /// race; see the Sync maintenance contract at the bottom of this file.
+    fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        let grid = self
+            .handles
+            .get(&handle)
+            .ok_or(QueryError::InvalidHandle(handle))?;
+
+        let voxel_sizes = openvdb_ffi::grid_voxel_sizes(grid);
+        let bbox_min = openvdb_ffi::grid_bbox_min(grid);
+        let bbox_max = openvdb_ffi::grid_bbox_max(grid);
+        let units_str = openvdb_ffi::grid_units(grid);
+
+        let raw_buffer = openvdb_ffi::grid_densify_to_buffer(grid).map_err(|e| {
+            QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}"))
+        })?;
+
+        let source = crate::ingest::build_realized_grid_source(
+            voxel_sizes,
+            bbox_min,
+            bbox_max,
+            &units_str,
+            raw_buffer,
+        );
+
+        let outcome = crate::ingest::lower_to_sampled(
+            &source,
+            SDF_FIELD_NAME,
+            &Type::dimensionless_scalar(),
+        )
+        .map_err(|e| QueryError::QueryFailed(format!("densify_grid_to_sampled: {e}")))?;
+
+        Ok(outcome.field)
     }
 }

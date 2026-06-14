@@ -31,7 +31,7 @@ use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_trait_arg_conformance};
+use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance, check_trait_arg_conformance};
 use crate::type_compat::{
     type_carries_trait_object, type_carries_type_param, unify,
     resolve_function_overload, OverloadResolution,
@@ -201,8 +201,14 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Field(_) => {
                 // Already compiled by fields_phase::phase_fields.
             }
-            reify_ast::Declaration::Purpose(_) => {
+            reify_ast::Declaration::Purpose(p) => {
                 // Handled later by post_passes::phase_purposes.
+                // Emit W_DEFAULT_NOT_WIRED for any ambient-default declarations
+                // nested directly in this purpose body.
+                for d in &p.defaults {
+                    ctx.diagnostics
+                        .push(crate::diagnostics::default_not_yet_wired_warning(d));
+                }
             }
             reify_ast::Declaration::Constraint(_) => {
                 // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
@@ -215,6 +221,12 @@ pub(crate) fn phase_entities(
             }
             reify_ast::Declaration::Module(_) => {
                 // No entity to build from a module declaration.
+            }
+            reify_ast::Declaration::Default(d) => {
+                // No entity to build from a default declaration (task A: accept and ignore).
+                // Emit W_DEFAULT_NOT_WIRED so `reify check` surfaces the unresolved decl.
+                ctx.diagnostics
+                    .push(crate::diagnostics::default_not_yet_wired_warning(d));
             }
         }
     }
@@ -640,6 +652,18 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             span,
             diags,
         );
+        // task 4444 ζ: StructureInstanceCtor trait-arg conformance for value-cell
+        // let bindings.  phase_pending_bound_checks covers sub-component ctor args
+        // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
+        // bindings lower to StructureInstanceCtor expressions and were NOT checked.
+        // Walking every StructureInstanceCtor here closes that gap.
+        check_expr_struct_ctor_args(
+            expr,
+            &template_registry,
+            &trait_registry,
+            span,
+            diags,
+        );
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -651,6 +675,16 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         for_each_template_root_expr(template, &mut |expr, span| {
             walk(expr, span, &mut new_diagnostics);
         });
+        // task-4584: check that StructureRef-typed Param defaults match their
+        // declared cell_type (e.g. `param part : Part = "x"` → rejects String).
+        // Geometry/Solid defaults are handled by the Type::Geometry arm of
+        // check_param_default_conformance (no separate helper).
+        check_param_default_conformance(
+            template,
+            &template_registry,
+            &trait_registry,
+            &mut new_diagnostics,
+        );
     }
 
     // Walk function bodies: param defaults, let-bindings, result expr.
@@ -814,6 +848,73 @@ fn check_expr_fn_calls(
                 trait_registry,
                 diagnostics,
                 representative_span,
+            );
+        }
+    });
+}
+
+/// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
+/// `check_trait_arg_conformance` on each named arg whose declared param type is
+/// `List<TraitObject(...)>` OR a bare `StructureRef(_)`.
+///
+/// This closes the gap left by `phase_pending_bound_checks`: that phase only
+/// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
+/// sub-lowering path).  Value-cell `let c = Foo(...)` bindings lower to
+/// `StructureInstanceCtor` expressions and were not checked.  By walking the
+/// compiled expression tree here we cover them with the same
+/// `check_trait_arg_conformance` logic that sub-components use.
+///
+/// **Scope: `List<TraitObject>` and `StructureRef` params.**  Bare `TraitObject`
+/// params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally
+/// excluded — those are either already covered by the fn-call/sub-component paths,
+/// or are deliberate type-coercion escape hatches pending trait-coerce support
+/// (e.g. `ConstitutiveLawInput`, task δ/3780 `TODO(trait-coerce)`).  Extending
+/// to bare `TraitObject` would regress those escape-hatch call sites and is
+/// deferred to a follow-up once the coercion story is settled.
+///
+/// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
+/// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
+/// → `walk_param_against_arg_type` StructureRef arm, which emits
+/// `TypeNotConformingToStructureRef` for concrete type mismatches.
+fn check_expr_struct_ctor_args(
+    expr: &CompiledExpr,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    representative_span: SourceSpan,
+    diagnostics: &mut Vec<reify_core::Diagnostic>,
+) {
+    expr.walk(&mut |node: &CompiledExpr| {
+        let CompiledExprKind::StructureInstanceCtor { type_name, ordered_args, .. } = &node.kind
+        else {
+            return;
+        };
+        // Resolve the target template once; skip if not found.
+        let Some(template) = template_registry.get(type_name.as_str()) else {
+            return;
+        };
+        for (arg_name, compiled_arg) in ordered_args {
+            // Scope to List<TraitObject> and StructureRef params.  Bare TraitObject
+            // params are skipped — see fn doc-comment rationale.
+            let should_check = template
+                .value_cells
+                .iter()
+                .find(|vc| vc.id.member == arg_name.as_str())
+                .is_some_and(|vc| {
+                    matches!(&vc.cell_type,
+                        Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
+                    || matches!(&vc.cell_type, Type::StructureRef(_))
+                });
+            if !should_check {
+                continue;
+            }
+            check_trait_arg_conformance(
+                type_name,
+                arg_name,
+                compiled_arg,
+                representative_span,
+                template_registry,
+                trait_registry,
+                diagnostics,
             );
         }
     });
