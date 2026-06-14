@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import unittest
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Module loader — load scripts/prd-capability-check.py into `pcc`
@@ -340,6 +341,134 @@ class TestVerdictTruthTable(unittest.TestCase):
         self.assertNotEqual(pcc.PASS, pcc.FAIL)
         self.assertNotEqual(pcc.PASS, pcc.UNPROVABLE)
         self.assertNotEqual(pcc.FAIL, pcc.UNPROVABLE)
+
+
+# ---------------------------------------------------------------------------
+# step-05 (RED): observation determination per probe kind
+# ---------------------------------------------------------------------------
+
+class TestObservation(unittest.TestCase):
+    """Tests for observe() and match_predicate() using synthetic ProbeRun fixtures.
+
+    These tests FAIL until step-06 adds ProbeRun, match_predicate, observe().
+    """
+
+    def _run(self, exit_code: int, stdout: str = "", stderr: str = "") -> Any:
+        """Build a synthetic ProbeRun-like object (or namedtuple/dataclass)."""
+        return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+
+    # ── match_predicate ───────────────────────────────────────────────────────
+
+    def test_match_empty_predicate_always_true(self):
+        """Empty match dict {} is always satisfied."""
+        run = self._run(0, stdout="hello", stderr="")
+        self.assertTrue(pcc.match_predicate(run, {}))
+
+    def test_match_exit_code_satisfied(self):
+        """match {exit_code: 1} is satisfied when exit_code == 1."""
+        run = self._run(1)
+        self.assertTrue(pcc.match_predicate(run, {"exit_code": 1}))
+
+    def test_match_exit_code_not_satisfied(self):
+        """match {exit_code: 1} is NOT satisfied when exit_code == 0."""
+        run = self._run(0)
+        self.assertFalse(pcc.match_predicate(run, {"exit_code": 1}))
+
+    def test_match_stderr_contains_satisfied(self):
+        """match {stderr_contains: 'Error'} satisfied when 'Error' in stderr."""
+        run = self._run(1, stderr="Error: something went wrong")
+        self.assertTrue(pcc.match_predicate(run, {"stderr_contains": "Error"}))
+
+    def test_match_stderr_contains_not_satisfied(self):
+        """match {stderr_contains: 'Error'} NOT satisfied when absent from stderr."""
+        run = self._run(1, stderr="warning: minor issue")
+        self.assertFalse(pcc.match_predicate(run, {"stderr_contains": "Error"}))
+
+    def test_match_stdout_contains_satisfied(self):
+        """match {stdout_contains: 'All constraints satisfied.'} satisfied."""
+        run = self._run(0, stdout="All constraints satisfied.")
+        self.assertTrue(pcc.match_predicate(run, {"stdout_contains": "All constraints satisfied."}))
+
+    def test_match_stdout_contains_not_satisfied(self):
+        """match {stdout_contains: 'All constraints satisfied.'} NOT satisfied when absent."""
+        run = self._run(0, stdout="")
+        self.assertFalse(pcc.match_predicate(run, {"stdout_contains": "All constraints satisfied."}))
+
+    def test_match_combined_all_must_hold(self):
+        """Combined match: all set fields must hold simultaneously (AND)."""
+        # Both exit_code and stderr_contains
+        run = self._run(1, stderr="rejection: type mismatch")
+        self.assertTrue(pcc.match_predicate(run, {"exit_code": 1, "stderr_contains": "rejection"}))
+        # exit_code matches but stderr_contains does not
+        self.assertFalse(pcc.match_predicate(run, {"exit_code": 1, "stderr_contains": "EvalError"}))
+        # Neither matches
+        run2 = self._run(0, stderr="clean")
+        self.assertFalse(pcc.match_predicate(run2, {"exit_code": 1, "stderr_contains": "rejection"}))
+
+    # ── observe() for grammar kind ────────────────────────────────────────────
+
+    def test_grammar_exit0_is_present(self):
+        """grammar: exit 0 → PRESENT (no parse errors)."""
+        run = self._run(0)
+        obs = pcc.observe("grammar", run, {})
+        self.assertEqual(obs, pcc.PRESENT)
+
+    def test_grammar_exit1_with_error_node_is_absent(self):
+        """grammar: exit 1 with '(ERROR' in output → ABSENT."""
+        run = self._run(1, stderr="(ERROR [1,12]-[1,32])")
+        obs = pcc.observe("grammar", run, {})
+        self.assertEqual(obs, pcc.ABSENT)
+
+    def test_grammar_exit1_with_failed_to_load_language_is_harness_error(self):
+        """grammar: 'Failed to load language' in stderr → harness-error sentinel."""
+        run = self._run(1, stderr="Failed to load language: reify")
+        obs = pcc.observe("grammar", run, {})
+        # Must not be PRESENT or ABSENT — it must be a harness-error signal
+        self.assertNotEqual(obs, pcc.PRESENT)
+        self.assertNotEqual(obs, pcc.ABSENT)
+
+    # ── observe() for check kind ──────────────────────────────────────────────
+
+    def test_check_match_satisfied_is_present(self):
+        """check: match predicate satisfied → PRESENT."""
+        # exit_code=1 predicate satisfied
+        run = self._run(1, stderr="error: type mismatch")
+        obs = pcc.observe("check", run, {"exit_code": 1})
+        self.assertEqual(obs, pcc.PRESENT)
+
+    def test_check_match_not_satisfied_is_absent(self):
+        """check: match predicate not satisfied → ABSENT."""
+        # The §3 4575 case: reify exits 0 + 'All constraints satisfied.', no rejection diag
+        run = self._run(0, stdout="All constraints satisfied.")
+        obs = pcc.observe("check", run, {"exit_code": 1})
+        self.assertEqual(obs, pcc.ABSENT)
+
+    def test_check_4575_silent_accept_is_absent(self):
+        """§3 4575: exit 0, 'All constraints satisfied.', empty stderr → no rejection → ABSENT."""
+        run = self._run(0, stdout="All constraints satisfied.", stderr="")
+        # We probe for presence of a rejection diagnostic (exit_code: 1)
+        obs = pcc.observe("check", run, {"exit_code": 1})
+        self.assertEqual(obs, pcc.ABSENT)
+
+    # ── observe() for ir kind ─────────────────────────────────────────────────
+
+    def test_ir_exit0_clean_is_absent(self):
+        """ir: exit 0 clean → ABSENT (sound by determinism §6 G6(b))."""
+        run = self._run(0, stdout="a = 0.01 m", stderr="")
+        obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
+        self.assertEqual(obs, pcc.ABSENT)
+
+    def test_ir_exit_nonzero_with_signature_is_present(self):
+        """ir: exit ≠ 0 with asserted signature in stderr → PRESENT."""
+        run = self._run(101, stderr="thread panicked: CrossSubGeometryRef would panic in eval_expr")
+        obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
+        self.assertEqual(obs, pcc.PRESENT)
+
+    def test_ir_exit_nonzero_without_signature_is_indeterminate(self):
+        """ir: exit ≠ 0 with an UNRELATED error (signature absent) → INDETERMINATE."""
+        run = self._run(1, stderr="error: unresolved type: Transform3")
+        obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
+        self.assertEqual(obs, pcc.INDETERMINATE)
 
 
 if __name__ == "__main__":
