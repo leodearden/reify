@@ -424,6 +424,8 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -502,6 +504,8 @@ pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -709,6 +713,8 @@ pub(crate) fn unify(
         | (Type::Plane, _)
         | (Type::Axis, _)
         | (Type::Direction, _)
+        // Relation directive (γ): a leaf with no inner `Type` to bind.
+        | (Type::Relation, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)

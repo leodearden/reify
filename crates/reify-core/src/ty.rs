@@ -235,6 +235,21 @@ pub enum Type {
     /// runtime exactly one arm is active and its concrete `StructureRef`-
     /// typed cell holds the value.
     Union(Vec<Type>),
+    /// A geometric **relation** directive: a degree-of-freedom-removal
+    /// directive between datums, carrying **no truth value** (distinct from
+    /// `Bool`, which asserts truth).
+    ///
+    /// Produced by the relation vocabulary (`coincident`/`concentric`/`flush`/
+    /// `offset`/`parallel`/`perpendicular`/… — geometric-relations γ, task
+    /// 4383). A relation call type-checks to `Type::Relation` but is an
+    /// **Undef-backed** compile-time directive: there is no `Value::Relation`,
+    /// so relation calls evaluate to `Value::Undef` until ζ supplies the
+    /// relate-solve (the geometry-query Phase-1 precedent). Inside a
+    /// `relate { … }` block a relation removes degrees of freedom rather than
+    /// asserting a truth — `relate { coincident(a, b) }` drives `a`/`b` into
+    /// coincidence. Admitted by `is_representable_cell_type` alongside
+    /// `StructureRef`/`TraitObject`.
+    Relation,
 }
 
 impl Type {
@@ -343,6 +358,12 @@ impl Type {
     /// Shorthand for a dimensionless 3D unit-vector (direction) type.
     pub fn direction() -> Self {
         Type::Direction
+    }
+
+    /// Shorthand for the geometric-relation directive type (γ): a DOF-removal
+    /// directive carrying no truth value, distinct from `Bool`.
+    pub fn relation() -> Self {
+        Type::Relation
     }
 
     /// Shorthand for a 3D bounding box type.
@@ -485,6 +506,7 @@ impl std::fmt::Display for Type {
             Type::Plane => write!(f, "Plane"),
             Type::Axis => write!(f, "Axis"),
             Type::Direction => write!(f, "Direction"),
+            Type::Relation => write!(f, "Relation"),
             Type::BoundingBox => write!(f, "BoundingBox"),
             Type::ScalarParam(name) => write!(f, "Scalar<{}>", name),
             Type::Matrix { m, n, quantity } => write!(f, "Matrix{}x{}<{}>", m, n, quantity),

@@ -1162,6 +1162,8 @@ fn type_carries_type_param(t: &Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -1246,6 +1248,8 @@ fn type_carries_dim_param(t: &Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector

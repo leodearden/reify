@@ -854,6 +854,7 @@ fn format_type_repr(t: &Type) -> String {
         Type::Plane => "Plane",
         Type::Axis => "Axis",
         Type::Direction => "Direction",
+        Type::Relation => "Relation",
         Type::BoundingBox => "BoundingBox",
         Type::Matrix { .. } => "Matrix",
         Type::ScalarParam(_) => "ScalarParam",

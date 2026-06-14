@@ -586,6 +586,11 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Axis" => Some(Type::Axis),
         "Plane" => Some(Type::Plane),
         "Frame" => Some(Type::Frame(3)),
+        // Geometric-relation directive type (geometric-relations γ, task 4383).
+        // `fn concentric(...) -> Relation` and `param r : Relation` type-check;
+        // a relation is a DOF-removal directive (no truth value), distinct from
+        // Bool. Evaluates to Value::Undef until ζ supplies the relate-solve.
+        "Relation" => Some(Type::Relation),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
@@ -1329,6 +1334,8 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): a leaf with no inner `Type` to substitute.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector

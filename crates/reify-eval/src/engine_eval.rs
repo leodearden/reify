@@ -111,6 +111,10 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // geometric-relations γ (task 4383): Undef-backed directive type — no
+        // Value::Relation; relation cells default to Value::Undef (accepted by
+        // value_type_kind_matches for any type) until ζ supplies relate-solve.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
