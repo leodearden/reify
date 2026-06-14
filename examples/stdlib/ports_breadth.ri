@@ -1,8 +1,10 @@
 // std.ports breadth-expansion integration gate
 // examples/stdlib/ports_breadth.ri
 //
-// Multi-domain assembly demonstrating the four std.ports submodule surfaces
-// introduced by the breadth-expansion PRD (docs/prds/v0_6/ports-breadth-expansion.md §7 η).
+// Multi-domain assembly demonstrating three std.ports submodule surfaces
+// (mechanical, thermal, fluid) introduced by the breadth-expansion PRD
+// (docs/prds/v0_6/ports-breadth-expansion.md §7 η).
+// std.ports.electrical is available but not exercised by the three η signals.
 //
 // Three η integration signals are exercised here:
 //   (a) ThreadSpec derived lets (M6×1 ISO 68-1 numerics) — via ThreadAssembly.spec
@@ -23,7 +25,6 @@
 // This file is auto-covered by examples_smoke.rs (directory walk).
 
 import std.ports.mechanical
-import std.ports.electrical
 import std.ports.thermal
 import std.ports.fluid
 
