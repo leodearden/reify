@@ -2867,6 +2867,24 @@ impl Engine {
         }
     }
 
+    /// Thin convenience wrapper over [`Self::build_outputs_with_result`] that
+    /// returns ONLY the per-occurrence artifacts, discarding the bundled
+    /// constraint results + diagnostics from the driver's single realization.
+    ///
+    /// Prefer [`Self::build_outputs_with_result`] when you ALSO need the
+    /// exit-code signal (constraint results / diagnostics) without realizing the
+    /// module a second time — that is exactly what the declarative `reify build`
+    /// (no `-o`) path needs, so it must not pay for two realizations.
+    pub fn build_outputs(
+        &mut self,
+        module: &CompiledModule,
+        design_dir: &std::path::Path,
+        out_dir_override: Option<&std::path::Path>,
+    ) -> Vec<crate::ExportArtifact> {
+        self.build_outputs_with_result(module, design_dir, out_dir_override)
+            .artifacts
+    }
+
     /// Occurrence-driven export driver (io-export δ, step-8): realize the module
     /// once, then emit one file [`crate::ExportArtifact`] per realized `Output`
     /// occurrence whose `format` and `path` come from the DSL.
@@ -2901,12 +2919,18 @@ impl Engine {
     /// Emits one artifact per recognized `Output` occurrence, in deterministic
     /// declaration order (`templates × sub_components`) — so a multi-output
     /// module produces a reproducible artifact sequence (B6).
-    pub fn build_outputs(
+    ///
+    /// Returns a [`crate::BuildOutputs`] bundling those artifacts with the
+    /// constraint results + diagnostics from the SINGLE realization in step 1,
+    /// so a caller needing the exit-code signal reuses this one realization
+    /// rather than calling [`Self::build`] (which would realize, constraint-check,
+    /// and serialize the discarded Phase-B product bodies all over again).
+    pub fn build_outputs_with_result(
         &mut self,
         module: &CompiledModule,
         design_dir: &std::path::Path,
         out_dir_override: Option<&std::path::Path>,
-    ) -> Vec<crate::ExportArtifact> {
+    ) -> crate::BuildOutputs {
         use crate::tolerance_combine::{
             OutputTarget, conforms_to_output, extract_output_export_spec,
         };
@@ -3075,7 +3099,15 @@ impl Engine {
             }
         }
 
-        artifacts
+        // Bundle the artifacts with the single realization's constraint results +
+        // diagnostics so the CLI exit-code gate reuses THIS realization instead of
+        // calling build() a second time (the `r` fields are moved out — the loop's
+        // immutable borrows of `r.values` have all ended by here).
+        crate::BuildOutputs {
+            constraint_results: r.constraint_results,
+            diagnostics: r.diagnostics,
+            artifacts,
+        }
     }
 
     /// T7 (task 3905): compute the minimum distance (SI metres) between two

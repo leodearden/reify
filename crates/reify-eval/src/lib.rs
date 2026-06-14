@@ -1044,6 +1044,30 @@ pub struct ExportArtifact {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Bundled result of the occurrence-driven export driver
+/// [`Engine::build_outputs_with_result`] (io-export δ).
+///
+/// Carries the per-occurrence [`ExportArtifact`]s AND the constraint results +
+/// diagnostics from the SINGLE realization the driver performs internally, so a
+/// caller that needs the exit-code signal (the declarative `reify build` with no
+/// `-o`) does NOT have to realize the module a second time via [`Engine::build`].
+/// The plain [`Engine::build_outputs`] is a thin wrapper that returns only
+/// [`Self::artifacts`], discarding the two fields below.
+#[derive(Debug)]
+pub struct BuildOutputs {
+    /// Constraint check results from the driver's single realization — identical
+    /// to what [`Engine::build`] would report for the same module (constraint
+    /// checking does not depend on the discarded Phase-B serialization).
+    pub constraint_results: Vec<ConstraintCheckEntry>,
+    /// Build-level diagnostics from the driver's single realization. Per-artifact
+    /// export diagnostics (an `I_DISPLAY_OUTPUT_DEFERRED` info, or a per-occurrence
+    /// export failure) live on each [`ExportArtifact::diagnostics`] instead.
+    pub diagnostics: Vec<Diagnostic>,
+    /// One artifact per recognized `Output` occurrence, in deterministic
+    /// declaration order (see [`ExportArtifact`]).
+    pub artifacts: Vec<ExportArtifact>,
+}
+
 /// A single surfaced mesh produced by tessellation, paired with its entity
 /// path and default visibility.
 ///
