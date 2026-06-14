@@ -2319,12 +2319,15 @@ impl OcctKernel {
             }
             GeometryOp::Draft {
                 target,
+                faces,
                 angle,
                 plane,
             } => {
                 let shape = self.get_shape(*target)?;
                 let angle_rad = extract_f64(angle)?;
                 let plane_shape = self.get_shape(*plane)?;
+                // Curated path (non-empty faces) will be wired in step-8.
+                let _ = faces;
                 ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
@@ -6388,6 +6391,7 @@ mod tests {
         // Apply Draft with angle ~5.7 degrees (0.1 rad)
         let draft_h = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
+            faces: vec![],
             angle: Value::Real(0.1),
             plane: plane_h.id,
         });
@@ -6750,6 +6754,7 @@ mod tests {
 
         let result = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
+            faces: vec![],
             angle: Value::Real(0.05),
             plane: sphere_h.id,
         });

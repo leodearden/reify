@@ -794,8 +794,15 @@ pub enum GeometryOp {
         degree: usize,
     },
     /// Apply draft angle to faces.
+    ///
+    /// `faces` is the curated selection of faces to draft. An **empty** list is
+    /// the all-draftable back-compat path (legacy 3-arg `draft(solid, angle, plane)`);
+    /// a non-empty list names the specific faces to draft (4-arg
+    /// `draft(solid, faces, angle, neutral_plane)`).
     Draft {
         target: GeometryHandleId,
+        /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
+        faces: Vec<GeometryHandleId>,
         angle: Value,
         plane: GeometryHandleId,
     },
@@ -6734,6 +6741,7 @@ mod tests {
                 "Draft",
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
+                    faces: vec![],
                     angle: Value::Real(0.1),
                     plane: GeometryHandleId(2),
                 },

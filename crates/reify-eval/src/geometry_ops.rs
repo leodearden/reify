@@ -930,6 +930,7 @@ pub(crate) fn compile_geometry_op(
                         .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
                     Ok(reify_ir::GeometryOp::Draft {
                         target: target_id,
+                        faces: vec![],
                         angle,
                         plane: plane_id,
                     })
