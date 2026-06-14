@@ -20020,6 +20020,139 @@ mod tests {
         );
     }
 
+    // ── feature→datum projection over a HYDRATED Selector receiver (task 4594) ─
+    //
+    // These tests verify the new `eval_selector_feature_datum` arm added to
+    // `try_eval_feature_datum_projection`: when the receiver cell holds a hydrated
+    // `Value::Selector`, the arm resolves it to sub-handles, unions the per-handle
+    // `FeatureDatumBundle`s, re-dedups across handles at the confusion-floor
+    // tolerance, and calls `feature_datum_projection` — the same select-one-or-
+    // diagnose refinement the GeometryHandle arm uses.
+
+    /// Assert that a `Value` is a `Value::Axis` lying on the world Z line
+    /// (origin x ≈ y ≈ 0, direction parallel to ±Z, |z| ≈ 1).
+    /// Mirrors `assert_value_axis_is_z_line` from feature_datum_tests.rs.
+    fn assert_value_axis_is_z_line(v: &reify_ir::Value) {
+        match v {
+            reify_ir::Value::Axis { origin, direction } => {
+                let o = match origin.as_ref() {
+                    reify_ir::Value::Point(c) if c.len() == 3 => [
+                        c[0].as_f64().expect("axis origin x is numeric"),
+                        c[1].as_f64().expect("axis origin y is numeric"),
+                        c[2].as_f64().expect("axis origin z is numeric"),
+                    ],
+                    other => panic!("axis origin must be a 3-component Point; got {other:?}"),
+                };
+                let d = match direction.as_ref() {
+                    reify_ir::Value::Direction { x, y, z } => [*x, *y, *z],
+                    other => panic!("axis direction must be a Direction; got {other:?}"),
+                };
+                assert!(
+                    o[0].abs() < 1e-9 && o[1].abs() < 1e-9,
+                    "axis origin must lie on the world Z line; got {o:?}"
+                );
+                assert!(
+                    d[0].abs() < 1e-9 && d[1].abs() < 1e-9 && (d[2].abs() - 1.0).abs() < 1e-9,
+                    "axis direction must be parallel to ±Z; got {d:?}"
+                );
+            }
+            other => panic!("expected Value::Axis; got {other:?}"),
+        }
+    }
+
+    /// Build a `Value::Axis` along the world Z line at the given z-origin offset,
+    /// direction +Z.  Mirrors `axis_value` from feature_datum_tests.rs.
+    fn z_axis_value_at(z_origin: f64) -> reify_ir::Value {
+        reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(z_origin),
+            ])),
+            direction: Box::new(reify_ir::Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }),
+        }
+    }
+
+    /// `s.axis` where `s : FaceSelector` is backed by a hydrated `Value::Selector`
+    /// that `topology_selectors::resolve` expands to a single cylindrical face,
+    /// whose `FaceAnalyticDatum` is an Axis on the world-Z line, must evaluate to
+    /// `Some(Value::Axis{..})` on Z with zero `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED today: the existing stub returns `Some(Value::Undef)` + one
+    /// `FeatureDatumAmbiguous` error for ANY selector receiver — hydrated or not.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_resolves_single_cyl_face_to_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let cyl_face = reify_ir::GeometryHandleId(10);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:        extract_faces(parent)   → [cyl_face]
+        // feature_datum_bundle:    extract_faces(cyl_face) → [cyl_face]
+        // FaceAnalyticDatum(cyl_face)                      → Axis at z=0, dir +Z
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![cyl_face])
+            .with_extracted_faces(cyl_face, vec![cyl_face])
+            .with_face_analytic_datum_result(cyl_face, z_axis_value_at(0.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (single cyl face) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over a single coaxial face must emit zero \
+             FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
     // ── Scalar-branch coverage (suggestion from review, task 3622 amend) ────
     //
     // Both dispatch_edge_length and dispatch_perimeter accept
