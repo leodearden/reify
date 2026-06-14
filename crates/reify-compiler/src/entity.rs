@@ -829,7 +829,7 @@ pub(crate) fn compile_entity(
                                     // and flows through `Some(t) => t` unchanged to suppress a
                                     // type-mismatch cascade; `None` is a genuine error the
                                     // helper already diagnosed, poisoned to a concrete
-                                    // `Type::Real` placeholder.
+                                    // `Type::dimensionless_scalar()` placeholder.
                                     //
                                     // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
                                     // into `param` type-annotation position ONLY. Other type-expr
@@ -849,7 +849,7 @@ pub(crate) fn compile_entity(
                                         diagnostics,
                                     ) {
                                         Some(t) => t,
-                                        None => Type::Real,
+                                        None => Type::dimensionless_scalar(),
                                     }
                                 } else {
                                     diagnostics.push(

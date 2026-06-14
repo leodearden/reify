@@ -784,9 +784,9 @@ fn trait_declares_assoc_type(
 ///   the `Type::Error` poison sentinel — exactly as [`resolve_assoc_type_name`]
 ///   does for the bare-name case — WITHOUT a new diagnostic, so the caller
 ///   suppresses a downstream type-mismatch cascade rather than mis-poisoning to a
-///   concrete `Type::Real`.
+///   concrete `Type::dimensionless_scalar()`.
 /// - `None`: a genuine error (each path pushes its own diagnostic); the caller
-///   poisons the param to a concrete `Type::Real` placeholder.
+///   poisons the param to a concrete `Type::dimensionless_scalar()` placeholder.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_qualified_assoc_type(
     base: &reify_ast::TypeExpr,
@@ -879,7 +879,7 @@ pub(crate) fn resolve_qualified_assoc_type(
     // `TraitAssocTypeNotBound`. Poison it to `Type::Error` (the same sentinel
     // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
     // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
-    // seeing the concrete `Type::Real` fallback would spuriously mismatch. No new
+    // seeing the concrete `Type::dimensionless_scalar()` fallback would spuriously mismatch. No new
     // diagnostic is emitted here (anti-cascade).
     let resolved_member = || {
         template

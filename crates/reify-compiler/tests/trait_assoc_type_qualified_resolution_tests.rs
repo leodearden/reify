@@ -21,7 +21,7 @@ use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only
 ///
 /// Fails today: the `QualifiedAssoc` type-expr resolves to `None` in the
 /// registry-less generic resolver, so the entity.rs param arm emits
-/// `UnresolvedType` and falls back to `Type::Real`.
+/// `UnresolvedType` and falls back to `Type::dimensionless_scalar()`.
 #[test]
 fn bare_unique_qualified_assoc_resolves_in_param_annotation() {
     let source = r#"
@@ -147,7 +147,7 @@ structure def UseBeam {
 /// — the qualifier is disambiguation-only.
 ///
 /// Fails after step-6: the helper does not yet handle `trait_name = Some(..)`,
-/// so it returns `None` and the params fall back to `Type::Real`.
+/// so it returns `None` and the params fall back to `Type::dimensionless_scalar()`.
 #[test]
 fn paren_disambiguated_qualified_assoc_resolves_both_qualifiers() {
     let source = r#"
@@ -216,7 +216,7 @@ fn any_diag_has_code(errors: &[&reify_core::Diagnostic], code: DiagnosticCode) -
 /// must NOT be reported as `AmbiguousAssocType`.
 ///
 /// Fails after step-8: bare `declaring_traits.len() == 0` returns `None` with no
-/// diagnostic, so the param silently falls back to `Type::Real`.
+/// diagnostic, so the param silently falls back to `Type::dimensionless_scalar()`.
 #[test]
 fn unknown_member_qualified_assoc_is_unresolved_not_ambiguous() {
     let source = r#"
@@ -326,7 +326,7 @@ structure def UseBeam {
 /// concrete `StructureRef` exists at definition time) and must not panic.
 ///
 /// Fails after step-8: the registry lookup misses for `T` and the helper returns
-/// `None` silently, so the param falls back to `Type::Real` with no diagnostic.
+/// `None` silently, so the param falls back to `Type::dimensionless_scalar()` with no diagnostic.
 #[test]
 fn type_parameter_base_qualified_assoc_diagnoses() {
     let source = r#"
@@ -418,11 +418,11 @@ fn example_file_qualified_assoc_compiles_and_resolves() {
 /// entry for it — `resolved_member()`'s `.unwrap_or(Type::Error)` branch fires
 /// and the helper returns `Some(Type::Error)`, which flows through the entity.rs
 /// `Some(t) => t` arm so `m` types as `Type::Error` (the poison sentinel), not
-/// `Type::Real`.
+/// `Type::dimensionless_scalar()`.
 ///
 /// This pins the most heavily-documented-yet-previously-untested behaviour of the
 /// helper: a future refactor that emitted a duplicate Unresolved/Ambiguous
-/// diagnostic at the consumer, or poisoned to a concrete `Type::Real`, would fail
+/// diagnostic at the consumer, or poisoned to a concrete `Type::dimensionless_scalar()`, would fail
 /// here.
 #[test]
 fn declared_but_unbound_qualified_assoc_poisons_to_error_without_cascade() {
@@ -469,7 +469,7 @@ structure def UseBeam {
         m_cell.cell_type,
         Type::Error,
         "declared-but-unbound `Beam::Material` should poison `m` to Type::Error \
-         (the anti-cascade sentinel), not fall back to Type::Real; got: {:?}",
+         (the anti-cascade sentinel), not fall back to Type::dimensionless_scalar(); got: {:?}",
         m_cell.cell_type
     );
 }
