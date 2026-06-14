@@ -12252,6 +12252,56 @@ mod tests {
         }
     }
 
+    /// (c) ANTI-ZERO-FACES (γ step-5): a shell_open whose "open_faces" arg
+    /// is PRESENT but evaluates to an empty List must NOT silently fall
+    /// through to the all-faces path or produce an empty open_face_handles.
+    /// `compile_geometry_op` must return `Err` and push exactly one
+    /// diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`.
+    /// Mirrors `compile_geometry_op_draft_empty_face_selection_errors_with_code`.
+    #[test]
+    fn compile_geometry_op_shell_open_empty_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                ("open_faces".into(), empty_list_literal()),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present open_faces selector resolving to zero faces must Err \
+             (never silently shell all faces), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, \
+             got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
     #[test]
