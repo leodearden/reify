@@ -720,6 +720,91 @@ structure def S2 : T2 { param y : Real = 2.0 }
     );
 }
 
+// ─── Step-3/5/7: template-literal seeding per-site RED tests (task 4599) ─────
+//
+// Each test uses ValueMapSpyChecker to assert that a specific seeding site
+// passes template literal-param defaults (keyed by own cell.id) to the
+// constraint checker — in addition to the candidate literal defaults that
+// γ/4434 wired.
+//
+// Site 1 = filter_feasible_candidates_seeded (per-candidate loop)
+// Site 2 = dfs_search leaf (multi-param DFS)
+// Site 3 = emit_fallback_warning_and_delegate_to_bfs γ joint-recheck
+
+/// Site 1 (filter_feasible_candidates_seeded): per-candidate ValueMap must
+/// include the parameterized template's own literal-param defaults.
+///
+/// Setup:
+/// - Trait T1 + structure S1:T1{x:Real=1.0}
+/// - Template Stack: p1:TypeParam("T1") (None), bound:Bool=true, trivial constraint
+/// - Single AutoTypeParam; max_depth=6 → single-param path → site 1
+///
+/// RED (before step-4): no template literal in per-candidate map.
+/// GREEN (after step-4): template_seed merged before the candidate loop.
+#[test]
+fn site1_filter_feasible_candidates_seeded_includes_template_literal_param() {
+    let source = r#"
+trait T1 {}
+structure def S1 : T1 { param x : Real = 1.0 }
+"#;
+    let module = parse_and_compile(source);
+    let (template_registry, trait_registry) = build_registries(&module);
+    let functions: &[CompiledFunction] = &[];
+
+    let parameterized_template = TopologyTemplateBuilder::new("Stack")
+        .param("Stack", "p1", Type::TypeParam("T1".to_string()), None)
+        .param(
+            "Stack",
+            "bound",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
+        )
+        .constraint(
+            "Stack",
+            0,
+            Some("trivial"),
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+        )
+        .build();
+
+    let (spy, captured) = ValueMapSpyChecker::new();
+
+    let params = vec![AutoTypeParam {
+        name: "T1".to_string(),
+        bounds: vec!["T1".to_string()],
+        free: false,
+        use_site_span: SourceSpan::new(10, 15),
+    }];
+
+    let mut diagnostics = Vec::new();
+    let _ = resolve_auto_type_params_with_backtracking(
+        &params,
+        &template_registry,
+        &trait_registry,
+        &parameterized_template,
+        &spy,
+        functions,
+        6,
+        usize::MAX,
+        &mut diagnostics,
+    );
+
+    let captured = captured.lock().expect("spy mutex poisoned");
+    assert!(!captured.is_empty(), "expected at least one check() call");
+
+    let template_key = ValueCellId::new("Stack", "bound");
+    assert!(
+        captured.iter().any(|vm| vm.get(&template_key).is_some()),
+        "expected at least one per-candidate check() call to contain the \
+         template literal key {template_key:?}; \
+         actual captured maps: {:?}",
+        captured
+            .iter()
+            .map(|m| m.iter().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// Stub-path no-op guard (PRD §11.2): all-Indeterminate checker → outcomes
 /// are unchanged from before the hoist reversion.  Verified GREEN both before
 /// and after step-6 to pin "stub-path callers unchanged".
