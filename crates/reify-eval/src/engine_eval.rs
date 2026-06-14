@@ -837,7 +837,7 @@ fn detect_unresolved_ad_hoc_selectors(
             // Only emit if the evaluated value is Undef (or absent from the map).
             let is_undef = values
                 .get(&cell.id)
-                .map_or(true, |v| matches!(v, Value::Undef));
+                .is_none_or(|v| matches!(v, Value::Undef));
             if !is_undef {
                 continue;
             }
