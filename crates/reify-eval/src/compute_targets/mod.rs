@@ -18,6 +18,8 @@
 
 pub mod buckling;
 pub mod elastic_static;
+// Task 2929: FEA diagnostic mapping — FeaFailure → reify_core::Diagnostic.
+pub mod fea_diagnostics;
 pub mod form_find;
 pub mod multi_case;
 pub mod shell_solve;
