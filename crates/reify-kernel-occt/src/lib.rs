@@ -1582,6 +1582,58 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepOffsetAPI_DraftAngle` to a curated subset of faces of
+    /// `target` at `angle_rad` radians, using `plane` as the neutral plane.
+    ///
+    /// `faces` must be non-empty (defense-in-depth; the all-faces path is
+    /// the `GeometryOp::Draft { faces: vec![], .. }` execute arm which calls
+    /// `draft_shape` directly). Each handle in `faces` must belong to `target`;
+    /// handles are mapped to their 0-based canonical positions via
+    /// `extract_faces` (TopExp::MapShapes order, same as the eval-arm seam).
+    ///
+    /// The result is stored directly via `store_with_repr(.., BRepKind::Solid)`
+    /// (history-free) — mirroring the existing `draft_shape` execute arm, which
+    /// does not participate in persistent-naming.
+    pub fn draft_faces(
+        &mut self,
+        target: GeometryHandleId,
+        angle_rad: f64,
+        plane: GeometryHandleId,
+        faces: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if faces.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "draft_faces: face selection must be non-empty \
+                 (the all-faces path uses draft_shape / empty faces vec)"
+                    .into(),
+            ));
+        }
+        // Map each selected face handle → its 0-based position in the
+        // parent's canonical face enumeration. `extract_faces` and
+        // `draft_faces_shape` both use TopExp::MapShapes(TopAbs_FACE)
+        // order, so the index is exactly what the kernel-side FFI expects.
+        let parent_faces = self.extract_faces(target).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "draft_faces: failed to enumerate parent faces of {target:?}: {e:?}"
+            ))
+        })?;
+        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
+        for f in faces {
+            let pos = parent_faces.iter().position(|h| h == f).ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "draft_faces: face {f:?} does not belong to solid {target:?}"
+                ))
+            })?;
+            face_indices.push(pos as u32);
+        }
+        let shape = self.get_shape(target)?;
+        let plane_shape = self.get_shape(plane)?;
+        let result_shape =
+            ffi::ffi::draft_faces_shape(shape, angle_rad, plane_shape, &face_indices)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+    }
+
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
@@ -2323,13 +2375,22 @@ impl OcctKernel {
                 angle,
                 plane,
             } => {
-                let shape = self.get_shape(*target)?;
                 let angle_rad = extract_f64(angle)?;
-                let plane_shape = self.get_shape(*plane)?;
-                // Curated path (non-empty faces) will be wired in step-8.
-                let _ = faces;
-                ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                if faces.is_empty() {
+                    // 3-arg / empty-selection back-compat: draft ALL draftable
+                    // faces (unchanged path). Shape stored after the match.
+                    let shape = self.get_shape(*target)?;
+                    let plane_shape = self.get_shape(*plane)?;
+                    ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                } else {
+                    // Curated per-face selection: draft only the chosen faces.
+                    // `draft_faces` stores the Solid result history-free and
+                    // returns its handle; early return mirrors the Fillet
+                    // curated arm (lib.rs:2167-2174).
+                    let handle = self.draft_faces(*target, angle_rad, *plane, faces)?;
+                    return Ok(handle);
+                }
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
