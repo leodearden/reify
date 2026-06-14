@@ -522,6 +522,41 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
 
 
 # ---------------------------------------------------------------------------
+# harness_exit_code() — aggregate results into a harness exit code
+# ---------------------------------------------------------------------------
+
+def harness_exit_code(results: List[Result]) -> int:
+    """Compute the harness exit code from a list of Results.
+
+    Precedence (highest to lowest):
+        70  — ≥1 harness-error result  (tool/runtime error; sysexits EX_SOFTWARE)
+         1  — ≥1 FAIL result           (at least one probe contradicts expectation)
+         2  — ≥1 UNPROVABLE, 0 FAIL   (at least one probe is indeterminate)
+         0  — all PASS
+
+    Note: 64 (usage error) is returned by main() for bad arguments, not here.
+
+    Args:
+        results: List of Result objects from evaluate().
+
+    Returns:
+        An integer exit code: 0, 1, 2, or 70.
+    """
+    verdicts = [r.verdict for r in results]
+
+    if _HARNESS_ERROR in verdicts:
+        return 70
+
+    if FAIL in verdicts:
+        return 1
+
+    if UNPROVABLE in verdicts:
+        return 2
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Verdict logic
 # ---------------------------------------------------------------------------
 
