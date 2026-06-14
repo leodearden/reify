@@ -78,9 +78,11 @@ def main(argv: List[str]) -> int:
     try:
         parser.parse_args(argv)
     except SystemExit as e:
-        # argparse exits 0 for --help, non-zero for bad args
+        # argparse exits 0 for --help/--version, non-zero (usually 2) for bad args
         code = e.code if isinstance(e.code, int) else 64
-        return code if code != 0 else 0
+        if code == 0:
+            return 0
+        return 64  # map any argparse error to EX_USAGE
 
     # Not yet implemented — return usage error.
     sys.stderr.write("error: probe runner not yet implemented\n")
