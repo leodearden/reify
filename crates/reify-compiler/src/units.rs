@@ -1466,6 +1466,10 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families, the dynamics-query family, AND the construction family.
     use crate::math_signatures::MATH_OPERATION_NAMES;
+    // §1.2 trig/transcendental family (task 4352) — third math sibling slice in
+    // `crate::math_signatures`, imported here to pin disjointness from every
+    // other name family (both directions).
+    use crate::math_signatures::MATH_TRANSCENDENTAL_NAMES;
     // §13 joint-constructor family (mechanism β, task 4311) — single source of
     // truth in `crate::joint_signatures`, imported here to pin disjointness from
     // all eight sibling families (regression-lock: catches any future colliding
@@ -1481,6 +1485,15 @@ mod tests {
     // names `angle`/`distance` are deliberately NOT in this slice (they stay in
     // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
     use crate::relation_signatures::RELATION_FN_NAMES;
+
+    // Local fixtures for name families that have no pub single-source slice —
+    // they are hardcoded match arms in `affine_map_algebra_result_type` and
+    // `infer_list_helper_return_type`. Keep in sync with those functions.
+    // Hoisted to module level so both the operation and transcendental
+    // disjointness tests share a single copy, and a future addition to either
+    // family only requires one edit here.
+    const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
+    const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -2216,6 +2229,12 @@ mod tests {
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
+                 constructors and transcendentals are disjoint slices)"
+            );
         }
     }
 
@@ -2243,13 +2262,8 @@ mod tests {
     /// disambiguated), so it is the documented exception.
     #[test]
     fn math_operation_fn_names_are_disjoint_from_other_families() {
-        // Affine ALGEBRA free-fn names (`affine_map_algebra_result_type`'s match
-        // arms) and list-helper names (`infer_list_helper_return_type`'s match
-        // arms) have no public single-source slice — they are hardcoded match
-        // arms — so these local fixtures mirror them. Keep in sync with those fns.
-        const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
-        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
-
+        // AFFINE_ALGEBRA_NAMES / LIST_HELPER_NAMES are hoisted to module level
+        // (shared with `math_transcendental_fn_names_are_disjoint_from_other_families`).
         for name in MATH_OPERATION_NAMES {
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -2328,6 +2342,113 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
+                 operations and transcendentals are disjoint slices)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the §1.2 trig/transcendental family (task
+    /// 4352). Every `MATH_TRANSCENDENTAL_NAMES` entry (`sin` / `cos` / `asin` /
+    /// `exp` / `log` / …) must be absent from every other name family — the five
+    /// geometry families, the dynamics-query family, the two other math families
+    /// (construction + operation), the joint / dynamics-constructor / analysis /
+    /// field-op / relation families, and the affine constructor / algebra /
+    /// list-helper ladder arms — so a name satisfies at most one classification
+    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// ladder, and the transcendental/operation/construction split stays a
+    /// partition. This forward sweep is the substantive guard (it catches a
+    /// colliding name added to EITHER side); the converse asserts in the two
+    /// math-sibling tests pin the math partition's documented both-ways story.
+    /// Mirrors `math_operation_fn_names_are_disjoint_from_other_families`.
+    #[test]
+    fn math_transcendental_fn_names_are_disjoint_from_other_families() {
+        for name in MATH_TRANSCENDENTAL_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (§13 joint family, task 4311)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be an \
+                 affine-algebra free-fn (earlier arm would shadow it; unlike \
+                 `determinant`, no trig name has an intentional affine-algebra overlap)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be a \
+                 list-helper (`single` / `flat_map` — earlier arm would shadow it)"
             );
         }
     }

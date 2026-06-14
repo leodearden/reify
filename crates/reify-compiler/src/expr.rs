@@ -2154,7 +2154,7 @@ pub(crate) fn compile_expr_guarded(
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
                     } else if is_math_typed_fn(name) {
-                        // The math-linalg family, routed via two sibling
+                        // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
                         //     vec / matrix / diag / identity.
@@ -2165,6 +2165,12 @@ pub(crate) fn compile_expr_guarded(
                         //     eigenvalues/complex_eigenvalues, and the complex
                         //     fns complex/real/imag/conjugate/complex_magnitude/
                         //     phase/arg.
+                        //   • TRIG / TRANSCENDENTAL (task 4352,
+                        //     MATH_TRANSCENDENTAL_NAMES): the §1.2 names —
+                        //     sin/cos/tan → dimensionless; asin/acos/atan/atan2
+                        //     → Angle; exp/log → dimensionless. Results are
+                        //     arg-independent (fixed arms in math_fn_result_type,
+                        //     matching eval).
                         // `math_fn_result_type` computes the per-call result type
                         // for BOTH: for constructors it recovers the return
                         // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —

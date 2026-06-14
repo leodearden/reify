@@ -78,13 +78,39 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
     "arg",
 ];
 
+/// The complete set of §1.2 trig/transcendental builtin names recognised by
+/// the compiler (task 4352). Sibling to [`MATH_CONSTRUCTION_NAMES`] and
+/// [`MATH_OPERATION_NAMES`] — kept as a SEPARATE slice so the construction
+/// exact-set contract (`math_construction_names_are_exactly_the_four`) and the
+/// operation exact-set contract (`math_operation_names_are_exactly_the_frozen_set`)
+/// both stay valid; [`is_math_typed_fn`] ORs all three. Single source of truth
+/// — imported into the `units.rs` test module to pin disjointness from every
+/// other name family.
+///
+/// Frozen at EXACTLY the 9 task-4352 §1.2 names. log10/sinh/cosh/tanh also
+/// drift to the first-arg default but are out of scope (deferred), mirroring
+/// how task-4182 froze its 26 §3 names and left trig out.
+///
+/// Case-sensitive snake_case, mirroring the sibling slices.
+pub const MATH_TRANSCENDENTAL_NAMES: &[&str] = &[
+    // forward trig (accept ANGLE-or-Real, return dimensionless Scalar ratio)
+    "sin", "cos", "tan",
+    // inverse trig (accept dimensionless Real, return Angle Scalar)
+    "asin", "acos", "atan", "atan2",
+    // exponential / logarithm (accept dimensionless Real, return dimensionless)
+    "exp", "log",
+];
+
 /// Is `name` a math-linalg builtin the compiler types via [`math_fn_result_type`]?
 /// Name-only classification, mirroring `units::is_geometry_query` (a `.contains`
-/// over the single-source-of-truth slices). Recognises BOTH the construction
-/// family ([`MATH_CONSTRUCTION_NAMES`]) and the operation family
-/// ([`MATH_OPERATION_NAMES`], task 4182 δ). Case-sensitive.
+/// over the single-source-of-truth slices). Recognises the construction family
+/// ([`MATH_CONSTRUCTION_NAMES`]), the operation family ([`MATH_OPERATION_NAMES`],
+/// task 4182 δ), and the trig/transcendental family ([`MATH_TRANSCENDENTAL_NAMES`],
+/// task 4352). Case-sensitive.
 pub(crate) fn is_math_typed_fn(name: &str) -> bool {
-    MATH_CONSTRUCTION_NAMES.contains(&name) || MATH_OPERATION_NAMES.contains(&name)
+    MATH_CONSTRUCTION_NAMES.contains(&name)
+        || MATH_OPERATION_NAMES.contains(&name)
+        || MATH_TRANSCENDENTAL_NAMES.contains(&name)
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
@@ -292,6 +318,24 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         "conjugate" => first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar()),
         // `phase` / `arg` return an Angle (Scalar{ANGLE}) regardless of operand.
         "phase" | "arg" => Type::angle(),
+
+        // ── §1.2 trig / transcendental family (task 4352) ────────────────────
+        // All returns are arg-INDEPENDENT — matching eval exactly:
+        //   sin/cos/tan: accept ANGLE-or-Real, always return a dimensionless
+        //     Scalar ratio (trig.rs:9-17; eval `Value::Real`). Defensive-only
+        //     arm: it equals the `_ => dimensionless_scalar()` fallback below, so
+        //     no test can distinguish removal — like the `sign | pow` arm, it
+        //     states the intent and pins the contract against a future change to
+        //     `_`.
+        //   exp/log: accept dimensionless Real, return dimensionless
+        //     (numeric.rs:41-43). Same defensive-only note as sin/cos/tan.
+        //   asin/acos/atan/atan2: accept dimensionless Real, return Scalar{ANGLE}
+        //     (trig.rs:20-35). LOAD-BEARING: without this arm they hit
+        //     `_ => dimensionless_scalar()`, which is wrong (ANGLE ≠ DIMENSIONLESS).
+        // Mirrors the existing fixed arms `sign | pow => dimensionless_scalar()`
+        // (line ~203) and `phase | arg => angle()` (above) in design and rationale.
+        "sin" | "cos" | "tan" | "exp" | "log" => Type::dimensionless_scalar(),
+        "asin" | "acos" | "atan" | "atan2" => Type::angle(),
 
         _ => Type::dimensionless_scalar(),
     }
@@ -626,6 +670,83 @@ mod tests {
         assert!(!is_math_typed_fn("Determinant"));
         assert!(!is_math_typed_fn("Eigenvalues"));
         assert!(!is_math_typed_fn("Complex"));
+    }
+
+    // ── Transcendental name-family contract (task 4352) ──────────────────────
+
+    /// The §1.2 trig/transcendental builtin names frozen by the task-4352 probe.
+    /// Mirrors `EXPECTED_OPERATION_NAMES` for convention parity. Note: asserting
+    /// `MATH_TRANSCENDENTAL_NAMES == EXPECTED_TRANSCENDENTAL_NAMES` catches
+    /// accidental additions/deletions; substantive protection against a wrong
+    /// name in the slice comes from the recognition and disjointness tests.
+    const EXPECTED_TRANSCENDENTAL_NAMES: [&str; 9] = [
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log",
+    ];
+
+    /// `is_math_typed_fn` recognises every §1.2 trig/transcendental name.
+    #[test]
+    fn is_math_typed_fn_recognises_all_transcendental_names() {
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "is_math_typed_fn({name:?}) must be true (§1.2 trig/transcendental family, task 4352)"
+            );
+        }
+    }
+
+    /// Case-sensitivity invariant for the trig/transcendental family.
+    #[test]
+    fn is_math_typed_fn_transcendental_names_are_case_sensitive() {
+        assert!(!is_math_typed_fn("Sin"));
+        assert!(!is_math_typed_fn("Cos"));
+        assert!(!is_math_typed_fn("Exp"));
+        assert!(!is_math_typed_fn("Log"));
+        assert!(!is_math_typed_fn("Atan2"));
+    }
+
+    /// `MATH_TRANSCENDENTAL_NAMES` is exactly the 9 frozen §1.2 names —
+    /// membership both ways plus an exact count (convention parity with
+    /// `math_operation_names_are_exactly_the_frozen_set`; substantive
+    /// protection comes from the recognition and disjointness tests).
+    #[test]
+    fn math_transcendental_names_are_exactly_the_frozen_set() {
+        assert_eq!(
+            MATH_TRANSCENDENTAL_NAMES.len(),
+            EXPECTED_TRANSCENDENTAL_NAMES.len(),
+            "MATH_TRANSCENDENTAL_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_TRANSCENDENTAL_NAMES.len(),
+            MATH_TRANSCENDENTAL_NAMES
+        );
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                MATH_TRANSCENDENTAL_NAMES.contains(&name),
+                "MATH_TRANSCENDENTAL_NAMES must contain {name:?}"
+            );
+        }
+        for name in MATH_TRANSCENDENTAL_NAMES {
+            assert!(
+                EXPECTED_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES has unexpected entry {name:?} not in the frozen set"
+            );
+        }
+    }
+
+    /// All three families are recognised by `is_math_typed_fn` — construction,
+    /// operation, and trig/transcendental — as distinct sibling slices.
+    #[test]
+    fn is_math_typed_fn_recognises_construction_operation_and_transcendental_alike() {
+        for name in EXPECTED_NAMES {
+            assert!(is_math_typed_fn(name), "construction name {name:?} must resolve");
+        }
+        for name in EXPECTED_OPERATION_NAMES {
+            assert!(is_math_typed_fn(name), "operation name {name:?} must resolve");
+        }
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "transcendental name {name:?} must resolve (task 4352)"
+            );
+        }
     }
 
     // ── Result-type resolution (step-11 RED / step-12 GREEN) ─────────────────
@@ -1342,5 +1463,74 @@ mod tests {
         let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
         assert_eq!(math_fn_result_type("phase", std::slice::from_ref(&z)), Type::angle());
         assert_eq!(math_fn_result_type("arg", &[z]), Type::angle());
+    }
+
+    // ── Transcendental result-type contract (task 4352) ──────────────────────
+
+    /// `asin`/`acos`/`atan`/`atan2` return `Type::angle()` regardless of the
+    /// argument dimension. LOAD-BEARING: without the step-4 arm these hit the
+    /// `_ => dimensionless_scalar()` fallback, which is wrong (ANGLE ≠ DIMENSIONLESS).
+    #[test]
+    fn asin_acos_atan_atan2_are_angle() {
+        let r = real_elem(0.5);
+        assert_eq!(
+            math_fn_result_type("asin", std::slice::from_ref(&r)),
+            Type::angle(),
+            "asin must return Type::angle()"
+        );
+        assert_eq!(
+            math_fn_result_type("acos", std::slice::from_ref(&r)),
+            Type::angle(),
+            "acos must return Type::angle()"
+        );
+        assert_eq!(
+            math_fn_result_type("atan", std::slice::from_ref(&r)),
+            Type::angle(),
+            "atan must return Type::angle()"
+        );
+        // atan2 takes two args
+        assert_eq!(
+            math_fn_result_type("atan2", &[real_elem(1.0), real_elem(1.0)]),
+            Type::angle(),
+            "atan2 must return Type::angle()"
+        );
+    }
+
+    /// `sin`/`cos`/`tan`/`exp`/`log` return a dimensionless Scalar. The contract
+    /// is arg-INDEPENDENT: sin/cos/tan are passed an ANGLE arg (proof of
+    /// dimension-independence — a first-arg fallback would give Scalar<ANGLE>).
+    /// exp/log use a Real arg (contract pin; they Undef on a dimensioned arg in
+    /// eval, so dimensionless is the correct call-site). GREEN-stable via the
+    /// `_ => dimensionless_scalar()` fallback; the step-4 explicit arms are
+    /// defensive-only — no test can distinguish them from the fallback (both
+    /// yield `Type::dimensionless_scalar()`), but they state the intent explicitly.
+    #[test]
+    fn sin_cos_tan_exp_log_are_real() {
+        let angle_arg = typed(sca(DimensionVector::ANGLE));
+        assert_eq!(
+            math_fn_result_type("sin", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "sin(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("cos", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "cos(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("tan", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "tan(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("exp", &[real_elem(2.0)]),
+            Type::dimensionless_scalar(),
+            "exp must return a dimensionless Scalar"
+        );
+        assert_eq!(
+            math_fn_result_type("log", &[real_elem(std::f64::consts::E)]),
+            Type::dimensionless_scalar(),
+            "log must return a dimensionless Scalar"
+        );
     }
 }
