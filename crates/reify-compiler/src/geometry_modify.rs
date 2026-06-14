@@ -104,24 +104,50 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
-        // draft(target, angle, plane)
-        "draft" => {
-            if !check_arg_count_exact("draft", compiled_args.len(), 3, expr_span, diagnostics) {
-                return None;
+        // draft(target, angle, plane)            — 3-arg all-draftable back-compat
+        // draft(target, faces, angle, plane)     — 4-arg curated face selection
+        "draft" => match compiled_args.len() {
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Draft,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
             }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Draft,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                    ("plane".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+            4 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Draft,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("faces".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // draft accepts only the 3-arg all-draftable form or the 4-arg
+            // curated-faces form — emit a labeled diagnostic mirroring fillet.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "draft() expects 3 or 4 arguments, got {got}"
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
         // chamfer(target, distance)
         "chamfer" => compile_modify_2arg(
             "chamfer",
