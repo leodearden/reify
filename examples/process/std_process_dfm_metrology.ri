@@ -57,3 +57,32 @@ structure def OverhangError : DFMRule {
     param applies_to : Process     = FDMPrinterA()
     param subject    : Solid       = box(50mm, 30mm, 20mm)
 }
+
+// ── Forming process conformer: 3° draft required ──────────────────────────────
+// Box vertical walls have 0° draft < 3° → DFM_DRAFT fires.
+
+structure def InjectionMolding : Forming {
+    param duration        : Time   = 30s
+    param cost            : Money  = 2USD
+    param min_bend_radius : Length = 1mm
+    param max_draw_depth  : Length = 80mm
+    param draft_angle     : Angle  = 3deg
+}
+
+// ── Draft rules (Warning + Error) ────────────────────────────────────────────
+// Distinct box subjects: different XY dimensions → distinct subject handles.
+// Vertical walls have 0° draft, which is < 3° → violation.
+
+structure def DraftWarning : DFMRule {
+    param rule_name  : String      = "draft-warning"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = box(40mm, 40mm, 30mm)
+}
+
+structure def DraftError : DFMRule {
+    param rule_name  : String      = "draft-error"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = box(50mm, 40mm, 30mm)
+}
