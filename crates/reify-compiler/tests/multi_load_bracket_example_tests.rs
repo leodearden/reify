@@ -211,4 +211,23 @@ fn multi_load_bracket_example_compiles_under_stdlib_with_zero_errors() {
          the literal 9.80665 — gravity must be expressed via STANDARD_GRAVITY() rather \
          than reconstructed inline (catches any binding name, not just `let g_scalar`)"
     );
+
+    // Task 3018 leaf signals: migration from MultiCaseResult(...) stub to real
+    // solve_load_cases engine call (η-PRD §9; 3009+4088 now done).
+    //
+    // `solve_load_cases(` — the real prismatic multi-case engine call.
+    //   RED while the example still binds `MultiCaseResult(cases: map{...})`.
+    // `envelope_von_mises(` — cross-case stress envelope (already present, stays
+    //   as a non-vacuous positive pin so both migrations are tracked together).
+    assert!(
+        src.contains("solve_load_cases("),
+        "leaf signal 'real engine call': expected src to contain 'solve_load_cases(' \
+         — the example must call the real prismatic multi-case engine (task 3018 / 4088), \
+         not the MultiCaseResult(cases: map{{...}}) constructor stub"
+    );
+    assert!(
+        src.contains("envelope_von_mises("),
+        "leaf signal 'envelope reduction': expected src to contain 'envelope_von_mises(' \
+         — the cross-case stress envelope must be present in the example"
+    );
 }
