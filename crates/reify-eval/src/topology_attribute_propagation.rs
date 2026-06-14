@@ -211,6 +211,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
 ///
 /// Returns `Err(QueryError::QueryFailed)` if any record references an out-of-bounds
 /// parent or result sub-shape index.
+#[allow(clippy::too_many_arguments)]
 pub fn propagate_attributes_via_local_feature_history(
     table: &mut TopologyAttributeTable,
     parent_face_handles: &[GeometryHandleId],
