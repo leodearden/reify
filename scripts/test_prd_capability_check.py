@@ -471,5 +471,124 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(obs, pcc.INDETERMINATE)
 
 
+# ---------------------------------------------------------------------------
+# step-07 (RED): evaluate() over injected synthetic runs
+# ---------------------------------------------------------------------------
+
+class TestEvaluate(unittest.TestCase):
+    """Tests for evaluate() over injected synthetic ProbeRun fixtures.
+
+    Verifies three golden verdicts (PASS/FAIL/UNPROVABLE) and mandatory evidence.
+    These tests FAIL until step-08 adds Result and evaluate().
+    """
+
+    def _make_grammar_probe(self, expected_obs: str = "present") -> Any:
+        return pcc.Probe(
+            capability="arrow-type grammar production",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": expected_obs, "match": {}},
+        )
+
+    def _make_check_probe(self, expected_obs: str = "present") -> Any:
+        return pcc.Probe(
+            capability="arg-vs-param rejection (4575)",
+            probe_kind="check",
+            fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            expected={"observation": expected_obs, "match": {"exit_code": 1}},
+        )
+
+    def _make_ir_probe(self, expected_obs: str = "absent") -> Any:
+        return pcc.Probe(
+            capability="eval-error proxy clean baseline",
+            probe_kind="ir",
+            fixture="tests/prd-gate/fixtures/ir_clean_eval.ri",
+            expected={"observation": expected_obs, "match": {"stderr_contains": "CrossSubGeometryRef"}},
+        )
+
+    def _stub_runner(self, exit_code: int, stdout: str = "", stderr: str = "") -> Any:
+        """Return a runner function that returns a fixed ProbeRun."""
+        def runner(probe):  # noqa: ANN202
+            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        return runner
+
+    # ── (a) grammar probe, exit 0, expected present → PASS ───────────────────
+
+    def test_grammar_pass(self):
+        """grammar probe, run exit 0, expected present → PASS."""
+        probe = self._make_grammar_probe("present")
+        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        self.assertEqual(result.verdict, pcc.PASS)
+
+    # ── (b) check probe = §3 4575 → FAIL ─────────────────────────────────────
+
+    def test_check_4575_fail(self):
+        """§3 4575: check probe, exit 0 + 'All constraints satisfied.', expected present → FAIL."""
+        probe = self._make_check_probe("present")
+        # Reify exits 0 with 'All constraints satisfied.', no rejection diag
+        result = pcc.evaluate(
+            probe,
+            runner=self._stub_runner(0, stdout="All constraints satisfied.", stderr=""),
+        )
+        self.assertEqual(result.verdict, pcc.FAIL)
+
+    # ── (c) ir probe, unrelated error, expected absent → UNPROVABLE ──────────
+
+    def test_ir_unrelated_error_unprovable(self):
+        """ir probe, exit ≠ 0 with unrelated error, no asserted signature → UNPROVABLE."""
+        probe = self._make_ir_probe("absent")
+        result = pcc.evaluate(
+            probe,
+            runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
+        )
+        self.assertEqual(result.verdict, pcc.UNPROVABLE)
+
+    # ── mandatory evidence: command, exit_code, stdout, stderr ───────────────
+
+    def test_result_has_command(self):
+        """Result must carry the exact command argv."""
+        probe = self._make_grammar_probe("present")
+        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        self.assertIsNotNone(result.command, "result.command must not be None")
+        self.assertIsInstance(result.command, list, "result.command must be a list")
+        self.assertGreater(len(result.command), 0, "result.command must be non-empty")
+
+    def test_result_has_exit_code(self):
+        """Result must carry the exit_code from the captured run."""
+        probe = self._make_grammar_probe("present")
+        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        self.assertEqual(result.exit_code, 0)
+
+    def test_result_has_stdout(self):
+        """Result must carry the stdout from the captured run."""
+        probe = self._make_check_probe("present")
+        result = pcc.evaluate(
+            probe,
+            runner=self._stub_runner(0, stdout="All constraints satisfied."),
+        )
+        self.assertEqual(result.stdout, "All constraints satisfied.")
+
+    def test_result_has_stderr(self):
+        """Result must carry the stderr from the captured run."""
+        probe = self._make_ir_probe("absent")
+        result = pcc.evaluate(
+            probe,
+            runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
+        )
+        self.assertIn("unresolved type", result.stderr)
+
+    def test_result_carries_probe(self):
+        """Result must carry the original Probe object."""
+        probe = self._make_grammar_probe("present")
+        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        self.assertIs(result.probe, probe)
+
+    def test_result_carries_observation(self):
+        """Result must carry the observation value."""
+        probe = self._make_grammar_probe("present")
+        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        self.assertEqual(result.observation, pcc.PRESENT)
+
+
 if __name__ == "__main__":
     unittest.main()
