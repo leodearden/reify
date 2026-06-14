@@ -3612,6 +3612,95 @@ mod tests {
         }
     }
 
+    /// Disjointness regression-lock for the geometric-relation vocabulary
+    /// (geometric-relations γ, task 4383). Every entry of `RELATION_FN_NAMES`
+    /// (the PURE relation family) must be absent from all sibling family slices
+    /// so a name satisfies at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions` ladder.
+    ///
+    /// The shared-verb names `angle`/`distance` are deliberately NOT in
+    /// `RELATION_FN_NAMES`: they stay in `GEOMETRY_QUERY_NAMES` (the arity-2
+    /// DERIVE form) and are claimed as relations only at arity 3 by the arg-aware
+    /// `relation_signatures::relation_fn_result_type` arm placed BEFORE the
+    /// geometry-query arm. Pinning the pure family disjoint keeps that single
+    /// arity gate the SOLE point where a relation name overlaps a sibling family.
+    ///
+    /// The 9 relation names are inherently disjoint from the existing families,
+    /// so this is GREEN on arrival — a regression lock that fails if a colliding
+    /// name is later added to EITHER the relation slice or a sibling slice.
+    /// Mirrors `field_op_names_are_disjoint_from_other_families`.
+    #[test]
+    fn relation_fn_names_are_disjoint_from_other_families() {
+        for name in RELATION_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family — the home of the \
+                 arity-2 angle/distance DERIVE forms)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family)"
+            );
+        }
+    }
+
     /// Per PRD §5.1: `field_op_result_type` must resolve each field-op name
     /// to the expected return type when given well-shaped arguments.
     ///
