@@ -1,0 +1,133 @@
+// std.ports breadth-expansion integration gate
+// examples/stdlib/ports_breadth.ri
+//
+// Multi-domain assembly demonstrating three std.ports submodule surfaces
+// (mechanical, thermal, fluid) introduced by the breadth-expansion PRD
+// (docs/prds/v0_6/ports-breadth-expansion.md §7 η).
+// std.ports.electrical is available but not exercised by the three η signals.
+//
+// Three η integration signals are exercised here:
+//   (a) ThreadSpec derived lets (M6×1 ISO 68-1 numerics) — via ThreadAssembly.spec
+//   (b) Asymmetric-LocatedPort warning — MechanicalPort (located) ↔ ThermalPort
+//       (non-located) bare connect emits connect.rs:344's warning
+//   (c) HydraulicPort multi-domain conformance — FluidPort+MechanicalPort diamond
+//       resolves; zero Error diagnostics
+//
+// EVAL-TIME RE-DECLARATION NOTE:
+// compile_with_stdlib provides stdlib definitions as a compilation prelude, but
+// the output CompiledModule contains ONLY user-defined templates.  The eval
+// engine resolves sub/structure constructions exclusively from user templates,
+// so any structure constructed at eval time (ThreadSpec, Frame3) MUST be locally
+// re-declared in this file.  Local re-declarations silently shadow the stdlib
+// prelude defs; the `import` lines below are documentary / for compile-time type
+// resolution.  This is the established m8_tolerancing.ri workaround (PRD §8).
+//
+// This file is auto-covered by examples_smoke.rs (directory walk).
+
+import std.ports.mechanical
+import std.ports.thermal
+import std.ports.fluid
+
+// ── Local enum re-declarations (eval availability) ───────────────────────────
+// Required because compile_with_stdlib does not emit stdlib enum defs into the
+// user CompiledModule; the eval engine resolves enum constructors from user defs.
+
+enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
+enum ThreadClass { Class_6g6H, Class_4g6H }
+enum ThreadTighteningDirection { Clockwise, Counterclockwise }
+
+// ── Local structure definitions (eval-time availability) ─────────────────────
+// These mirror the stdlib definitions exactly and must appear before any
+// `sub` usage so the eval engine can resolve sub-component construction.
+
+// Mirror of stdlib ports_mechanical.ri: ThreadSpec with ISO 68-1 derived lets.
+structure def ThreadSpec {
+    param system : ThreadSystem
+    param nominal_diameter : Length
+    param pitch : Length
+    param thread_class : ThreadClass
+    param tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+
+    let minor_diameter = nominal_diameter - pitch * 1.0825
+    let pitch_diameter = nominal_diameter - pitch * 0.6495
+    let tap_drill = nominal_diameter - pitch
+    let clearance_hole = nominal_diameter + pitch * 0.5
+}
+
+// ── (a) Signal: ThreadSpec derived-let eval numerics ─────────────────────────
+// ThreadAssembly.spec is an M6×1 ISO metric thread.
+// Eval-time assertions (via ports_breadth_integration_eval.rs):
+//   minor_diameter ≈ 0.0049175m  (6mm − 1mm·1.0825)
+//   pitch_diameter ≈ 0.0053505m  (6mm − 1mm·0.6495)
+//   tap_drill      == 0.005m     (6mm − 1mm)
+
+structure def ThreadAssembly {
+    sub spec = ThreadSpec(
+        system: ThreadSystem.ISO_Metric,
+        nominal_diameter: 6mm,
+        pitch: 1mm,
+        thread_class: ThreadClass.Class_6g6H
+    )
+}
+
+// ── Local Frame3 re-declaration (eval-time availability) ─────────────────────
+// Required for Frame3(...) constructions in AsymmetricRig and HydroConformer.
+// Mirrors stdlib ports.ri's structure def Frame3.
+
+structure def Frame3 {
+    param origin : Vector3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
+
+// ── (b) Signal: asymmetric-LocatedPort warning from stdlib-derived ports ──────
+// MechanicalPort refines LocatedPort (β restructure, landed task 4255).
+// ThermalPort refines only Port.
+// Bare `connect mech -> heat` triggers connect.rs:344's asymmetric-LocatedPort
+// warning — the integration point PRD §0 highlights ("previously unreachable
+// from stdlib-derived ports").
+
+structure def AsymmetricRig {
+    port mech : out MechanicalPort {
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm)
+        )
+    }
+    port heat : in ThermalPort {
+        param heat_flow : Power = 10W
+    }
+    connect mech -> heat
+}
+
+// ── Local enum re-declarations for fluid domain ───────────────────────────────
+
+enum FluidType { Liquid, Gas, TwoPhase }
+enum FittingStandard { NPT, BSP, JIC, ORFS }
+
+// ── (c) Signal: HydraulicPort multi-domain conformance ────────────────────────
+// HydraulicPort refines both FluidPort and MechanicalPort (ζ task 4259, landed).
+// The port-p slot supplies all required params; zero Error diagnostics at
+// compile time confirms the FluidPort+MechanicalPort diamond resolves.
+// (Enum-typed params fluid_type/fitting_type omit the type annotation per the
+// documented port-param enum-type limitation; mirrors the proven ζ conformer
+// shape in ports_stdlib_compile.rs::hydraulic_port_concrete_conformer_multidomain_compiles.)
+
+structure def HydroConformer {
+    port p : in HydraulicPort {
+        param pressure : Pressure = 101325Pa
+        param flow_rate : VolumetricFlowRate = 1gal / 1s
+        param medium : String = "hydraulic_oil"
+        param fluid_type = FluidType.Liquid
+        param frame : Frame3 = Frame3(
+            origin: vec3(0mm, 0mm, 0mm),
+            x_axis: vec3(1mm, 0mm, 0mm),
+            y_axis: vec3(0mm, 1mm, 0mm),
+            z_axis: vec3(0mm, 0mm, 1mm)
+        )
+        param fitting_type = FittingStandard.NPT
+    }
+}
