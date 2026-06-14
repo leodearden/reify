@@ -1,30 +1,40 @@
 // Multi-load-case FEA — mounting bracket evaluated against three load
 // scenarios with envelope-stress design criterion.
 //
-// Demonstrates the v0.3.x multi-load-case FEA stdlib surface:
+// Demonstrates the v0.4.x multi-load-case FEA stdlib surface:
 //   - `LoadCase` solver-input bundles (per-case loads + supports)
+//   - `solve_load_cases(...)` real prismatic multi-case engine call
 //   - `MultiCaseResult` solver-output container (Map<String, ElasticResult>)
 //   - `envelope_von_mises(...)` cross-case stress envelope
+//   - `max(envelope)` → `Scalar<Pressure>` peak stress design predicate
 //   - `linear_combine(...)` weighted superposition (LRFD-style code combinations)
 //
-// PRD: docs/prds/v0_3/multi-load-case-fea.md ("End-to-end example file" — task #7).
+// PRD: docs/prds/v0_4/fea-result-model.md §9 η ("prismatic multi-case example" — task 3018).
 //
-// Geometry is a parametric rectangular mounting plate (a stand-in for the PRD's
-// motivating L-bracket; full L-shape with fillet defers to the topology
-// selectors of `topology-selectors.md` task 5). Loads attach to opaque string
-// selectors — these are accepted today as selector-target placeholders per
-// `validate_selector_target` in `crates/reify-stdlib/src/helpers.rs`; the
-// runtime FEA solver will resolve them against the actual geometry once
-// topology-kind validation lands (PRD task 16).
+// Three load cases bracket the design envelope:
+//   "operating"  — nominal in-service load (5 kN normal to the load face)
+//   "overload"   — 2× safety-factor design overload (10 kN)
+//   "transport"  — 5g downward acceleration during shipping (body force)
+// All three share the same fixed mounting-face support.  The real
+// `solve_load_cases` engine call (task 4088 / R1 wired) produces a fully
+// populated `MultiCaseResult` with per-case Sampled stress and displacement
+// fields.  `envelope_von_mises(results)` is then non-vacuous, and
+// `peak_stress = max(envelope)` is a callable Scalar<Pressure> design predicate.
+//
+// Geometry is a parametric rectangular mounting plate.  Loads attach to opaque
+// string selectors — accepted as selector-target placeholders per
+// `validate_selector_target`; the runtime FEA solver maps them to the actual
+// geometry once topology-kind validation lands (PRD task 16).  The full
+// `param thickness=auto` + `minimize mass(bracket) where peak_stress < yield`
+// auto-resolve design loop and the body.face()-load bracket-geometry variant
+// are deferred to task 2930 (FEA-in-the-loop optimization + P1=4091/P2=4092
+// arbitrary-geometry producers not yet wired).
 //
 // After SIR-α (task 3540) stdlib struct constructors evaluate to
-// `Value::StructureInstance` — not `Value::Undef`. The `let operating = LoadCase(...)`,
-// `let overload = LoadCase(...)`, `let transport = LoadCase(...)`, and
-// `let results = MultiCaseResult(...)` bindings below all produce inspectable
-// structure values. The eval-layer contract is pinned in
-// `crates/reify-eval/tests/load_case.rs`. When `solve_load_cases` engine
-// integration lands (task #3009), the `let results = ...` form will swap from
-// the constructor stub to the engine call.
+// `Value::StructureInstance`.  The `let operating = LoadCase(...)`,
+// `let overload = LoadCase(...)`, `let transport = LoadCase(...)` bindings
+// produce inspectable structure values.  The eval-layer contract for the full
+// solve is pinned in `crates/reify-eval/tests/multi_load_bracket_e2e.rs`.
 
 structure MultiLoadBracket {
     // ── Geometry ─────────────────────────────────────────────────────────────
@@ -77,17 +87,14 @@ structure MultiLoadBracket {
 
     // ── Solve all cases, envelope across them, drive the design ──────────────
     //
-    // Engine wiring (`solve_load_cases`) is task-#3009 work; until then the
-    // `MultiCaseResult(...)` constructor stub stands in so the example is a
-    // type-checked, parse-clean reference for the API shape. Switching to the
-    // engine call is a one-line edit when the wiring lands.
-    let results = MultiCaseResult(
-        cases: map{
-            "operating" => operating,
-            "overload"  => overload,
-            "transport" => transport,
-        },
-    )
+    // `solve_load_cases` runs the real prismatic cantilever solver over all
+    // three load cases in a single engine dispatch (task 4088 / R1 wired).
+    // The arguments match the box dimensions: length=width, width=height,
+    // height=thickness — the same prismatic section used for `body` above.
+    // `ElasticOptions()` accepts the solver defaults (grid, material model,
+    // convergence tolerances).  The result is a fully-populated MultiCaseResult
+    // with Sampled Regular3D stress and displacement fields per case.
+    let results = solve_load_cases(material, width, height, thickness, [operating, overload, transport], ElasticOptions())
 
     let envelope    = envelope_von_mises(results)
     let critical_case = worst_case(results, |r| r)
