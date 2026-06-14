@@ -718,7 +718,7 @@ pub fn try_infer_traits_for_function_call_in_env(
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
+        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" | "zone_profile" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }

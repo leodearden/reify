@@ -238,7 +238,8 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
         | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder" | "zone_annulus" => &[0],
+        | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder" | "zone_annulus"
+        | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1808,6 +1809,73 @@ pub(crate) fn compile_geometry_call(
             });
             Some(sub_ops)
         }
+        // zone_profile(solid: Geometry, width: Length) — GD&T profile tolerance zone.
+        //
+        // Lowers to:
+        //   [N+0] <solid ops> — resolved geometry from geom_ref(0)
+        //   [N+k] Modify{Thicken, target:Step(N+k-1), offset=+w/2}  — outer shell boundary
+        //   [N+k+1] Modify{Thicken, target:Step(N+k-1), offset=−w/2} — inner shell boundary
+        //   [N+k+2] Boolean{Difference, left:Step(N+k), right:Step(N+k+1)}
+        //
+        // Both Thicken ops target the SAME solid (the last solid op in sub_ops before pushing).
+        // No closed-form volume: V ≈ surface_area × width; realized via OCCT Thicken.
+        "zone_profile" => {
+            if !check_arg_count_exact(
+                "zone_profile",
+                compiled_args.len(),
+                2,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut iter = compiled_args.into_iter();
+            let solid_expr = iter.next().unwrap(); // arg0: solid (geometry; also compiled as scalar)
+            let w = iter.next().unwrap();           // arg1: zone width (Length)
+
+            let solid_target = geom_ref(0); // the input solid
+
+            // plus_offset = +w/2 = w * 0.5
+            let plus_offset = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+            // minus_offset = -w/2 = w * (-0.5)
+            let minus_offset = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+
+            // Track absolute step indices for the Boolean Difference.
+            let plus_step = step_offset + sub_ops.len(); // step of plus-thicken op
+            sub_ops.push(CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: solid_target.clone(),
+                args: vec![
+                    ("target".to_string(), solid_expr.clone()),
+                    ("offset".to_string(), plus_offset),
+                ],
+            });
+            let minus_step = step_offset + sub_ops.len(); // step of minus-thicken op
+            sub_ops.push(CompiledGeometryOp::Modify {
+                kind: ModifyKind::Thicken,
+                target: solid_target,
+                args: vec![
+                    ("target".to_string(), solid_expr),
+                    ("offset".to_string(), minus_offset),
+                ],
+            });
+            sub_ops.push(CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(plus_step),
+                right: GeomRef::Step(minus_step),
+            });
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
             name,
@@ -1973,6 +2041,7 @@ mod tests {
         "zone_slab",
         "zone_cylinder",
         "zone_annulus",
+        "zone_profile",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -2039,7 +2108,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 49;
+    const EXPECTED_DISPATCH_COUNT: usize = 50;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
