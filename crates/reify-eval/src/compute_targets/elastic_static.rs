@@ -423,10 +423,10 @@ pub fn solve_elastic_static_trampoline(
     // Gate on the tet path: on `ShellRoute::Shell` the user has already opted
     // into shell elements, so emitting the advisory would recommend exactly what
     // they've done — self-contradictory noise.
-    if shell_route != ShellRoute::Shell {
-        if let Some(advisory) = thin_body_advisory(length, width, height, 10.0) {
-            route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
-        }
+    if shell_route != ShellRoute::Shell
+        && let Some(advisory) = thin_body_advisory(length, width, height, 10.0)
+    {
+        route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
     }
 
     if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
