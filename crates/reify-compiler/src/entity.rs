@@ -1538,8 +1538,27 @@ pub(crate) fn compile_entity(
                     let compiled_expr =
                         compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
 
-                    // Check that the constraint expression produces Bool
-                    if compiled_expr.result_type != Type::Bool {
+                    // Check that the constraint expression produces Bool. A
+                    // `Type::Relation` is a SPECIFIC misuse — it belongs in a
+                    // `relate {}` block, not a `constraint` — so reject it loudly
+                    // (Error) with a dedicated redirect: the mirror of
+                    // E_RELATE_EXPECTS_RELATION that completes the relate-vs-
+                    // constraint dispatch (geometric-relations δ §4/§7.3). Other
+                    // non-Bool types keep the existing generic warning (gradualism).
+                    if compiled_expr.result_type == Type::Relation {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "constraint accepts only Bool, but this expression has type \
+                                 Relation; a relation belongs in a `relate { }` block, not a \
+                                 `constraint`"
+                                    .to_string(),
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                constraint.expr.span,
+                                "Relation not allowed in `constraint`; use a `relate { }` block",
+                            )),
+                        );
+                    } else if compiled_expr.result_type != Type::Bool {
                         diagnostics.push(
                             Diagnostic::warning(format!(
                                 "constraint expression has type {}, expected Bool",
