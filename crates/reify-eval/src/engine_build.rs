@@ -2058,6 +2058,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -2457,6 +2458,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -2941,6 +2943,7 @@ impl Engine {
                         .copied()
                         .unwrap_or(ReprKind::BRep),
                     &mut self.last_dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -3700,6 +3703,7 @@ impl Engine {
                     // default-kernel tessellate call).
                     ReprKind::BRep,
                     &mut *dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -3997,6 +4001,15 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
+        // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
+        // should probe or insert into the `RealizationCache`. Intermediate
+        // realizations all share the same `entity` cache key; if we probe/insert
+        // for them we get false hits (realization N finds realization N-1's
+        // result for the same entity key) which violates the per-build
+        // reset invariant and produces wrong geometry (the intermediate let-
+        // binding gets the terminal's handle instead of its own).
+        is_terminal_realization: bool,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -4077,7 +4090,8 @@ impl Engine {
         // fallback could serve the Step entry to the Stl demand — cannot arise in
         // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
         // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+        if is_terminal_realization
+        && let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
                 .map(|&handle| (handle, cache_repr))
@@ -4146,7 +4160,7 @@ impl Engine {
                 );
                 return;
             }
-        }
+        } // end is_terminal_realization cache-probe guard
 
         let mut had_failure = false;
         // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
@@ -5090,7 +5104,9 @@ impl Engine {
                 if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
                 }
-                if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
+                if is_terminal_realization
+                    && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)
+                {
                     // **Task 4050 step-10 (gap 4)**: key the INSERT on the
                     // RESOLVED terminal repr (`last_produced_repr`), falling
                     // back to `cache_repr` only when no op captured a repr. On
@@ -5100,6 +5116,20 @@ impl Engine {
                     // resolved BRep because no Mesh kernel was linked) this
                     // stores at BRep, so a later Mesh lookup correctly MISSES
                     // rather than handing back a BRep handle as if it were Mesh.
+                    //
+                    // **Task 3437 (ζ): guard INSERT on is_terminal_realization.**
+                    // Non-terminal realizations (intermediate let-bindings in
+                    // a structure) share the same `entity` cache key as the
+                    // terminal.  Without this guard, box_a's BRep handle would
+                    // be stored at `(entity, BRep, tol)` before the terminal's
+                    // ops run.  On a Mesh-capable engine the terminal's BRep
+                    // fallback probe would then find the intermediate handle,
+                    // and since that same handle is recorded in
+                    // `feature_tag_table` (from its own op run earlier in this
+                    // build), the per-build reset debug_assert fires.  Only the
+                    // TERMINAL realization's result is a valid cache entry for
+                    // the entity+tol key — intermediate lets are intra-build
+                    // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
                     realization_cache.insert(
                         &realization_id.entity,
@@ -7004,6 +7034,8 @@ mod tests {
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
 
@@ -7063,6 +7095,8 @@ mod tests {
                 // parameter.
                 demanded_repr,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
     }

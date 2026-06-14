@@ -4377,6 +4377,7 @@ dependencies = [
  "reify-expr",
  "reify-geometry",
  "reify-ir",
+ "reify-kernel-manifold",
  "reify-kernel-occt",
  "reify-kernel-openvdb",
  "reify-runtime",
