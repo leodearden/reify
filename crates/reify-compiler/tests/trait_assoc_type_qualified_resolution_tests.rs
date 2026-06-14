@@ -314,8 +314,8 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// End-to-end: the CI example `examples/trait_assoc_type_qualified.ri` compiles
 /// clean WITH the stdlib prelude (the same path `examples_smoke` exercises), and
 /// its consumer structure's bare (`Beam::Material`) and paren-disambiguated
-/// (`Beam::(HasMaterial::Material)`) params both resolve to the structure's bound
-/// material `Type::StructureRef("IotaSteel")`.
+/// (`Beam::(IotaHasMaterial::Material)`) params both resolve to the structure's
+/// bound material `Type::StructureRef("IotaSteel")`.
 ///
 /// RED until step-12 creates the file: `read_to_string` fails and the test panics.
 #[test]
@@ -358,7 +358,7 @@ fn example_file_qualified_assoc_compiles_and_resolves() {
     assert_eq!(
         cell_type("n"),
         Type::StructureRef("IotaSteel".to_string()),
-        "`Beam::(HasMaterial::Material)` should resolve to Type::StructureRef(\"IotaSteel\")"
+        "`Beam::(IotaHasMaterial::Material)` should resolve to Type::StructureRef(\"IotaSteel\")"
     );
 }
 
