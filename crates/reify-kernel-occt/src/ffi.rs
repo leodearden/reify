@@ -630,6 +630,16 @@ pub mod ffi {
             plane_shape: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
+        /// identified by 0-based canonical-order face indices. Requires
+        /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        fn draft_faces_shape(
+            shape: &OcctShape,
+            angle_rad: f64,
+            plane_shape: &OcctShape,
+            face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Thicken / Shell / Offset Solid ---
         fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;

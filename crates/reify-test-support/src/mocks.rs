@@ -3012,6 +3012,7 @@ mod tests {
         let handle = kernel
             .execute(&GeometryOp::Draft {
                 target: target.id,
+                faces: vec![],
                 angle: Value::Real(0.05),
                 plane: plane.id,
             })
@@ -3021,10 +3022,12 @@ mod tests {
         match &kernel.operations()[2].op {
             GeometryOp::Draft {
                 target,
+                faces,
                 angle,
                 plane,
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
+                assert!(faces.is_empty(), "expected empty faces for back-compat draft");
                 assert_eq!(*angle, Value::Real(0.05));
                 assert_eq!(*plane, GeometryHandleId(2));
             }

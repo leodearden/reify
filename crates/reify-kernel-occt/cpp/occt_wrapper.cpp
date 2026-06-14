@@ -2264,6 +2264,100 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     });
 }
 
+/// Apply `BRepOffsetAPI_DraftAngle` to a CURATED subset of faces identified
+/// by 0-based canonical-order indices (matching the `get_faces` / TopExp
+/// `MapShapes(TopAbs_FACE)` order). Mirrors `draft_shape`'s neutral-plane
+/// and pull-dir extraction from `plane_shape`'s first planar face, then
+/// uses the same per-face `AddDone / Remove` skip pattern for only the
+/// selected faces. Throws on empty `face_indices` (defense-in-depth) and
+/// on any out-of-range index.
+///
+/// The all-faces path uses `draft_shape`; this function requires
+/// `face_indices` to be non-empty.
+std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices) {
+    return wrap_occt_call("draft_faces_shape", [&]() {
+        if (face_indices.size() == 0) {
+            throw std::runtime_error(
+                "draft_faces_shape: face_indices must be non-empty "
+                "(the all-faces path uses draft_shape)");
+        }
+
+        // Extract the neutral plane and pull direction from plane_shape's
+        // first planar face — identical to draft_shape.
+        gp_Dir pull_dir;
+        gp_Pln neutral_plane;
+        {
+            TopExp_Explorer face_ex(plane_shape.shape, TopAbs_FACE);
+            if (!face_ex.More()) {
+                throw std::runtime_error("draft_faces_shape: plane_shape has no faces");
+            }
+            TopoDS_Face plane_face = TopoDS::Face(face_ex.Current());
+            Handle(Geom_Surface) surface = BRep_Tool::Surface(plane_face);
+            Handle(Geom_Plane) geom_plane = Handle(Geom_Plane)::DownCast(surface);
+            if (geom_plane.IsNull()) {
+                throw std::runtime_error(
+                    "draft_faces_shape: plane_shape does not contain a planar face");
+            }
+            neutral_plane = geom_plane->Pln();
+            pull_dir = neutral_plane.Axis().Direction();
+        }
+
+        // Build the canonical 1-based face map. TopExp::MapShapes is
+        // deterministic for a given shape, matching the order that
+        // `get_faces` uses (and thus the 0-based indices from
+        // `extract_faces`).
+        TopTools_IndexedMapOfShape face_map;
+        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+        const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
+
+        BRepOffsetAPI_DraftAngle drafter(shape.shape);
+
+        uint32_t added_count = 0;
+        for (auto idx : face_indices) {
+            if (idx >= face_count) {
+                throw std::runtime_error(
+                    "draft_faces_shape: face index " + std::to_string(idx) +
+                    " out of range (shape has " + std::to_string(face_count) + " faces)");
+            }
+            // face_indices are 0-based; the IndexedMap is 1-based.
+            TopoDS_Face face = TopoDS::Face(face_map.FindKey(idx + 1));
+            drafter.Add(face, pull_dir, angle_rad, neutral_plane);
+            if (!drafter.AddDone()) {
+                // This face is not draftable (e.g., parallel to pull direction
+                // or already at the requested angle) — skip it, matching
+                // draft_shape's per-face AddDone/Remove skip pattern.
+                drafter.Remove(face);
+            } else {
+                ++added_count;
+            }
+        }
+
+        // A curated selection that silently drafts zero faces is a
+        // user-actionable failure — unlike draft_shape's best-effort all-faces
+        // path, the user explicitly requested these faces.  Calling Build() on
+        // an empty drafter would either silently return the original shape or
+        // emit a generic failure; surface a clear diagnostic instead.
+        if (added_count == 0) {
+            throw std::runtime_error(
+                "draft_faces_shape: none of the " +
+                std::to_string(face_indices.size()) +
+                " selected face(s) were draftable at the requested angle "
+                "(all were rejected by AddDone); "
+                "try a different angle, pull direction, or face selection");
+        }
+
+        drafter.Build();
+        if (!drafter.IsDone()) {
+            throw std::runtime_error(
+                "BRepOffsetAPI_DraftAngle failed (curated per-face selection)");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = drafter.Shape();
+        return result;
+    });
+}
+
 // --- Wire helpers ---
 
 std::unique_ptr<OcctShape> make_circle_wire(double radius, double z_height) {

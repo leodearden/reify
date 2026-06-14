@@ -10349,6 +10349,7 @@ mod tests {
             Case {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
+                    faces: vec![],
                     angle: Value::Real(0.1),
                     plane: GeometryHandleId(71),
                 },
@@ -10701,6 +10702,7 @@ mod tests {
             Case {
                 op: GeometryOp::Draft {
                     target: h(1),
+                    faces: vec![],
                     angle: r(0.1),
                     plane: h(2),
                 },

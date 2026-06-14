@@ -104,24 +104,50 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
-        // draft(target, angle, plane)
-        "draft" => {
-            if !check_arg_count_exact("draft", compiled_args.len(), 3, expr_span, diagnostics) {
-                return None;
+        // draft(target, angle, plane)            — 3-arg all-draftable back-compat
+        // draft(target, faces, angle, plane)     — 4-arg curated face selection
+        "draft" => match compiled_args.len() {
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Draft,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
             }
-            let mut it = compiled_args.into_iter();
-            let op = CompiledGeometryOp::Modify {
-                kind: ModifyKind::Draft,
-                target,
-                args: vec![
-                    ("target".to_string(), it.next().unwrap()),
-                    ("angle".to_string(), it.next().unwrap()),
-                    ("plane".to_string(), it.next().unwrap()),
-                ],
-            };
-            sub_ops.push(op);
-            Some(sub_ops)
-        }
+            4 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Draft,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("faces".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                        ("plane".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // draft accepts only the 3-arg all-draftable form or the 4-arg
+            // curated-faces form — emit a labeled diagnostic mirroring fillet.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "draft() expects 3 or 4 arguments, got {got}"
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
         // chamfer(target, distance)
         "chamfer" => compile_modify_2arg(
             "chamfer",
@@ -730,30 +756,153 @@ mod tests {
         }
     }
 
-    /// Assert that the `CASES` table in `single_geom_target_kinds()` contains exactly one entry
-    /// per `ModifyKind` variant — i.e., that the set of variants in the table has the same
-    /// cardinality as `ModifyKind::VARIANT_COUNT`.
+    // Assert that the `CASES` table in `single_geom_target_kinds()` contains exactly one entry
+    // per `ModifyKind` variant — i.e., that the set of variants in the table has the same
+    // cardinality as `ModifyKind::VARIANT_COUNT`.
+    //
+    // ## Gap this closes
+    //
+    // The two existing exhaustiveness tripwires in `single_geom_target_kinds()` protect against
+    // *missing* entries but not against *duplicate-with-omission* edits:
+    //
+    // 1. **Compile-time count assert** (`geometry_modify.rs` — the `const _: () = assert!(
+    //    CASES.len() == ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES`
+    //    declaration): fires at `cargo check` if the table length drifts from the variant count,
+    //    but passes for any table of exactly 5 rows — including one with two `Chamfer` rows and
+    //    zero `Draft` rows.
+    //
+    // 2. **No-wildcard sentinel closure** (`geometry_modify.rs` — the `let _ = |k: ModifyKind|
+    //    match k { ModifyKind::Chamfer | ... => () }` below `CASES`): fails to compile when a
+    //    new variant is added without updating the closure, but only enumerates variants; it does
+    //    not cross-check the `CASES` rows against that enumeration.
+    //
+    // Neither tripwire catches a routine table edit that silently swaps one variant for a
+    // duplicate. This test closes that gap by collecting the `ModifyKind` keys from `CASES` into
+    // a `HashSet` and asserting the set's length equals `ModifyKind::VARIANT_COUNT`. A
+    // duplicate row shrinks the set size below the count, failing the assertion.
+    // (See `single_geom_target_kinds_cases_table_unique_variant_set` below.)
+    // ── δ: draft arity dispatch tests ──────────────────────────────────────────
+
+    /// 4-arg `draft(solid, faces, angle, plane)` is recognised by `compile_modify_op`
+    /// and lowered to named args `[target, faces, angle, plane]` (curated face selection).
     ///
-    /// ## Gap this closes
+    /// RED until step-4 rewrites the draft arm.
+    #[test]
+    fn compile_modify_op_draft_4arg_builds_curated_face_args() {
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+            scalar_literal(4.0),
+        ];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("draft", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op draft (4-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Draft,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "faces", "angle", "plane"]);
+            }
+            other => panic!("expected Modify(Draft) with 4 args, got {:?}", other),
+        }
+    }
+
+    /// 3-arg `draft(solid, angle, plane)` through `compile_modify_op` is unchanged
+    /// (back-compat): named args `[target, angle, plane]`, no `faces` slot.
+    #[test]
+    fn compile_modify_op_draft_3arg_back_compat() {
+        let args: Vec<CompiledExpr> =
+            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("draft", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op draft (3-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Draft,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "angle", "plane"]);
+            }
+            other => panic!("expected Modify(Draft) with 3 args, got {:?}", other),
+        }
+    }
+
+    /// `draft` accepts only 3 or 4 args: a 2-arg and a 5-arg call each return
+    /// None and emit a labeled diagnostic "draft() expects 3 or 4 arguments, got N".
     ///
-    /// The two existing exhaustiveness tripwires in `single_geom_target_kinds()` protect against
-    /// *missing* entries but not against *duplicate-with-omission* edits:
-    ///
-    /// 1. **Compile-time count assert** (`geometry_modify.rs` — the `const _: () = assert!(
-    ///    CASES.len() == ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES`
-    ///    declaration): fires at `cargo check` if the table length drifts from the variant count,
-    ///    but passes for any table of exactly 5 rows — including one with two `Chamfer` rows and
-    ///    zero `Draft` rows.
-    ///
-    /// 2. **No-wildcard sentinel closure** (`geometry_modify.rs` — the `let _ = |k: ModifyKind|
-    ///    match k { ModifyKind::Chamfer | ... => () }` below `CASES`): fails to compile when a
-    ///    new variant is added without updating the closure, but only enumerates variants; it does
-    ///    not cross-check the `CASES` rows against that enumeration.
-    ///
-    /// Neither tripwire catches a routine table edit that silently swaps one variant for a
-    /// duplicate. This test closes that gap by collecting the `ModifyKind` keys from `CASES` into
-    /// a `HashSet` and asserting the set's length equals `ModifyKind::VARIANT_COUNT`. A
-    /// duplicate row shrinks the set size below the count, failing the assertion.
+    /// RED until step-4 rewrites the draft arm (current code emits
+    /// "draft() expects 3 arguments, got N" via check_arg_count_exact).
+    #[test]
+    fn compile_modify_op_draft_rejects_2arg_and_5arg() {
+        let span = SourceSpan::new(10, 20);
+        // 2 args → None + diagnostic containing "3 or 4"
+        {
+            let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result =
+                compile_modify_op("draft", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            assert!(result.is_none(), "expected None for 2-arg draft");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 2-arg draft"
+            );
+            assert!(
+                diagnostics[0].message.contains("3 or 4"),
+                "expected diagnostic to mention '3 or 4', got: {:?}",
+                diagnostics[0].message
+            );
+        }
+        // 5 args → None + diagnostic containing "3 or 4"
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+                scalar_literal(5.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result =
+                compile_modify_op("draft", args, GeomRef::Step(0), span, &mut diagnostics, vec![]);
+            assert!(result.is_none(), "expected None for 5-arg draft");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 5-arg draft"
+            );
+            assert!(
+                diagnostics[0].message.contains("3 or 4"),
+                "expected diagnostic to mention '3 or 4', got: {:?}",
+                diagnostics[0].message
+            );
+        }
+    }
+
     #[test]
     fn single_geom_target_kinds_cases_table_unique_variant_set() {
         use std::collections::HashSet;

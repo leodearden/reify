@@ -794,8 +794,15 @@ pub enum GeometryOp {
         degree: usize,
     },
     /// Apply draft angle to faces.
+    ///
+    /// `faces` is the curated selection of faces to draft. An **empty** list is
+    /// the all-draftable back-compat path (legacy 3-arg `draft(solid, angle, plane)`);
+    /// a non-empty list names the specific faces to draft (4-arg
+    /// `draft(solid, faces, angle, neutral_plane)`).
     Draft {
         target: GeometryHandleId,
+        /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
+        faces: Vec<GeometryHandleId>,
         angle: Value,
         plane: GeometryHandleId,
     },
@@ -6734,6 +6741,7 @@ mod tests {
                 "Draft",
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
+                    faces: vec![],
                     angle: Value::Real(0.1),
                     plane: GeometryHandleId(2),
                 },
@@ -7727,6 +7735,50 @@ mod tests {
                 );
             }
             _ => panic!("expected GeometryOp::Fillet"),
+        }
+    }
+
+    /// δ / contract: `GeometryOp::Draft` records a curated `faces` selection
+    /// alongside `target`/`angle`/`plane`. A non-empty list names the specific
+    /// faces to draft; an empty list is the all-draftable back-compat path
+    /// (legacy 3-arg `draft(solid, angle, plane)`).
+    ///
+    /// RED until step-2 adds the `faces` field.
+    #[test]
+    fn draft_records_curated_faces_selection() {
+        // Curated selection: one named face.
+        let curated = GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![GeometryHandleId(2)],
+            angle: Value::Real(0.05),
+            plane: GeometryHandleId(3),
+        };
+        match curated {
+            GeometryOp::Draft { faces, .. } => {
+                assert_eq!(
+                    faces.len(),
+                    1,
+                    "curated draft must record the 1 curated face"
+                );
+            }
+            _ => panic!("expected GeometryOp::Draft"),
+        }
+
+        // Back-compat: empty faces = all-draftable.
+        let all_faces = GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::Real(0.05),
+            plane: GeometryHandleId(3),
+        };
+        match all_faces {
+            GeometryOp::Draft { faces, .. } => {
+                assert!(
+                    faces.is_empty(),
+                    "3-arg back-compat draft must record an empty face selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Draft"),
         }
     }
 

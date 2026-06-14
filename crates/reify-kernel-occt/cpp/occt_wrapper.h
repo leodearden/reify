@@ -732,6 +732,12 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape);
 
+/// Apply `BRepOffsetAPI_DraftAngle` to a curated subset of faces, identified
+/// by 0-based canonical-order face indices (same order as `get_faces`).
+/// Requires non-empty `face_indices`; the all-faces path uses `draft_shape`.
+std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices);
+
 // --- Wire helpers / Loft ---
 
 /// Create a circular wire profile at a given Z height (for loft profiles).
