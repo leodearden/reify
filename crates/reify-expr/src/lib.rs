@@ -2274,8 +2274,20 @@ fn eval_from_samples(
             "Linear" => InterpolationKind::Linear,
             "NearestNeighbor" => InterpolationKind::NearestNeighbor,
             "Cubic" => InterpolationKind::Cubic,
-            _ => {
-                // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED (step-8)
+            other => {
+                // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED.
+                // This is a HARD error in from_samples — unlike interp::resolve_method
+                // which falls back to Linear + W_INTERPOLATION_DEFERRED for sampled{}
+                // fields. from_samples is a new surface with no back-compat obligation.
+                push_eval_error(
+                    ctx,
+                    &format!(
+                        "from_samples: interpolation method '{}' is not supported by \
+                         from_samples (supported: Linear, NearestNeighbor, Cubic)",
+                        other
+                    ),
+                    DiagnosticCode::InterpMethodUnsupported,
+                );
                 return Value::Undef;
             }
         },
