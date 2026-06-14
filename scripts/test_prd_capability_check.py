@@ -8,6 +8,7 @@ CLI main() in hermetic golden tests — real subprocess probes are skip-guarded.
 """
 
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -56,8 +57,209 @@ class TestScaffold(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Future test classes will be added in steps 01-14 (RED→GREEN cycle).
+# Locate the repo root for resolving committed probe-set paths
 # ---------------------------------------------------------------------------
+
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+_EXAMPLE_PROBE_SET = os.path.join(_REPO_ROOT, "tests", "prd-gate", "example-probe-set.json")
+
+
+# ---------------------------------------------------------------------------
+# step-01 (RED): probe-set JSON round-trip tests
+# ---------------------------------------------------------------------------
+
+class TestProbeSetRoundTrip(unittest.TestCase):
+    """Tests for load_probe_set / dump_probe_set / Probe round-trip.
+
+    These tests FAIL until step-02 adds Probe, load_probe_set, dump_probe_set.
+    """
+
+    # ── inline fixture covering all three probe kinds ─────────────────────────
+
+    PROBE_DICTS = [
+        {
+            "capability": "arrow-type grammar production",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {
+                "observation": "present",
+                "match": {},
+            },
+        },
+        {
+            "capability": "arg-vs-param rejection",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "expected": {
+                "observation": "present",
+                "match": {"exit_code": 1},
+            },
+        },
+        {
+            "capability": "clean eval baseline",
+            "probe_kind": "ir",
+            "fixture": "tests/prd-gate/fixtures/ir_clean_eval.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {"stderr_contains": "EvalError"},
+            },
+        },
+    ]
+
+    def _make_probe_set_text(self, probe_dicts):
+        return json.dumps({"probes": probe_dicts})
+
+    def test_load_parse_all_three_kinds(self):
+        """load_probe_set produces one Probe per dict, all fields preserved."""
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(len(probes), 3)
+        self.assertEqual(probes[0].probe_kind, "grammar")
+        self.assertEqual(probes[1].probe_kind, "check")
+        self.assertEqual(probes[2].probe_kind, "ir")
+
+    def test_load_preserves_capability(self):
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(probes[0].capability, "arrow-type grammar production")
+        self.assertEqual(probes[1].capability, "arg-vs-param rejection")
+        self.assertEqual(probes[2].capability, "clean eval baseline")
+
+    def test_load_preserves_fixture(self):
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(probes[0].fixture, "tests/prd-gate/fixtures/arrow_type.ri")
+        self.assertEqual(probes[1].fixture, "tests/prd-gate/fixtures/revolute_silent_accept.ri")
+        self.assertEqual(probes[2].fixture, "tests/prd-gate/fixtures/ir_clean_eval.ri")
+
+    def test_load_preserves_observation(self):
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(probes[0].expected["observation"], "present")
+        self.assertEqual(probes[1].expected["observation"], "present")
+        self.assertEqual(probes[2].expected["observation"], "absent")
+
+    def test_load_preserves_match_exit_code(self):
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        # grammar has empty match
+        self.assertEqual(probes[0].expected["match"], {})
+        # check has exit_code: 1
+        self.assertEqual(probes[1].expected["match"]["exit_code"], 1)
+
+    def test_load_preserves_match_stderr_contains(self):
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        # ir has stderr_contains
+        self.assertEqual(probes[2].expected["match"]["stderr_contains"], "EvalError")
+
+    def test_round_trip_identical(self):
+        """load_probe_set(dump_probe_set(probes)) reproduces the same Probe list."""
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        dumped = pcc.dump_probe_set(probes)
+        probes2 = pcc.load_probe_set(dumped)
+        self.assertEqual(len(probes2), len(probes))
+        for p1, p2 in zip(probes, probes2):
+            self.assertEqual(p1.capability, p2.capability)
+            self.assertEqual(p1.probe_kind, p2.probe_kind)
+            self.assertEqual(p1.fixture, p2.fixture)
+            self.assertEqual(p1.expected, p2.expected)
+
+    def test_dump_is_valid_json(self):
+        """dump_probe_set produces valid JSON that can be loaded back."""
+        text = self._make_probe_set_text(self.PROBE_DICTS)
+        probes = pcc.load_probe_set(text)
+        dumped = pcc.dump_probe_set(probes)
+        obj = json.loads(dumped)  # must not raise
+        self.assertIn("probes", obj)
+        self.assertEqual(len(obj["probes"]), 3)
+
+    # ── match predicate fields (stdout_contains) ─────────────────────────────
+
+    def test_load_preserves_stdout_contains(self):
+        """stdout_contains match field is round-tripped correctly."""
+        dicts = [
+            {
+                "capability": "stdout check",
+                "probe_kind": "check",
+                "fixture": "some/fixture.ri",
+                "expected": {
+                    "observation": "present",
+                    "match": {"stdout_contains": "All constraints satisfied."},
+                },
+            }
+        ]
+        text = self._make_probe_set_text(dicts)
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(
+            probes[0].expected["match"]["stdout_contains"],
+            "All constraints satisfied.",
+        )
+
+    # ── validation: bad probe_kind ────────────────────────────────────────────
+
+    def test_load_rejects_bad_probe_kind(self):
+        """load_probe_set raises an error for an unknown probe_kind."""
+        dicts = [dict(self.PROBE_DICTS[0], probe_kind="invalid_kind")]
+        text = self._make_probe_set_text(dicts)
+        with self.assertRaises(Exception):
+            pcc.load_probe_set(text)
+
+    def test_load_rejects_unknown_observation(self):
+        """load_probe_set raises an error for an unknown observation value."""
+        probe = dict(self.PROBE_DICTS[0])
+        probe["expected"] = {"observation": "maybe", "match": {}}
+        text = self._make_probe_set_text([probe])
+        with self.assertRaises(Exception):
+            pcc.load_probe_set(text)
+
+    def test_load_rejects_missing_fixture(self):
+        """load_probe_set raises an error when fixture field is absent."""
+        probe = {
+            "capability": "test",
+            "probe_kind": "grammar",
+            "expected": {"observation": "present", "match": {}},
+            # no "fixture" key
+        }
+        text = self._make_probe_set_text([probe])
+        with self.assertRaises(Exception):
+            pcc.load_probe_set(text)
+
+    def test_load_rejects_missing_capability(self):
+        """load_probe_set raises an error when capability field is absent."""
+        probe = {
+            "probe_kind": "grammar",
+            "fixture": "some/file.ri",
+            "expected": {"observation": "present", "match": {}},
+            # no "capability" key
+        }
+        text = self._make_probe_set_text([probe])
+        with self.assertRaises(Exception):
+            pcc.load_probe_set(text)
+
+    def test_load_rejects_missing_probes_key(self):
+        """load_probe_set raises an error if top-level 'probes' key is absent."""
+        text = json.dumps([])  # a JSON array instead of an object with "probes"
+        with self.assertRaises(Exception):
+            pcc.load_probe_set(text)
+
+    # ── committed example-probe-set.json ─────────────────────────────────────
+
+    def test_committed_probe_set_parses_into_3_records(self):
+        """The committed example-probe-set.json parses into exactly 3 Probe records."""
+        with open(_EXAMPLE_PROBE_SET) as f:
+            text = f.read()
+        probes = pcc.load_probe_set(text)
+        self.assertEqual(len(probes), 3)
+
+    def test_committed_probe_set_has_one_of_each_kind(self):
+        """The committed probe set has one grammar, one check, and one ir probe."""
+        with open(_EXAMPLE_PROBE_SET) as f:
+            text = f.read()
+        probes = pcc.load_probe_set(text)
+        kinds = {p.probe_kind for p in probes}
+        self.assertEqual(kinds, {"grammar", "check", "ir"})
 
 
 if __name__ == "__main__":
