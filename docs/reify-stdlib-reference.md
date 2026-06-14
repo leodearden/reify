@@ -690,13 +690,14 @@ structure def ThreadSpec {
     param system : ThreadSystem
     param nominal_diameter : Length
     param pitch : Length
-    param class : ThreadClass
-    param direction : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
-    let clearance_hole = ...    // from standards tables
-    let tap_drill = ...
-    let minor_diameter = ...
-    let pitch_diameter = ...
-    param thread_form : Geometry = undef
+    param thread_class : ThreadClass
+    param tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+    param thread_form : Option<Geometry> = none
+
+    let minor_diameter = nominal_diameter - pitch * 1.0825
+    let pitch_diameter = nominal_diameter - pitch * 0.6495
+    let tap_drill = nominal_diameter - pitch
+    let clearance_hole = nominal_diameter + pitch * 0.5
 }
 
 enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
