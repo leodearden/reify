@@ -329,6 +329,11 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
                 false
             }
         }),
+        // Recurse into `auto(seed = expr, …)` params so a cursor landing inside a
+        // param value resolves to its symbol (mirrors collect_idents_in_expr).
+        ExprKind::Auto { params, .. } => {
+            params.iter().any(|(_, v)| expr_member_segment_hit(v, off))
+        }
         // Leaves with no sub-expressions.
         ExprKind::Ident(_)
         | ExprKind::NumberLiteral { .. }
@@ -336,7 +341,6 @@ fn expr_member_segment_hit(expr: &Expr, off: u32) -> bool {
         | ExprKind::StringLiteral(_)
         | ExprKind::BoolLiteral(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => false,
     }
 }
@@ -1042,13 +1046,21 @@ fn collect_idents_in_expr(expr: &Expr, name: &str, out: &mut Vec<SourceSpan>) {
                 }
             }
         }
+        // `auto(seed = expr, …)` params carry value expressions that reference
+        // real bindings, so recurse — otherwise find-references/rename silently
+        // miss occurrences inside `auto(seed = x)`, leaving a dangling reference
+        // after rename (mirrors substitute_expr; geometric-relations δ, 4384).
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                collect_idents_in_expr(v, name, out);
+            }
+        }
         // Leaves with no sub-expressions.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
         | ExprKind::StringLiteral(_)
         | ExprKind::BoolLiteral(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => {}
     }
 }

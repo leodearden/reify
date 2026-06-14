@@ -668,6 +668,15 @@ fn walk_expr_depth(
                 }
             }
         }
+        // `auto(seed = …, …)` params carry value expressions; recurse into each
+        // under the current frames so a shadowing ident used inside a param value
+        // is still checked against enclosing scopes (geometric-relations δ, 4384).
+        // α binds no new names, so no shadow-frame is opened.
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                walk_expr_depth(v, frames, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
@@ -675,7 +684,6 @@ fn walk_expr_depth(
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => {}
     }
 }

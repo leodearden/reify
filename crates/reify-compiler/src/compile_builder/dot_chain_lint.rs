@@ -496,6 +496,14 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 }
             }
         }
+        // `auto(seed = a.b.c.d, …)` params carry arbitrary value expressions, so
+        // recurse into each so deep dot-chains nested inside them are still
+        // linted (geometric-relations δ, 4384).
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                walk_expr_depth(v, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
         // `FunctionCall`, acts as a chain root simply by virtue of not being
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm
@@ -507,7 +515,6 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => {}
     }
 }
