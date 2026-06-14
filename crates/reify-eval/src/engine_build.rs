@@ -7203,6 +7203,118 @@ mod tests {
         }
     }
 
+    /// step-11 (RED): `build_outputs` RECOGNIZES a `DisplayOutput` occurrence as
+    /// a conforming `Output` but DEFERS its file emission (the viewport drive is
+    /// a sibling PRD), surfacing an info-severity [`crate::I_DISPLAY_OUTPUT_DEFERRED`]
+    /// diagnostic instead of a file — while an `Input` occurrence (`STEPInput`)
+    /// is EXCLUDED entirely (it conforms to `Input`, not `Output`).
+    ///
+    /// The module mixes all three: one `STLOutput` (a file), one `DisplayOutput`
+    /// (recognize-but-defer), one `STEPInput` (not an Output at all). The driver
+    /// must therefore produce exactly ONE file artifact (the STLOutput, with
+    /// non-empty bytes), surface exactly ONE `I_DISPLAY_OUTPUT_DEFERRED` info
+    /// diagnostic for the DisplayOutput, and emit NEITHER artifact NOR diagnostic
+    /// for the STEPInput. The recording kernel must observe exactly ONE
+    /// `export()` call (the STLOutput) — proving DisplayOutput/STEPInput drove no
+    /// serialization.
+    ///
+    /// RED until step-12: the step-8/10 happy path `continue`s silently on a
+    /// `DisplayDeferred` target, so no `I_DISPLAY_OUTPUT_DEFERRED` diagnostic is
+    /// surfaced and this test's diagnostic assertion fails.
+    #[test]
+    fn build_outputs_defers_display_output_and_excludes_input() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub d = DisplayOutput(subject: part)
+    sub i = STEPInput(source: "in.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        // Exactly one FILE artifact (non-empty bytes): the STLOutput. The
+        // DisplayOutput is recognized-but-deferred (a zero-byte skipped entry,
+        // never a written file); STEPInput contributes no entry at all.
+        let files: Vec<&crate::ExportArtifact> =
+            artifacts.iter().filter(|a| !a.bytes.is_empty()).collect();
+        assert_eq!(
+            files.len(),
+            1,
+            "exactly one FILE artifact (the STLOutput); DisplayOutput defers and \
+             STEPInput is excluded, got files {:?}",
+            files.iter().map(|a| &a.path).collect::<Vec<_>>()
+        );
+        assert_eq!(files[0].format, reify_ir::ExportFormat::Stl);
+        assert_eq!(files[0].path, PathBuf::from("/tmp/d/o.stl"));
+
+        // Exactly one info-severity I_DISPLAY_OUTPUT_DEFERRED diagnostic, for the
+        // DisplayOutput. "Result diagnostics" = every artifact's diagnostics.
+        let display_diags: Vec<&reify_core::Diagnostic> = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.message.contains(crate::I_DISPLAY_OUTPUT_DEFERRED))
+            .collect();
+        assert_eq!(
+            display_diags.len(),
+            1,
+            "exactly one I_DISPLAY_OUTPUT_DEFERRED diagnostic for the single \
+             DisplayOutput occurrence, got {}",
+            display_diags.len()
+        );
+        assert_eq!(
+            display_diags[0].severity,
+            Severity::Info,
+            "the DisplayOutput-deferred diagnostic must be info-severity (not an \
+             error that would fail the build)"
+        );
+
+        // STEPInput (an `Input`, not an `Output`) produces NO diagnostic of any
+        // kind — it is filtered out by the conforms_to_output gate before any
+        // spec read.
+        let input_diags = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.message.contains("STEPInput") || d.message.contains(".i"))
+            .count();
+        assert_eq!(
+            input_diags, 0,
+            "STEPInput is not an Output: it must produce neither artifact nor diagnostic"
+        );
+
+        // The kernel serialized exactly once — the STLOutput. DisplayOutput and
+        // STEPInput drove no export() call.
+        let exported = exported.lock().unwrap().clone();
+        assert_eq!(
+            exported.len(),
+            1,
+            "only the STLOutput exports; DisplayOutput defers and STEPInput is \
+             excluded, got {} export() calls",
+            exported.len()
+        );
+        assert_eq!(exported[0].1, reify_ir::ExportFormat::Stl);
+    }
+
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /
     /// `module_named_steps`.
