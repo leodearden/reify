@@ -626,7 +626,7 @@ const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
 /// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
 pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
-    if let reify_ast::ExprKind::Auto { free } = &expr.kind {
+    if let reify_ast::ExprKind::Auto { free, .. } = &expr.kind {
         Some(*free)
     } else {
         None

@@ -2250,6 +2250,31 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 β).
     DatumProjectionAmbiguous,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (the `MemberDecl::Relate`
+    /// arm and the inline `SubDecl.relate_relations` check, geometric-relations δ).
+    ///
+    /// Canonical message form:
+    /// `"relate member has type <T>, expected Relation"` — e.g. a Bool member
+    /// (`relate { true }`) or a metric query (`relate { distance(p1, p2) }`,
+    /// `Scalar<Length>`). A `relate { }` block — and its inline
+    /// `sub … at … where { }` twin — accepts ONLY `Type::Relation` members
+    /// (design §4/§7.3): a `drive` relation (`concentric`/`flush`/`offset`/…).
+    ///
+    /// Emitted as `Severity::Error` when a relate-block member's `result_type`
+    /// is neither `Type::Relation` nor `Type::Error` (a `Type::Error` member is
+    /// skipped — anti-cascade, so no second diagnostic piles onto an already-
+    /// errored member). The 3-verb routing falls out of this single check with
+    /// no name re-classification: a `check` verb types to `Bool` and a
+    /// `derive`/`query` verb types to a metric, both failing the Relation check.
+    ///
+    /// The symmetric mirror is the constraint side rejecting `Type::Relation`
+    /// (a Relation belongs in `relate {}`, not `constraint`; see the
+    /// `MemberDecl::Constraint` arm).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_RELATE_EXPECTS_RELATION`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
+    RelateExpectsRelation,
     /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
     /// arg/default mismatch — task 4584).
     ///
@@ -2961,6 +2986,36 @@ mod tests {
     fn diagnostic_code_interp_method_unsupported_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::InterpMethodUnsupported).unwrap();
         assert_eq!(s, "\"InterpMethodUnsupported\"");
+    }
+
+    // --- RelateExpectsRelation tests (task 4384 δ — E_RELATE_EXPECTS_RELATION) ---
+    // Pairs with the `MemberDecl::Relate` arm + `SubDecl.relate_relations` check
+    // in `crates/reify-compiler/src/entity.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::RelateExpectsRelation` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::RelateExpectsRelation)`.
+    /// Pins the error-severity contract for E_RELATE_EXPECTS_RELATION.
+    #[test]
+    fn relate_expects_relation_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("relate member has type Bool, expected Relation")
+            .with_code(DiagnosticCode::RelateExpectsRelation);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateExpectsRelation));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::RelateExpectsRelation`
+    /// serializes as `"RelateExpectsRelation"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
+        assert_eq!(s, "\"RelateExpectsRelation\"");
     }
 
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---

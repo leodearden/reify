@@ -195,7 +195,7 @@ fn parse_auto_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto { free: false }),
+                matches!(expr.kind, ExprKind::Auto { free: false, .. }),
                 "expected ExprKind::Auto {{ free: false }}, got {:?}",
                 expr.kind
             );
@@ -233,7 +233,7 @@ fn parse_auto_free_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto { free: true }),
+                matches!(expr.kind, ExprKind::Auto { free: true, .. }),
                 "expected ExprKind::Auto {{ free: true }}, got {:?}",
                 expr.kind
             );
@@ -282,7 +282,7 @@ fn parse_mixed_auto_and_normal_params() {
     assert_eq!(y.name, "y");
     assert!(matches!(
         y.default.as_ref().unwrap().kind,
-        ExprKind::Auto { free: false }
+        ExprKind::Auto { free: false, .. }
     ));
 
     // z has no default
@@ -324,7 +324,7 @@ fn parse_mixed_auto_and_auto_free() {
     assert!(
         matches!(
             a.default.as_ref().unwrap().kind,
-            ExprKind::Auto { free: false }
+            ExprKind::Auto { free: false, .. }
         ),
         "expected Auto {{ free: false }}, got {:?}",
         a.default.as_ref().unwrap().kind
@@ -339,7 +339,7 @@ fn parse_mixed_auto_and_auto_free() {
     assert!(
         matches!(
             b.default.as_ref().unwrap().kind,
-            ExprKind::Auto { free: true }
+            ExprKind::Auto { free: true, .. }
         ),
         "expected Auto {{ free: true }}, got {:?}",
         b.default.as_ref().unwrap().kind
@@ -552,6 +552,7 @@ fn all_spans_valid() {
             MemberDecl::ForallConstraint(d) => d.span,
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.span,
+            MemberDecl::Relate(r) => r.span,
             // Produced by lower_function (task 3937).
             MemberDecl::Fn(f) => f.span,
         };

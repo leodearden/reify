@@ -1,0 +1,183 @@
+================================================================================
+auto_param: single seed param — auto(seed = 5mm)
+================================================================================
+
+structure S { param p : Frame = auto(seed = 5mm) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword
+        (auto_param_list
+          (auto_param
+            name: (identifier)
+            value: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name)))))))))
+
+================================================================================
+auto_param: multi component-fix — auto(x = 5mm, orientation = orient_identity())
+================================================================================
+
+structure S { param p : Frame = auto(x = 5mm, orientation = orient_identity()) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword
+        (auto_param_list
+          (auto_param
+            name: (identifier)
+            value: (quantity_literal
+              value: (number_literal)
+              unit: (unit_expr
+                (unit_name))))
+          (auto_param
+            name: (identifier)
+            value: (function_call
+              name: (identifier))))))))
+
+================================================================================
+auto_param: baseline auto(free) regression — anonymous `free` token, no param_list
+================================================================================
+
+structure S { param p : Frame = auto(free) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (param_declaration
+      name: (identifier)
+      type: (type_expr
+        (identifier))
+      default: (auto_keyword))))
+
+================================================================================
+at auto: bare-auto pose on a specialization sub — sub b : B at auto
+================================================================================
+
+structure S { sub b : B at auto }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword))))
+
+================================================================================
+at auto: parameterized pose — sub b : B at auto(seed = self.frame)
+================================================================================
+
+structure S { sub b : B at auto(seed = self.frame) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword
+        (auto_param_list
+          (auto_param
+            name: (identifier)
+            value: (member_access
+              object: (identifier)
+              member: (identifier))))))))
+
+================================================================================
+relate_block: member-level block of two relations — relate { concentric(…)  flush(…) }
+================================================================================
+
+structure S {
+  relate {
+    concentric(a, b)
+    flush(c, d)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (relate_block
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)
+            (identifier))))
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+relate_block: empty block — relate { }
+================================================================================
+
+structure S { relate { } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (relate_block)))
+
+================================================================================
+sub_relate_block: inline at … where { } — sub … at auto where { concentric(…)  flush(…) }
+================================================================================
+
+structure S {
+  sub bolt : Bolt at auto where {
+    concentric(a, b)
+    flush(c, d)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword)
+      relations: (sub_relate_block
+        (relation_member
+          expr: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier)
+              (identifier))))
+        (relation_member
+          expr: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier)
+              (identifier))))))))
