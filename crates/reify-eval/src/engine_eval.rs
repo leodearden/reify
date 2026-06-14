@@ -5054,6 +5054,19 @@ mod invariant_tests {
         );
     }
 
+    /// `Type::Relation` is representable as a value cell_type (geometric-relations
+    /// γ, task 4383): it is an Undef-backed compile-time directive type with no
+    /// `Value::Relation`, admitted alongside StructureRef/TraitObject. Relation
+    /// calls type-check to Type::Relation but evaluate to Value::Undef until ζ
+    /// supplies the relate-solve. RED until step-2 adds the arm.
+    #[test]
+    fn is_representable_cell_type_admits_relation() {
+        assert!(
+            super::is_representable_cell_type(&Type::Relation),
+            "Type::Relation must be representable (Undef-backed directive type, γ)"
+        );
+    }
+
     /// Verify that `assert_value_cell_types_representable` panics with the
     /// expected message for every unrepresentable `Type` variant.  Uses
     /// `catch_unwind` to check all variants in a single test run, avoiding

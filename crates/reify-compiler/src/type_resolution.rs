@@ -2770,6 +2770,19 @@ mod tests {
         );
     }
 
+    /// `resolve_type_name("Relation")` must return `Type::Relation`
+    /// (geometric-relations γ, task 4383): the `Relation` directive type name
+    /// resolves so `fn ... -> Relation` and `param r : Relation` type-check.
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_relation() {
+        assert_eq!(
+            resolve_type_name("Relation"),
+            Some(Type::Relation),
+            "\"Relation\" should resolve to Type::Relation"
+        );
+    }
+
     /// `resolve_type_with_aliases` must inherit the builtin selector arms so that
     /// param-annotation resolution (which calls this function) resolves selector
     /// type names without an alias entry.

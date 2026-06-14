@@ -1910,4 +1910,62 @@ mod tests {
         assert!(!sp_q.is_error());
         assert_eq!(sp_q.as_name(), None);
     }
+
+    // ── Relation tests (γ: geometric-relations Relation directive type) ───────
+    // `Type::Relation` is a DOF-removal directive (geometric-relations γ, task
+    // 4383): it carries NO truth value, so it is distinct from `Bool`, and it is
+    // distinct from every datum type (Axis/Plane/Direction/Frame). RED until the
+    // variant lands in step-2 (compile failure is the documented RED state).
+
+    #[test]
+    fn type_relation_construction_and_equality() {
+        // Equal to itself.
+        assert_eq!(Type::Relation, Type::Relation);
+        // Distinct from Bool — a Relation is a directive, not a truth value.
+        assert_ne!(Type::Relation, Type::Bool);
+        // Distinct from every datum type.
+        assert_ne!(Type::Relation, Type::Axis);
+        assert_ne!(Type::Relation, Type::Plane);
+        assert_ne!(Type::Relation, Type::Direction);
+        assert_ne!(Type::Relation, Type::Frame(3));
+        // Distinct from a plain scalar.
+        assert_ne!(Type::Relation, Type::dimensionless_scalar());
+    }
+
+    #[test]
+    fn type_relation_display() {
+        // Display renders exactly "Relation".
+        assert_eq!(format!("{}", Type::Relation), "Relation");
+    }
+
+    #[test]
+    fn type_relation_factory() {
+        assert_eq!(Type::relation(), Type::Relation);
+    }
+
+    #[test]
+    fn type_relation_eq_and_hash() {
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Relation, "relation");
+        assert_eq!(map.get(&Type::Relation), Some(&"relation"));
+        assert_eq!(map.get(&Type::Bool), None);
+    }
+
+    #[test]
+    fn type_relation_not_numeric() {
+        // A directive type is not numeric.
+        assert!(!Type::Relation.is_numeric());
+    }
+
+    #[test]
+    fn type_relation_not_error() {
+        assert!(!Type::Relation.is_error());
+    }
+
+    #[test]
+    fn type_relation_as_name_none() {
+        // No nominal name (not a name-carrying variant).
+        assert_eq!(Type::Relation.as_name(), None);
+    }
 }
