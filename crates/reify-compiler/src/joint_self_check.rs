@@ -26,6 +26,7 @@
 //! `relation_signatures.rs` / `joint_signatures.rs` convention).
 
 use crate::relation_signatures::relation_delta_dof_kinds;
+use reify_core::{DimensionVector, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// A rotational/translational DOF split. `rot + trans` is the total DOF count.
@@ -83,6 +84,32 @@ pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
         NOMINAL_ROT.saturating_sub(sum_rot),
         NOMINAL_TRANS.saturating_sub(sum_trans),
     )
+}
+
+/// Classify the declared DOF field types into their `(rot, trans)` kind
+/// contribution, together with the list of types that could not be classified.
+///
+/// Each resolved declared DOF `Type` maps to:
+/// - `Scalar<Angle>` → 1 rotational,
+/// - `Scalar<Length>` → 1 translational,
+/// - `Orientation(_)` → 3 rotational (a free spherical orientation),
+/// - anything else → contributes `(0, 0)` AND is appended to the returned
+///   unclassified list, so the caller can surface it. A DOF field that is
+///   neither an angle, a length, nor an orientation has no geometric kind to
+///   match against the residual.
+pub(crate) fn declared_kinds(declared: &[Type]) -> (DofKinds, Vec<Type>) {
+    let mut rot: u32 = 0;
+    let mut trans: u32 = 0;
+    let mut unclassified: Vec<Type> = Vec::new();
+    for ty in declared {
+        match ty {
+            Type::Scalar { dimension } if *dimension == DimensionVector::ANGLE => rot += 1,
+            Type::Scalar { dimension } if *dimension == DimensionVector::LENGTH => trans += 1,
+            Type::Orientation(_) => rot += 3,
+            other => unclassified.push(other.clone()),
+        }
+    }
+    (DofKinds::new(rot, trans), unclassified)
 }
 
 #[cfg(test)]
