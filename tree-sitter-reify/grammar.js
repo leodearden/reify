@@ -144,6 +144,7 @@ module.exports = grammar({
       $.unit_declaration,
       $.type_alias_declaration,
       $.default_declaration,
+      $.joint_definition,
       $.pragma,
       $.annotation,
     ),
@@ -734,6 +735,54 @@ module.exports = grammar({
       '{',
       repeat($.relation_member),
       '}',
+    ),
+
+    // ── Joint definition ─────────────────────────────────────
+    // `joint revolute(a: Axis, b: Axis, stop: Plane) with angle: Angle in 0deg..120deg = { coaxial(a, b)  on(a.point, stop) }`
+    // Top-level module-scope definition (not a structure/trait member).
+    // Grammar producer only (task α 4395); semantics (DOF self-check, body
+    // type-check) are deferred to task β.
+    //
+    // `joint` and `with` are PLAIN string tokens (contextual keywords), mirroring
+    // the proven `relate`/`default`/`undef` pattern. No top-level declaration
+    // alternative begins with the same keyword — zero regression: `joint` and
+    // `with` continue to lex as identifiers at all other parse positions.
+    joint_definition: $ => seq(
+      optional('pub'),
+      'joint',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '(',
+      optional($.fn_param_list),
+      ')',
+      'with',
+      field('dof', $.joint_dof),
+      '=',
+      field('body', $.joint_body),
+    ),
+
+    // The DOF specification following `with`.
+    // Step-2 (single form): exactly one joint_dof_field.
+    // Extended to the braced record form in step-4.
+    joint_dof: $ => $.joint_dof_field,
+
+    // A single DOF field: `name: TypeExpr` with an optional `in <range>` clause.
+    // `'in'` is a contextual keyword here — valid only at this parse position.
+    joint_dof_field: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('type', $.type_expr),
+      optional(seq('in', field('range', $._expression))),
+    ),
+
+    // The body of a joint definition, introduced by `=` in joint_definition.
+    // Block form: `{ relation_member* }` — reuses δ's relation_member node so
+    // each body expression lowers via lower_relation_members (same as relate_block).
+    // Single-expr form: `result: _expression` — a single relation expression.
+    // `{` unambiguously selects the block arm (no _expression starts with bare `{`).
+    joint_body: $ => choice(
+      seq('{', repeat($.relation_member), '}'),
+      field('result', $._expression),
     ),
 
     // ── Sub ─────────────────────────────────────────────────
