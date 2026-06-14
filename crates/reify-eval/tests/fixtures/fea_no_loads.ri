@@ -1,0 +1,24 @@
+// FEA diagnostic fixture: no-loads advisory.
+//
+// A cantilever structure with a FixedSupport but an EMPTY loads list [].
+// Triggers the FeaNoLoads warning diagnostic via the elastic-static trampoline.
+//
+// Modelled after examples/fea_cantilever_smoke.ri (same geometry, same
+// material) but `loads: []` so the FEA receives zero applied force.
+
+structure FeaNoLoads {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+
+    // No loads applied.
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [], [mount], ElasticOptions()
+    )
+
+    let body = box(length, width, height)
+}
