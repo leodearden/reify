@@ -68,7 +68,7 @@ fn load_and_compile_example() -> reify_compiler::CompiledModule {
     reify_test_support::parse_and_compile_with_stdlib(&source)
 }
 
-// ── step-1 / step-2: OCCT-gated overhang slice ───────────────────────────────
+// ── step-1 / step-2: OCCT-gated overhang slice ──────────────────────────────
 
 /// Loads the shipped example, builds with OCCT, checks, and asserts that
 /// exactly one diagnostic is emitted per DFMSeverity for the overhang rules:
