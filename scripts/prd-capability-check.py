@@ -58,7 +58,21 @@ from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Valid constants
+# Observation and verdict constants
+# ---------------------------------------------------------------------------
+
+# Observation values (what the probe runner sees when it runs a probe)
+PRESENT = "present"            # the asserted capability/behavior is present
+ABSENT = "absent"              # the asserted capability/behavior is absent
+INDETERMINATE = "indeterminate"  # cannot determine (ir kind: unrelated error)
+
+# Verdict values (result of comparing observed vs expected)
+PASS = "PASS"
+FAIL = "FAIL"
+UNPROVABLE = "UNPROVABLE"
+
+# ---------------------------------------------------------------------------
+# Valid constants for validation
 # ---------------------------------------------------------------------------
 
 _VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
@@ -159,6 +173,34 @@ def dump_probe_set(probes: List[Probe]) -> str:
 
     obj = {"probes": [probe_to_dict(p) for p in probes]}
     return json.dumps(obj, indent=4)
+
+
+# ---------------------------------------------------------------------------
+# Verdict logic
+# ---------------------------------------------------------------------------
+
+def verdict(observation: str, expected_observation: str) -> str:
+    """Return PASS/FAIL/UNPROVABLE by comparing observation to expected.
+
+    Truth table:
+        PRESENT  + expected present  → PASS
+        ABSENT   + expected absent   → PASS
+        PRESENT  + expected absent   → FAIL
+        ABSENT   + expected present  → FAIL
+        INDETERMINATE + (any)        → UNPROVABLE
+
+    Args:
+        observation: One of PRESENT, ABSENT, INDETERMINATE.
+        expected_observation: "present" or "absent" (from the probe's expected field).
+
+    Returns:
+        PASS, FAIL, or UNPROVABLE.
+    """
+    if observation == INDETERMINATE:
+        return UNPROVABLE
+    if observation == expected_observation:
+        return PASS
+    return FAIL
 
 
 def main(argv: List[str]) -> int:
