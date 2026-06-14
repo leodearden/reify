@@ -748,6 +748,144 @@ mod tests {
         assert_eq!(relation_delta_dof("tangent", &aa), Some(2));
     }
 
+    // ── ΔDOF kind split: relation_delta_dof_kinds (task 4396 β) ───────────────
+    //
+    // The companion to `relation_delta_dof` that publishes the rotational vs
+    // translational split of the codimension each relation removes (design
+    // §3.4 / PRD §7.1.3). The joint self-check sums these to derive a residual
+    // `(rot, trans)`. A sum-invariant test pins `rot + trans == relation_delta_dof`
+    // for every curated shape (except `tangent`, whose split is surface-
+    // conditional and intentionally `None`).
+
+    /// `coincident(D, D)` splits its codimension by datum kind: a `Direction`
+    /// pins 2 rotational; a `Point` pins 3 translational; a `Plane` pins 2 tilt +
+    /// 1 normal-offset; an `Axis` pins 2 tilt + 2 translation; a `Frame` pins all
+    /// 3 + 3.
+    #[test]
+    fn relation_delta_dof_kinds_coincident() {
+        let pt = || arg(Type::point3(Type::length()));
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[arg(Type::Direction), arg(Type::Direction)]),
+            Some((2, 0))
+        );
+        assert_eq!(relation_delta_dof_kinds("coincident", &[pt(), pt()]), Some((0, 3)));
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[arg(Type::Plane), arg(Type::Plane)]),
+            Some((2, 1))
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[arg(Type::Axis), arg(Type::Axis)]),
+            Some((2, 2))
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[arg(Type::Frame(3)), arg(Type::Frame(3))]),
+            Some((3, 3))
+        );
+    }
+
+    /// `on(Point, host)` removes only translational sliding freedoms: a point on
+    /// a `Plane` loses 1 translation; on an `Axis` 2; on a `Point` all 3. No
+    /// rotational component.
+    #[test]
+    fn relation_delta_dof_kinds_on_is_all_translational() {
+        let pt = || arg(Type::point3(Type::length()));
+        assert_eq!(relation_delta_dof_kinds("on", &[pt(), arg(Type::Plane)]), Some((0, 1)));
+        assert_eq!(relation_delta_dof_kinds("on", &[pt(), arg(Type::Axis)]), Some((0, 2)));
+        assert_eq!(relation_delta_dof_kinds("on", &[pt(), pt()]), Some((0, 3)));
+    }
+
+    /// Orientation primitives remove only angular freedoms; the arity-3 metric
+    /// DRIVE forms split by their dimension (`angle` rotational, `distance`
+    /// translational).
+    #[test]
+    fn relation_delta_dof_kinds_orientation_and_metric() {
+        let dd = [arg(Type::Direction), arg(Type::Direction)];
+        let aa_theta = [arg(Type::Axis), arg(Type::Axis), arg(Type::angle())];
+        let pp_delta = [
+            arg(Type::point3(Type::length())),
+            arg(Type::point3(Type::length())),
+            arg(Type::length()),
+        ];
+        assert_eq!(relation_delta_dof_kinds("parallel", &dd), Some((2, 0)));
+        assert_eq!(relation_delta_dof_kinds("antiparallel", &dd), Some((2, 0)));
+        assert_eq!(relation_delta_dof_kinds("perpendicular", &dd), Some((1, 0)));
+        assert_eq!(relation_delta_dof_kinds("angle", &aa_theta), Some((1, 0)));
+        assert_eq!(relation_delta_dof_kinds("distance", &pp_delta), Some((0, 1)));
+    }
+
+    /// Named compounds publish their summed-body kind split: `concentric` =
+    /// coincident axis = (2, 2); `flush` = coincident plane = (2, 1); `offset` =
+    /// parallel + on = (2, 1). `tangent` is surface-conditional → `None`.
+    #[test]
+    fn relation_delta_dof_kinds_compounds_and_tangent() {
+        let aa = [arg(Type::Axis), arg(Type::Axis)];
+        assert_eq!(relation_delta_dof_kinds("concentric", &aa), Some((2, 2)));
+        assert_eq!(
+            relation_delta_dof_kinds("flush", &[arg(Type::Plane), arg(Type::Plane)]),
+            Some((2, 1))
+        );
+        assert_eq!(
+            relation_delta_dof_kinds(
+                "offset",
+                &[arg(Type::Plane), arg(Type::Plane), arg(Type::length())]
+            ),
+            Some((2, 1))
+        );
+        // tangent's split is undecidable nominally — gradualism returns None.
+        assert_eq!(relation_delta_dof_kinds("tangent", &aa), None);
+    }
+
+    /// An uncurated operand shape (e.g. `coincident(Geometry, Geometry)`) and an
+    /// unknown name both return `None` — mirroring `relation_delta_dof`.
+    #[test]
+    fn relation_delta_dof_kinds_uncurated_is_none() {
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[arg(Type::Geometry), arg(Type::Geometry)]),
+            None
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("does_not_exist", &[arg(Type::Axis), arg(Type::Axis)]),
+            None
+        );
+    }
+
+    /// Sum invariant (the anti-drift pin): for every curated `(name, args)` shape
+    /// EXCEPT `tangent`, `rot + trans == relation_delta_dof(name, args)`. This is
+    /// what keeps the count table and the kind table from drifting apart.
+    #[test]
+    fn relation_delta_dof_kinds_sum_equals_delta_dof() {
+        let pt = || arg(Type::point3(Type::length()));
+        let curated: Vec<(&str, Vec<CompiledExpr>)> = vec![
+            ("coincident", vec![arg(Type::Direction), arg(Type::Direction)]),
+            ("coincident", vec![pt(), pt()]),
+            ("coincident", vec![arg(Type::Plane), arg(Type::Plane)]),
+            ("coincident", vec![arg(Type::Axis), arg(Type::Axis)]),
+            ("coincident", vec![arg(Type::Frame(3)), arg(Type::Frame(3))]),
+            ("on", vec![pt(), arg(Type::Plane)]),
+            ("on", vec![pt(), arg(Type::Axis)]),
+            ("on", vec![pt(), pt()]),
+            ("parallel", vec![arg(Type::Direction), arg(Type::Direction)]),
+            ("antiparallel", vec![arg(Type::Direction), arg(Type::Direction)]),
+            ("perpendicular", vec![arg(Type::Direction), arg(Type::Direction)]),
+            ("angle", vec![arg(Type::Axis), arg(Type::Axis), arg(Type::angle())]),
+            ("distance", vec![pt(), pt(), arg(Type::length())]),
+            ("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
+            ("flush", vec![arg(Type::Plane), arg(Type::Plane)]),
+            ("offset", vec![arg(Type::Plane), arg(Type::Plane), arg(Type::length())]),
+        ];
+        for (name, args) in &curated {
+            let (rot, trans) = relation_delta_dof_kinds(name, args)
+                .unwrap_or_else(|| panic!("{name} must have a curated kind split"));
+            let count = relation_delta_dof(name, args)
+                .unwrap_or_else(|| panic!("{name} must have a curated ΔDOF"));
+            assert_eq!(
+                rot + trans,
+                count,
+                "{name}: kind split ({rot},{trans}) must sum to ΔDOF {count}"
+            );
+        }
+    }
+
     // ── Contract string (step-3 RED / step-4 GREEN) ──────────────────────────
 
     /// The contract string renders `name(ArgTys) -> Relation removes N`, with the
