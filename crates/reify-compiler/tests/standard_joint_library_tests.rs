@@ -182,6 +182,85 @@ fn ball_joint_definition_is_self_check_clean() {
     );
 }
 
+// ── (c) B8 boundary tests ─────────────────────────────────────────────────────
+//
+// Couplings (couple / gear / screw / rack_and_pinion) type to
+// `Type::StructureRef("Coupling")`, NOT `Type::Relation`. Core-δ's
+// `check_relate_relations` (entity.rs) rejects any relate-block member whose
+// type ≠ `Type::Relation` with `DiagnosticCode::RelateExpectsRelation`.
+//
+// These tests characterise and LOCK the pre-landed B8 boundary (geometric-joints
+// γ owns enforcing + documenting this boundary — task 4397). No new code is
+// needed; the enforcement is by composition (core-δ + joint_signatures.rs).
+
+/// Filter error-severity `RelateExpectsRelation` diagnostics — the δ
+/// relate-block enforcement signal (mirrors `relate_block_check_tests.rs`).
+fn relate_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::RelateExpectsRelation)
+                && d.severity == Severity::Error
+        })
+        .collect()
+}
+
+/// B8 — `couple(a, b)` in a `relate { }` body draws `E_RELATE_EXPECTS_RELATION`:
+/// `couple` types to `Type::StructureRef("Coupling")` (not `Type::Relation`), so
+/// core-δ rejects it at relate-block enforcement time.
+#[test]
+fn couple_in_relate_block_draws_relate_expects_relation() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a : Axis\n    param b : Axis\n    \
+         relate { couple(a, b) }\n}",
+    );
+    let errs = relate_errors(&module);
+    assert!(
+        !errs.is_empty(),
+        "couple() types to StructureRef(\"Coupling\") (not Type::Relation); \
+         a `relate {{ }}` block containing it must emit E_RELATE_EXPECTS_RELATION.\n\
+         All diagnostics: {:#?}",
+        module.diagnostics
+    );
+}
+
+/// B8 variant — `gear(a, b)` in a `relate { }` body draws
+/// `E_RELATE_EXPECTS_RELATION` for the same reason: `gear` also types to
+/// `Type::StructureRef("Coupling")`.
+#[test]
+fn gear_in_relate_block_draws_relate_expects_relation() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a : Axis\n    param b : Axis\n    \
+         relate { gear(a, b) }\n}",
+    );
+    let errs = relate_errors(&module);
+    assert!(
+        !errs.is_empty(),
+        "gear() types to StructureRef(\"Coupling\") (not Type::Relation); \
+         a `relate {{ }}` block containing it must emit E_RELATE_EXPECTS_RELATION.\n\
+         All diagnostics: {:#?}",
+        module.diagnostics
+    );
+}
+
+/// B8 positive control — `concentric(a, b)` in a `relate { }` body is accepted:
+/// a genuine drive relation types to `Type::Relation` and is NOT rejected.
+/// This confirms that the B8 rejection is coupling-specific, not a blanket error.
+#[test]
+fn concentric_in_relate_block_is_accepted() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a : Axis\n    param b : Axis\n    \
+         relate { concentric(a, b) }\n}",
+    );
+    let errs = relate_errors(&module);
+    assert!(
+        errs.is_empty(),
+        "concentric(a, b) types to Type::Relation and must NOT emit \
+         E_RELATE_EXPECTS_RELATION in a `relate {{ }}` block, got: {errs:#?}",
+    );
+}
+
 // ── (c) stdlib registration check ────────────────────────────────────────────
 
 /// `std.joints` must be registered as a prelude stdlib module — `load_stdlib()`
