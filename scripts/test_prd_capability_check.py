@@ -265,5 +265,82 @@ class TestProbeSetRoundTrip(unittest.TestCase):
         self.assertEqual(kinds, {"grammar", "check", "ir"})
 
 
+# ---------------------------------------------------------------------------
+# step-03 (RED): pure verdict() truth table
+# ---------------------------------------------------------------------------
+
+class TestVerdictTruthTable(unittest.TestCase):
+    """Tests for Verdict/Observation constants and verdict() pure function.
+
+    These tests FAIL until step-04 adds Verdict, Observation, verdict().
+    """
+
+    def test_observation_constants_exist(self):
+        """Observation constants PRESENT, ABSENT, INDETERMINATE must exist."""
+        self.assertTrue(hasattr(pcc, "PRESENT"), "missing PRESENT")
+        self.assertTrue(hasattr(pcc, "ABSENT"), "missing ABSENT")
+        self.assertTrue(hasattr(pcc, "INDETERMINATE"), "missing INDETERMINATE")
+
+    def test_verdict_constants_exist(self):
+        """Verdict constants PASS, FAIL, UNPROVABLE must exist."""
+        self.assertTrue(hasattr(pcc, "PASS"), "missing PASS")
+        self.assertTrue(hasattr(pcc, "FAIL"), "missing FAIL")
+        self.assertTrue(hasattr(pcc, "UNPROVABLE"), "missing UNPROVABLE")
+
+    def test_verdict_function_exists(self):
+        self.assertTrue(hasattr(pcc, "verdict"), "missing verdict()")
+        self.assertTrue(callable(pcc.verdict))
+
+    # ── PASS cases ────────────────────────────────────────────────────────────
+
+    def test_present_expected_present_is_pass(self):
+        """PRESENT + expected present → PASS."""
+        v = pcc.verdict(pcc.PRESENT, "present")
+        self.assertEqual(v, pcc.PASS)
+
+    def test_absent_expected_absent_is_pass(self):
+        """ABSENT + expected absent → PASS."""
+        v = pcc.verdict(pcc.ABSENT, "absent")
+        self.assertEqual(v, pcc.PASS)
+
+    # ── FAIL cases ────────────────────────────────────────────────────────────
+
+    def test_present_expected_absent_is_fail(self):
+        """PRESENT + expected absent → FAIL."""
+        v = pcc.verdict(pcc.PRESENT, "absent")
+        self.assertEqual(v, pcc.FAIL)
+
+    def test_absent_expected_present_is_fail(self):
+        """ABSENT + expected present → FAIL."""
+        v = pcc.verdict(pcc.ABSENT, "present")
+        self.assertEqual(v, pcc.FAIL)
+
+    # ── UNPROVABLE cases ──────────────────────────────────────────────────────
+
+    def test_indeterminate_expected_present_is_unprovable(self):
+        """INDETERMINATE + expected present → UNPROVABLE."""
+        v = pcc.verdict(pcc.INDETERMINATE, "present")
+        self.assertEqual(v, pcc.UNPROVABLE)
+
+    def test_indeterminate_expected_absent_is_unprovable(self):
+        """INDETERMINATE + expected absent → UNPROVABLE."""
+        v = pcc.verdict(pcc.INDETERMINATE, "absent")
+        self.assertEqual(v, pcc.UNPROVABLE)
+
+    # ── constants are distinct ────────────────────────────────────────────────
+
+    def test_observation_constants_are_distinct(self):
+        """PRESENT, ABSENT, INDETERMINATE must be pairwise distinct."""
+        self.assertNotEqual(pcc.PRESENT, pcc.ABSENT)
+        self.assertNotEqual(pcc.PRESENT, pcc.INDETERMINATE)
+        self.assertNotEqual(pcc.ABSENT, pcc.INDETERMINATE)
+
+    def test_verdict_constants_are_distinct(self):
+        """PASS, FAIL, UNPROVABLE must be pairwise distinct."""
+        self.assertNotEqual(pcc.PASS, pcc.FAIL)
+        self.assertNotEqual(pcc.PASS, pcc.UNPROVABLE)
+        self.assertNotEqual(pcc.FAIL, pcc.UNPROVABLE)
+
+
 if __name__ == "__main__":
     unittest.main()
