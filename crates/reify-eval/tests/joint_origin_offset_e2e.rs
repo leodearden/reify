@@ -165,8 +165,6 @@ fn revolute_pivot_offset_e2e() {
 /// **t_hinge** (oriented revolute, axis=+Z, origin=frame3(point3(100mm,0,0), R_x(90°)), θ=π/2):
 /// - rotation = R_x(90°)·R_z(90°) = (0.5, 0.5, -0.5, 0.5)  [Hamilton product]
 /// - translation = R_x(90°)·(0,0,0) + (0.1,0,0) = (0.1, 0, 0)
-///
-/// This test is RED until step-4 creates the fixture file.
 #[test]
 fn oriented_frame3_linkage_e2e() {
     let source = oriented_fixture_source();
@@ -195,18 +193,20 @@ fn oriented_frame3_linkage_e2e() {
     let sq2_2 = std::f64::consts::SQRT_2 / 2.0;
 
     // t_slider: oriented prismatic, axis=+X, R_z(90°) origin, d=0.5m.
-    // Expected: rotation=(√2/2,0,0,√2/2), translation=(0,0.5,0).
+    // Expected: rotation=(√2/2,0,0,√2/2) up to sign, translation=(0,0.5,0).
     let t_slider = get_value("t_slider");
     let ((sw, sx, sy, sz), [stx, sty, stz]) = decompose_transform(t_slider, "t_slider");
+    let s_matches_pos = (sw - sq2_2).abs() < 1e-12
+        && sx.abs() < 1e-12
+        && sy.abs() < 1e-12
+        && (sz - sq2_2).abs() < 1e-12;
+    let s_matches_neg = (sw + sq2_2).abs() < 1e-12
+        && sx.abs() < 1e-12
+        && sy.abs() < 1e-12
+        && (sz + sq2_2).abs() < 1e-12;
     assert!(
-        (sw - sq2_2).abs() < 1e-12,
-        "t_slider.w should be √2/2 ≈ {sq2_2}, got {sw}"
-    );
-    assert!(sx.abs() < 1e-12, "t_slider.x should be 0, got {sx}");
-    assert!(sy.abs() < 1e-12, "t_slider.y should be 0, got {sy}");
-    assert!(
-        (sz - sq2_2).abs() < 1e-12,
-        "t_slider.z should be √2/2 ≈ {sq2_2}, got {sz}"
+        s_matches_pos || s_matches_neg,
+        "t_slider rotation should be R_z(90°) ≈ ({sq2_2},0,0,{sq2_2}) up to sign, got ({sw},{sx},{sy},{sz})"
     );
     assert!(stx.abs() < 1e-12, "t_slider.tx should be 0, got {stx}");
     assert!(
@@ -216,24 +216,20 @@ fn oriented_frame3_linkage_e2e() {
     assert!(stz.abs() < 1e-12, "t_slider.tz should be 0, got {stz}");
 
     // t_hinge: oriented revolute, axis=+Z, origin=frame3(point3(100mm,0,0), R_x(90°)), θ=π/2.
-    // Expected: rotation=(0.5,0.5,-0.5,0.5), translation=(0.1,0,0).
+    // Expected: rotation=(0.5,0.5,-0.5,0.5) up to sign, translation=(0.1,0,0).
     let t_hinge = get_value("t_hinge");
     let ((hw, hx, hy, hz), [htx, hty, htz]) = decompose_transform(t_hinge, "t_hinge");
+    let h_matches_pos = (hw - 0.5).abs() < 1e-12
+        && (hx - 0.5).abs() < 1e-12
+        && (hy + 0.5).abs() < 1e-12
+        && (hz - 0.5).abs() < 1e-12;
+    let h_matches_neg = (hw + 0.5).abs() < 1e-12
+        && (hx + 0.5).abs() < 1e-12
+        && (hy - 0.5).abs() < 1e-12
+        && (hz + 0.5).abs() < 1e-12;
     assert!(
-        (hw - 0.5).abs() < 1e-12,
-        "t_hinge.w should be 0.5, got {hw}"
-    );
-    assert!(
-        (hx - 0.5).abs() < 1e-12,
-        "t_hinge.x should be 0.5, got {hx}"
-    );
-    assert!(
-        (hy - (-0.5)).abs() < 1e-12,
-        "t_hinge.y should be -0.5, got {hy}"
-    );
-    assert!(
-        (hz - 0.5).abs() < 1e-12,
-        "t_hinge.z should be 0.5, got {hz}"
+        h_matches_pos || h_matches_neg,
+        "t_hinge rotation should be (0.5,0.5,-0.5,0.5) up to sign, got ({hw},{hx},{hy},{hz})"
     );
     assert!(
         (htx - 0.1).abs() < 1e-12,

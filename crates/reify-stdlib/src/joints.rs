@@ -1589,62 +1589,60 @@ fn make_cylindrical_joint(axis: Value, translation_range: Value, rotation_range:
 /// Resolves PRD §7.1 / §11 Q1 + Q3: positional 3rd pivot arg → "origin" key.
 /// Dimensionless pivots (bare `Real`) are rejected to avoid silently mis-scaling
 /// `point3(40,0,0)` as 40 m instead of the user's intended 40 mm (PRD B9 rationale).
+/// Validates `comps` as a 3-element slice of finite LENGTH [`Value::Scalar`]s and
+/// returns their SI values in metres.  Returns `None` on any mismatch.
+///
+/// Shared by the `Point`/`Vector` arm and the `Frame` arm of [`pivot_to_origin`]
+/// so the LENGTH-and-finiteness discipline is defined in one place and both arms
+/// stay in lock-step.
+fn read_length3(comps: &[Value]) -> Option<[f64; 3]> {
+    if comps.len() != 3 {
+        return None;
+    }
+    let mut vals = [0.0f64; 3];
+    for (i, comp) in comps.iter().enumerate() {
+        match comp {
+            Value::Scalar { si_value, dimension }
+                if *dimension == DimensionVector::LENGTH =>
+            {
+                if !si_value.is_finite() {
+                    return None;
+                }
+                vals[i] = *si_value;
+            }
+            _ => return None,
+        }
+    }
+    Some(vals)
+}
+
 fn pivot_to_origin(pivot: &Value) -> Option<Value> {
     // ── α back-compat: Point3 / Vector3 → pure-translation origin ──────────────
     if let Value::Point(c) | Value::Vector(c) = pivot {
-        if c.len() == 3 {
-            let mut vals = [0.0f64; 3];
-            for (i, comp) in c.iter().enumerate() {
-                match comp {
-                    Value::Scalar { si_value, dimension }
-                        if *dimension == DimensionVector::LENGTH =>
-                    {
-                        if !si_value.is_finite() {
-                            return None;
-                        }
-                        vals[i] = *si_value;
-                    }
-                    _ => return None,
-                }
-            }
-            return Some(Value::Transform {
-                rotation: Box::new(Value::Orientation {
-                    w: 1.0,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                }),
-                translation: Box::new(Value::Vector(vec![
-                    Value::length(vals[0]),
-                    Value::length(vals[1]),
-                    Value::length(vals[2]),
-                ])),
-            });
-        }
-        return None;
+        let vals = read_length3(c)?;
+        return Some(Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![
+                Value::length(vals[0]),
+                Value::length(vals[1]),
+                Value::length(vals[2]),
+            ])),
+        });
     }
 
     // ── δ (task 4394): Frame3 → oriented origin (basis→rotation, origin→translation) ──
     if let Value::Frame { origin, basis } = pivot {
         // Validate origin: must be Point(3) with finite LENGTH components.
         let comps = match origin.as_ref() {
-            Value::Point(c) if c.len() == 3 => c,
+            Value::Point(c) => c,
             _ => return None,
         };
-        let mut vals = [0.0f64; 3];
-        for (i, comp) in comps.iter().enumerate() {
-            match comp {
-                Value::Scalar { si_value, dimension }
-                    if *dimension == DimensionVector::LENGTH =>
-                {
-                    if !si_value.is_finite() {
-                        return None;
-                    }
-                    vals[i] = *si_value;
-                }
-                _ => return None,
-            }
-        }
+        let vals = read_length3(comps)?;
         // Validate + normalize basis: must be a finite, non-zero-norm Orientation.
         let (w, x, y, z) = match basis.as_ref() {
             Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
@@ -2184,6 +2182,54 @@ mod tests {
                 i,
                 exp,
                 val
+            );
+        }
+    }
+
+    /// Like [`assert_transform_approx`] but accepts the rotation quaternion up to sign
+    /// (`q` and `-q` encode the same rotation).  Use this for oriented-origin tests
+    /// where `normalize_quaternion` / `compose_transforms` may canonicalize to either
+    /// hemisphere without changing the physical rotation.
+    fn assert_transform_approx_up_to_sign(
+        result: &Value,
+        exp_rot: (f64, f64, f64, f64),
+        exp_trans: [f64; 3],
+        tol: f64,
+        label: &str,
+    ) {
+        let (rot, trans) = match result {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("{label}: expected Transform, got {other:?}"),
+        };
+        let (w, x, y, z) = match rot {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("{label}: expected Orientation, got {other:?}"),
+        };
+        let (ew, ex, ey, ez) = exp_rot;
+        let matches_pos = (w - ew).abs() < tol
+            && (x - ex).abs() < tol
+            && (y - ey).abs() < tol
+            && (z - ez).abs() < tol;
+        let matches_neg = (w + ew).abs() < tol
+            && (x + ex).abs() < tol
+            && (y + ey).abs() < tol
+            && (z + ez).abs() < tol;
+        assert!(
+            matches_pos || matches_neg,
+            "{label}: rotation should be ({ew},{ex},{ey},{ez}) up to sign, got ({w},{x},{y},{z})"
+        );
+
+        let comps = match trans {
+            Value::Vector(v) if v.len() == 3 => v,
+            other => panic!("{label}: expected Vector(3), got {other:?}"),
+        };
+        for (i, (comp, &exp)) in comps.iter().zip(exp_trans.iter()).enumerate() {
+            let val = comp
+                .as_f64()
+                .unwrap_or_else(|| panic!("{label}: translation[{i}] not numeric"));
+            assert!(
+                (val - exp).abs() < tol,
+                "{label}: translation[{i}] expected {exp} got {val}"
             );
         }
     }
@@ -7387,8 +7433,7 @@ mod tests {
 
     // ── KIN-OFFSET δ (task 4394): Frame3 oriented-origin authoring ──────────────
     //
-    // Tests for the new `Value::Frame { origin, basis }` arm in `pivot_to_origin`.
-    // All positive tests are RED until step-2 adds the Frame arm.
+    // Tests for the `Value::Frame { origin, basis }` arm in `pivot_to_origin` (task 4394 δ).
 
     /// Helper: create an orient_axis_angle(vec3(ax,ay,az), angle_rad) Value.
     fn make_orient_axis_angle(ax: f64, ay: f64, az: f64, angle_rad: f64) -> Value {
@@ -7408,8 +7453,6 @@ mod tests {
     /// (a) revolute 3rd arg = frame3(point3(0.1m,0,0), R_x(90°)) →
     /// Map with "origin" = Transform{rotation=R_x(90°)=(√2/2,√2/2,0,0), translation=(0.1,0,0)}.
     /// kind/axis/range fields must still be present.
-    ///
-    /// RED: today a Frame 3rd arg makes pivot_to_origin return None → constructor returns Undef.
     #[test]
     fn revolute_3arg_frame3_origin_lifts_basis_and_translation() {
         let pi = std::f64::consts::PI;
@@ -7438,8 +7481,8 @@ mod tests {
         let origin = map
             .get(&Value::String("origin".to_string()))
             .unwrap_or_else(|| panic!("revolute_3arg_frame3: 'origin' key must be present"));
-        // R_x(90°) = (w=√2/2, x=√2/2, y=0, z=0)
-        assert_transform_approx(
+        // R_x(90°) = (w=√2/2, x=√2/2, y=0, z=0) — accepted up to sign.
+        assert_transform_approx_up_to_sign(
             origin,
             (sq2_2, sq2_2, 0.0, 0.0),
             [0.1, 0.0, 0.0],
@@ -7450,8 +7493,6 @@ mod tests {
 
     /// (b) prismatic 3rd arg = frame3(point3(0,0,0), R_z(90°)) →
     /// Map with "origin" = Transform{rotation=R_z(90°)=(√2/2,0,0,√2/2), translation=(0,0,0)}.
-    ///
-    /// RED: same as (a).
     #[test]
     fn prismatic_3arg_frame3_origin_lifts_basis_and_translation() {
         let pi = std::f64::consts::PI;
@@ -7470,8 +7511,8 @@ mod tests {
         let origin = map
             .get(&Value::String("origin".to_string()))
             .unwrap_or_else(|| panic!("prismatic_3arg_frame3: 'origin' key must be present"));
-        // R_z(90°) = (w=√2/2, x=0, y=0, z=√2/2); translation = (0,0,0).
-        assert_transform_approx(
+        // R_z(90°) = (w=√2/2, x=0, y=0, z=√2/2); translation = (0,0,0) — up to sign.
+        assert_transform_approx_up_to_sign(
             origin,
             (sq2_2, 0.0, 0.0, sq2_2),
             [0.0, 0.0, 0.0],
@@ -7484,8 +7525,6 @@ mod tests {
     /// FK = { rotation=R_z(90°), translation=(0,0.5,0) }.
     ///
     /// Local +X slider appears along world +Y because origin mount frame is rotated 90° about Z.
-    ///
-    /// RED: same as (a) — the joint itself fails to construct today.
     #[test]
     fn transform_at_oriented_prismatic_rotates_motion_translation() {
         let pi = std::f64::consts::PI;
@@ -7497,8 +7536,8 @@ mod tests {
 
         let result = eval_builtin("transform_at", &[joint, Value::length(0.5)]);
 
-        // R_z(90°)·(0.5,0,0) = (0,0.5,0), rotation = R_z(90°).
-        assert_transform_approx(
+        // R_z(90°)·(0.5,0,0) = (0,0.5,0), rotation = R_z(90°) — accepted up to sign.
+        assert_transform_approx_up_to_sign(
             &result,
             (sq2_2, 0.0, 0.0, sq2_2),
             [0.0, 0.5, 0.0],
@@ -7510,12 +7549,7 @@ mod tests {
     /// (d) transform_at on oriented revolute (axis=+Z, origin=frame3(point3(0.1m,0,0), R_x(90°)),
     /// θ=π/2) → FK = { rotation=R_x(90°)·R_z(90°)=(0.5,0.5,-0.5,0.5), translation=(0.1,0,0) }.
     ///
-    /// Hand-computed Hamilton product: R_x(90°)=(√2/2,√2/2,0,0)·R_z(90°)=(√2/2,0,0,√2/2)
-    ///   w = √2/2·√2/2 - √2/2·0 - 0·0 - 0·√2/2 = 0.5
-    ///   x = √2/2·0 + √2/2·√2/2 + 0·√2/2 - 0·0 = 0.5
-    ///   y = √2/2·0 - √2/2·0 + 0·√2/2 + 0·0... wait let me recalculate.
-    ///
-    /// Hamilton: q1=(w1,x1,y1,z1)·q2=(w2,x2,y2,z2):
+    /// Hamilton product: q1=(w1,x1,y1,z1)·q2=(w2,x2,y2,z2):
     ///   w = w1w2 - x1x2 - y1y2 - z1z2
     ///   x = w1x2 + x1w2 + y1z2 - z1y2
     ///   y = w1y2 - x1z2 + y1w2 + z1x2
@@ -7529,8 +7563,6 @@ mod tests {
     /// => (0.5, 0.5, -0.5, 0.5). ✓
     ///
     /// Translation: R_x(90°)·(0,0,0) + (0.1,0,0) = (0.1,0,0). ✓
-    ///
-    /// RED: same as (a).
     #[test]
     fn transform_at_oriented_revolute_composes_rotation() {
         let pi = std::f64::consts::PI;
@@ -7541,8 +7573,8 @@ mod tests {
 
         let result = eval_builtin("transform_at", &[joint, Value::angle(pi / 2.0)]);
 
-        // R_x(90°)·R_z(90°) = (0.5, 0.5, -0.5, 0.5); translation = (0.1, 0, 0).
-        assert_transform_approx(
+        // R_x(90°)·R_z(90°) = (0.5, 0.5, -0.5, 0.5); translation = (0.1, 0, 0) — up to sign.
+        assert_transform_approx_up_to_sign(
             &result,
             (0.5, 0.5, -0.5, 0.5),
             [0.1, 0.0, 0.0],
@@ -7554,10 +7586,7 @@ mod tests {
     /// (e) revolute 3rd arg = frame3 with DIMENSIONLESS origin → Undef.
     ///
     /// frame3 accepts dimensionless points (frame3_dimensionless_point3_is_accepted),
-    /// so pivot_to_origin's Frame arm must enforce LENGTH itself.
-    ///
-    /// RED: today Frame falls through to the `_ => return None` arm (yields Undef anyway),
-    /// but will remain RED semantically if the Frame arm doesn't add the LENGTH check.
+    /// so pivot_to_origin's Frame arm enforces LENGTH via `read_length3`.
     #[test]
     fn revolute_3arg_frame3_dimensionless_origin_returns_undef() {
         let pi = std::f64::consts::PI;
@@ -7614,6 +7643,49 @@ mod tests {
         assert!(
             result.is_undef(),
             "Frame with NaN basis must yield Undef, got {result:?}"
+        );
+    }
+
+    /// (i) Non-unit-norm (2× scaled) finite basis is normalized to unit quaternion.
+    ///
+    /// Supplying `Orientation{w=√2, x=√2, y=0, z=0}` (2× R_x(90°)) as the Frame
+    /// basis must yield an origin rotation equal to the normalized form R_x(90°) =
+    /// (√2/2, √2/2, 0, 0).  This exercises the `normalize_quaternion` path inside
+    /// the Frame arm that is never reached when the caller supplies a unit-norm basis
+    /// from `orient_axis_angle`.
+    #[test]
+    fn frame3_origin_with_scaled_basis_normalizes_to_unit_rotation() {
+        let sq2 = std::f64::consts::SQRT_2;
+        // 2× R_x(90°): non-unit-norm Orientation.
+        let scaled_basis = Value::Orientation { w: sq2, x: sq2, y: 0.0, z: 0.0 };
+        let frame_val = Value::Frame {
+            origin: Box::new(Value::Point(vec![
+                Value::length(0.0),
+                Value::length(0.0),
+                Value::length(0.0),
+            ])),
+            basis: Box::new(scaled_basis),
+        };
+
+        let result = eval_builtin("revolute", &[axis_z_unit(), angle_range_0_to_pi(), frame_val]);
+
+        let map = match &result {
+            Value::Map(m) => m,
+            other => panic!("scaled basis: expected Map, got {other:?}"),
+        };
+        let origin = map
+            .get(&Value::String("origin".to_string()))
+            .unwrap_or_else(|| panic!("scaled basis: 'origin' key must be present"));
+
+        // After normalization the rotation must be R_x(90°) = (√2/2, √2/2, 0, 0),
+        // accepted up to sign (normalize_quaternion does not canonicalize hemisphere).
+        let sq2_2 = std::f64::consts::SQRT_2 / 2.0;
+        assert_transform_approx_up_to_sign(
+            origin,
+            (sq2_2, sq2_2, 0.0, 0.0),
+            [0.0, 0.0, 0.0],
+            1e-12,
+            "scaled basis: must normalize to unit-norm R_x(90°)",
         );
     }
 
