@@ -238,7 +238,7 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
         "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
         | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
         | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder" => &[0],
+        | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder" | "zone_annulus" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1730,6 +1730,84 @@ pub(crate) fn compile_geometry_call(
             sub_ops.push(op);
             Some(sub_ops)
         }
+        // zone_annulus(axis: Geometry, nominal_radius: Length, width: Length, length: Length)
+        //   — GD&T annular tolerance zone (hollow cylinder shell).
+        //
+        // Lowers to:
+        //   [N+0] Curve(…) — axis wire from geom_ref(0)
+        //   [N+1] Sweep{Pipe, radius=R+w/2} — outer cylinder
+        //   [N+2] Sweep{Pipe, radius=R-w/2} — inner cylinder
+        //   [N+3] Boolean{Difference, left:Step(N+1), right:Step(N+2)} — annular shell
+        //
+        // `length` (arg 3) is accepted/validated per the C6 signature but the swept
+        // extent comes from the axis wire (ratified L2 esc-4476-88 Option A).
+        // V = 2π * R * w * L.
+        "zone_annulus" => {
+            if !check_arg_count_exact(
+                "zone_annulus",
+                compiled_args.len(),
+                4,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let path_ref = resolve_named_geom_arg(
+                0,
+                "zone_annulus",
+                "axis",
+                args,
+                &geom_refs,
+                diagnostics,
+                step_offset,
+            );
+            let mut iter = compiled_args.into_iter();
+            let _axis = iter.next().unwrap(); // arg0: axis (geometry; path_ref handles geometry side)
+            let r = iter.next().unwrap();     // arg1: nominal_radius (Length)
+            let w = iter.next().unwrap();     // arg2: zone width (Length)
+            let _l = iter.next().unwrap();    // arg3: zone length (validated; axis wire supplies extent)
+
+            // half_w = w * 0.5  (same Length dimension)
+            let half_w = CompiledExpr::binop(
+                BinOp::Mul,
+                w.clone(),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
+                w.result_type.clone(),
+            );
+            // outer_r = R + w/2, inner_r = R - w/2
+            let outer_r = CompiledExpr::binop(
+                BinOp::Add,
+                r.clone(),
+                half_w.clone(),
+                r.result_type.clone(),
+            );
+            let inner_r = CompiledExpr::binop(
+                BinOp::Sub,
+                r.clone(),
+                half_w,
+                r.result_type.clone(),
+            );
+
+            // Track absolute step indices for the Boolean Difference.
+            let outer_step = step_offset + sub_ops.len(); // step after axis wire
+            sub_ops.push(CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref.clone()],
+                args: vec![("radius".to_string(), outer_r)],
+            });
+            let inner_step = step_offset + sub_ops.len(); // step after outer pipe
+            sub_ops.push(CompiledGeometryOp::Sweep {
+                kind: SweepKind::Pipe,
+                profiles: vec![path_ref],
+                args: vec![("radius".to_string(), inner_r)],
+            });
+            sub_ops.push(CompiledGeometryOp::Boolean {
+                op: BooleanOp::Difference,
+                left: GeomRef::Step(outer_step),
+                right: GeomRef::Step(inner_step),
+            });
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
             name,
@@ -1894,6 +1972,7 @@ mod tests {
         "fillet_all",
         "zone_slab",
         "zone_cylinder",
+        "zone_annulus",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1960,7 +2039,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 48;
+    const EXPECTED_DISPATCH_COUNT: usize = 49;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
