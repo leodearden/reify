@@ -576,6 +576,14 @@ id(5mm)     // evaluates to 5 mm -- identical to the monomorphic twin id_length(
 single(5mm) // evaluates to [5 mm] (a one-element List<Length>)
 ```
 
+**Trait bounds on function type parameters:** A function type parameter may carry a trait bound `T: Trait`. At each call site the inferred concrete argument for `T` is validated against the bound using the same bound-checking machinery as structure type parameters (`satisfies_trait_bound` / `check_type_param_bounds`). A non-conforming argument emits the existing bound diagnostic.
+
+```
+fn keep<T: Solid>(x: T) -> T { x }   // concrete arg must satisfy Solid
+```
+
+**Permissive generic body checking:** Inside a generic function body, a value whose type is a type parameter (`Type::TypeParam`) acts as a **resolution wildcard** -- builtin and operator calls on it are not eagerly rejected at compile time, mirroring how trait-object-typed values are handled. This is necessary for field-compositing generics such as `constant_field` (where `fn_field(|p| value)` is called with `value : C`, a type-param-typed value). Full bounded-operation licensing (where-clauses that license specific operations on a bounded type parameter) is out of scope (§11).
+
 ### 3.10 Determinacy and Types
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are written as plain `Length`, `Force`, etc. Determinacy (`undef` / constrained / `auto` / determined) is a property of the parameter tracked by the design system, not part of the type.
