@@ -2963,10 +2963,33 @@ impl Engine {
                 let Some(spec) = extract_output_export_spec(instance) else {
                     continue;
                 };
-                // step-8 happy path: only File targets emit (DisplayOutput
-                // recognize-but-defer is step-12).
-                let OutputTarget::File(export_format) = spec.format else {
-                    continue;
+                // File targets serialize below; a DisplayOutput conforms to
+                // Output but its file emission is DEFERRED (the viewport drive is
+                // a sibling PRD). Rather than a silent skip, surface an
+                // info-severity I_DISPLAY_OUTPUT_DEFERRED diagnostic so the user
+                // learns the occurrence was recognized and intentionally
+                // deferred (step-12). It is carried as a zero-byte "skipped
+                // entry" (the step-14 placement choice): `bytes` is empty so the
+                // CLI writes no file and `path` is empty (a viewport sink has no
+                // destination); `format` is an unread placeholder because
+                // `ExportFormat` has no `Display` variant. Consumers MUST gate
+                // file-writing on `!bytes.is_empty()`, never on `format`.
+                let export_format = match spec.format {
+                    OutputTarget::File(f) => f,
+                    OutputTarget::DisplayDeferred => {
+                        artifacts.push(crate::ExportArtifact {
+                            path: std::path::PathBuf::new(),
+                            format: ExportFormat::Step,
+                            bytes: Vec::new(),
+                            diagnostics: vec![Diagnostic::info(format!(
+                                "{}: DisplayOutput occurrence `{}.{}` recognized; \
+                                 file emission deferred (the viewport drive is a \
+                                 deferred sibling PRD)",
+                                crate::I_DISPLAY_OUTPUT_DEFERRED, template.name, sub.name
+                            ))],
+                        });
+                        continue;
+                    }
                 };
 
                 // (4) Resolve `subject` → live kernel handle via the sub's
