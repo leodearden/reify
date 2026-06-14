@@ -1791,6 +1791,42 @@ mod tests {
         );
     }
 
+    // --- stdlib completions: new geometry primitives (task-4162) ---
+    #[test]
+    fn completions_include_new_geometry_primitives() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"cone"), "should include 'cone'");
+        assert!(func_labels.contains(&"torus"), "should include 'torus'");
+        assert!(func_labels.contains(&"wedge"), "should include 'wedge'");
+        assert!(
+            func_labels.contains(&"cylinder_centered"),
+            "should include 'cylinder_centered'"
+        );
+        assert!(
+            func_labels.contains(&"box_centered"),
+            "should include 'box_centered'"
+        );
+        assert!(
+            func_labels.contains(&"rectangle"),
+            "should include 'rectangle'"
+        );
+        assert!(func_labels.contains(&"circle"), "should include 'circle'");
+        assert!(
+            func_labels.contains(&"polygon"),
+            "should include 'polygon'"
+        );
+        assert!(
+            func_labels.contains(&"ellipse"),
+            "should include 'ellipse'"
+        );
+    }
+
     // --- stdlib completions: orientation functions (step-4) ---
     #[test]
     fn completions_include_orientation_functions() {
