@@ -22,7 +22,7 @@ extern crate reify_kernel_manifold as _;
 mod cache;
 mod mcp_context;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
-use reify_ir::{ExportFormat, Satisfaction};
+use reify_ir::{ExportFormat, Satisfaction, UndefCause};
 
 fn print_usage(out: &mut dyn std::io::Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
@@ -1277,6 +1277,34 @@ fn cmd_eval(args: &[String]) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Format a single [`reify_ir::UndefCause`] as a terse, human-readable string.
+///
+/// Called by `cmd_eval` to render the complete cause set for each undef output
+/// cell as a comma-joined `because:` clause in the note line (Q5 / PRD §4.4).
+///
+/// # Variant renderings
+///
+/// | Variant | Rendered as |
+/// |---|---|
+/// | `Unbound { param }` | `"<entity>.<member> unbound"` |
+/// | `AwaitingSolve { param }` | `"<entity>.<member> awaiting solve"` |
+/// | `SolveFailed { detail }` | `"solve failed: <detail>"` |
+/// | `OpContractFailed { code, .. }` | `"op contract failed (<code:?>)"` |
+/// | `UserUndef { .. }` | `"explicit undef"` |
+///
+/// The `OpContractFailed` branch is wired for task γ forward-compatibility:
+/// γ constructs this variant; δ just formats it so the CLI auto-enriches once
+/// γ lands without any re-edit here.
+fn format_undef_cause(cause: &UndefCause) -> String {
+    match cause {
+        UndefCause::Unbound { param, .. } => format!("{param} unbound"),
+        UndefCause::AwaitingSolve { param } => format!("{param} awaiting solve"),
+        UndefCause::SolveFailed { detail } => format!("solve failed: {detail}"),
+        UndefCause::OpContractFailed { code, .. } => format!("op contract failed ({code:?})"),
+        UndefCause::UserUndef { .. } => "explicit undef".to_string(),
     }
 }
 
