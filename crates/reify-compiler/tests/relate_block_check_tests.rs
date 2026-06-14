@@ -135,3 +135,63 @@ fn inline_where_relate_block_accepts_relation_member() {
         errs
     );
 }
+
+// ── The constraint side: `constraint` rejects Type::Relation ─────────────────
+//
+// The symmetric half of the relate-vs-constraint dispatch (design §4/§7.3): a
+// `constraint` accepts only `Bool`. A `Relation` placed in a `constraint` is a
+// misuse — it belongs in a `relate { }` block — and must be rejected loudly
+// (Error severity) with a dedicated message pointing the author at `relate`.
+// Since neither structure here declares a `relate { }` block, the ONLY
+// diagnostic that can mention `relate` is the constraint-side rejection.
+
+/// The Error-severity diagnostics whose message mentions `relate` — for these
+/// relate-block-free structures, that is exactly the constraint→Relation
+/// rejection (the dedicated "a relation belongs in `relate { }`" redirect).
+fn constraint_relation_rejections(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error && d.message.to_lowercase().contains("relate")
+        })
+        .collect()
+}
+
+/// REQUIRED: `constraint concentric(a, b)` — a `Type::Relation` expression in a
+/// `constraint` (Bool) context — is rejected loudly: an Error-severity
+/// diagnostic that names `relate` (the redirect to the relate-block home).
+///
+/// RED: the base constraint check emits only a generic `Severity::Warning`
+/// ("constraint expression has type Relation, expected Bool") that neither errors
+/// loudly nor mentions `relate` — so no Error+`relate` diagnostic exists yet.
+#[test]
+fn constraint_rejects_relation_expression() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a : Axis\n    param b : Axis\n    \
+         constraint concentric(a, b)\n}",
+    );
+    let rejections = constraint_relation_rejections(&module);
+    assert!(
+        !rejections.is_empty(),
+        "a Relation in a `constraint` must be rejected loudly with a dedicated \
+         `relate`-redirect Error.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+}
+
+/// NEGATIVE: a genuine Bool constraint (`a_len > 0mm`) is accepted — NO
+/// constraint→Relation rejection. Holds both before and after step-16.
+#[test]
+fn constraint_accepts_bool_expression() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a_len : Length\n    constraint a_len > 0mm\n}",
+    );
+    let rejections = constraint_relation_rejections(&module);
+    assert!(
+        rejections.is_empty(),
+        "a genuine Bool constraint `a_len > 0mm` must NOT draw a constraint→Relation \
+         rejection, got: {:#?}",
+        rejections
+    );
+}
