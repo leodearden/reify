@@ -2448,6 +2448,14 @@ impl Engine {
             })
             .unwrap_or_default();
 
+        // Task 4358 ε (step-8): hoisted out of the `geometry_output` block so the
+        // realization-produced per-template handle maps survive to the
+        // post-geometry Constraint re-check below (the folding source for INLINE
+        // geometry-query constraints under UnifiedDag). Populated by
+        // `snapshot_named_steps` inside the realization loop on EITHER scheduler;
+        // only READ post-loop under UnifiedDag, so LegacyMultiPass is unaffected.
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
+
         let geometry_output = if let Some(name) = default_kernel_name.as_deref()
             && self.geometry_kernels.contains_key(name)
         {
@@ -2487,8 +2495,9 @@ impl Engine {
             // Helper invocations (`seed_cross_sub_named_steps`,
             // `snapshot_named_steps`) factor the per-template seed/snapshot
             // logic out so the three eval loop sites stay in sync.
-            let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
-                HashMap::new();
+            // `module_named_steps` is declared above the `geometry_output` block
+            // (task 4358 ε step-8) so it survives to the post-geometry Constraint
+            // re-check; it is still populated here by `snapshot_named_steps`.
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -2951,8 +2960,33 @@ impl Engine {
             .any(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
         {
             let determinacy = self.eval_state.as_ref().map(|s| &s.snapshot.values);
-            let (recheck_results, recheck_diags) =
-                self.check_constraints_against_templates(module, &values, determinacy);
+            // Task 4358 ε (step-8): under UnifiedDag, supersede the kernel-less
+            // 4229 re-check SOURCE with the post-geometry Constraint executor. It
+            // folds each active constraint's INLINE geometry-query leaves
+            // (`bounding_box(part)` / `volume(part)` / …) against the live kernel +
+            // the realization-produced `module_named_steps` BEFORE the kernel-less
+            // `SimpleConstraintChecker` runs, so an inline leaf resolves to a
+            // DEFINITE verdict (un-freezing "C7") instead of staying
+            // `Indeterminate`. The downstream merge loop (which only upgrades
+            // `Indeterminate` entries and drops the matching stale "undefined
+            // inputs" warning) is reused verbatim. LegacyMultiPass — and the
+            // no-default-kernel path — keep the original kernel-less re-check
+            // (the executor defers to it when no kernel exists), so `reify check`
+            // and the default build path stay byte-unchanged.
+            let (recheck_results, recheck_diags) = if self.build_scheduler
+                == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+                && let Some(kernel_name) = default_kernel_name.as_deref()
+            {
+                self.check_constraints_post_geometry(
+                    module,
+                    &values,
+                    &module_named_steps,
+                    kernel_name,
+                    determinacy,
+                )
+            } else {
+                self.check_constraints_against_templates(module, &values, determinacy)
+            };
             for entry in constraint_results.iter_mut() {
                 if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
                     continue;

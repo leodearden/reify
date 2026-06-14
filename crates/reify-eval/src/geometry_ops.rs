@@ -2393,7 +2393,7 @@ fn dispatch_geometry_query_call(
 /// `(function_name, GeometryHandleId)` within a single rewrite so repeated
 /// leaves reuse one round-trip — deliberately NOT done here as it is
 /// unobservable at the current single-query scope.
-fn rewrite_geometry_queries(
+pub(crate) fn rewrite_geometry_queries(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,

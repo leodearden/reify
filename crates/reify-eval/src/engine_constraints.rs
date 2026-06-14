@@ -11,8 +11,8 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Satisfaction,
-    StructureInstanceData, StructureTypeId, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput, PersistentMap,
+    Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -763,6 +763,119 @@ impl Engine {
                 debug_assert_eq!(
                     result.id, compiled.id,
                     "check_constraints_against_templates: result.id must match compiled.id \
+                     — dispatch_constraints reordered results or active_constraints changed",
+                );
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
+                    compiled.label.as_deref(),
+                );
+            }
+        }
+
+        (constraint_results, diagnostics)
+    }
+
+    /// Task 4358 ε (step-8): the post-geometry constraint re-check that supersedes
+    /// the kernel-less Task-4229 re-check on the `UnifiedDag` build path.
+    ///
+    /// Same per-template / [`collect_active_constraints`] /
+    /// [`dispatch_constraints`] / [`push_constraint_result`] shape as
+    /// [`check_constraints_against_templates`], with ONE addition: before the
+    /// kernel-less [`SimpleConstraintChecker`] runs, each active constraint's
+    /// inline geometry-query leaves (`bounding_box(part)` / `volume(part)` / …)
+    /// are folded to `Literal`s of their kernel-dispatched `Value` via
+    /// [`crate::geometry_ops::rewrite_geometry_queries`], using the live default
+    /// kernel + the realization-produced `module_named_steps`. This is the engine
+    /// side of PRD C6/D4: the constraint trait boundary stays kernel-less (no
+    /// trait break), but `build()` resolves the geometry BEFORE the boundary so an
+    /// INLINE geometry-query constraint reaches a DEFINITE verdict instead of the
+    /// frozen kernel-less `Indeterminate` (un-freezing "C7").
+    ///
+    /// ORDERING INVARIANT (esc-4358-124): `eval_expr` `unreachable!()`-PANICS on a
+    /// `CrossSubGeometryRef`, so the fold MUST reduce every geometry-query leaf
+    /// (incl. `bounding_box(proc.build_volume)`) to a `Literal` STRUCTURALLY here,
+    /// before `dispatch_constraints` runs the checker. `rewrite_geometry_queries`
+    /// → `dispatch_geometry_query_call` → `resolve_geometry_handle_arg` resolves
+    /// the handle WITHOUT ever calling `eval_expr` on the geometry arg, satisfying
+    /// the invariant.
+    ///
+    /// Returns the SAME `(Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` shape as
+    /// [`check_constraints_against_templates`] so it is a drop-in re-check source
+    /// for the 4229 merge loop in `build()`. When no default kernel is present
+    /// (nothing to fold against) it defers verbatim to the kernel-less path.
+    pub(crate) fn check_constraints_post_geometry(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+        default_kernel_name: &str,
+        determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+        // No default kernel → no geometry to fold; the folding pass would be a
+        // no-op, so defer to the kernel-less re-check verbatim (keeps the
+        // no-kernel UnifiedDag path identical to legacy).
+        let Some(kernel) = self.geometry_kernels.get(default_kernel_name) else {
+            return self.check_constraints_against_templates(module, values, determinacy);
+        };
+        let kernel = kernel.as_ref();
+
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+        let empty_steps: HashMap<String, KernelHandle> = HashMap::new();
+
+        for template in &module.templates {
+            let active_constraints = Self::collect_active_constraints(template, values);
+
+            if active_constraints.is_empty() {
+                continue;
+            }
+
+            // This template's realization-produced handle map (keyed by member
+            // name, plus `<sub>.<member>` cross-sub keys seeded by
+            // `seed_cross_sub_named_steps`). Absent only if the template realized
+            // no geometry — then the fold finds no handles and leaves leaves as
+            // `Undef` (→ Indeterminate), matching the kernel-less path.
+            let named_steps = module_named_steps
+                .get(&template.name)
+                .unwrap_or(&empty_steps);
+
+            // Fold each active constraint's geometry-query leaves to Literals
+            // BEFORE the kernel-less checker runs (ordering invariant above). An
+            // unresolvable leaf folds to `Literal(Undef)`, propagating to an
+            // Indeterminate verdict — never a wrong value.
+            let folded_exprs: Vec<CompiledExpr> = active_constraints
+                .iter()
+                .map(|c| {
+                    crate::geometry_ops::rewrite_geometry_queries(
+                        &c.expr,
+                        named_steps,
+                        kernel,
+                        &mut diagnostics,
+                    )
+                })
+                .collect();
+
+            let entries: Vec<_> = active_constraints
+                .iter()
+                .zip(folded_exprs.iter())
+                .map(|(c, folded)| (c.id.clone(), folded, c.optimized_target.as_deref()))
+                .collect();
+
+            let (results, dispatch_diags) =
+                self.dispatch_constraints(entries, values, &self.functions, determinacy);
+            diagnostics.extend(dispatch_diags);
+            debug_assert_eq!(
+                results.len(),
+                active_constraints.len(),
+                "check_constraints_post_geometry: results/active_constraints length mismatch",
+            );
+
+            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                debug_assert_eq!(
+                    result.id, compiled.id,
+                    "check_constraints_post_geometry: result.id must match compiled.id \
                      — dispatch_constraints reordered results or active_constraints changed",
                 );
                 Self::push_constraint_result(
