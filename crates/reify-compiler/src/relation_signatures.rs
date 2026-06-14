@@ -75,6 +75,25 @@ pub fn is_relation_typed_fn(name: &str) -> bool {
     RELATION_FN_NAMES.contains(&name)
 }
 
+/// Is `name` an **arity-gated shared verb** (`angle`/`distance`) whose arity-3
+/// DRIVE form is a relation? These names are deliberately NOT in
+/// [`RELATION_FN_NAMES`] — their arity-2 DERIVE forms belong to the
+/// geometry-query family — so [`is_relation_typed_fn`] excludes them.
+///
+/// A caller that must reach the arity-3 metric DRIVE relations (`angle(a, b, θ)`
+/// / `distance(a, b, δ)`) — e.g. reify-lsp's hover gate — widens its predicate
+/// with this so those forms are reachable. The arity disambiguation is then left
+/// to the arg-aware resolvers ([`relation_fn_result_type`] /
+/// [`relation_contract_for_call`]), which return `None` for the arity-2 DERIVE
+/// forms so they fall through to the geometry-query path.
+///
+/// `pub` so reify-lsp can widen its hover gate without re-deriving the
+/// shared-verb set (kept here as the single source of truth, mirroring the
+/// arity-gate in [`relation_fn_result_type`]).
+pub fn is_relation_shared_verb(name: &str) -> bool {
+    matches!(name, "angle" | "distance")
+}
+
 /// Arg-aware result-type resolver for the relation vocabulary. Returns
 /// `Some(Type::Relation)` for every pure relation name (regardless of operand
 /// shape) and for the arity-3 DRIVE forms of `angle`/`distance`; `None`
@@ -549,6 +568,27 @@ mod tests {
         assert!(!is_relation_typed_fn("Coincident"), "PascalCase must not match");
         assert!(!is_relation_typed_fn("Offset"), "PascalCase must not match");
         assert!(!is_relation_typed_fn("Concentric"), "PascalCase must not match");
+    }
+
+    /// `is_relation_shared_verb` recognises exactly the two arity-gated shared
+    /// verbs (`angle`/`distance`) and nothing else — it is disjoint from the pure
+    /// relation family and rejects unknown names. This is the predicate the hover
+    /// gate ORs with `is_relation_typed_fn` to reach the arity-3 DRIVE forms.
+    #[test]
+    fn is_relation_shared_verb_is_exactly_angle_and_distance() {
+        assert!(is_relation_shared_verb("angle"), "angle is a shared verb");
+        assert!(is_relation_shared_verb("distance"), "distance is a shared verb");
+        // Disjoint from the pure relation family.
+        for name in EXPECTED_NAMES {
+            assert!(
+                !is_relation_shared_verb(name),
+                "{name:?} is a pure relation name, not a shared verb"
+            );
+        }
+        // Unknown / empty / case-variant.
+        assert!(!is_relation_shared_verb("volume"), "must reject unrelated name");
+        assert!(!is_relation_shared_verb("Angle"), "case-sensitive: PascalCase must not match");
+        assert!(!is_relation_shared_verb(""), "must reject empty name");
     }
 
     /// `RELATION_FN_NAMES` is exactly the 9 expected names: correct count, every
