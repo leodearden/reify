@@ -1,0 +1,28 @@
+// FEA diagnostic fixture: thin-body advisory.
+//
+// A plate with bounding-box aspect ratio >> 10 (length=1000mm, width=1000mm,
+// height=10mm → max_dim/min_dim = 1000/10 = 100 >> threshold ≈ 10).
+//
+// Includes both a PointLoad and a FixedSupport so ONLY the thin-body advisory
+// fires — the no-loads and under-constrained advisories are suppressed.
+//
+// Triggers the FeaThinBody warning diagnostic via the elastic-static trampoline.
+// Modelled after examples/fea_cantilever_smoke.ri.
+
+structure FeaThinBody {
+    // Thin plate: 1000mm × 1000mm in-plane, 10mm thick → ratio 100 >> threshold ~10.
+    param length : Length = 1000mm
+    param width  : Length = 1000mm
+    param height : Length = 10mm
+
+    let material = Steel_AISI_1045()
+
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let body = box(length, width, height)
+}
