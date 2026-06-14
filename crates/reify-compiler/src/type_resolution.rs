@@ -1307,6 +1307,12 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // Dimension-param scalar: substitute when bound (mirrors the TypeParam
+        // arm above), else pass through unchanged. Nested dim-params inside
+        // Vector/Point/Tensor/Matrix quantity slots substitute for free via the
+        // quantity-slot recursion already in place above.
+        Type::ScalarParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
@@ -1326,9 +1332,6 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — substitutes to itself.
-        // Dimension binding is ζ / D8 and does not go through this walk.
-        | Type::ScalarParam(_)
         | Type::Error => ty.clone(),
     }
 }
