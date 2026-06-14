@@ -841,10 +841,16 @@ fn cmd_build(args: &[String]) -> ExitCode {
 
     // Likewise for `--out-dir <dir>` (declarative mode's CI escape hatch): its
     // value must be excluded from the positional-file scan so it is never
-    // mistaken for the input file.
+    // mistaken for the input file. The following token only counts as the
+    // directory value when it is NOT itself a flag, so `--out-dir` immediately
+    // followed by another flag (or appearing as the last token) is treated as
+    // "no value given": `out_dir_value_pos` stays None, and the malformed
+    // override is warned about + dropped below rather than silently consuming a
+    // flag like `--verbose` as the directory.
+    let out_dir_present = args.iter().any(|a| a == "--out-dir");
     let out_dir_value_pos: Option<usize> =
         args.iter().position(|a| a == "--out-dir").and_then(|i| {
-            if i + 1 < args.len() {
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                 Some(i + 1)
             } else {
                 None
@@ -871,6 +877,23 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // without `--verbose` — the historical "no -o requires --verbose" guard is
     // gone now that a bare `reify build f.ri` runs the driver.
     let output_path: Option<&String> = o_value_pos.map(|i| &args[i]);
+
+    // `--out-dir` only affects the declarative (no-`-o`) driver. Warn rather than
+    // silently discard the user's intent when it can have no effect (`-o` present)
+    // or is malformed (no directory argument follows).
+    if out_dir_present {
+        if output_path.is_some() {
+            eprintln!(
+                "warning: --out-dir is ignored when -o is given \
+                 (imperative single-output mode writes to the -o path)"
+            );
+        } else if out_dir_value_pos.is_none() {
+            eprintln!(
+                "warning: --out-dir was given without a directory argument; ignoring it \
+                 (relative output paths resolve against the design file's directory)"
+            );
+        }
+    }
 
     let compiled = match parse_and_compile(file) {
         Ok(c) => c,
@@ -994,23 +1017,27 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or_else(|| std::path::Path::new("."));
 
-            // Reuse the standard build() for constraint results, diagnostics and
-            // kernel provenance — its serialized geometry_output is discarded;
-            // export is driven per-occurrence by build_outputs below. The
-            // RealizationCache makes build_outputs' internal re-realization cheap.
-            let result = engine.build(&compiled, ExportFormat::Step);
-            let artifacts = engine.build_outputs(&compiled, design_dir, out_dir_override);
+            // Realize the module ONCE: build_outputs_with_result runs a single
+            // realization (Phase-B product serialization DISABLED) and returns
+            // both the per-occurrence artifacts AND that realization's constraint
+            // results + diagnostics. This replaces the earlier
+            // `engine.build()` + `engine.build_outputs()` pair, which realized,
+            // constraint-checked, and serialized the discarded Phase-B STEP output
+            // twice. Kernel provenance is read from engine state below, populated
+            // by this single realization.
+            let outputs = engine.build_outputs_with_result(&compiled, design_dir, out_dir_override);
+            let artifacts = &outputs.artifacts;
 
             // Surface BOTH the build diagnostics AND every per-artifact
             // diagnostic (an I_DISPLAY_OUTPUT_DEFERRED info, or a per-occurrence
             // export error) through the shared reporter + exit gate.
-            let mut all_diagnostics = result.diagnostics.clone();
-            for artifact in &artifacts {
+            let mut all_diagnostics = outputs.diagnostics.clone();
+            for artifact in artifacts {
                 all_diagnostics.extend(artifact.diagnostics.iter().cloned());
             }
 
             let outcome = report_eval_output(
-                &result.constraint_results,
+                &outputs.constraint_results,
                 &all_diagnostics,
                 &mut std::io::stdout(),
                 &mut std::io::stderr(),
@@ -1035,7 +1062,8 @@ fn cmd_build(args: &[String]) -> ExitCode {
             // Write one file per artifact. Gate on non-empty bytes (NEVER on
             // format): a DisplayOutput-deferred or failed-occurrence artifact
             // carries empty bytes and must write no file.
-            for artifact in &artifacts {
+            let mut files_written = 0usize;
+            for artifact in artifacts {
                 if artifact.bytes.is_empty() {
                     continue;
                 }
@@ -1055,6 +1083,31 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     artifact.path.display(),
                     artifact.bytes.len()
                 );
+                files_written += 1;
+            }
+
+            // Explain a silent zero-file success: without this, a bare
+            // `reify build f.ri` whose design declares no `: Output` occurrence
+            // (or only deferred/failed ones) exits SUCCESS having printed nothing
+            // about output — a likely "I forgot -o / forgot to declare an Output"
+            // confusion. Print one informational line so the no-write outcome is
+            // never unexplained. (Per-occurrence deferral/failure diagnostics were
+            // already surfaced above via report_eval_output.)
+            if files_written == 0 {
+                if artifacts.is_empty() {
+                    println!(
+                        "No output files written: the design declares no `: Output` \
+                         occurrences. Use `-o <file>` to write a single file, or add an \
+                         output occurrence (e.g. `sub o = STLOutput(subject: <part>, \
+                         path: \"out.stl\")`)."
+                    );
+                } else {
+                    println!(
+                        "No output files written: all {} `: Output` occurrence(s) were \
+                         deferred or failed (see diagnostics above).",
+                        artifacts.len()
+                    );
+                }
             }
 
             // Same status message + exit gate as the imperative path: 0 file
