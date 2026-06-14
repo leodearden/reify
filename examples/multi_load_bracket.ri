@@ -97,6 +97,31 @@ structure MultiLoadBracket {
     let results = solve_load_cases(material, width, height, thickness, [operating, overload, transport], ElasticOptions())
 
     let envelope    = envelope_von_mises(results)
+
+    // ── Design-predicate: peak stress vs. yield limit ────────────────────────
+    //
+    // `max(envelope)` reduces the Sampled envelope Field to a single
+    // Scalar<Pressure> — the worst-case von Mises stress anywhere in the body
+    // across all three load cases.  This is the PRD Goal #2 callable predicate:
+    // once `peak_stress` and `within_yield` are value cells in the compiled
+    // module, any downstream consumer (e.g. an optimisation loop, a report, or
+    // a GUI indicator) can read them directly.
+    //
+    // `yield_limit` mirrors `Steel_AISI_1045.yield_stress = some(310MPa)`.
+    // We use a plain Pressure literal rather than unwrapping the Option<Pressure>
+    // field — Reify has no `.unwrap()` / `?` operator, and `match some(x) {…}`
+    // has no precedent in the stdlib .ri files, so keeping the literal avoids
+    // a zero-Error-diagnostics risk.
+    //
+    // The full `param thickness=auto` + `minimize mass(bracket) where
+    // max(envelope_von_mises(results)) < material.yield_stress` auto-resolve
+    // design loop is deferred to task 2930 (FEA-in-the-loop optimization is
+    // not wired: the dimensional solver evaluates @optimized ComputeNodes as
+    // Value::Undef inside the constraint-cost loop — see PRD §6 decision #5).
+    let peak_stress  = max(envelope)
+    let yield_limit  = 310MPa
+    let within_yield = peak_stress < yield_limit
+
     let critical_case = worst_case(results, |r| r)
 
     // LRFD-style design combination: 1.4·D (transport, dead/inertial) +
