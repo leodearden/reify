@@ -395,6 +395,18 @@ pub fn solve_elastic_static_trampoline(
         route_diagnostics.push(fea_diagnostic_to_core(&FeaFailure::NoLoads, None));
     }
 
+    // Under-constrained advisory: empty supports list (value_inputs[5]).
+    // The fixed cantilever model auto-clamps the root face regardless, so this
+    // is a Warning (Completed), not an Error (Failed).
+    if let Value::List(supports) = &value_inputs[5] {
+        if supports.is_empty() {
+            route_diagnostics.push(fea_diagnostic_to_core(
+                &FeaFailure::UnderConstrained { support_count: 0 },
+                None,
+            ));
+        }
+    }
+
     if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
         let policy = resolve_extraction_failure(shell_force);
         let msg = format!(
