@@ -51,6 +51,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "rotate",
     "scale",
     "rotate_around",
+    "apply_transform",
     "line_segment",
     "arc",
     "helix",

@@ -1594,6 +1594,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             TransformKind::Rotate => Operation::TransformRotate,
             TransformKind::Scale => Operation::TransformScale,
             TransformKind::RotateAround => Operation::TransformRotateAround,
+            TransformKind::ApplyTransform => Operation::TransformApplyTransform,
         },
         CompiledGeometryOp::Pattern { kind, .. } => match kind {
             PatternKind::Linear => Operation::PatternLinear,
@@ -6877,6 +6878,7 @@ mod tests {
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
                 (Operation::TransformRotateAround, ReprKind::BRep),
+                (Operation::TransformApplyTransform, ReprKind::BRep),
                 (Operation::PatternLinear, ReprKind::BRep),
                 (Operation::PatternCircular, ReprKind::BRep),
                 (Operation::PatternMirror, ReprKind::BRep),

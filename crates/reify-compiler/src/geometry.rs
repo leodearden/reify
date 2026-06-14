@@ -235,9 +235,9 @@ pub(crate) fn is_geometry_let(
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
-        "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
-        | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
-        | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
+        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
+        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
         | "fillet" | "fillet_all" | "zone_slab" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
@@ -1736,7 +1736,7 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1883,6 +1883,7 @@ mod tests {
         "rotate",
         "scale",
         "rotate_around",
+        "apply_transform",
         "circular_pattern",
         "linear_pattern",
         "mirror",
@@ -1951,11 +1952,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    22  (offset_solid, fillet_all, zone_slab)
+    /// GEOM_ARG_FUNCTIONS    23  (offset_solid, fillet_all, zone_slab, apply_transform)
     /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 50
+    /// Total                 51
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1967,7 +1968,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 50;
+    const EXPECTED_DISPATCH_COUNT: usize = 51;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

@@ -1080,6 +1080,44 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
+            // ApplyTransform fetches a Value (not f64) arg, so handle it before the
+            // f64_arg closure which borrows diagnostics mutably for the full match span.
+            if let reify_compiler::TransformKind::ApplyTransform = kind {
+                match eval_named_arg("transform", kind, args, values, functions, meta_map, diagnostics) {
+                    Some(v) => match decompose_transform_to_arrays(&v) {
+                        Some((rotation, translation)) => {
+                            // NOTE: quaternion unit-length is NOT validated here.
+                            // `decompose_transform_to_arrays` is total and only checks
+                            // structural shape (Orientation variant, Vector translation,
+                            // correct dimension count).  Unit-norm enforcement is
+                            // intentionally delegated to the kernel's `build_trsf`
+                            // (OCCT layer — apply_transform_integration.rs case f).
+                            // A non-unit quaternion that reaches the kernel produces a
+                            // kernel-level `OperationFailed` error, which is surfaced as
+                            // a build diagnostic (not a panic).  This is an accepted
+                            // layering choice: early-reject requires a square-root in
+                            // the eval hot path for every transform, while the kernel
+                            // already must validate for correctness.
+                            return Ok(reify_ir::GeometryOp::ApplyTransform {
+                                target: target_id,
+                                rotation,
+                                translation,
+                            });
+                        }
+                        None => {
+                            diagnostics.push(Diagnostic::warning(
+                                "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
+                                    .to_string(),
+                            ));
+                            return Err("apply_transform: 'transform' arg is not a valid Transform<3>".into());
+                        }
+                    },
+                    None => {
+                        // eval_named_arg already pushed a Warning for the missing arg.
+                        return Err("apply_transform: 'transform' arg is missing".into());
+                    }
+                }
+            }
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| {
@@ -1138,6 +1176,7 @@ pub(crate) fn compile_geometry_op(
                         angle_rad: f64_arg("angle")?,
                     })
                 }
+                reify_compiler::TransformKind::ApplyTransform => unreachable!("handled above"),
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
@@ -8607,6 +8646,158 @@ mod tests {
             }
             other => panic!("expected GeometryOp::RotateAround, got {:?}", other),
         }
+    }
+
+    /// Helper: build a CompiledExpr literal from a Value::Transform
+    /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
+    fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            transform_of(q, t),
+            reify_core::Type::transform(3),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_happy_path() {
+        // orient_axis_angle(z, 90°) quaternion: [w, x, y, z] = [cos45°, 0, 0, sin45°]
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)), // placeholder; target resolved via GeomRef
+                ("transform".into(), literal_transform([w, 0.0, 0.0, w], [0.005, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let geo_op = result.expect("compile_geometry_op should return Ok for ApplyTransform happy path");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((rotation[0] - w).abs() < 1e-12, "rotation[0] (w) mismatch");
+                assert!(rotation[1].abs() < 1e-12, "rotation[1] (x) mismatch");
+                assert!(rotation[2].abs() < 1e-12, "rotation[2] (y) mismatch");
+                assert!((rotation[3] - w).abs() < 1e-12, "rotation[3] (z) mismatch");
+                assert!((translation[0] - 0.005).abs() < 1e-12, "translation[0] mismatch");
+                assert!(translation[1].abs() < 1e-12, "translation[1] mismatch");
+                assert!(translation[2].abs() < 1e-12, "translation[2] mismatch");
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "expected no diagnostics, got {:?}", diagnostics);
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_malformed_arg_produces_warning_and_err() {
+        let step_handles = vec![GeometryHandleId(7)];
+        let values = ValueMap::new();
+
+        // Pass a Real(5.0) instead of a Transform value — should be rejected.
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_f64(5.0)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "malformed transform arg must return Err");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got {:?}", diagnostics);
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity"
+        );
+        assert!(
+            diag.message.contains("transform"),
+            "diagnostic message must name the 'transform' arg; got: {:?}",
+            diag.message
+        );
+    }
+
+    /// A non-unit quaternion (e.g. [2, 0, 0, 0]) must pass through the eval arm
+    /// as `Ok(GeometryOp::ApplyTransform{…})` — the eval seam does NOT validate
+    /// unit-length (see the layering note in the production arm above).
+    ///
+    /// The kernel (`build_trsf` in the OCCT layer) is responsible for rejecting
+    /// non-unit quaternions; it surfaces the rejection as a kernel-level
+    /// `OperationFailed` error, which the eval layer converts to a build diagnostic
+    /// (not a panic).  This test confirms the eval-to-kernel handoff contract:
+    /// eval always passes a structurally-valid Transform through, regardless of
+    /// whether its rotation has unit norm.
+    #[test]
+    fn compile_geometry_op_apply_transform_non_unit_quaternion_passthrough() {
+        // [2, 0, 0, 0] is structurally valid (Orientation variant) but not unit-norm.
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_transform([2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The eval arm must NOT panic and must return Ok — unit-norm is the kernel's job.
+        let geo_op = result.expect("non-unit quaternion must pass through eval arm as Ok");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(99));
+                // Rotation passed through as-is (eval does not normalize).
+                assert!((rotation[0] - 2.0).abs() < 1e-12, "rotation[0] must be 2.0");
+                assert!(rotation[1].abs() < 1e-12);
+                assert!(rotation[2].abs() < 1e-12);
+                assert!(rotation[3].abs() < 1e-12);
+                assert!(translation.iter().all(|&v| v.abs() < 1e-12));
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        // No diagnostic emitted by the eval arm for a structurally-valid Transform.
+        assert!(
+            diagnostics.is_empty(),
+            "eval arm must not emit diagnostics for a structurally-valid (non-unit) Transform; got: {:?}",
+            diagnostics
+        );
     }
 
     #[test]

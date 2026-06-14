@@ -1350,6 +1350,7 @@ pub enum TransformKind {
     Rotate,
     Scale,
     RotateAround,
+    ApplyTransform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1359,6 +1360,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::Rotate => f.write_str("rotate"),
             TransformKind::Scale => f.write_str("scale"),
             TransformKind::RotateAround => f.write_str("rotate_around"),
+            TransformKind::ApplyTransform => f.write_str("apply_transform"),
         }
     }
 }
@@ -1684,6 +1686,7 @@ mod kind_display_tests {
             (TransformKind::Rotate, "rotate"),
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
+            (TransformKind::ApplyTransform, "apply_transform"),
         ]);
     }
 
