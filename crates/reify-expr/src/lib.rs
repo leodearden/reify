@@ -1168,7 +1168,87 @@ fn type_carries_type_param(t: &Type) -> bool {
         // Dimension-param scalar: opaque leaf — carries no *type* param.
         // MUST remain verbatim-synced with the canonical copy in
         // reify-compiler/src/type_compat.rs (drift reproduces esc-4231-120/126).
+        // `type_carries_dim_param` (below) handles the ScalarParam wildcard case.
         | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Returns `true` when `t` is, or recursively wraps, a [`Type::ScalarParam`].
+///
+/// Local mirror of `reify_compiler::type_compat::type_carries_dim_param`,
+/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
+/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
+/// imported here — the two MUST be kept in sync. If they drift, a generic call
+/// whose param is a dimension-kinded `Scalar<Q>` resolves at compile time but
+/// the eval-side resolver rejects it → the call evals to `Value::Undef`
+/// (the ζ/D8 divergence class — the same failure mode as esc-4231-120/126 for
+/// type-params).
+///
+/// Recurses through the same inner-`Type`-bearing constructor set as
+/// [`type_carries_type_param`]. Returns `true` at the `ScalarParam(_)` leaf,
+/// `false` at all other leaves. Used by [`find_matching_compiled_function`] to
+/// make a *generic* candidate's dimension-param-carrying params act as
+/// eval-time resolution wildcards, gated on `!f.type_params.is_empty()` (task ζ
+/// / D8).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the canonical
+/// compiler-side copy.
+fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // All remaining leaves carry no inner ScalarParam.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::TypeParam(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => false,
     }
 }
@@ -1223,6 +1303,8 @@ pub fn find_matching_compiled_function<'a>(
     //   * a *generic* candidate's type-param-carrying params (gated on
     //     `!type_params.is_empty()` so this pass can never relax a non-generic
     //     fn via type-params), and
+    //   * a *generic* candidate's dimension-param-carrying params (ScalarParam,
+    //     task ζ / D8 — gated on genericity, same as type-param wildcards), and
     //   * ANY candidate's trait-object-carrying params (NOT gated on genericity),
     //     mirroring compile-side `resolve_function_overload` which treats
     //     trait-carrying params as wildcards for every candidate. Without this,
@@ -1233,7 +1315,7 @@ pub fn find_matching_compiled_function<'a>(
     fns.iter().filter(arity_match).find(|f| {
         let is_generic = !f.type_params.is_empty();
         f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            (is_generic && type_carries_type_param(param_ty))
+            (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
                 || type_carries_trait_object(param_ty)
                 || *param_ty == arg.result_type
         })
