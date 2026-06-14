@@ -5721,6 +5721,75 @@ mod tests {
 
     // --- Thicken / Shell tests ---
 
+    /// Diagnostic test: does negative Thicken offset work on a box?
+    #[test]
+    fn thicken_solid_negative_offset_diagnostic() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Create a 10x10x10mm box (10mm = 0.010m)
+        let box_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.010),
+                height: Value::Real(0.010),
+                depth: Value::Real(0.010),
+            })
+            .unwrap();
+        // Positive thicken: should expand box to ~11mm
+        let outer_h = kernel
+            .execute(&GeometryOp::Thicken {
+                target: box_h.id,
+                offset: Value::Real(0.0005),
+            })
+            .unwrap();
+        let outer_vol = kernel
+            .query(&GeometryQuery::Volume(outer_h.id))
+            .unwrap();
+        let outer_v = outer_vol.as_f64().expect("volume should be f64");
+        eprintln!("outer Thicken(+0.5mm) volume = {:.3e} m³ (expected ~1.331e-6 = (11mm)³)", outer_v);
+        assert!(outer_v > 1e-6, "outer thicken should be larger than original box (1e-6), got {outer_v}");
+
+        // Negative thicken: should contract box to ~9mm
+        let inner_result = kernel.execute(&GeometryOp::Thicken {
+            target: box_h.id,
+            offset: Value::Real(-0.0005),
+        });
+        eprintln!("negative Thicken(-0.5mm) result: {:?}", inner_result.as_ref().map(|h| h.id));
+        match inner_result {
+            Ok(inner_h) => {
+                let inner_vol = kernel.query(&GeometryQuery::Volume(inner_h.id));
+                eprintln!("inner Thicken(-0.5mm) volume query: {:?}", inner_vol);
+                let inner_v = inner_vol
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(-1.0);
+                eprintln!("inner Thicken(-0.5mm) volume = {:.3e} m³ (expected ~7.29e-7 = (9mm)³)", inner_v);
+
+                // Try Difference(outer, inner)
+                let diff_result = kernel.execute(&GeometryOp::Difference {
+                    left: outer_h.id,
+                    right: inner_h.id,
+                });
+                eprintln!("Difference result: {:?}", diff_result.as_ref().map(|h| h.id));
+                if let Ok(diff_h) = diff_result {
+                    let diff_vol = kernel.query(&GeometryQuery::Volume(diff_h.id));
+                    eprintln!("Difference volume: {:?}", diff_vol);
+                    let diff_v = diff_vol.ok().and_then(|v| v.as_f64()).unwrap_or(-1.0);
+                    eprintln!("zone_profile volume = {:.3e} m³ (expected ~6e-7 for (11mm)³-(9mm)³)", diff_v);
+                } else {
+                    eprintln!("Difference failed: {:?}", diff_result.err());
+                }
+            }
+            Err(e) => {
+                eprintln!("negative Thicken failed: {}", e);
+                panic!("negative Thicken(-0.5mm) on a 10mm box returned Err: {}", e);
+            }
+        }
+        eprintln!("diagnostic complete");
+    }
+
     #[test]
     fn thicken_solid_increases_volume() {
         let mut kernel = OcctKernel::new();
