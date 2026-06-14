@@ -739,14 +739,18 @@ trait PinPort : ElectricalPort + LocatedPort {
 ### 5.4 `std.ports.thermal`
 
 ```
+pub type HeatFlux = Power / Area
+pub type ThermalResistance = Temperature / Power
+
 trait ThermalPort : Port {
-    param temperature : Temperature = undef
-    param heat_flux : HeatFlux = undef
-    param thermal_resistance : Resistance = undef   // thermal resistance (dimension: Temperature*Time^3/(Mass*Length^2))
+    param temperature : Option<Temperature> = none
+    param heat_flow : Power
+    param heat_flux : Option<HeatFlux> = none
+    param thermal_resistance : Option<ThermalResistance> = none
 }
 trait ThermalContactPort : ThermalPort + RegionPort {
     param contact_area : Area
-    param contact_conductance : ThermalConductivity = undef
+    param contact_conductance : Option<ThermalConductivity> = none
 }
 ```
 
