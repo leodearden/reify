@@ -4033,7 +4033,7 @@ mod tests {
 
             let mut table = TopologyAttributeTable::default();
             let corner_role = Role::CornerVertex { x: AxisSign::Pos, y: AxisSign::Pos, z: AxisSign::Pos };
-            table.record(parent_vertex, make_attr(&fid, corner_role.clone(), 3));
+            table.record(parent_vertex, make_attr(&fid, corner_role, 3));
 
             let history = LocalFeatureOpHistoryRecords {
                 edge_generated: vec![rec(0, 0), rec(0, 1)],
