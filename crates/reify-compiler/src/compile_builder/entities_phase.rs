@@ -228,6 +228,11 @@ pub(crate) fn phase_entities(
                 ctx.diagnostics
                     .push(crate::diagnostics::default_not_yet_wired_warning(d));
             }
+            reify_ast::Declaration::Joint(_) => {
+                // Grammar producer only (task α 4395). Entity build + self-check
+                // (DOF count/kind, E_JOINT_DOF_MISMATCH, validate_range, body
+                // Type::Relation enforcement) are deferred to task β.
+            }
         }
     }
 }

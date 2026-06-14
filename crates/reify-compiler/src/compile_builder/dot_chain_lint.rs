@@ -162,6 +162,9 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         // A default declaration has no annotations and no embedded dot-chain expressions
         // to walk in task A (the RHS is accepted but not compiled; task B).
         Declaration::Default(_) => {}
+        // Grammar producer only (task α 4395). Body/DOF dot-chain lint is
+        // deferred to task β (DOF self-check + body type enforcement).
+        Declaration::Joint(_) => {}
     }
 }
 

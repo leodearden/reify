@@ -58,6 +58,11 @@ pub enum Declaration {
     /// repeat($._declaration))` rule, so a `module` decl after any other declaration is a
     /// parse ERROR. No enforcement semantics here — task γ reads `declared_module_path`.
     Module(ModuleDecl),
+    /// `joint revolute(a: Axis, b: Axis) with angle: Angle in 0deg..120deg = { … }`
+    ///
+    /// Grammar producer only (task α 4395). Semantics (DOF self-check, body
+    /// type-check against Type::Relation, validate_range) are deferred to task β.
+    Joint(JointDef),
 }
 
 /// `module company.products.actuators` — a top-of-file module path declaration.
@@ -932,6 +937,50 @@ pub struct DefaultDecl {
     pub value: Expr,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
+}
+
+/// A `joint` definition (geometric-joints α, task 4395).
+///
+/// `joint revolute(a: Axis, b: Axis, stop: Plane) with angle: Angle in 0deg..120deg = { coaxial(a, b)  on(a.point, stop) }`
+///
+/// Grammar producer only (task α 4395). Semantics — DOF self-check
+/// (E_JOINT_DOF_MISMATCH), body type-check against `Type::Relation`,
+/// `validate_range` call — are deferred to task β. Mirrors `FnDef`/`RelateDecl`
+/// field conventions (span, content_hash, annotations).
+#[derive(Debug, Clone)]
+pub struct JointDef {
+    pub name: String,
+    pub doc: Option<String>,
+    pub is_pub: bool,
+    pub type_params: Vec<TypeParamDecl>,
+    /// Datum parameter list: `(a: Axis, b: Axis, stop: Plane)`.
+    pub params: Vec<FnParam>,
+    /// The DOF fields, in source order. Length 1 for the single form
+    /// (`with angle: Angle`); length N for the record form
+    /// (`with { angle: Angle, travel: Length }`).
+    pub dof: Vec<JointDofField>,
+    /// The body expressions, in source order. Block form (`= { … }`) lowers
+    /// to one `Expr` per `relation_member`; single-expr form (`= expr`) lowers
+    /// to a 1-element Vec. Carried as `Vec<Expr>`, unvalidated (β validates).
+    pub body: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
+    /// Annotations preceding this declaration.
+    pub annotations: Vec<Annotation>,
+}
+
+/// A single DOF field inside a `joint … with` clause.
+///
+/// `name: TypeExpr` with an optional `in <range>` bound expression.
+/// `range` is carried as `Option<Expr>` and is NOT validated here (deferred to β).
+#[derive(Debug, Clone)]
+pub struct JointDofField {
+    pub name: String,
+    pub type_expr: TypeExpr,
+    /// The optional `in <range>` bound (e.g., `0deg..120deg`).
+    /// `None` when the `in` clause is absent.
+    pub range: Option<Expr>,
+    pub span: SourceSpan,
 }
 
 /// The source kind for a field declaration.

@@ -41,6 +41,7 @@ pub use decl::{
     ConstraintDef, ConstraintInstDecl, Declaration, DefaultDecl, EnumDecl, EnumVariantDecl,
     FieldDef, FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
     ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, ImportKind,
+    JointDef, JointDofField,
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
     OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,

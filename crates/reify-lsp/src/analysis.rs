@@ -336,6 +336,10 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
             Declaration::TypeAlias(t) => t.span,
             Declaration::Default(d) => d.span,
             Declaration::Module(m) => m.span,
+            // Grammar producer only (task α 4395). Joint bodies are not
+            // navigable by the LSP yet; included here so the exhaustive match
+            // stays complete. Semantics deferred to task β.
+            Declaration::Joint(j) => j.span,
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
             return Some(decl);

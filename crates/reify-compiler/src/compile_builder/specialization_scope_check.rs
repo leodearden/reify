@@ -120,7 +120,11 @@ where
             | Declaration::TypeAlias(_)
             | Declaration::Import(_)
             | Declaration::Module(_)
-            | Declaration::Default(_) => continue,
+            | Declaration::Default(_)
+            // Grammar producer only (task α 4395). Joint bodies are Vec<Expr>,
+            // not Vec<MemberDecl>, so they cannot host a specialization scope.
+            // Semantics deferred to task β.
+            | Declaration::Joint(_) => continue,
         };
         find_specialization_scopes(members, visitor, 0);
     }

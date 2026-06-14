@@ -393,6 +393,14 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::TypeAlias(decl));
                     }
                 }
+                "joint_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
+                    if let Some(mut decl) = self.lower_joint(child) {
+                        decl.annotations = annotations;
+                        self.declarations.push(Declaration::Joint(decl));
+                    }
+                }
                 "default_declaration" => {
                     // Defaults are not annotatable in v1. Emit a diagnostic for each
                     // annotation/cfg that preceded this declaration so it is not
@@ -1065,6 +1073,132 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+        })
+    }
+
+    // ── Joint lowering ─────────────────────────────────────────
+
+    /// Lower a `joint_definition` CST node into a `JointDef`.
+    ///
+    /// Grammar (task α 4395):
+    ///   `joint NAME(params) with <dof> = <body>`
+    ///
+    /// Strategy:
+    /// - Reuses `lower_function`'s param-walk, `lower_type_parameters`,
+    ///   `has_pub_keyword`, and `extract_doc_comment` for the common prefix.
+    /// - `dof`: walks the `dof` (joint_dof) field node and collects every
+    ///   `joint_dof_field` child into `JointDofField`. Uniform for single/record:
+    ///   the single-form produces a joint_dof wrapping one field; the record-form
+    ///   wraps N fields; the lowering collects all children identically.
+    /// - `body`: inspects the `body` (joint_body) field node:
+    ///   - If it has `relation_member` children → block form → call
+    ///     `lower_relation_members` to produce Vec<Expr> (same as RelateDecl).
+    ///   - Otherwise → single-expr form → lower the `result` field into a
+    ///     1-element Vec<Expr>.
+    ///
+    /// Scope boundary (α): no DOF self-check, no validate_range, no
+    /// Type::Relation enforcement on the body — all deferred to β.
+    fn lower_joint(&self, node: tree_sitter::Node) -> Option<JointDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let doc = self.extract_doc_comment(node);
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        // Collect datum params from fn_param_list (mirrors lower_function's
+        // param-walk; no `self` receiver in joint params).
+        let params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_param_list" {
+                    let mut param_cursor = child.walk();
+                    for param_child in child.children(&mut param_cursor) {
+                        if param_child.kind() == "fn_param" {
+                            if let Some(p) = self.lower_fn_param(param_child) {
+                                params.push(p);
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            params
+        };
+
+        // Lower the DOF fields from the `dof` (joint_dof) field node.
+        // Both single-form (joint_dof = joint_dof_field) and record-form
+        // (joint_dof = '{' joint_dof_field* '}') produce joint_dof_field
+        // children; we collect them all uniformly.
+        let dof = if let Some(dof_node) = node.child_by_field_name("dof") {
+            let mut fields = Vec::new();
+            let mut cursor = dof_node.walk();
+            for child in dof_node.children(&mut cursor) {
+                if child.kind() == "joint_dof_field" {
+                    if let Some(f) = self.lower_joint_dof_field(child) {
+                        fields.push(f);
+                    }
+                }
+            }
+            fields
+        } else {
+            vec![]
+        };
+
+        // Lower the body from the `body` (joint_body) field node.
+        let body = if let Some(body_node) = node.child_by_field_name("body") {
+            // Check if the body node has `relation_member` children (block form).
+            let has_relation_members = {
+                let mut cursor = body_node.walk();
+                body_node.children(&mut cursor).any(|c| c.kind() == "relation_member")
+            };
+            if has_relation_members {
+                // Block form: reuse lower_relation_members (same as RelateDecl).
+                self.lower_relation_members(body_node)
+            } else if let Some(result_node) = body_node.child_by_field_name("result") {
+                // Single-expr form: lower the `result` field into a 1-element Vec.
+                self.lower_expr(result_node).map(|e| vec![e]).unwrap_or_default()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        Some(JointDef {
+            name,
+            doc,
+            is_pub,
+            type_params,
+            params,
+            dof,
+            body,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+            annotations: vec![],
+        })
+    }
+
+    /// Lower a `joint_dof_field` CST node into a `JointDofField`.
+    ///
+    /// Grammar: `field('name', id) ':' field('type', type_expr) optional(seq('in', field('range', _expression)))`
+    fn lower_joint_dof_field(&self, node: tree_sitter::Node) -> Option<JointDofField> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_type_expr_node(type_node);
+
+        let range = node
+            .child_by_field_name("range")
+            .and_then(|r| self.lower_expr(r));
+
+        Some(JointDofField {
+            name,
+            type_expr,
+            range,
+            span: self.span(node),
         })
     }
 
