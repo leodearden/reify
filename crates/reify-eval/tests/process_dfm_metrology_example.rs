@@ -124,3 +124,44 @@ fn example_emits_one_dfm_draft_per_severity() {
     assert_dfm_diagnostic_count(&result, "W_DFM_DRAFT", 1);
     assert_dfm_diagnostic_count(&result, "E_DFM_DRAFT", 1);
 }
+
+// ── step-5 / step-6: OCCT-gated undercut + conformer slice ───────────────────
+
+/// Loads the shipped example, builds with OCCT, checks, and asserts:
+///
+/// (a) Undercut — exactly one `E_DFM_UNDERCUT` (always Error regardless of
+///     the rule's declared severity). The undercut rule uses `DFMSeverity.Info`
+///     so that its mandatory co-emitted draft diagnostic lands on `I_DFM_DRAFT`.
+///
+/// (b) Co-emit — exactly one `I_DFM_DRAFT` (the undercut rule's Info severity
+///     routes the co-emitted draft arm — dfm.rs:350-360 — to `I_DFM_DRAFT`,
+///     keeping `W_DFM_DRAFT` and `E_DFM_DRAFT` at exactly 1 each).
+///
+/// (c) Conformer — the total `_DFM_OVERHANG` count stays at 3 (the conformer
+///     rule uses `max_overhang_angle=90°`, whose threshold sin(90°)=1 means
+///     `n·ẑ < -1` is never true → no 4th overhang diagnostic).
+///
+/// RED (step-5): the example has no undercut rule or conformer yet →
+///   `E_DFM_UNDERCUT` = 0 ≠ 1 and `I_DFM_DRAFT` = 0 ≠ 1 → test fails.
+/// GREEN (step-6): undercut rule (Info) + conformer are added to the example.
+#[test]
+fn example_emits_undercut_and_conformer_is_silent() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping example_emits_undercut_and_conformer_is_silent: OCCT not available"
+        );
+        return;
+    }
+
+    let compiled = load_and_compile_example();
+    let mut engine = make_occt_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    // Undercut: always Error regardless of rule severity.
+    assert_dfm_diagnostic_count(&result, "E_DFM_UNDERCUT", 1);
+    // Co-emit: Info-severity undercut rule also triggers the draft arm → I_DFM_DRAFT.
+    assert_dfm_diagnostic_count(&result, "I_DFM_DRAFT", 1);
+    // Conformer: 90° max_overhang_angle → no 4th overhang diagnostic.
+    assert_dfm_diagnostic_count(&result, "_DFM_OVERHANG", 3);
+}
