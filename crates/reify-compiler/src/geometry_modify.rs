@@ -148,6 +148,31 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
+        // shell_open(target, thickness, open_faces)  — 3-arg curated face selection
+        //
+        // Mirrors the `draft` 4-arg and `fillet` 3-arg curated arms.
+        // Routes to ModifyKind::Shell (same as the legacy `shell` arm) so the existing
+        // Shell eval arm and IR variant are reused.  The eval arm branches on the
+        // presence of the "open_faces" named arg to distinguish the curated from the
+        // legacy numeric path.
+        "shell_open" => {
+            if !check_arg_count_exact("shell_open", compiled_args.len(), 3, expr_span, diagnostics)
+            {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Modify {
+                kind: ModifyKind::Shell,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("thickness".to_string(), it.next().unwrap()),
+                    ("open_faces".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // chamfer(target, distance)
         "chamfer" => compile_modify_2arg(
             "chamfer",

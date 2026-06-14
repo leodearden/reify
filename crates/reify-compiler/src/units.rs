@@ -33,6 +33,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "revolve",
     "revolve_full",
     "shell",
+    "shell_open",
     "thicken",
     "offset_solid",
     "draft",
