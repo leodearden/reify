@@ -181,3 +181,27 @@ fn ball_joint_definition_is_self_check_clean() {
          → zero E_JOINT_DOF_MISMATCH, got: {errs:#?}",
     );
 }
+
+// ── (c) stdlib registration check ────────────────────────────────────────────
+
+/// `std.joints` must be registered as a prelude stdlib module — `load_stdlib()`
+/// returns a compiled module whose `path` display is `std/joints`.
+///
+/// RED: `std.joints` is not registered in `stdlib_sources()` yet (step-3 test).
+/// Step-4 (impl) adds the `include_str!` entry and makes this green.
+#[test]
+fn std_joints_registered_in_stdlib_prelude() {
+    let modules = reify_compiler::stdlib_loader::load_stdlib();
+    let found = modules
+        .iter()
+        .any(|m| format!("{}", m.path) == "std/joints");
+    assert!(
+        found,
+        "std.joints must be registered in the stdlib prelude (stdlib_loader.rs::stdlib_sources);\n\
+         currently loaded module paths: {:?}",
+        modules
+            .iter()
+            .map(|m| format!("{}", m.path))
+            .collect::<Vec<_>>()
+    );
+}
