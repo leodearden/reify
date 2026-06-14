@@ -7338,6 +7338,140 @@ mod tests {
         assert_eq!(exported[0].1, reify_ir::ExportFormat::Stl);
     }
 
+    /// step-13 helper: a kernel whose FIRST `export()` call fails with a
+    /// [`reify_ir::ExportError`] and whose subsequent calls succeed (delegated
+    /// to the inner mock). With `build_outputs`'s Phase-B product export
+    /// disabled, the only `export()` calls are the per-occurrence ones, so call
+    /// #1 is the first `Output` occurrence and call #2 the second — letting a
+    /// test drive "first occurrence fails, second succeeds".
+    struct FailFirstExportKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        export_calls: std::sync::Mutex<usize>,
+    }
+
+    impl reify_ir::GeometryKernel for FailFirstExportKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            let mut n = self.export_calls.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                return Err(reify_ir::ExportError::FormatError(
+                    "injected failure (first export)".to_string(),
+                ));
+            }
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.inner.tessellate(handle, tolerance)
+        }
+
+        fn make_compound(
+            &mut self,
+            handles: &[reify_ir::GeometryHandleId],
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.inner.make_compound(handles)
+        }
+    }
+
+    /// step-13 (RED): a per-occurrence export failure must be ISOLATED — it
+    /// emits an error diagnostic and the loop CONTINUES, so a later valid
+    /// `Output` occurrence still serializes its file. One bad Output never
+    /// aborts the others (PRD §4.3/§7.3 per-artifact failure isolation).
+    ///
+    /// Two `STLOutput`s on the same solid; the kernel fails the FIRST `export()`
+    /// (occurrence `o`) and succeeds the second (occurrence `s`). The driver
+    /// must NOT panic/abort: it surfaces an error-severity diagnostic naming the
+    /// failed occurrence's path (`o.stl`) AND still produces a written artifact
+    /// (non-empty bytes) for the valid `s` (`o2.stl`).
+    ///
+    /// RED until step-14: the step-8 happy path `continue`s SILENTLY on an
+    /// export `Err` (no diagnostic), so the error-diagnostic assertion fails.
+    #[test]
+    fn build_outputs_isolates_per_occurrence_export_failure() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, path: "o.stl")
+    sub s = STLOutput(subject: part, path: "o2.stl")
+}"#,
+        );
+
+        let kernel = FailFirstExportKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            export_calls: std::sync::Mutex::new(0),
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        // Must not panic even though the first occurrence's export errors.
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        // The failed occurrence (`o`) carries an error-severity diagnostic that
+        // names its path, so the failure is attributable and not silent.
+        let error_diags: Vec<&reify_core::Diagnostic> = artifacts
+            .iter()
+            .flat_map(|a| &a.diagnostics)
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            error_diags.len(),
+            1,
+            "the failed occurrence must surface exactly one error diagnostic, got {}",
+            error_diags.len()
+        );
+        assert!(
+            error_diags[0].message.contains("o.stl"),
+            "the error diagnostic must name the failed occurrence's path (o.stl); got {:?}",
+            error_diags[0].message
+        );
+
+        // Isolation: the valid SECOND occurrence (`s`) still produced a written
+        // file with bytes despite the first occurrence failing.
+        let written: Vec<&crate::ExportArtifact> =
+            artifacts.iter().filter(|a| !a.bytes.is_empty()).collect();
+        assert_eq!(
+            written.len(),
+            1,
+            "the valid second occurrence still serializes a file despite the \
+             first failing, got {} written artifacts",
+            written.len()
+        );
+        assert_eq!(
+            written[0].path,
+            PathBuf::from("/tmp/d/o2.stl"),
+            "the surviving artifact must be the second (valid) occurrence o2.stl"
+        );
+    }
+
     /// step-09 (RED): `seed_cross_sub_named_steps` must thread [`KernelHandle`]
     /// (not bare [`GeometryHandleId`]) through `named_steps` /
     /// `module_named_steps`.
