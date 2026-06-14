@@ -606,6 +606,26 @@ fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scala
 
 Using a non-dimension-kinded type parameter in a dimension slot (`Scalar<T>` where `T` has no `Dimension` bound), or using a dimension-kinded parameter as an ordinary type (bare `Q` in a non-dimension position), is a kind misuse and emits `E_DIM_PARAM_KIND`. Dimension-param type arguments are resolved at compile time and erased before evaluation, following the same erasure rule as ordinary type parameters.
 
+**Inference-only call sites (v1):** There is no turbofish syntax (`f<Length>(x)`) for explicit type arguments at call sites. All type arguments are inferred solely from the value arguments (D9). Explicit call-site type arguments are a future addition.
+
+**`auto` deferral for function type parameters:** The `auto`-on-type-parameter form (`fn f<auto T: Trait>(…)`) described for *structure* type parameters earlier in §3.9 is **not** available for function type parameters in v0.6. Both `auto` type-params on functions and explicit call-site type arguments are deferred out of scope.
+
+**Fixtures and examples:** The committed grammar parse fixtures for generic functions (0 ERROR/MISSING under tree-sitter-reify) are:
+
+- `tree-sitter-reify/test/fixtures/guf-3-simple.ri` -- `id<T>` (simplest identity generic)
+- `tree-sitter-reify/test/fixtures/guf-1-generic-fn.ri` -- `constant_field<D, C>` (two ordinary params, `Field` return)
+- `tree-sitter-reify/test/fixtures/guf-2-bounded.ri` -- `clamp_field<D, Q: Dimension>` (mixed ordinary + dimension-kinded)
+- `tree-sitter-reify/test/fixtures/guf-4-compose.ri` -- `compose<A, B, C>` (three-param field composition)
+
+End-to-end runnable examples:
+
+- `examples/generics/identity.ri` -- `id(5mm)` → 5 mm; erasure parity with monomorphic twin
+- `examples/generics/container.ri` -- `single(5mm)` → `[5 mm]`, typed `List<Length>`
+- `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
+- `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
+
+See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+
 ### 3.10 Determinacy and Types
 
 Determinacy is tracked orthogonally, not baked into types. Parameter types are written as plain `Length`, `Force`, etc. Determinacy (`undef` / constrained / `auto` / determined) is a property of the parameter tracked by the design system, not part of the type.
