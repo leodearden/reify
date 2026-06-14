@@ -1,4 +1,9 @@
-//! End-to-end signal test for the KIN-OFFSET α authoring surface (task 4331).
+//! End-to-end signal tests for the KIN-OFFSET authoring surface.
+//!
+//! - **α (task 4331)**: `revolute_pivot_offset_e2e` — translation-pivot (point3) authoring.
+//! - **δ (task 4394)**: `oriented_frame3_linkage_e2e` — oriented Frame3 origin authoring.
+//!
+//! Original α doc:
 //!
 //! Loads `examples/kinematic/revolute_pivot_offset.ri`, drives it through
 //! `parse_and_compile_with_stdlib → eval`, and asserts the pivot-offset
@@ -25,13 +30,29 @@ const FIXTURE_PATH: &str = concat!(
     "/../../examples/kinematic/revolute_pivot_offset.ri"
 );
 
-/// Read the fixture source, caching it via OnceLock.
+const ORIENTED_FIXTURE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/kinematic/spatial_linkage_oriented.ri"
+);
+
+/// Read the α fixture source, caching it via OnceLock.
 fn fixture_source() -> &'static str {
     use std::sync::OnceLock;
     static S: OnceLock<String> = OnceLock::new();
     S.get_or_init(|| {
         std::fs::read_to_string(FIXTURE_PATH)
             .unwrap_or_else(|e| panic!("{FIXTURE_PATH} should exist: {e}"))
+    })
+    .as_str()
+}
+
+/// Read the δ oriented-linkage fixture source, caching it via OnceLock.
+fn oriented_fixture_source() -> &'static str {
+    use std::sync::OnceLock;
+    static S: OnceLock<String> = OnceLock::new();
+    S.get_or_init(|| {
+        std::fs::read_to_string(ORIENTED_FIXTURE_PATH)
+            .unwrap_or_else(|e| panic!("{ORIENTED_FIXTURE_PATH} should exist: {e}"))
     })
     .as_str()
 }
@@ -129,4 +150,91 @@ fn revolute_pivot_offset_e2e() {
         matches_pos || matches_neg,
         "t1 rotation should be R_z(π/3) ≈ ({qw},0,0,{qz}) up to sign, got ({rw},{rx},{ry},{rz})"
     );
+}
+
+/// Signal test (δ, task 4394): `spatial_linkage_oriented.ri` produces the expected
+/// oriented-origin poses for both a prismatic and a revolute joint authored with
+/// `frame3(point3(..mm), orient_axis_angle(vec3(..), ..rad))` as the 3rd pivot arg.
+///
+/// Invariants (hand-computed, tolerance 1e-12):
+///
+/// **t_slider** (oriented prismatic, axis=+X, origin=R_z(90°), d=0.5m):
+/// - rotation = R_z(90°) = (√2/2, 0, 0, √2/2)
+/// - translation = R_z(90°)·(0.5,0,0) = (0, 0.5, 0)
+///
+/// **t_hinge** (oriented revolute, axis=+Z, origin=frame3(point3(100mm,0,0), R_x(90°)), θ=π/2):
+/// - rotation = R_x(90°)·R_z(90°) = (0.5, 0.5, -0.5, 0.5)  [Hamilton product]
+/// - translation = R_x(90°)·(0,0,0) + (0.1,0,0) = (0.1, 0, 0)
+#[test]
+fn oriented_frame3_linkage_e2e() {
+    let source = oriented_fixture_source();
+    assert!(!source.is_empty(), "spatial_linkage_oriented.ri must be non-empty");
+
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // No error diagnostics.
+    let errors = collect_errors(&result.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "eval must produce no Error diagnostics for spatial_linkage_oriented.ri, got: {errors:?}"
+    );
+
+    // Resolve bindings from the structure.  The fixture defines structure "SpatialLinkageOriented".
+    let get_value = |name: &str| {
+        let id = ValueCellId::new("SpatialLinkageOriented", name);
+        result
+            .values
+            .get(&id)
+            .unwrap_or_else(|| panic!("SpatialLinkageOriented.{name} not found in eval result"))
+    };
+
+    let sq2_2 = std::f64::consts::SQRT_2 / 2.0;
+
+    // t_slider: oriented prismatic, axis=+X, R_z(90°) origin, d=0.5m.
+    // Expected: rotation=(√2/2,0,0,√2/2) up to sign, translation=(0,0.5,0).
+    let t_slider = get_value("t_slider");
+    let ((sw, sx, sy, sz), [stx, sty, stz]) = decompose_transform(t_slider, "t_slider");
+    let s_matches_pos = (sw - sq2_2).abs() < 1e-12
+        && sx.abs() < 1e-12
+        && sy.abs() < 1e-12
+        && (sz - sq2_2).abs() < 1e-12;
+    let s_matches_neg = (sw + sq2_2).abs() < 1e-12
+        && sx.abs() < 1e-12
+        && sy.abs() < 1e-12
+        && (sz + sq2_2).abs() < 1e-12;
+    assert!(
+        s_matches_pos || s_matches_neg,
+        "t_slider rotation should be R_z(90°) ≈ ({sq2_2},0,0,{sq2_2}) up to sign, got ({sw},{sx},{sy},{sz})"
+    );
+    assert!(stx.abs() < 1e-12, "t_slider.tx should be 0, got {stx}");
+    assert!(
+        (sty - 0.5).abs() < 1e-12,
+        "t_slider.ty should be 0.5 m (R_z(90°)·+X = +Y), got {sty}"
+    );
+    assert!(stz.abs() < 1e-12, "t_slider.tz should be 0, got {stz}");
+
+    // t_hinge: oriented revolute, axis=+Z, origin=frame3(point3(100mm,0,0), R_x(90°)), θ=π/2.
+    // Expected: rotation=(0.5,0.5,-0.5,0.5) up to sign, translation=(0.1,0,0).
+    let t_hinge = get_value("t_hinge");
+    let ((hw, hx, hy, hz), [htx, hty, htz]) = decompose_transform(t_hinge, "t_hinge");
+    let h_matches_pos = (hw - 0.5).abs() < 1e-12
+        && (hx - 0.5).abs() < 1e-12
+        && (hy + 0.5).abs() < 1e-12
+        && (hz - 0.5).abs() < 1e-12;
+    let h_matches_neg = (hw + 0.5).abs() < 1e-12
+        && (hx + 0.5).abs() < 1e-12
+        && (hy - 0.5).abs() < 1e-12
+        && (hz + 0.5).abs() < 1e-12;
+    assert!(
+        h_matches_pos || h_matches_neg,
+        "t_hinge rotation should be (0.5,0.5,-0.5,0.5) up to sign, got ({hw},{hx},{hy},{hz})"
+    );
+    assert!(
+        (htx - 0.1).abs() < 1e-12,
+        "t_hinge.tx should be 0.1 m (100mm pivot), got {htx}"
+    );
+    assert!(hty.abs() < 1e-12, "t_hinge.ty should be 0, got {hty}");
+    assert!(htz.abs() < 1e-12, "t_hinge.tz should be 0, got {htz}");
 }
