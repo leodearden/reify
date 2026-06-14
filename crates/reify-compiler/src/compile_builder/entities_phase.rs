@@ -338,6 +338,43 @@ fn compile_joint_self_check(
         })
         .collect();
 
+    // (3b) DOF `in <range>` dimensional consistency (PRD §7.1; the compile-time
+    // analog of the runtime `validate_range` dimensional guard). For each Scalar
+    // DOF (`Angle`/`Length`) carrying an `in <range>` bound, compile the range
+    // against the param scope and require its element dimension to equal the
+    // declared DOF's. Orientation DOFs (no scalar range) and absent ranges are
+    // skipped. Indexed against `declared_types` so each field is paired with its
+    // already-resolved type.
+    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+        let Type::Scalar { dimension: dof_dim } = declared_ty else {
+            continue; // non-Scalar DOF (Orientation / unresolved Error) — no scalar range
+        };
+        let Some(range_expr) = &field.range else {
+            continue; // no `in <range>` clause to validate
+        };
+        let compiled_range = compile_expr(range_expr, &scope, enum_defs, functions, diagnostics);
+        // The range element type is the bound type; require its dimension to
+        // match the DOF. A non-`Range<Scalar>` (e.g. Type::Error from an
+        // already-diagnosed range) is skipped — anti-cascade.
+        if let Type::Range(inner) = &compiled_range.result_type
+            && let Type::Scalar { dimension: range_dim } = inner.as_ref()
+            && range_dim != dof_dim
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint `{}` DOF `{}`: the `in` range must match the declared DOF \
+                     dimension `{}`, but the range bounds are `{}`",
+                    joint.name, field.name, declared_ty, inner
+                ))
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    range_expr.span,
+                    "range dimension does not match the declared DOF",
+                )),
+            );
+        }
+    }
+
     // (4) Compare declared free DOF against the body's geometric residual.
     let residual = crate::joint_self_check::residual_kinds(&compiled_body);
     let (declared, _unclassified) = crate::joint_self_check::declared_kinds(&declared_types);
