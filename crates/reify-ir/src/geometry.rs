@@ -2305,6 +2305,14 @@ pub enum AttributeHistory {
     /// `BRepAlgoAPI_Common` for binary boolean ops
     /// (`GeometryOp::Union` / `Difference` / `Intersection`; task 8, #2656).
     Boolean(BooleanOpHistoryRecords),
+    /// Records produced by `BRepFilletAPI_MakeFillet` (for
+    /// `GeometryOp::Fillet`) or `BRepFilletAPI_MakeChamfer` (for
+    /// `GeometryOp::Chamfer`); task 7, #2831.
+    ///
+    /// Uses [`LocalFeatureOpHistoryRecords`] whose per-stream parent kinds
+    /// differ from the boolean case: `face_generated` parents are **edges**,
+    /// and `edge_generated` parents are **vertices** (cross-kind).
+    LocalFeature(LocalFeatureOpHistoryRecords),
 }
 
 /// Outcome of a [`KernelAttributeHook::propagate_attributes`] call (or of the

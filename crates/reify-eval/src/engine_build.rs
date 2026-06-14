@@ -12,8 +12,9 @@ use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
     CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind,
-    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
+    GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    ValueMap, VolumeMesh,
 };
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
@@ -702,7 +703,65 @@ fn populate_attribute_history(
                 history,
             )
         }
+        AttributeHistory::LocalFeature(history) => {
+            // Local-feature ops (fillet / chamfer): one target shape.
+            let target_handle = match geom_op {
+                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                _ => {
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
+                         GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_local_feature_op(
+                table,
+                kernel,
+                feature_id,
+                target_handle,
+                result_handle,
+                history,
+            )
+        }
     }
+}
+
+/// Propagate local-feature (fillet / chamfer) history onto the result shape.
+///
+/// Mirrors [`populate_boolean_op`] but extracts target faces/edges/vertices
+/// (three parent slices) rather than two operand face/edge slices.
+/// Delegates to [`propagate_attributes_via_local_feature_history`] which runs
+/// four independent per-stream cross-kind passes (face_modified←faces,
+/// face_generated←edges, edge_modified←edges, edge_generated←vertices).
+///
+/// Failure semantics are identical to [`populate_boolean_op`]: a `QueryError`
+/// returned here surfaces as `Diagnostic::warning` at the call site — never a
+/// Failed-realization regression (per task-2574 convention).
+fn populate_local_feature_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    target_handle: GeometryHandleId,
+    result_handle: GeometryHandleId,
+    history: &LocalFeatureOpHistoryRecords,
+) -> Result<(), reify_ir::QueryError> {
+    let target_faces = kernel.extract_faces(target_handle)?;
+    let target_edges = kernel.extract_edges(target_handle)?;
+    let target_vertices = kernel.extract_vertices(target_handle)?;
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+
+    crate::topology_attribute_propagation::propagate_attributes_via_local_feature_history(
+        table,
+        &target_faces,
+        &target_edges,
+        &target_vertices,
+        &result_faces,
+        &result_edges,
+        history,
+        feature_id,
+    )
 }
 
 /// Build per-cap-face vertex-index-lists by position-matching cap-face vertex
