@@ -1908,6 +1908,18 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Profile { kind, args } => {
             use reify_compiler::ProfileKind;
+            // Polygon uses eval_all_args_to_f64 (borrows `diagnostics` directly).
+            // Handle it before the eval_arg closure to avoid a conflicting mutable borrow.
+            if matches!(kind, ProfileKind::Polygon) {
+                let coords =
+                    eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
+                        .ok_or_else(|| {
+                            "polygon() has non-finite coordinates".to_string()
+                        })?;
+                let points: Vec<[f64; 2]> =
+                    coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+                return Ok(reify_ir::GeometryOp::PolygonProfile { points });
+            }
             let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
@@ -1920,6 +1932,11 @@ pub(crate) fn compile_geometry_op(
                 ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
                     radius: eval_arg("radius")?,
                 }),
+                ProfileKind::Ellipse => Ok(reify_ir::GeometryOp::EllipseProfile {
+                    semi_major: eval_arg("semi_major")?,
+                    semi_minor: eval_arg("semi_minor")?,
+                }),
+                ProfileKind::Polygon => unreachable!("handled above"),
             }
         }
     }

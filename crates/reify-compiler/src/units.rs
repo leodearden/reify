@@ -65,6 +65,8 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "wedge",
     "rectangle",
     "circle",
+    "polygon",
+    "ellipse",
     "zone_slab",
 ];
 

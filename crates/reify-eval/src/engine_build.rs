@@ -1619,6 +1619,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Profile { kind, .. } => match kind {
             ProfileKind::Rectangle => Operation::ProfileRectangle,
             ProfileKind::Circle => Operation::ProfileCircle,
+            ProfileKind::Polygon => Operation::ProfilePolygon,
+            ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
     }
 }

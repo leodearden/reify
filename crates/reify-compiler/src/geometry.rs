@@ -1213,6 +1213,45 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // polygon(x1,y1, x2,y2, ...) → CompiledGeometryOp::Profile(Polygon)
+        // Variadic coordinate PAIRS: ≥6 args (3 pts min), must be multiple of 2.
+        "polygon" => {
+            let n = compiled_args.len();
+            if n < 6 || !n.is_multiple_of(2) {
+                push_labeled_arg_count_error(
+                    format!(
+                        "polygon() expects coordinate pairs (at least 6 args for 3 points), got {}",
+                        n
+                    ),
+                    expr.span,
+                    diagnostics,
+                );
+                return None;
+            }
+            let args: Vec<(String, CompiledExpr)> = compiled_args
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{}", i), e))
+                .collect();
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Polygon,
+                args,
+            }])
+        }
+        // ellipse(semi_major, semi_minor) → CompiledGeometryOp::Profile(Ellipse)
+        "ellipse" => {
+            if !check_arg_count_exact("ellipse", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Ellipse,
+                args: vec![
+                    ("semi_major".to_string(), it.next().unwrap()),
+                    ("semi_minor".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
 
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
@@ -1872,6 +1911,8 @@ mod tests {
         "nurbs",
         "rectangle",
         "circle",
+        "polygon",
+        "ellipse",
     ];
 
     /// Boolean set-operation functions — handled by the early-return path to
@@ -1895,11 +1936,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    21  (added fillet_all)
-    /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
+    /// GEOM_ARG_FUNCTIONS    22  (added fillet_all, zone_slab)
+    /// NO_GEOM_ARG_FUNCTIONS 20  (added rectangle, circle, polygon, ellipse for 2-D profile faces)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 46
+    /// Total                 49
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1911,7 +1952,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 47;
+    const EXPECTED_DISPATCH_COUNT: usize = 49;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

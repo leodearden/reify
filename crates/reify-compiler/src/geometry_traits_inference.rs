@@ -71,7 +71,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -224,8 +224,8 @@ impl InferredTraits {
         }
     }
 
-    /// A 2-D profile face (`rectangle`/`circle`). Bounded/connected/convex are
-    /// all true (a rectangle or circle face is finite, single-component, and
+    /// A 2-D profile face (`rectangle`/`circle`/`ellipse`). Bounded/connected/convex are
+    /// all true (a rectangle, circle, or ellipse face is finite, single-component, and
     /// convex). `dimension == GeomDim::Surface`, `planar == true`,
     /// `closed == true` — satisfying `violates_profile_requirement`'s
     /// Surface+closed+planar contract so extrude/revolve/loft accept them, and
@@ -235,6 +235,22 @@ impl InferredTraits {
             bounded: true,
             connected: true,
             convex: true,
+            dimension: GeomDim::Surface,
+            planar: true,
+            closed: true,
+        }
+    }
+
+    /// A 2-D profile face that may be non-convex (`polygon`). Identical to
+    /// [`surface()`] except `convex == false`. A general polygon may be
+    /// concave, so this variant is returned when the caller cannot guarantee
+    /// convexity. The profile precondition (Surface + closed + planar) is still
+    /// satisfied, so extrude/revolve/loft still accept a polygon face.
+    pub const fn surface_nonconvex() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
             dimension: GeomDim::Surface,
             planar: true,
             closed: true,
@@ -573,7 +589,11 @@ fn infer_op(
         CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
 
         // 2-D profile face constructors → GeomDim::Surface (planar, closed).
-        CompiledGeometryOp::Profile { .. } => InferredTraits::surface(),
+        // Polygon may be concave → surface_nonconvex(); all others are convex.
+        CompiledGeometryOp::Profile { kind, .. } => match kind {
+            ProfileKind::Polygon => InferredTraits::surface_nonconvex(),
+            _ => InferredTraits::surface(),
+        },
     }
 }
 
@@ -729,7 +749,8 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Profile face constructors → surface() (2-D faces) ──────────
-        "rectangle" | "circle" => Some(InferredTraits::surface()),
+        "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
+        "polygon" => Some(InferredTraits::surface_nonconvex()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
