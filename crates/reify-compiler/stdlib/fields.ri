@@ -87,7 +87,7 @@ pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
 //     params) because scalar `remap` is strictly 5-arg and Range.lower/upper
 //     return Value::Option, not bare scalars (see plan.json D1 decision).
 //
-//   threshold<D, Q: Dimension>(f, value) -> Field<D, Bool>   [step-6]
+//   threshold<D, Q: Dimension>(f, value) -> Field<D, Bool>   [step-6, landed]
 //     Produces a Bool field: true where `sample(f, p) > value`, false
 //     elsewhere.  B8 gate: above-threshold sample == true, below == false.
 
@@ -101,6 +101,10 @@ pub fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: S
 
 pub fn remap_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, from_lo: Scalar<Q>, from_hi: Scalar<Q>, to_lo: Scalar<Q>, to_hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
     fn_field(|p| remap(sample(f, p), from_lo, from_hi, to_lo, to_hi))
+}
+
+pub fn threshold<D, Q: Dimension>(f: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool> {
+    fn_field(|p| sample(f, p) > value)
 }
 
 // ── Why no Field type alias ───────────────────────────────────────────────────
