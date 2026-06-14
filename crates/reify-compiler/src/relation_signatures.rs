@@ -353,15 +353,15 @@ pub(crate) fn check_relation_arg_types(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // (a) UNIT layer — the metric slot's physical dimension.
-    if let Some((idx, expected_dim, type_name)) = relation_metric_slot(name) {
-        if let Some(metric) = compiled_args.get(idx) {
-            match &metric.result_type {
-                // Gradualism: poison / unresolved pass silently.
-                Type::Error | Type::TypeParam(_) => {}
-                // Dimensioned scalar: mismatch only when the dimension differs.
-                Type::Scalar { dimension } if *dimension == expected_dim => {}
-                other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
-            }
+    if let Some((idx, expected_dim, type_name)) = relation_metric_slot(name)
+        && let Some(metric) = compiled_args.get(idx)
+    {
+        match &metric.result_type {
+            // Gradualism: poison / unresolved pass silently.
+            Type::Error | Type::TypeParam(_) => {}
+            // Dimensioned scalar: mismatch only when the dimension differs.
+            Type::Scalar { dimension } if *dimension == expected_dim => {}
+            other => emit_unit_mismatch(name, type_name, other, call_span, diagnostics),
         }
     }
 
