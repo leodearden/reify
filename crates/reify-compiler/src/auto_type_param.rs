@@ -948,6 +948,38 @@ pub fn seed_candidate_value_map(
     map
 }
 
+/// Seed a [`reify_ir::ValueMap`] from the parameterized template's own
+/// **literal-default** params, keyed by each cell's **own** `id`
+/// (e.g. `("Bearing","bore_radius")`).
+///
+/// Unlike [`seed_candidate_value_map`], which re-keys candidate cells under a
+/// `param_member` prefix, this function uses the cell's native `id` because
+/// bare param refs in a template constraint compile to
+/// `ValueCellId::new(&scope.entity_name, member)` — i.e. the cell's own id.
+///
+/// # Cell selection
+///
+/// Only cells whose `default_expr` is `Some(expr)` with
+/// `expr.kind == CompiledExprKind::Literal(v)` are included.
+/// - `TypeParam` cells with `default_expr=None` → naturally skipped.
+/// - Non-literal (ValueRef, BinOp, …) defaults → skipped (Gap C, out of scope).
+/// - Value-kind-agnostic: `Value::Bool`, `Value::Scalar`, … all accepted.
+pub fn seed_template_literal_params(
+    template: &crate::types::TopologyTemplate,
+) -> reify_ir::ValueMap {
+    use reify_ir::{CompiledExprKind, ValueMap};
+
+    let mut map = ValueMap::new();
+    for cell in &template.value_cells {
+        if let Some(expr) = &cell.default_expr
+            && let CompiledExprKind::Literal(v) = &expr.kind
+        {
+            map.insert(cell.id.clone(), v.clone());
+        }
+    }
+    map
+}
+
 // ─── δ: candidate constructibility check + zero-arg ctor synthesis ──────────
 
 /// The result of [`check_candidate_constructible`].
