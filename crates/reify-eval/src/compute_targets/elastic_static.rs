@@ -276,6 +276,14 @@ pub(crate) struct CantileverFeaSolve {
 /// `lib.rs` for tests/ access.
 pub const PROGRESS_STRIDE: usize = 10;
 
+/// CG solver iteration limit shared between `solve_cantilever_fea` (which configures
+/// `CgSolverOptions`) and the trampoline's `classify_convergence` call.
+///
+/// Both consumers MUST reference this const so the diagnostic message ("did not
+/// converge after N/M iterations") can never silently disagree with the actual solver
+/// limit if the limit is ever changed.
+pub(crate) const SOLVER_MAX_ITER: usize = 2000;
+
 /// Trampoline for `solver::elastic_static`.
 ///
 /// Accepts the seven `value_inputs` corresponding to:
@@ -387,10 +395,12 @@ pub fn solve_elastic_static_trampoline(
     // return ComputeOutcome::Failed.  Per esc-2929-40 (relaxed scope), all
     // diagnostics are emitted label-less (span=None).
 
-    // No-loads advisory: all applied forces are zero.
-    // tip_force components ≈ 0 ∧ pressures.is_empty() ∧ body_force ≈ 0.
-    let no_tip_force = tip_force.iter().all(|&c| c.abs() < 1e-300);
-    let no_body_force = body_force.iter().all(|&c| c.abs() < 1e-300);
+    // No-loads advisory: all applied forces are exactly zero.
+    // Forces come from user-provided `.ri` literals; they are never denormal in
+    // practice, so `== 0.0` is the correct predicate (not a relative epsilon).
+    // tip_force components == 0 ∧ pressures.is_empty() ∧ body_force == 0.
+    let no_tip_force = tip_force.iter().all(|&c| c == 0.0);
+    let no_body_force = body_force.iter().all(|&c| c == 0.0);
     if no_tip_force && pressures.is_empty() && no_body_force {
         route_diagnostics.push(fea_diagnostic_to_core(&FeaFailure::NoLoads, None));
     }
@@ -407,11 +417,16 @@ pub fn solve_elastic_static_trampoline(
         ));
     }
 
-    // Thin-body advisory: aspect ratio > threshold (~10).
+    // Thin-body advisory: aspect ratio > threshold (~10), tet/solid route only.
     // P1 solid elements perform poorly when max_dim/min_dim > 10; warn to use
     // shell elements or higher-order elements instead (shells PRD, task P2).
-    if let Some(advisory) = thin_body_advisory(length, width, height, 10.0) {
-        route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
+    // Gate on the tet path: on `ShellRoute::Shell` the user has already opted
+    // into shell elements, so emitting the advisory would recommend exactly what
+    // they've done — self-contradictory noise.
+    if shell_route != ShellRoute::Shell {
+        if let Some(advisory) = thin_body_advisory(length, width, height, 10.0) {
+            route_diagnostics.push(fea_diagnostic_to_core(&advisory, None));
+        }
     }
 
     if shell_route == ShellRoute::Shell && !matches!(model, MaterialModel::Isotropic(_)) {
@@ -649,10 +664,20 @@ pub fn solve_elastic_static_trampoline(
 
     // ── (6c) Post-solve FEA diagnostics (task 2929) ───────────────────────────
     //
-    // Degenerate mesh (singular stiffness): find the minimum tet volume and
-    // classify with `classify_degenerate`.  A degenerate element is genuinely
-    // unsolvable → Error → `ComputeOutcome::Failed`.  The well-conditioned
-    // prismatic cantilever mesh never triggers this in practice; it is defensive.
+    // Near-degenerate element guard: scan tet volumes and emit a FeaSingularStiffness
+    // Error for the element with the smallest volume when it falls below `eps`.
+    //
+    // IMPORTANT SCOPE NOTE: this guard fires only in the narrow window where an
+    // element is near-degenerate yet the CG solver still completed without panicking.
+    // A *genuinely* singular stiffness matrix panics inside `solve_cantilever_fea`
+    // at the `p·Kp > 0` assertion in the CG loop (see the solver contract comment at
+    // ~line 1244 below); such a mesh never reaches this post-solve block.  This guard
+    // therefore does NOT convert all singular-stiffness failures into a clean Failed
+    // outcome — it handles only the marginal near-degenerate case.
+    //
+    // Full coverage (surface min-tet-vol from `CantileverFeaSolve` to avoid the
+    // redundant O(n_tets) scan) is deferred; the per-solve overhead is negligible
+    // for the coarse cantilever mesh used today.
     {
         let mut min_tet_vol = f64::INFINITY;
         let mut min_tet_elem = 0usize;
@@ -677,14 +702,16 @@ pub fn solve_elastic_static_trampoline(
     }
 
     // Non-convergence advisory: CG did not converge within max_iter iterations.
-    // max_iter is hardcoded to 2000 in solve_cantilever_fea; residual is not
-    // surfaced by CantileverFeaSolve so None is passed.
+    // `SOLVER_MAX_ITER` is the shared const used by `solve_cantilever_fea`'s
+    // `CgSolverOptions`; referencing the same const here guarantees the diagnostic
+    // message ("did not converge after N/M iterations") is always consistent with
+    // the actual solver limit.  The residual is not surfaced by `CantileverFeaSolve`
+    // so `None` is passed.
     // Advisory (Warning on Completed) — a partially-converged result is still
     // returned; non-convergence is never .ri-triggerable for the well-conditioned
     // fixed cantilever, so the classifier is covered by unit tests (step-1).
-    const TRAMPOLINE_MAX_ITER: usize = 2000;
     if let Some(non_conv) =
-        classify_convergence(fea.converged, fea.iterations, TRAMPOLINE_MAX_ITER, None)
+        classify_convergence(fea.converged, fea.iterations, SOLVER_MAX_ITER, None)
     {
         route_diagnostics.push(fea_diagnostic_to_core(&non_conv, None));
     }
@@ -1205,7 +1232,7 @@ pub(crate) fn solve_cantilever_fea(
     // ── Solve ─────────────────────────────────────────────────────────────────
     let opts = CgSolverOptions {
         tolerance: 1e-6,
-        max_iter: 2000,
+        max_iter: SOLVER_MAX_ITER,
     };
     // Capture max_iter before `opts` is moved into the solve call (task 4366):
     // the cancel short-circuit below needs it to distinguish cooperative cancel

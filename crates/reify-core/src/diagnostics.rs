@@ -2371,8 +2371,13 @@ pub enum DiagnosticCode {
 
     /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
     /// (task 2929). Emitted when a load selector targets an interior node
-    /// rather than a boundary face. Detection is mapping-only (upstream
-    /// selector resolution); reserved for future wiring.
+    /// rather than a boundary face.
+    ///
+    /// **Not yet emitted.** The trampoline receives already-resolved
+    /// `Load`/`Support` `StructureInstance` values (selector resolution is
+    /// upstream); detection wiring is deferred to a follow-up task.  The
+    /// variant and its `fea_diagnostic_to_core` arm are reserved so downstream
+    /// tooling can match on the typed code the moment wiring lands.
     ///
     /// The PRD-prose mnemonic for this code is `E_FEA_LOAD_ON_INTERIOR`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
@@ -2380,8 +2385,12 @@ pub enum DiagnosticCode {
 
     /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
     /// (task 2929). Emitted when a selector matches no geometry nodes.
-    /// Detection is mapping-only (upstream selector resolution); reserved
-    /// for future wiring.
+    ///
+    /// **Not yet emitted.** The trampoline receives already-resolved
+    /// `Load`/`Support` `StructureInstance` values (selector resolution is
+    /// upstream); detection wiring is deferred to a follow-up task.  The
+    /// variant and its `fea_diagnostic_to_core` arm are reserved so downstream
+    /// tooling can match on the typed code the moment wiring lands.
     ///
     /// The PRD-prose mnemonic for this code is `E_FEA_SELECTOR_NO_MATCH`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
