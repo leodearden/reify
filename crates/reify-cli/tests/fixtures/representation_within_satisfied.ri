@@ -1,0 +1,37 @@
+// Fixture: BT7 — RepresentationWithin Satisfied + zero exit (PRD §5 BT7 / C3)
+// Task δ (4200), cli_determinacy_gate.rs.
+//
+// Fine-precision 1 m-radius sphere with a RepresentationWithin(subject, 1mm)
+// assertion.  Numbers mirror the shipped, passing engine test
+// `bt7_fine_sphere_tight_bound_yields_satisfied` in
+// `crates/reify-eval/tests/representation_within_assertion.rs` (OCCT_SOURCE_FINE):
+//
+//   #precision(0.1mm) — fine deflection; sampled facet-chord deviation ≪ 1 mm
+//   sphere(1000mm)    — 1 m radius
+//   bound 1mm         — assertion bound = 1e-3 m
+//
+// Under OCCT: tessellate_realizations populates achieved_repr_tol["Sphere#realization[0]"]
+// with a value ≪ 1mm (1e-3 m) → RepresentationWithin → Satisfied → `reify check` exits 0.
+//
+// Under stub (no OCCT): realization cannot run → achieved_repr_tol map stays empty →
+// RepresentationWithin → Indeterminate (C1 graceful degradation) → `reify check` exits 0.
+//
+// Both modes satisfy the gate invariants: exit 0 AND stdout has no "VIOLATED".
+
+#precision(0.1mm)
+
+// Sphere: 1 m-radius sphere realized at fine precision.
+// At #precision(0.1mm) (1e-4 m deflection) the sampled facet-chord deviation
+// on a sphere of radius 1 m is far below the 1 mm (1e-3 m) bound.
+structure Sphere {
+    let r = sphere(1000mm)
+}
+
+// SphereCheck: declares the RepresentationWithin assertion.
+// param subject : Sphere types the subject as StructureRef("Sphere"), which is
+// the type-name the engine uses to scan achieved_repr_tol for a matching
+// "Sphere#realization[0]" entry after tessellation.
+structure SphereCheck {
+    param subject : Sphere
+    constraint RepresentationWithin(subject, 1mm)
+}

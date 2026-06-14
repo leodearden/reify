@@ -27,6 +27,32 @@ pub enum NodeId {
     Compute(ComputeNodeId),
 }
 
+impl NodeId {
+    /// Human-readable, kind-naming description of this node (PRD §3.4).
+    ///
+    /// Produces `"<kind> <id-Display>"` for each variant, naming every kind
+    /// distinctly:
+    /// - `NodeId::Value`       → `"value cell Bracket.width"`
+    /// - `NodeId::Constraint`  → `"constraint Bracket#constraint[0]"`
+    /// - `NodeId::Realization` → `"realization E#realization[0]"`
+    /// - `NodeId::Resolution`  → `"resolution A#resolution[0]"`
+    /// - `NodeId::Compute`     → `"compute A#computation[0]"`
+    ///
+    /// Used by [`crate::engine_fixpoint::run_unified_pass`] to name graph
+    /// members in `E_EVAL_CYCLE` / `E_EVAL_UNRESOLVED` diagnostic messages,
+    /// mirroring the ordered-members `[a, b, c]` shape of the legacy
+    /// `detect_let_cycle` diagnostic.
+    pub fn describe(&self) -> String {
+        match self {
+            NodeId::Value(v) => format!("value cell {v}"),
+            NodeId::Constraint(c) => format!("constraint {c}"),
+            NodeId::Realization(r) => format!("realization {r}"),
+            NodeId::Resolution(s) => format!("resolution {s}"),
+            NodeId::Compute(c) => format!("compute {c}"),
+        }
+    }
+}
+
 impl From<ValueCellId> for NodeId {
     fn from(id: ValueCellId) -> Self {
         NodeId::Value(id)
@@ -1690,6 +1716,83 @@ mod tests {
     use super::*;
     use reify_core::{ConstraintNodeId, RealizationNodeId, Type, ValueCellId};
 
+    /// Task 4357 δ (step-1): `NodeId::describe()` must return a distinct,
+    /// human-readable, kind-naming string for each of the five variants —
+    /// each containing its kind word AND the underlying id's Display. The
+    /// five outputs must be pairwise distinct. Used by `run_unified_pass`'s
+    /// `E_EVAL_CYCLE`/`E_EVAL_UNRESOLVED` messages to name graph members.
+    ///
+    /// RED until step-2 adds `NodeId::describe()`.
+    #[test]
+    fn node_id_describe_names_every_kind_distinctly() {
+        use reify_core::{ComputeNodeId, ResolutionNodeId};
+
+        let value = NodeId::Value(ValueCellId::new("A", "x"));
+        let constraint = NodeId::Constraint(ConstraintNodeId::new("A", 0));
+        let realization = NodeId::Realization(RealizationNodeId::new("A", 0));
+        let resolution = NodeId::Resolution(ResolutionNodeId::new("A", 0));
+        let compute = NodeId::Compute(ComputeNodeId::new("A", 0));
+
+        let dv = value.describe();
+        let dc = constraint.describe();
+        let dr = realization.describe();
+        let ds = resolution.describe();
+        let dk = compute.describe();
+
+        // Each description names its kind word.
+        assert!(dv.contains("value"), "value describe must name kind: {dv}");
+        assert!(
+            dc.contains("constraint"),
+            "constraint describe must name kind: {dc}"
+        );
+        assert!(
+            dr.contains("realization"),
+            "realization describe must name kind: {dr}"
+        );
+        assert!(
+            ds.contains("resolution"),
+            "resolution describe must name kind: {ds}"
+        );
+        assert!(
+            dk.contains("compute"),
+            "compute describe must name kind: {dk}"
+        );
+
+        // Each description embeds the underlying id's Display.
+        assert!(
+            dv.contains(&ValueCellId::new("A", "x").to_string()),
+            "value describe must embed id Display: {dv}"
+        );
+        assert!(
+            dc.contains(&ConstraintNodeId::new("A", 0).to_string()),
+            "constraint describe must embed id Display: {dc}"
+        );
+        assert!(
+            dr.contains(&RealizationNodeId::new("A", 0).to_string()),
+            "realization describe must embed id Display: {dr}"
+        );
+        assert!(
+            ds.contains(&ResolutionNodeId::new("A", 0).to_string()),
+            "resolution describe must embed id Display: {ds}"
+        );
+        assert!(
+            dk.contains(&ComputeNodeId::new("A", 0).to_string()),
+            "compute describe must embed id Display: {dk}"
+        );
+
+        // Pairwise distinct across all five variants.
+        let all = [&dv, &dc, &dr, &ds, &dk];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(
+                    all[i], all[j],
+                    "describe outputs must be pairwise distinct: {} vs {}",
+                    all[i], all[j]
+                );
+            }
+        }
+    }
+
     #[test]
     fn node_id_from_value_cell_id() {
         let vcid = ValueCellId::new("Bracket", "width");
@@ -2133,9 +2236,9 @@ mod tests {
         let y = ValueCellId::new("A", "b");
         let expr = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(y.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         let mut values = ValueMap::new();
@@ -2154,7 +2257,7 @@ mod tests {
     #[test]
     fn compute_input_hash_different_values_produce_different_hashes() {
         let x = ValueCellId::new("A", "a");
-        let expr = CompiledExpr::value_ref(x.clone(), Type::Real);
+        let expr = CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar());
 
         // Values: 1.0
         let mut values1 = ValueMap::new();
@@ -2176,7 +2279,7 @@ mod tests {
     fn compute_input_hash_empty_deps_uses_expr_hash() {
         // Literal expression with no deps
         use std::f64::consts::PI;
-        let expr = CompiledExpr::literal(Value::Real(PI), Type::Real);
+        let expr = CompiledExpr::literal(Value::Real(PI), Type::dimensionless_scalar());
         let values = ValueMap::new();
 
         let hash = compute_input_hash(&expr, &[], &values);
@@ -2194,17 +2297,17 @@ mod tests {
         // a + a
         let expr_add = CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // a * a
         let expr_mul = CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            CompiledExpr::value_ref(x.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         let mut values = ValueMap::new();

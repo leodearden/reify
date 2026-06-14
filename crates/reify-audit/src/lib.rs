@@ -41,6 +41,7 @@ pub mod p1_producer_orphan;
 pub mod pdead_dead_code;
 pub mod puntested;
 pub mod player;
+pub mod ptodo;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
 
@@ -130,6 +131,28 @@ pub enum Pattern {
     /// See task 4140 / esc-4137-196 and
     /// `docs/architecture-audit/f-infra-design.md` §5 P5.
     P5LivePathStranded,
+    /// PTODO — TODO-tracking-invariant: a TODO-family marker that is not backed
+    /// by a *live* canonical `#NNNN` task citation. The §8.3 finding `kind` is
+    /// carried as a stable summary prefix rather than a per-kind variant. Three
+    /// lanes emit under this one variant, all Medium severity:
+    /// - **Structural lane (task α)** — a marker with no canonical cite at all:
+    ///   `untracked` / `malformed-cite` / `phantom-tracking` / `bare-ignore`.
+    /// - **Liveness lane (task β)** — a canonical cite resolved against
+    ///   `.taskmaster/tasks/tasks.db`: `orphaned` (cited status is terminal —
+    ///   done / cancelled — summary carries the id + status) or `unknown-id`
+    ///   (the cite parses but the id is absent from the DB).
+    /// - **Inverse lane (task ζ)** — for each non-terminal task in the master
+    ///   task DB, each `metadata.files` path absent from the tracked-file set
+    ///   is checked for git history: if history exists the path was deleted →
+    ///   `task-cites-deleted-path` (summary carries the task id, path, and last
+    ///   commit sha). Paths that never existed (presumed to-be-created) pass.
+    ///
+    /// The liveness and inverse lanes degrade fail-soft together (§6.7): when
+    /// the task DB is missing or unreadable both are skipped with a single stderr
+    /// breadcrumb and the structural lane still runs in full (exit class unchanged).
+    /// See `docs/prds/reify-audit-ptodo-detector.md` §8 (grammar) / §6.3
+    /// (inverse lane) / §6.7 (degradation).
+    PTodo,
 }
 
 /// A pointer to forensic evidence supporting a [`Finding`]. Renders verbatim
@@ -347,6 +370,32 @@ pub trait GitOps {
     /// Fail-safe: returns `false` on any git error or spawn failure (exit 128
     /// from an unknown commit correctly maps to "not an ancestor").
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool;
+
+    /// Equivalent of `git -C <root> ls-files`: every tracked file path,
+    /// root-relative, one per line. Used by the PTODO structural lane to
+    /// enumerate the working-tree files it scans (content is then read
+    /// directly via `std::fs`, not through this seam). Fail-safe: returns an
+    /// empty vec on any git error (missing repo, spawn failure) — the
+    /// structural lane treats "no tracked files" and "git failed" identically
+    /// (it simply finds nothing to scan).
+    fn ls_files(&self) -> Vec<String>;
+
+    /// Equivalent of `git log -1 --format=<LOG_GREP_FORMAT> -- <path>`:
+    /// returns `Some(GitCommit)` if the path has any git history (including
+    /// paths that were deleted — the `--` ensures the path is treated as a
+    /// pathspec even after deletion), or `None` when the path never existed in
+    /// the repository OR when any git error occurs.
+    ///
+    /// Fail-safe semantics: a git invocation failure (spawn error, non-zero
+    /// exit, non-UTF-8 output) returns `None` rather than propagating an
+    /// error, so the caller (ζ inverse lane) can treat "no history" and
+    /// "git unavailable" identically — a git failure can never manufacture a
+    /// false-positive `task-cites-deleted-path` finding.
+    ///
+    /// Implementation note: uses [`LOG_GREP_FORMAT`] (`%H%x09%s`) and the
+    /// same `splitn(2, '\t')` parse as [`log_grep`], keeping the two seam
+    /// methods consistent.
+    fn last_commit_for_path(&self, path: &str) -> Option<GitCommit>;
 }
 
 /// Production [`GitOps`] impl that shells out to `git`. Untested by the
@@ -619,6 +668,37 @@ impl GitOps for RealGitOps {
             .map(|(i, l)| (i + 1, l.to_string()))
             .collect()
     }
+
+    fn ls_files(&self) -> Vec<String> {
+        let Some(stdout) = self.run_or_warn("ls-files", &["ls-files"]) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn last_commit_for_path(&self, path: &str) -> Option<GitCommit> {
+        // `git log -1 --format=<F> -- <path>` returns the most recent commit
+        // touching `path` (including deletions). The `--` separator ensures
+        // the path is treated as a pathspec even for files no longer present.
+        // run_or_warn returns None on any git failure → fail-safe (no false positive).
+        let stdout = self.run_or_warn(
+            "log -1 (path)",
+            &["log", "-1", &format!("--format={}", LOG_GREP_FORMAT), "--", path],
+        )?;
+        let line = stdout.trim();
+        if line.is_empty() {
+            // Path never existed (or `git log` returned nothing) → not deleted.
+            return None;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let sha = parts.next()?.to_string();
+        let subject = parts.next().unwrap_or("").to_string();
+        Some(GitCommit { sha, subject })
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -641,6 +721,8 @@ pub struct MockGitOps {
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     is_ancestor: HashMap<(String, String), bool>,
+    ls_files: Vec<String>,
+    last_commit_for_path: HashMap<String, GitCommit>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -712,6 +794,16 @@ impl MockGitOps {
         self.file_lines_on
             .insert((reference.to_string(), path.to_string()), lines);
     }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_ls_files(&mut self, files: Vec<String>) {
+        self.ls_files = files;
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_last_commit_for_path(&mut self, path: &str, commit: GitCommit) {
+        self.last_commit_for_path.insert(path.to_string(), commit);
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -767,6 +859,14 @@ impl GitOps for MockGitOps {
             .get(&(commit.to_string(), branch.to_string()))
             .copied()
             .unwrap_or(false)
+    }
+
+    fn ls_files(&self) -> Vec<String> {
+        self.ls_files.clone()
+    }
+
+    fn last_commit_for_path(&self, path: &str) -> Option<GitCommit> {
+        self.last_commit_for_path.get(path).cloned()
     }
 }
 

@@ -16,10 +16,15 @@
 # after verify passes, scripts/land.sh) mark it; this hook consumes it. A main
 # move WITH the sentinel is sanctioned; WITHOUT it is unsanctioned.
 #
-# Rollout is staged (warn now, enforce later):
-#   - default            : warn-only — log sanctioned/unsanctioned, never abort.
-#   - REIFY_MAIN_GATE_ENFORCE=1 : hard-abort an unsanctioned main move (exit 1).
-#   - REIFY_MAIN_GATE_BYPASS=1  : always allow (break-glass), still logged.
+# Rollout is staged (warn now, enforce later). ENFORCE and BYPASS are each
+# resolved by main_gate_{enforce,bypass}_on (hooks/main-gate-lib.sh) from a
+# DURABLE switch, in precedence order: env var (override) → git config
+# reify.mainGate.{enforce,bypass} → a flag file in the common git dir. The
+# durability matters because the long-lived orchestrator merge worker cannot
+# pass an env var down to the `git update-ref` subprocess that fires this hook.
+#   - default     : warn-only — log sanctioned/unsanctioned, never abort.
+#   - ENFORCE on  : hard-abort an unsanctioned main move (exit 1).
+#   - BYPASS on   : always allow (break-glass), still logged.
 #
 # Deliberately runs WITHOUT `set -e`: a warn-only tripwire must never abort a ref
 # update because of an unexpected internal error. The only non-zero exit is the
@@ -31,6 +36,14 @@ STATE="${1:-}"
 # are post-facto notifications whose exit codes git ignores. Bail fast otherwise
 # (this also covers the common case: most ref updates are not on main).
 if [ "$STATE" != "prepared" ]; then
+    # Drain stdin before exiting. git always passes the transaction's ref lines on
+    # stdin (for every state, including these post-facto notifications); if we exit
+    # without reading them, a piped caller under `set -o pipefail` (e.g. the test
+    # harness's `printf ... | bash hook committed`) sees the write end close early,
+    # takes SIGPIPE, and the upstream `printf` exits 141 — turning the pipeline
+    # non-zero and spuriously failing the "committed never aborts" assertion under
+    # load. Draining is correctness-neutral for git (it ignores our exit code here).
+    cat >/dev/null 2>&1
     exit 0
 fi
 
@@ -66,8 +79,8 @@ while read -r _old _new _ref; do
     [ -z "${_old//0/}" ] && continue
     [ -z "${_new//0/}" ] && continue
 
-    if [ "${REIFY_MAIN_GATE_BYPASS:-}" = "1" ]; then
-        main_gate_log "bypass (REIFY_MAIN_GATE_BYPASS=1) main move ${_old} -> ${_new}"
+    if main_gate_bypass_on; then
+        main_gate_log "bypass main move ${_old} -> ${_new}"
         continue
     fi
 
@@ -79,8 +92,8 @@ while read -r _old _new _ref; do
     fi
 
     main_gate_log "UNSANCTIONED main move ${_old} -> ${_new}"
-    if [ "${REIFY_MAIN_GATE_ENFORCE:-}" = "1" ]; then
-        main_gate_log "ENFORCE on (REIFY_MAIN_GATE_ENFORCE=1) — aborting transaction"
+    if main_gate_enforce_on; then
+        main_gate_log "ENFORCE on — aborting transaction"
         exit 1
     fi
     # warn-only default: allow the move (logged above).

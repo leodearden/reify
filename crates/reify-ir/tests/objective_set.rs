@@ -9,7 +9,7 @@ use reify_ir::{ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm
 
 /// Mirror of the in-module `make_literal_expr()` helper in `constraint.rs`.
 /// Integration tests cannot see `#[cfg(test)]` helpers inside the crate, so we
-/// rebuild it here.  Same shape: `Value::Real(1.0)` literal, `Type::Real`,
+/// rebuild it here.  Same shape: `Value::Real(1.0)` literal, `Type::dimensionless_scalar()`,
 /// `ContentHash::of(b"test")`.
 fn make_literal_expr() -> reify_ir::CompiledExpr {
     use reify_ir::expr::CompiledExprKind;
@@ -18,7 +18,7 @@ fn make_literal_expr() -> reify_ir::CompiledExpr {
     use reify_core::ty::Type;
     reify_ir::CompiledExpr {
         kind: CompiledExprKind::Literal(Value::Real(1.0)),
-        result_type: Type::Real,
+        result_type: Type::dimensionless_scalar(),
         content_hash: ContentHash::of(b"test"),
     }
 }

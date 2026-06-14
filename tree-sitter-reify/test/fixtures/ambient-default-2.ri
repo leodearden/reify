@@ -1,0 +1,3 @@
+purpose Exploration() {
+    default Material = steel
+}

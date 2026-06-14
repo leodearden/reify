@@ -129,7 +129,7 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_single_annotation() {
         let field =
-            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::dimensionless_scalar())
                 .imported()
                 .annotation(annotation(DEPRECATED_ANNOTATION))
                 .build();
@@ -140,7 +140,7 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotation_with_args() {
         let field =
-            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::dimensionless_scalar())
                 .imported()
                 .annotation(annotation_with_args(
                     DEPRECATED_ANNOTATION,
@@ -154,7 +154,7 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotations_replace_all() {
         let field =
-            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::dimensionless_scalar())
                 .imported()
                 .annotations(vec![annotation("a"), annotation("b")])
                 .build();
@@ -164,11 +164,11 @@ mod annotation_tests {
     #[test]
     fn compiled_field_builder_annotation_does_not_affect_content_hash() {
         let f1 =
-            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::dimensionless_scalar())
                 .imported()
                 .build();
         let f2 =
-            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::Real)
+            CompiledFieldBuilder::new("f", reify_core::Type::Geometry, reify_core::Type::dimensionless_scalar())
                 .imported()
                 .annotation(annotation(TEST_ANNOTATION))
                 .build();
@@ -185,13 +185,13 @@ mod tests {
     #[test]
     fn compiled_field_builder_analytical_produces_field() {
         let body = literal(Value::Real(1.0));
-        let field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .analytical(body)
             .build();
         assert_eq!(field.name, "temp");
         assert!(!field.is_pub);
         assert_eq!(field.domain_type, Type::Geometry);
-        assert_eq!(field.codomain_type, Type::Real);
+        assert_eq!(field.codomain_type, Type::dimensionless_scalar());
         assert!(matches!(
             field.source,
             CompiledFieldSource::Analytical { .. }
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn compiled_field_builder_public_sampled() {
-        let field = CompiledFieldBuilder::new("vel", Type::Geometry, Type::Real)
+        let field = CompiledFieldBuilder::new("vel", Type::Geometry, Type::dimensionless_scalar())
             .public()
             .sampled(vec![("resolution", literal(Value::Int(32)))])
             .build();
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn compiled_field_builder_composed() {
         let body = literal(Value::Real(0.0));
-        let field = CompiledFieldBuilder::new("composed_f", Type::Geometry, Type::Real)
+        let field = CompiledFieldBuilder::new("composed_f", Type::Geometry, Type::dimensionless_scalar())
             .composed(body)
             .build();
         assert!(matches!(field.source, CompiledFieldSource::Composed { .. }));
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn compiled_field_builder_imported() {
-        let field = CompiledFieldBuilder::new("ext", Type::Geometry, Type::Real)
+        let field = CompiledFieldBuilder::new("ext", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .build();
         assert!(matches!(field.source, CompiledFieldSource::Imported { .. }));
@@ -230,10 +230,10 @@ mod tests {
 
     #[test]
     fn compiled_field_hash_differs_by_domain_type() {
-        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .build();
-        let f2 = CompiledFieldBuilder::new("temp", Type::Real, Type::Real)
+        let f2 = CompiledFieldBuilder::new("temp", Type::dimensionless_scalar(), Type::dimensionless_scalar())
             .imported()
             .build();
         assert_ne!(
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn compiled_field_hash_differs_by_codomain_type() {
-        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f1 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .build();
         let f2 = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Int)
@@ -261,13 +261,13 @@ mod tests {
         // Use different expressions for analytical vs composed so source_hash differs.
         // (Real compiler hashes Analytical/Composed identically via expr.content_hash,
         // so same-expr would match — use distinct exprs to test source sensitivity.)
-        let f_analytical = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f_analytical = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .analytical(literal(Value::Real(1.0)))
             .build();
-        let f_composed = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f_composed = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .composed(literal(Value::Real(2.0)))
             .build();
-        let f_imported = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+        let f_imported = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .build();
         assert_ne!(

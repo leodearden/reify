@@ -284,6 +284,8 @@ fn collect_body_frame_into(members: &[reify_ast::MemberDecl], frame: &mut Frame,
     }
     for member in members {
         match member {
+            // A relate block introduces no bindable names (task δ 4384).
+            MemberDecl::Relate(_) => {}
             MemberDecl::Param(p) => {
                 frame.entry(p.name.clone()).or_insert(p.span);
             }
@@ -370,6 +372,12 @@ fn walk_members_depth(
     }
     for member in members {
         match member {
+            // Walk relate-block relations so shadow lints see them (task δ 4384).
+            MemberDecl::Relate(r) => {
+                for rel in &r.relations {
+                    walk_expr(rel, frames, diagnostics);
+                }
+            }
             MemberDecl::Param(p) => {
                 if let Some(default) = &p.default {
                     walk_expr(default, frames, diagnostics);
@@ -660,6 +668,15 @@ fn walk_expr_depth(
                 }
             }
         }
+        // `auto(seed = …, …)` params carry value expressions; recurse into each
+        // under the current frames so a shadowing ident used inside a param value
+        // is still checked against enclosing scopes (geometric-relations δ, 4384).
+        // α binds no new names, so no shadow-frame is opened.
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                walk_expr_depth(v, frames, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children.
         ExprKind::NumberLiteral { .. }
         | ExprKind::QuantityLiteral { .. }
@@ -667,7 +684,6 @@ fn walk_expr_depth(
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => {}
     }
 }

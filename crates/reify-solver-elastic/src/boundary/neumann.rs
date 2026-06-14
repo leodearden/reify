@@ -751,6 +751,69 @@ mod tests {
         }
     }
 
+    /// Kernel→result half of the task-4440 β §7.1 boundary test (reciprocal
+    /// characterisation of the gravity bridge).
+    ///
+    /// For the unit reference tet (volume = 1/6) with body force [0, 0, -ρg]:
+    ///   (i)  every node's x- and y-DOF force is exactly 0  (only z component)
+    ///   (ii) every node's z-DOF force < 0                  (purely downward)
+    ///   (iii) Σ_i f_z[i] = body_force_z × Volume exactly  (partition of unity)
+    ///
+    /// Partition-of-unity identity: Σ_i ∫ N_i dV = V  →  total scattered force
+    /// equals body_force_z · Volume, independent of mesh density.
+    ///
+    /// This pins the total-weight + sign invariant the gravity bridge relies on;
+    /// combined with the eval-layer step-1 test, a units bug on either side
+    /// fails one direction.  The kernel is pre-existing and correct, so this
+    /// test passes on write.
+    #[test]
+    fn apply_body_force_p1_gravity_vector_downward_total_weight() {
+        let phys_nodes: [[f64; 3]; 4] = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let connectivity = [0usize, 1, 2, 3];
+        let body_force_z = -76982.2_f64; // representative ρg  (N·m⁻³)
+        let body_force = [0.0_f64, 0.0, body_force_z];
+        let volume = 1.0_f64 / 6.0; // unit reference tet volume
+
+        let mut f = vec![0.0_f64; 12]; // 4 nodes × 3 DOFs
+        apply_body_force(&mut f, ElementOrder::P1, &connectivity, &phys_nodes, body_force);
+
+        for node in 0..4 {
+            // (i) x- and y-DOFs must be zero — body force has no x/y component
+            assert_eq!(
+                f[3 * node],
+                0.0,
+                "node {node} x-DOF: expected 0.0, got {}",
+                f[3 * node]
+            );
+            assert_eq!(
+                f[3 * node + 1],
+                0.0,
+                "node {node} y-DOF: expected 0.0, got {}",
+                f[3 * node + 1]
+            );
+            // (ii) z-DOF must be strictly negative (downward body force)
+            let fz = f[3 * node + 2];
+            assert!(
+                fz < 0.0,
+                "node {node} z-DOF: expected < 0.0 (downward), got {fz}"
+            );
+        }
+
+        // (iii) partition-of-unity: Σ f_z[i] = body_force_z × volume  (exact)
+        let z_sum: f64 = (0..4).map(|n| f[3 * n + 2]).sum();
+        let expected_z_sum = body_force_z * volume;
+        assert!(
+            (z_sum - expected_z_sum).abs() < 1e-9,
+            "z-force sum: expected {expected_z_sum:.9}, got {z_sum:.9} (diff {})",
+            (z_sum - expected_z_sum).abs()
+        );
+    }
+
     /// Pins the scatter target: non-contiguous connectivity `[4, 0, 7, 2]` into
     /// a 10-node global `f` (length 30). A regression treating local index `i`
     /// as the global index would write into `f[0..12]` instead of the correct

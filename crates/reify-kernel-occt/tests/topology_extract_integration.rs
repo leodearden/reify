@@ -423,6 +423,7 @@ fn extract_edges_after_fillet_count_differs_from_box() {
     let filleted = kernel
         .execute(&GeometryOp::Fillet {
             target: box_id,
+            edges: vec![],
             radius: Value::Real(0.001),
         })
         .expect("Fillet of a 10mm box with 1mm radius should succeed");

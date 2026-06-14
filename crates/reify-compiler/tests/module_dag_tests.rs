@@ -18,14 +18,14 @@ fn circular_import_detected() {
     // Module a imports b
     fs::write(
         dir.join("a.ri"),
-        "import b\nstructure A { param x: Scalar = 1mm }",
+        "import b\nstructure A { param x: Length = 1mm }",
     )
     .unwrap();
 
     // Module b imports a (circular)
     fs::write(
         dir.join("b.ri"),
-        "import a\nstructure B { param y: Scalar = 2mm }",
+        "import a\nstructure B { param y: Length = 2mm }",
     )
     .unwrap();
 
@@ -55,26 +55,26 @@ fn diamond_import_compiles_each_module_once() {
     let dir = _tmp.path().to_path_buf();
 
     // D (leaf) — no imports
-    fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
+    fs::write(dir.join("d.ri"), "structure D { param v: Length = 1mm }").unwrap();
 
     // B depends on D
     fs::write(
         dir.join("b.ri"),
-        "import d\nstructure B { param v: Scalar = 2mm }",
+        "import d\nstructure B { param v: Length = 2mm }",
     )
     .unwrap();
 
     // C depends on D
     fs::write(
         dir.join("c.ri"),
-        "import d\nstructure C { param v: Scalar = 3mm }",
+        "import d\nstructure C { param v: Length = 3mm }",
     )
     .unwrap();
 
     // A depends on B and C (diamond: A→B→D, A→C→D)
     fs::write(
         dir.join("a.ri"),
-        "import b\nimport c\nstructure A { param v: Scalar = 4mm }",
+        "import b\nimport c\nstructure A { param v: Length = 4mm }",
     )
     .unwrap();
 
@@ -106,19 +106,19 @@ fn topological_order_leaves_first() {
     let dir = _tmp.path().to_path_buf();
 
     // C (leaf)
-    fs::write(dir.join("c.ri"), "structure C { param v: Scalar = 1mm }").unwrap();
+    fs::write(dir.join("c.ri"), "structure C { param v: Length = 1mm }").unwrap();
 
     // B depends on C
     fs::write(
         dir.join("b.ri"),
-        "import c\nstructure B { param v: Scalar = 2mm }",
+        "import c\nstructure B { param v: Length = 2mm }",
     )
     .unwrap();
 
     // A depends on B
     fs::write(
         dir.join("a.ri"),
-        "import b\nstructure A { param v: Scalar = 3mm }",
+        "import b\nstructure A { param v: Length = 3mm }",
     )
     .unwrap();
 
@@ -137,26 +137,26 @@ fn topological_order_diamond() {
     let dir = _tmp.path().to_path_buf();
 
     // D (leaf)
-    fs::write(dir.join("d.ri"), "structure D { param v: Scalar = 1mm }").unwrap();
+    fs::write(dir.join("d.ri"), "structure D { param v: Length = 1mm }").unwrap();
 
     // B depends on D
     fs::write(
         dir.join("b.ri"),
-        "import d\nstructure B { param v: Scalar = 2mm }",
+        "import d\nstructure B { param v: Length = 2mm }",
     )
     .unwrap();
 
     // C depends on D
     fs::write(
         dir.join("c.ri"),
-        "import d\nstructure C { param v: Scalar = 3mm }",
+        "import d\nstructure C { param v: Length = 3mm }",
     )
     .unwrap();
 
     // A depends on B and C
     fs::write(
         dir.join("a.ri"),
-        "import b\nimport c\nstructure A { param v: Scalar = 4mm }",
+        "import b\nimport c\nstructure A { param v: Length = 4mm }",
     )
     .unwrap();
 
@@ -187,14 +187,14 @@ fn entity_import_resolves_structure_name() {
     // Module a defines a pub structure Bolt
     fs::write(
         dir.join("a.ri"),
-        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+        "pub structure Bolt {\n    param d: Length = 6mm\n}",
     )
     .unwrap();
 
     // Module b imports Bolt from a and uses it in a sub declaration
     fs::write(
         dir.join("b.ri"),
-        "import a.Bolt\nstructure Assembly {\n    param size: Scalar = 10mm\n    sub b = Bolt(d: 8mm)\n}",
+        "import a.Bolt\nstructure Assembly {\n    param size: Length = 10mm\n    sub b = Bolt(d: 8mm)\n}",
     )
     .unwrap();
 
@@ -226,14 +226,14 @@ fn local_definition_shadows_import_with_warning() {
     // Module a defines Bolt
     fs::write(
         dir.join("a.ri"),
-        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+        "pub structure Bolt {\n    param d: Length = 6mm\n}",
     )
     .unwrap();
 
     // Module b imports Bolt but also defines its own Bolt
     fs::write(
         dir.join("b.ri"),
-        "import a.Bolt\nstructure Bolt {\n    param d: Scalar = 10mm\n}",
+        "import a.Bolt\nstructure Bolt {\n    param d: Length = 10mm\n}",
     )
     .unwrap();
 
@@ -259,21 +259,21 @@ fn pub_import_re_exports_entity() {
     // Module a defines Helper
     fs::write(
         dir.join("a.ri"),
-        "pub structure Helper {\n    param v: Scalar = 1mm\n}",
+        "pub structure Helper {\n    param v: Length = 1mm\n}",
     )
     .unwrap();
 
     // Module b re-exports Helper from a
     fs::write(
         dir.join("b.ri"),
-        "pub import a.Helper\nstructure Wrapper {\n    param w: Scalar = 2mm\n}",
+        "pub import a.Helper\nstructure Wrapper {\n    param w: Length = 2mm\n}",
     )
     .unwrap();
 
     // Module c imports Helper through b
     fs::write(
         dir.join("c.ri"),
-        "import b.Helper\nstructure User {\n    param u: Scalar = 3mm\n    sub h = Helper(v: u)\n}",
+        "import b.Helper\nstructure User {\n    param u: Length = 3mm\n    sub h = Helper(v: u)\n}",
     )
     .unwrap();
 
@@ -304,8 +304,8 @@ fn backward_compatible_single_module_no_imports() {
     // The canonical bracket source (no imports) should compile
     // through both the existing compile() function and the DAG
     let source = r#"structure Bracket {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
+    param width: Length = 80mm
+    param height: Length = 100mm
     let volume = width * height
     constraint width > 0mm
 }"#;
@@ -351,7 +351,7 @@ fn dag_recovers_after_parse_error_in_dependency() {
     // Module a imports b
     fs::write(
         dir.join("a.ri"),
-        "import b\nstructure A { param x: Scalar = 1mm }",
+        "import b\nstructure A { param x: Length = 1mm }",
     )
     .unwrap();
 
@@ -369,7 +369,7 @@ fn dag_recovers_after_parse_error_in_dependency() {
     );
 
     // Fix module b on disk
-    fs::write(dir.join("b.ri"), "structure B { param y: Scalar = 2mm }").unwrap();
+    fs::write(dir.join("b.ri"), "structure B { param y: Length = 2mm }").unwrap();
 
     // Second attempt on the SAME dag instance: should succeed
     // This proves in_progress was cleaned up after the first failure
@@ -395,14 +395,14 @@ fn compiled_import_preserves_kind_and_is_pub() {
     // Module a defines a pub structure Helper
     fs::write(
         dir.join("a.ri"),
-        "pub structure Helper {\n    param v: Scalar = 1mm\n}",
+        "pub structure Helper {\n    param v: Length = 1mm\n}",
     )
     .unwrap();
 
     // Module b has a pub import (re-export) and a plain module import
     fs::write(
         dir.join("b.ri"),
-        "pub import a.Helper\nimport a\nstructure Wrapper {\n    param w: Scalar = 2mm\n}",
+        "pub import a.Helper\nimport a\nstructure Wrapper {\n    param w: Length = 2mm\n}",
     )
     .unwrap();
 
@@ -586,7 +586,7 @@ fn compile_module_prelude_propagates_pub_structure() {
     // Module c: defines pub structure Part
     fs::write(
         dir.join("c.ri"),
-        "pub structure Part {\n    param x: Scalar = 1mm\n}",
+        "pub structure Part {\n    param x: Length = 1mm\n}",
     )
     .unwrap();
 
@@ -641,14 +641,14 @@ fn compile_module_multi_import_prelude() {
     // Module x: pub structure Bolt
     fs::write(
         dir.join("x.ri"),
-        "pub structure Bolt {\n    param d: Scalar = 6mm\n}",
+        "pub structure Bolt {\n    param d: Length = 6mm\n}",
     )
     .unwrap();
 
     // Module y: pub structure Nut
     fs::write(
         dir.join("y.ri"),
-        "pub structure Nut {\n    param d: Scalar = 6mm\n}",
+        "pub structure Nut {\n    param d: Length = 6mm\n}",
     )
     .unwrap();
 
@@ -724,21 +724,21 @@ fn circular_import_error_message_deterministic() {
     // cherry imports apple (DFS entry point)
     fs::write(
         dir.join("cherry.ri"),
-        "import apple\nstructure Cherry { param x: Scalar = 1mm }",
+        "import apple\nstructure Cherry { param x: Length = 1mm }",
     )
     .unwrap();
 
     // apple imports banana
     fs::write(
         dir.join("apple.ri"),
-        "import banana\nstructure Apple { param y: Scalar = 2mm }",
+        "import banana\nstructure Apple { param y: Length = 2mm }",
     )
     .unwrap();
 
     // banana imports cherry (closes the cycle: cherry -> apple -> banana -> cherry)
     fs::write(
         dir.join("banana.ri"),
-        "import cherry\nstructure Banana { param z: Scalar = 3mm }",
+        "import cherry\nstructure Banana { param z: Length = 3mm }",
     )
     .unwrap();
 
@@ -816,14 +816,14 @@ fn compile_project_multi_import_prelude() {
     // Module p: pub structure Pin
     fs::write(
         dir.join("p.ri"),
-        "pub structure Pin {\n    param d: Scalar = 2mm\n}",
+        "pub structure Pin {\n    param d: Length = 2mm\n}",
     )
     .unwrap();
 
     // Module q: pub structure Socket
     fs::write(
         dir.join("q.ri"),
-        "pub structure Socket {\n    param d: Scalar = 2mm\n}",
+        "pub structure Socket {\n    param d: Length = 2mm\n}",
     )
     .unwrap();
 
@@ -903,7 +903,7 @@ fn no_prelude_suppresses_import_prelude() {
     // dep.ri: exports pub unit myunit
     fs::write(
         dir.join("dep.ri"),
-        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Length = 1mm\n}",
     )
     .unwrap();
 
@@ -929,7 +929,7 @@ fn no_prelude_suppresses_import_prelude() {
     let dir2 = _tmp2.path().to_path_buf();
     fs::write(
         dir2.join("dep.ri"),
-        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Scalar = 1mm\n}",
+        "pub unit myunit : Length = 0.001\npub structure Part {\n    param x: Length = 1mm\n}",
     )
     .unwrap();
     fs::write(
@@ -963,7 +963,7 @@ fn private_unit_not_exported_through_import_prelude() {
     // dep.ri: private unit (no pub) and a pub structure to make import valid
     fs::write(
         dir.join("dep.ri"),
-        "unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+        "unit secret : Length = 0.005\npub structure Widget {\n    param w: Length = 1mm\n}",
     )
     .unwrap();
 
@@ -989,7 +989,7 @@ fn private_unit_not_exported_through_import_prelude() {
     let dir2 = _tmp2.path().to_path_buf();
     fs::write(
         dir2.join("dep.ri"),
-        "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Scalar = 1mm\n}",
+        "pub unit secret : Length = 0.005\npub structure Widget {\n    param w: Length = 1mm\n}",
     )
     .unwrap();
     fs::write(
@@ -1025,21 +1025,21 @@ fn cycle_error_excludes_non_cycle_ancestors() {
     // d imports a (DFS entry; d is NOT in the cycle)
     fs::write(
         dir.join("d.ri"),
-        "import a\nstructure D { param v: Scalar = 4mm }",
+        "import a\nstructure D { param v: Length = 4mm }",
     )
     .unwrap();
 
     // a imports b
     fs::write(
         dir.join("a.ri"),
-        "import b\nstructure A { param v: Scalar = 1mm }",
+        "import b\nstructure A { param v: Length = 1mm }",
     )
     .unwrap();
 
     // b imports a (closes the cycle: a -> b -> a)
     fs::write(
         dir.join("b.ri"),
-        "import a\nstructure B { param v: Scalar = 2mm }",
+        "import a\nstructure B { param v: Length = 2mm }",
     )
     .unwrap();
 
@@ -1094,21 +1094,21 @@ fn cycle_error_preserves_dfs_traversal_order() {
     // zebra imports middle (DFS entry point)
     fs::write(
         dir.join("zebra.ri"),
-        "import middle\nstructure Zebra { param v: Scalar = 3mm }",
+        "import middle\nstructure Zebra { param v: Length = 3mm }",
     )
     .unwrap();
 
     // middle imports alpha
     fs::write(
         dir.join("middle.ri"),
-        "import alpha\nstructure Middle { param v: Scalar = 2mm }",
+        "import alpha\nstructure Middle { param v: Length = 2mm }",
     )
     .unwrap();
 
     // alpha imports zebra (closes the cycle: zebra -> middle -> alpha -> zebra)
     fs::write(
         dir.join("alpha.ri"),
-        "import zebra\nstructure Alpha { param v: Scalar = 1mm }",
+        "import zebra\nstructure Alpha { param v: Length = 1mm }",
     )
     .unwrap();
 
@@ -1449,7 +1449,7 @@ fn partial_stdlib_overlay_errors_when_outer_fs_and_inner_embedded() {
     fs::create_dir_all(&stdlib_dir).unwrap();
     fs::write(
         stdlib_dir.join("foo.ri"),
-        "import std.units\npub structure Foo { param v: Scalar = 1mm }",
+        "import std.units\npub structure Foo { param v: Length = 1mm }",
     )
     .unwrap();
     // units.ri intentionally NOT written — std.units must fall back to embedded stdlib.
@@ -1618,7 +1618,7 @@ fn compile_project_with_entry_source_dirty_entry_with_disk_import() {
     // Only the sibling dep.ri is on disk; entry.ri is never created.
     fs::write(
         dir.join("dep.ri"),
-        "pub structure Helper { param d: Scalar = 1mm }",
+        "pub structure Helper { param d: Length = 1mm }",
     )
     .unwrap();
 
@@ -1664,7 +1664,7 @@ fn compile_project_with_entry_source_uses_in_memory_source_not_disk() {
     // dep.ri: sibling on disk, imported by both the disk and in-memory variants.
     fs::write(
         dir.join("dep.ri"),
-        "pub structure Helper { param d: Scalar = 1mm }",
+        "pub structure Helper { param d: Length = 1mm }",
     )
     .unwrap();
 
@@ -1723,7 +1723,7 @@ fn compile_project_with_entry_source_parity_with_compile_project_when_source_mat
     let _tmp = tempfile::tempdir().unwrap();
     let dir = _tmp.path().to_path_buf();
 
-    let dep_source = "pub structure Helper { param d: Scalar = 1mm }";
+    let dep_source = "pub structure Helper { param d: Length = 1mm }";
     let entry_source = "import dep.Helper\nstructure Top {\n    sub h = Helper(d: 5mm)\n}";
 
     fs::write(dir.join("dep.ri"), dep_source).unwrap();
@@ -1876,7 +1876,7 @@ fn entry_source_diagnostics(entry_source: &str) -> Vec<reify_core::Diagnostic> {
 #[test]
 fn entry_source_matching_module_decl_no_path_diagnostic() {
     // `module main` matches stem "main" → no E/W path diagnostic
-    let diags = entry_source_diagnostics("module main\nstructure S { param x: Scalar = 1mm }");
+    let diags = entry_source_diagnostics("module main\nstructure S { param x: Length = 1mm }");
     let path_diags: Vec<_> = diags
         .iter()
         .filter(|d| {
@@ -1894,7 +1894,7 @@ fn entry_source_matching_module_decl_no_path_diagnostic() {
 #[test]
 fn entry_source_mismatched_module_decl_emits_error() {
     // `module a.b.c` != stem "main" → E_MODULE_PATH_MISMATCH Error
-    let diags = entry_source_diagnostics("module a.b.c\nstructure S { param x: Scalar = 1mm }");
+    let diags = entry_source_diagnostics("module a.b.c\nstructure S { param x: Length = 1mm }");
     let mismatch: Vec<_> = diags
         .iter()
         .filter(|d| d.message.contains("E_MODULE_PATH_MISMATCH"))
@@ -1914,7 +1914,7 @@ fn entry_source_mismatched_module_decl_emits_error() {
 #[test]
 fn entry_source_absent_module_decl_emits_warning() {
     // No module declaration → W_MODULE_DECL_MISSING Warning
-    let diags = entry_source_diagnostics("structure S { param x: Scalar = 1mm }");
+    let diags = entry_source_diagnostics("structure S { param x: Length = 1mm }");
     let missing: Vec<_> = diags
         .iter()
         .filter(|d| d.message.contains("W_MODULE_DECL_MISSING"))
@@ -1941,7 +1941,7 @@ fn dag_dep_diagnostics(dep_source: &str) -> Vec<reify_core::Diagnostic> {
 
     fs::write(
         dir.join("a.ri"),
-        "import dep\nstructure A { param x: Scalar = 1mm }",
+        "import dep\nstructure A { param x: Length = 1mm }",
     )
     .unwrap();
     fs::write(dir.join("dep.ri"), dep_source).unwrap();
@@ -1956,7 +1956,7 @@ fn dag_dep_diagnostics(dep_source: &str) -> Vec<reify_core::Diagnostic> {
 #[test]
 fn dag_matching_module_decl_no_path_diagnostic() {
     // dep.ri declares `module dep` (matches resolver path "dep") → no E/W diagnostic
-    let diags = dag_dep_diagnostics("module dep\nstructure Dep { param x: Scalar = 1mm }");
+    let diags = dag_dep_diagnostics("module dep\nstructure Dep { param x: Length = 1mm }");
     let path_diags: Vec<_> = diags
         .iter()
         .filter(|d| {
@@ -1974,7 +1974,7 @@ fn dag_matching_module_decl_no_path_diagnostic() {
 #[test]
 fn dag_mismatched_module_decl_emits_error() {
     // dep.ri declares `module not.dep` (mismatch) → E_MODULE_PATH_MISMATCH Error
-    let diags = dag_dep_diagnostics("module not.dep\nstructure Dep { param x: Scalar = 1mm }");
+    let diags = dag_dep_diagnostics("module not.dep\nstructure Dep { param x: Length = 1mm }");
     let mismatch: Vec<_> = diags
         .iter()
         .filter(|d| d.message.contains("E_MODULE_PATH_MISMATCH"))
@@ -1994,7 +1994,7 @@ fn dag_mismatched_module_decl_emits_error() {
 #[test]
 fn dag_absent_module_decl_emits_warning() {
     // dep.ri has no module declaration → W_MODULE_DECL_MISSING Warning
-    let diags = dag_dep_diagnostics("structure Dep { param x: Scalar = 1mm }");
+    let diags = dag_dep_diagnostics("structure Dep { param x: Length = 1mm }");
     let missing: Vec<_> = diags
         .iter()
         .filter(|d| d.message.contains("W_MODULE_DECL_MISSING"))

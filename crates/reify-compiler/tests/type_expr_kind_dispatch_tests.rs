@@ -397,7 +397,7 @@ fn assert_one_error_containing(compiled: &reify_compiler::CompiledModule, substr
 }
 
 /// A DimensionalOp as an entity param type should produce a diagnostic, not
-/// silently fall back to Type::Real with no feedback.
+/// silently fall back to Type::dimensionless_scalar() with no feedback.
 #[test]
 fn dim_op_in_entity_param_emits_diagnostic() {
     let te = dim_op(DimOp::Mul, named("Force"), named("Length"));
@@ -441,7 +441,7 @@ fn dim_op_in_field_domain_emits_exactly_one_diagnostic() {
 }
 
 /// A DimensionalOp as a trait-bound type argument should produce a diagnostic,
-/// not silently fall back to Type::Real.
+/// not silently fall back to Type::dimensionless_scalar().
 #[test]
 fn dim_op_in_trait_bound_type_arg_emits_diagnostic() {
     let te = dim_op(DimOp::Mul, named("Mass"), named("Acceleration"));

@@ -25,6 +25,8 @@ export const DEFAULT_SIDE_WIDTH = 300;
 export const DEFAULT_DESIGN_TREE_HEIGHT = 160;
 export const DEFAULT_PROPERTY_HEIGHT = 200;
 export const DEFAULT_CONSTRAINT_HEIGHT = 140;
+export const DEFAULT_PROBLEMS_HEIGHT = 160;
+export const DEFAULT_PROBLEMS_COLLAPSED = true;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -41,6 +43,8 @@ export function createLayoutStore() {
     designTreeHeight: saved?.designTreeHeight ?? DEFAULT_DESIGN_TREE_HEIGHT,
     propertyHeight: saved?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT,
     constraintHeight: saved?.constraintHeight ?? DEFAULT_CONSTRAINT_HEIGHT,
+    problemsHeight: saved?.problemsHeight ?? DEFAULT_PROBLEMS_HEIGHT,
+    problemsCollapsed: saved?.problemsCollapsed ?? DEFAULT_PROBLEMS_COLLAPSED,
   });
 
   // -------------------------------------------------------------------------
@@ -58,6 +62,11 @@ export function createLayoutStore() {
   const setDesignTreeHeight = makeSetter('designTreeHeight');
   const setPropertyHeight = makeSetter('propertyHeight');
   const setConstraintHeight = makeSetter('constraintHeight');
+  const setProblemsHeight = makeSetter('problemsHeight');
+
+  type BooleanUpdater = boolean | ((prev: boolean) => boolean);
+  const setProblemsCollapsed = (v: BooleanUpdater) =>
+    setState('problemsCollapsed', v as any);
 
   // -------------------------------------------------------------------------
   // Debounced persistence
@@ -72,6 +81,8 @@ export function createLayoutStore() {
       designTreeHeight: state.designTreeHeight,
       propertyHeight: state.propertyHeight,
       constraintHeight: state.constraintHeight,
+      problemsHeight: state.problemsHeight,
+      problemsCollapsed: state.problemsCollapsed,
     };
     clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => savePanelLayout(layout), SAVE_DEBOUNCE_MS);
@@ -86,6 +97,8 @@ export function createLayoutStore() {
     setDesignTreeHeight,
     setPropertyHeight,
     setConstraintHeight,
+    setProblemsHeight,
+    setProblemsCollapsed,
   };
 }
 

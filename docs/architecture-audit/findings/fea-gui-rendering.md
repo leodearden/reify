@@ -83,7 +83,7 @@
 - **Failure mode:** N/A
 - **Evidence:** `gui/src/stores/feaModeStore.ts` (state + setters + `tryAutoEnable`); `gui/src/viewport/FeaModeToolbar.tsx`; `gui/src/__tests__/feaModeStore.test.ts`; task 2961 done commit `2f345a9951`. `Viewport.tsx:216` invokes `feaStore.tryAutoEnable(channel)` when a scalar channel arrives — auto-promote semantics per PRD §Resolved are present.
 - **Blocks:** —
-- **Note:** "Lock Current" handler is implemented per task 2961 description; but task 2962 description still mentions an empty TODO at `Viewport.tsx:384-386` for that handler. Worth a re-grep at sync; not material to this PRD's gap-count beyond noting partial state.
+- **Note:** "Lock Current" handler is implemented per task 2961 description. (RESOLVED 2026-06-11: a stale cross-reference here to an empty TODO at `Viewport.tsx:384-386` was removed — no such TODO exists.)
 
 ### M-010: Stress contour rendering — end-to-end wiring
 

@@ -491,20 +491,13 @@ fn geo_fn(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExp
     }
 }
 
-/// SolverRegistry dispatches geometric constraints to SolveSpaceSolver.
+/// Returns `(x_id, y_id, problem)` for a `pt_pt_distance == 10mm` geometric problem.
 ///
-/// Creates a registry with DimensionalSolver + SolveSpaceSolver, then sends
-/// a geometric constraint (pt_pt_distance via std::geo::*). The classifier
-/// identifies it as Geometric, and the registry dispatches to SolveSpaceSolver.
-#[test]
-fn registry_dispatches_geometric_to_solvespace() {
-    let registry = SolverRegistry::with_solvers(
-        Box::new(DimensionalSolver),
-        Some(Box::new(SolveSpaceSolver)),
-        None,
-        None,
-    );
-
+/// Both `registry_dispatches_geometric_to_solvespace` and
+/// `production_registry_routes_geometric_to_solvespace` use this fixture — only the
+/// registry construction differs between the two.  If the geometric fixture changes,
+/// edit here once.
+fn pt_pt_distance_problem() -> (reify_core::ValueCellId, reify_core::ValueCellId, ResolutionProblem) {
     let x_id = vcid("Point", "x");
     let y_id = vcid("Point", "y");
 
@@ -556,23 +549,59 @@ fn registry_dispatches_geometric_to_solvespace() {
         functions: vec![].into(),
     };
 
-    let result = registry.solve(&problem);
+    (x_id, y_id, problem)
+}
+
+/// Asserts `result` is `SolveResult::Solved` and `sqrt(x²+y²) ≈ 0.01 m` (10 mm) within 1e-6 m.
+fn assert_solved_distance_10mm(
+    result: SolveResult,
+    x_id: &reify_core::ValueCellId,
+    y_id: &reify_core::ValueCellId,
+) {
     match result {
         SolveResult::Solved { values, .. } => {
-            let x_val = values.get(&x_id).unwrap().as_f64().unwrap();
-            let y_val = values.get(&y_id).unwrap().as_f64().unwrap();
+            let x_val = values.get(x_id).unwrap().as_f64().unwrap();
+            let y_val = values.get(y_id).unwrap().as_f64().unwrap();
             let actual_dist = (x_val * x_val + y_val * y_val).sqrt();
             assert!(
                 (actual_dist - 0.01).abs() < 1e-6,
-                "registry should dispatch to SolveSpaceSolver: distance should be ~10mm (0.01m), got {} m",
+                "distance should be ~10mm (0.01m), got {} m",
                 actual_dist,
             );
         }
-        other => panic!(
-            "expected Solved via SolveSpaceSolver dispatch, got {:?}",
-            other
-        ),
+        other => panic!("expected Solved, got {:?}", other),
     }
+}
+
+/// SolverRegistry dispatches geometric constraints to SolveSpaceSolver.
+///
+/// Creates a registry with DimensionalSolver + SolveSpaceSolver, then sends
+/// a geometric constraint (pt_pt_distance via std::geo::*). The classifier
+/// identifies it as Geometric, and the registry dispatches to SolveSpaceSolver.
+#[test]
+fn registry_dispatches_geometric_to_solvespace() {
+    let registry = SolverRegistry::with_solvers(
+        Box::new(DimensionalSolver),
+        Some(Box::new(SolveSpaceSolver)),
+        None,
+        None,
+    );
+    let (x_id, y_id, problem) = pt_pt_distance_problem();
+    assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
+}
+
+/// `SolverRegistry::production()` dispatches geometric constraints to SolveSpaceSolver.
+///
+/// Proves that the production factory installs SolveSpaceSolver as the geometric
+/// slot: feeds the same `pt_pt_distance` geometric ResolutionProblem used by
+/// `registry_dispatches_geometric_to_solvespace` but constructs the registry via
+/// `SolverRegistry::production()`.  This is the single source of truth that both
+/// the CLI and GUI engines install.
+#[test]
+fn production_registry_routes_geometric_to_solvespace() {
+    let registry = SolverRegistry::production();
+    let (x_id, y_id, problem) = pt_pt_distance_problem();
+    assert_solved_distance_10mm(registry.solve(&problem), &x_id, &y_id);
 }
 
 /// Mixed dimensional + geometric constraints solved through SolverRegistry.

@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Internal type alias entry — stored in the registry during compilation.
 ///
@@ -570,9 +570,30 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "FaceSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Face)),
         "EdgeSelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Edge)),
         "BodySelector" => Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
+        // Kind-agnostic selector param annotation (PRD §4.2/§11.1, task 4369/A2).
+        // Bare "Selector" resolves to Type::AnySelector so a param declared as
+        // `target : Selector` accepts a Selector value of ANY concrete kind
+        // (Face/Edge/Body), while single-kind params (FaceSelector etc.) keep
+        // exact-kind checking.  resolve_type_with_aliases inherits this arm
+        // automatically since it delegates to resolve_type_name for builtin names.
+        "Selector" => Some(Type::AnySelector),
+        // Datum-receiver type names (task 4382 / β; see esc-4382-157). β owns
+        // `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+        // vocabulary (adjacent to the geometry-transforms PRD) so default-less
+        // params like `param a : Axis` type-check without a value constructor.
+        // `Frame` resolves to the 3D frame `Type::Frame(3)`.
+        "Direction" => Some(Type::Direction),
+        "Axis" => Some(Type::Axis),
+        "Plane" => Some(Type::Plane),
+        "Frame" => Some(Type::Frame(3)),
+        // Geometric-relation directive type (geometric-relations γ, task 4383).
+        // `fn concentric(...) -> Relation` and `param r : Relation` type-check;
+        // a relation is a DOF-removal directive (no truth value), distinct from
+        // Bool. Evaluates to Value::Undef until ζ supplies the relate-solve.
+        "Relation" => Some(Type::Relation),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
-        "Real" => Some(Type::Real),
+        "Real" => Some(Type::dimensionless_scalar()),
         "String" => Some(Type::String),
         // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
         // None for it); mirror the special-case used in resolve_dimension_type.
@@ -805,6 +826,7 @@ pub(crate) fn resolve_type_alias_expr(
                     &HashSet::new(),
                     &HashSet::new(),
                     &HashSet::new(),
+                    &HashSet::new(), // alias DFS: no dim params in scope
                 ) {
                     diagnostics.extend(tmp_diags);
                     return Some(ty);
@@ -953,9 +975,48 @@ pub(crate) fn resolve_type_alias_expr_to_dimension(
 /// Falls through: builtins → type params → non-parameterized aliases →
 /// parameterized aliases → trait names.
 /// Returns None if the type cannot be resolved (caller handles "unresolved" error).
+///
+/// Thin wrapper around [`resolve_type_expr_with_aliases_kinded`] with an empty
+/// `dim_param_names` set.  The ~30 external callers stay untouched; only
+/// function-signature resolution (which knows about dimension-kinded params)
+/// calls the kinded entry directly.
 pub(crate) fn resolve_type_expr_with_aliases(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    diagnostics: &mut Vec<Diagnostic>,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+) -> Option<Type> {
+    resolve_type_expr_with_aliases_kinded(
+        type_expr,
+        type_param_names,
+        &HashSet::new(),
+        alias_registry,
+        diagnostics,
+        structure_names,
+        trait_names,
+    )
+}
+
+/// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
+///
+/// Identical to the 6-arg wrapper but accepts a `dim_param_names` set that
+/// names the dimension-kinded type parameters in scope (params declared with
+/// `Q: Dimension`).  These names are threaded into
+/// [`resolve_parameterized_builtin_type`] so that `Scalar<Q>`, `Vector3<Q>`,
+/// and `Point3<Q>` arms can detect a dimension-param in the slot and return
+/// `Type::ScalarParam(Q)` / `Type::vec3(ScalarParam(Q))` / `Type::point3(ScalarParam(Q))`
+/// instead of routing to `resolve_type_alias_expr_to_dimension`.
+///
+/// Called directly by `compile_function` and `compile_assoc_function` (which
+/// build the dim-param set from `fn_def.type_params`).  All other callers go
+/// through the 6-arg wrapper with an empty dim set.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_type_expr_with_aliases_kinded(
+    type_expr: &reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
     alias_registry: &TypeAliasRegistry,
     diagnostics: &mut Vec<Diagnostic>,
     structure_names: &HashSet<String>,
@@ -993,9 +1054,40 @@ pub(crate) fn resolve_type_expr_with_aliases(
             structure_names,
             trait_names,
             type_param_names,
+            dim_param_names,
         )
     {
         return Some(ty);
+    }
+
+    // Bare dimension-kinded param intercept (task ε, kind-misuse case #2).
+    //
+    // A dimension-kinded type parameter (Q ∈ dim_param_names) may ONLY appear
+    // in a dimension slot (Scalar<Q>, Vector3<Q>, Point3<Q>); using it as a
+    // bare ordinary type — e.g. `fn k<Q: Dimension>(x: Q)` — is a kind error.
+    // Intercept BEFORE resolve_type_with_aliases so we do NOT return
+    // Type::TypeParam("Q") (which would be silently wrong); emit a single
+    // DimParamKind Error + return Some(Type::Error) (anti-cascade poison).
+    //
+    // Guard: type_args is empty (bare name) and name ∈ dim_param_names.
+    // Non-bare usages (Q<…>) fall through to the concrete path as before.
+    // This interception fires ONLY in the kinded path; the thin 6-arg wrapper
+    // passes an empty dim_param_names, so non-fn-signature callers are unaffected.
+    if type_args.is_empty() && dim_param_names.contains(name) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "dimension-kinded type parameter '{}' used as an ordinary type; \
+                 it may only appear in a dimension slot, e.g. `Scalar<{}>`, `Vector3<{}>`, \
+                 or `Point3<{}>`",
+                name, name, name, name
+            ))
+            .with_code(DiagnosticCode::DimParamKind)
+            .with_label(DiagnosticLabel::new(
+                type_expr.span,
+                "dimension-kinded parameter cannot be used as an ordinary type",
+            )),
+        );
+        return Some(Type::Error);
     }
 
     // Simple name resolution (builtins, type params, non-parameterized aliases,
@@ -1220,10 +1312,15 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // Dimension-param scalar: substitute when bound (mirrors the TypeParam
+        // arm above), else pass through unchanged. Nested dim-params inside
+        // Vector/Point/Tensor/Matrix quantity slots substitute for free via the
+        // quantity-slot recursion already in place above.
+        Type::ScalarParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1236,9 +1333,166 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): a leaf with no inner `Type` to substitute.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
+        | Type::AnySelector
         | Type::Error => ty.clone(),
+    }
+}
+
+/// Recursively rewrite every node's `result_type` in `expr` in place by
+/// applying the type-parameter substitution map `subst`.
+///
+/// Mirrors [`CompiledExpr::walk`] (reify-ir/src/expr.rs) arm-for-arm but
+/// **mutably**, visiting pre-order. The `match` over `CompiledExprKind` is
+/// exhaustive (no `_` wildcard) so that adding a new variant to the enum
+/// produces a compile error here — preventing a new variant from silently
+/// passing through with unsubstituted `result_type` values.
+///
+/// Used during monomorphization (`phase_auto_type_param_resolution`) to
+/// rewrite body expressions in cloned generic templates so that all
+/// `Type::TypeParam` occurrences in expression nodes are replaced with the
+/// resolved concrete `Type::StructureRef` values.
+pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &HashMap<String, Type>) {
+    // Substitute this node's own result_type (pre-order).
+    expr.result_type = substitute_type_params(&expr.result_type, subst);
+
+    match &mut expr.kind {
+        CompiledExprKind::Literal(_) => {}
+        CompiledExprKind::ValueRef(_) | CompiledExprKind::CrossSubGeometryRef(_) => {}
+        CompiledExprKind::BinOp { left, right, .. } => {
+            substitute_expr_result_types(left, subst);
+            substitute_expr_result_types(right, subst);
+        }
+        CompiledExprKind::UnOp { operand, .. } => {
+            substitute_expr_result_types(operand, subst);
+        }
+        CompiledExprKind::FunctionCall { args, .. } => {
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            substitute_expr_result_types(condition, subst);
+            substitute_expr_result_types(then_branch, subst);
+            substitute_expr_result_types(else_branch, subst);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            substitute_expr_result_types(discriminant, subst);
+            for arm in arms {
+                substitute_expr_result_types(&mut arm.body, subst);
+            }
+        }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Lambda { params, body, .. } => {
+            // Substitute TypeParam→StructureRef in lambda parameter type
+            // annotations (e.g., `|x: T| ...` inside a generic body).
+            // Mirrors the explicit annotation positions — NOT included in
+            // CompiledExpr::walk because walk only traverses sub-expressions;
+            // we substitute here to prevent residual TypeParam in param types.
+            for (_, ty) in params.iter_mut() {
+                if let Some(t) = ty {
+                    *t = substitute_type_params(t, subst);
+                }
+            }
+            substitute_expr_result_types(body, subst);
+        }
+        CompiledExprKind::ListLiteral(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::ReflectiveCellList(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::SetLiteral(elements) => {
+            for elem in elements {
+                substitute_expr_result_types(elem, subst);
+            }
+        }
+        CompiledExprKind::MapLiteral(entries) => {
+            for (key, val) in entries {
+                substitute_expr_result_types(key, subst);
+                substitute_expr_result_types(val, subst);
+            }
+        }
+        CompiledExprKind::IndexAccess { object, index } => {
+            substitute_expr_result_types(object, subst);
+            substitute_expr_result_types(index, subst);
+        }
+        CompiledExprKind::MethodCall { object, args, .. } => {
+            substitute_expr_result_types(object, subst);
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            substitute_expr_result_types(collection, subst);
+            substitute_expr_result_types(predicate, subst);
+        }
+        CompiledExprKind::OptionSome(inner) => {
+            substitute_expr_result_types(inner, subst);
+        }
+        CompiledExprKind::OptionNone => {}
+        CompiledExprKind::MetaAccess { .. } => {}
+        CompiledExprKind::DeterminacyPredicate { .. } => {}
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                substitute_expr_result_types(lo, subst);
+            }
+            if let Some(hi) = upper {
+                substitute_expr_result_types(hi, subst);
+            }
+        }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            substitute_expr_result_types(base, subst);
+            for arg in args {
+                substitute_expr_result_types(arg, subst);
+            }
+        }
+        // Leaf placeholder — no child expressions.
+        CompiledExprKind::PurposeReflectiveAggregation { .. } => {}
+        // Mirror walk: only ordered_args and defaults are traversed; `lets`
+        // contains template-local value refs (structural, not type-bearing)
+        // and is intentionally skipped by CompiledExpr::walk — we mirror
+        // that decision here.  Any result_type TypeParam nodes inside a
+        // `lets` subtree are therefore NOT substituted, which is an accepted
+        // α partial-coverage limitation (symmetric with walk's precedent).
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            for (_, arg) in ordered_args {
+                substitute_expr_result_types(arg, subst);
+            }
+            for (_, def) in defaults {
+                substitute_expr_result_types(def, subst);
+            }
+        }
+        // task 4118 (γ): recurse into the wrapped selector. The node's own
+        // result_type is the invariant List<Geometry> (no TypeParam to
+        // substitute), but the inner selector may carry substitutable types.
+        CompiledExprKind::ResolveSelector { selector } => {
+            substitute_expr_result_types(selector, subst);
+        }
     }
 }
 
@@ -1381,6 +1635,48 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
     }
 }
 
+/// Outcome of classifying a dimension-slot type argument (task ε).
+///
+/// Used by [`classify_dim_slot`] to decide whether a `Scalar<_>`/`Vector3<_>`/
+/// `Point3<_>` dimension argument is a dimension-kinded param, a kind-misuse
+/// (non-dimension param in a dimension slot), or a concrete expression.
+enum DimSlotClass<'a> {
+    /// The arg is a bare `Named` type whose name is in `dim_param_names`.
+    /// Value: the param name; the arm returns `ScalarParam(name)` (wrapped).
+    DimParam(&'a str),
+    /// The arg is a bare `Named` type whose name is in `type_param_names` but
+    /// NOT in `dim_param_names`.  The arm should push `DimParamKind` + return
+    /// `Some(Type::Error)` (anti-cascade poison).
+    KindMisuse(&'a str),
+    /// Not a bare Named dim/type-param — fall through to the concrete dimension
+    /// path (`resolve_type_alias_expr_to_dimension`).
+    Concrete,
+}
+
+/// Shared classifier for Scalar/Vector3/Point3 dimension-slot detection (task ε).
+///
+/// Factored so all three quantity-slot arms stay in lock-step: any future
+/// change to the classification logic needs only one edit here.
+fn classify_dim_slot<'a>(
+    type_arg: &'a reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
+) -> DimSlotClass<'a> {
+    let reify_ast::TypeExprKind::Named { name: n, type_args: inner } = &type_arg.kind else {
+        return DimSlotClass::Concrete;
+    };
+    if !inner.is_empty() {
+        return DimSlotClass::Concrete;
+    }
+    if dim_param_names.contains(n.as_str()) {
+        DimSlotClass::DimParam(n.as_str())
+    } else if type_param_names.contains(n.as_str()) {
+        DimSlotClass::KindMisuse(n.as_str())
+    } else {
+        DimSlotClass::Concrete
+    }
+}
+
 /// Resolve a parameterized builtin type constructor (List, Set, Map, Option,
 /// Tensor, Matrix, Scalar, Vector3, Point3, Field) within a type alias RHS expression.
 ///
@@ -1426,6 +1722,7 @@ pub(crate) fn resolve_type_alias_expr_with_subst(
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
 /// diagnostic first.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_parameterized_builtin_type(
     name: &str,
     type_args: &[reify_ast::TypeExpr],
@@ -1434,13 +1731,15 @@ pub(crate) fn resolve_parameterized_builtin_type(
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
     type_param_names: &HashSet<String>,
+    dim_param_names: &HashSet<String>,
 ) -> Option<Type> {
     let pre_diag_len = diagnostics.len();
     let result = match name {
         "List" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1449,9 +1748,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::List(Box::new(inner)))
         }
         "Set" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1460,17 +1760,19 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Set(Box::new(inner)))
         }
         "Map" if type_args.len() == 2 => {
-            let key = resolve_type_expr_with_aliases(
+            let key = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
                 trait_names,
             )?;
-            let val = resolve_type_expr_with_aliases(
+            let val = resolve_type_expr_with_aliases_kinded(
                 &type_args[1],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1479,9 +1781,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Map(Box::new(key), Box::new(val)))
         }
         "Keyed" if type_args.len() == 1 => {
-            let inner = resolve_type_expr_with_aliases(
+            let inner = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1490,6 +1793,18 @@ pub(crate) fn resolve_parameterized_builtin_type(
             Some(Type::Keyed(Box::new(inner)))
         }
         "Option" if type_args.len() == 1 => {
+            let inner = resolve_type_expr_with_aliases_kinded(
+                &type_args[0],
+                type_param_names,
+                dim_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )?;
+            Some(Type::Option(Box::new(inner)))
+        }
+        "Range" if type_args.len() == 1 => {
             let inner = resolve_type_expr_with_aliases(
                 &type_args[0],
                 type_param_names,
@@ -1498,34 +1813,105 @@ pub(crate) fn resolve_parameterized_builtin_type(
                 structure_names,
                 trait_names,
             )?;
-            Some(Type::Option(Box::new(inner)))
+            Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
-            // Scalar<Q>: resolve Q to a DimensionVector and wrap.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::Scalar { dimension: dim })
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                // Dimension-kinded param in the slot → ScalarParam (signature-level).
+                DimSlotClass::DimParam(n) => Some(Type::ScalarParam(n.to_string())),
+                // Non-dimension-kinded type param used in a dimension slot → single
+                // root-cause DimParamKind Error + poison Type::Error (anti-cascade).
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Scalar`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                // Concrete expression → existing dimension-resolver path.
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::Scalar { dimension: dim })
+                }
+            }
         }
         "Vector3" if type_args.len() == 1 => {
-            // Vector3<Q>: resolve Q to a DimensionVector and wrap as a 3D vector.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::vec3(Type::Scalar { dimension: dim }))
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                DimSlotClass::DimParam(n) => Some(Type::vec3(Type::ScalarParam(n.to_string()))),
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Vector3`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::vec3(Type::Scalar { dimension: dim }))
+                }
+            }
         }
         "Point3" if type_args.len() == 1 => {
-            // Point3<Q>: resolve Q to a DimensionVector and wrap as a 3D point.
-            let dim =
-                resolve_type_alias_expr_to_dimension(&type_args[0], alias_registry, diagnostics)?;
-            Some(Type::point3(Type::Scalar { dimension: dim }))
+            match classify_dim_slot(&type_args[0], type_param_names, dim_param_names) {
+                DimSlotClass::DimParam(n) => Some(Type::point3(Type::ScalarParam(n.to_string()))),
+                DimSlotClass::KindMisuse(n) => {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "non-dimension-kinded type parameter '{}' used in a dimension slot \
+                             of `Point3`; declare it with a `Dimension` bound: `{}: Dimension`",
+                            n, n
+                        ))
+                        .with_code(DiagnosticCode::DimParamKind)
+                        .with_label(DiagnosticLabel::new(
+                            type_args[0].span,
+                            "this type parameter is not dimension-kinded",
+                        )),
+                    );
+                    Some(Type::Error)
+                }
+                DimSlotClass::Concrete => {
+                    let dim = resolve_type_alias_expr_to_dimension(
+                        &type_args[0],
+                        alias_registry,
+                        diagnostics,
+                    )?;
+                    Some(Type::point3(Type::Scalar { dimension: dim }))
+                }
+            }
         }
         "Tensor" if type_args.len() == 3 => {
             // Tensor<rank, n, Q>: two integer literals + a quantity type.
             let rank =
                 expect_integer_literal_type_arg(&type_args[0], "Tensor", "rank", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Tensor", "n", diagnostics)?;
-            let quantity = resolve_type_expr_with_aliases(
+            let quantity = resolve_type_expr_with_aliases_kinded(
                 &type_args[2],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1537,9 +1923,10 @@ pub(crate) fn resolve_parameterized_builtin_type(
             // Matrix<m, n, Q>: two integer literals + a quantity type.
             let m = expect_integer_literal_type_arg(&type_args[0], "Matrix", "m", diagnostics)?;
             let n = expect_integer_literal_type_arg(&type_args[1], "Matrix", "n", diagnostics)?;
-            let quantity = resolve_type_expr_with_aliases(
+            let quantity = resolve_type_expr_with_aliases_kinded(
                 &type_args[2],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1549,19 +1936,21 @@ pub(crate) fn resolve_parameterized_builtin_type(
         }
         "Field" if type_args.len() == 2 => {
             // Field<D, C>: full-type domain and codomain (Point3, Vector3, Tensor, etc.),
-            // not bare dimensions. Use resolve_type_expr_with_aliases (full-type resolver)
-            // rather than resolve_type_alias_expr_to_dimension. Mirrors Map's two-arg shape.
-            let domain = resolve_type_expr_with_aliases(
+            // not bare dimensions. Use the kinded resolver so nested Scalar<Q> positions
+            // still see the dim set.
+            let domain = resolve_type_expr_with_aliases_kinded(
                 &type_args[0],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
                 trait_names,
             )?;
-            let codomain = resolve_type_expr_with_aliases(
+            let codomain = resolve_type_expr_with_aliases_kinded(
                 &type_args[1],
                 type_param_names,
+                dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -1627,7 +2016,7 @@ fn expect_integer_literal_type_arg(
 /// design. There is no `structure_names`/`trait_names` parameter here; the plain
 /// alias-DFS resolver is correct for this context.
 ///
-/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Scalar<Q>`, `Vector3<Q>`,
+/// Handles: `List<T>`, `Set<T>`, `Map<K,V>`, `Option<T>`, `Range<T>`, `Scalar<Q>`, `Vector3<Q>`,
 /// `Point3<Q>`, `Tensor<rank,n,Q>`, `Matrix<m,n,Q>`, `Field<D,C>`.
 ///
 /// `Field<D, C>` resolves both `D` (domain) and `C` (codomain) via
@@ -1698,6 +2087,16 @@ pub(crate) fn resolve_parameterized_builtin_type_with_subst(
                 depth,
             )?;
             Some(Type::Option(Box::new(inner)))
+        }
+        "Range" if type_args.len() == 1 => {
+            let inner = resolve_type_alias_expr_with_subst(
+                &type_args[0],
+                alias_registry,
+                subst,
+                diagnostics,
+                depth,
+            )?;
+            Some(Type::Range(Box::new(inner)))
         }
         "Scalar" if type_args.len() == 1 => {
             let dim = resolve_type_alias_expr_to_dim_with_subst(
@@ -2332,6 +2731,65 @@ mod tests {
         );
     }
 
+    // ── Datum-receiver type names (task 4382 / β; see esc-4382-157) ───────────
+    //
+    // β owns `Direction`; Axis/Plane/Frame are the foundational datum-receiver
+    // vocabulary so default-less params (`param a : Axis`) type-check without a
+    // value constructor. RED until step-6 adds the arms (all return None today).
+
+    /// `resolve_type_name("Direction")` must return `Type::Direction`.
+    #[test]
+    fn resolve_type_name_recognises_direction() {
+        assert_eq!(
+            resolve_type_name("Direction"),
+            Some(Type::Direction),
+            "\"Direction\" should resolve to Type::Direction"
+        );
+    }
+
+    /// `resolve_type_name("Axis")` must return `Type::Axis`.
+    #[test]
+    fn resolve_type_name_recognises_axis() {
+        assert_eq!(
+            resolve_type_name("Axis"),
+            Some(Type::Axis),
+            "\"Axis\" should resolve to Type::Axis"
+        );
+    }
+
+    /// `resolve_type_name("Plane")` must return `Type::Plane`.
+    #[test]
+    fn resolve_type_name_recognises_plane() {
+        assert_eq!(
+            resolve_type_name("Plane"),
+            Some(Type::Plane),
+            "\"Plane\" should resolve to Type::Plane"
+        );
+    }
+
+    /// `resolve_type_name("Frame")` must return `Type::Frame(3)`.
+    #[test]
+    fn resolve_type_name_recognises_frame() {
+        assert_eq!(
+            resolve_type_name("Frame"),
+            Some(Type::Frame(3)),
+            "\"Frame\" should resolve to Type::Frame(3)"
+        );
+    }
+
+    /// `resolve_type_name("Relation")` must return `Type::Relation`
+    /// (geometric-relations γ, task 4383): the `Relation` directive type name
+    /// resolves so `fn ... -> Relation` and `param r : Relation` type-check.
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_relation() {
+        assert_eq!(
+            resolve_type_name("Relation"),
+            Some(Type::Relation),
+            "\"Relation\" should resolve to Type::Relation"
+        );
+    }
+
     /// `resolve_type_with_aliases` must inherit the builtin selector arms so that
     /// param-annotation resolution (which calls this function) resolves selector
     /// type names without an alias entry.
@@ -2392,6 +2850,63 @@ mod tests {
         );
     }
 
+    // ── AnySelector type-name resolution (task 4369 / A2) ────────────────────
+    //
+    // The bare `Selector` spelling (no kind qualifier) must resolve to
+    // `Type::AnySelector` so that param annotations like `target : Selector`
+    // accept any concrete selector kind at the type-compat level.
+    //
+    // Tests (a) and (b) are RED until step-2 adds the resolver arm.
+    // Test (c) is GREEN from pre-1's Display arm (documents the
+    // resolver<->Display round-trip contract).
+
+    /// (a) `resolve_type_name("Selector")` must return `Type::AnySelector`.
+    ///
+    /// RED until step-2 adds `"Selector" => Some(Type::AnySelector)` to
+    /// `resolve_type_name`.
+    #[test]
+    fn resolve_type_name_recognises_any_selector() {
+        assert_eq!(
+            resolve_type_name("Selector"),
+            Some(Type::AnySelector),
+            "\"Selector\" should resolve to Type::AnySelector"
+        );
+    }
+
+    /// (b) `resolve_type_with_aliases("Selector", …)` must return
+    /// `Type::AnySelector` — it inherits the builtin arm automatically.
+    ///
+    /// RED until step-2 adds the arm to `resolve_type_name`.
+    #[test]
+    fn resolve_type_with_aliases_inherits_any_selector() {
+        let reg = TypeAliasRegistry::new();
+        let result = resolve_type_with_aliases(
+            "Selector",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::AnySelector),
+            "resolve_type_with_aliases(\"Selector\", …) should return Type::AnySelector"
+        );
+    }
+
+    /// (c) Display round-trip: `Type::AnySelector` formats as `"Selector"`,
+    /// which is the same spelling the resolver accepts (task 4369/A2 §11.1).
+    ///
+    /// GREEN from pre-1's Display arm.
+    #[test]
+    fn any_selector_display_matches_resolver_spelling() {
+        assert_eq!(
+            format!("{}", Type::AnySelector),
+            "Selector",
+            "Type::AnySelector should display as \"Selector\" to match the resolver spelling"
+        );
+    }
+
     // ── Keyed<T> parameterized resolution (step-3 RED / task 3930 β) ──────────
     // `Keyed<Vent>` must resolve to the keyed-collection kind, distinct from the
     // `Map`/`List` resolutions of the same arg. Mirrors the List/Map resolver arms.
@@ -2413,6 +2928,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             keyed,
@@ -2431,6 +2947,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             list,
@@ -2521,6 +3038,7 @@ mod tests {
             &structure_names,
             &trait_names,
             &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
         );
         assert_eq!(
             keyed,
@@ -2663,17 +3181,17 @@ mod tests {
     #[test]
     fn substitute_bare_type_param_bound() {
         // (a) bare TypeParam("T") with {T: Real} → Real.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("T".to_string()), &subst),
-            Type::Real
+            Type::dimensionless_scalar()
         );
     }
 
     #[test]
     fn substitute_unbound_type_param_passthrough() {
         // (b) unbound TypeParam("D") with {C: Real} → TypeParam("D") unchanged.
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(&Type::TypeParam("D".to_string()), &subst),
             Type::TypeParam("D".to_string())
@@ -2698,7 +3216,7 @@ mod tests {
         // (d) Field{domain: TypeParam("D"), codomain: TypeParam("C")} with
         //     {C: Real} → Field{domain: TypeParam("D"), codomain: Real}.
         //     D stays unbound (nested partial substitution).
-        let subst = subst_of(&[("C", Type::Real)]);
+        let subst = subst_of(&[("C", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Field {
@@ -2709,7 +3227,7 @@ mod tests {
             ),
             Type::Field {
                 domain: Box::new(Type::TypeParam("D".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }
         );
     }
@@ -2734,7 +3252,7 @@ mod tests {
     fn substitute_function_params_and_return() {
         // (f) Function{params:[TypeParam("T")], return_type: List(TypeParam("T"))}
         //     with {T: Real} → both positions substituted.
-        let subst = subst_of(&[("T", Type::Real)]);
+        let subst = subst_of(&[("T", Type::dimensionless_scalar())]);
         assert_eq!(
             substitute_type_params(
                 &Type::Function {
@@ -2744,8 +3262,8 @@ mod tests {
                 &subst
             ),
             Type::Function {
-                params: vec![Type::Real],
-                return_type: Box::new(Type::List(Box::new(Type::Real))),
+                params: vec![Type::dimensionless_scalar()],
+                return_type: Box::new(Type::List(Box::new(Type::dimensionless_scalar()))),
             }
         );
     }
@@ -2776,5 +3294,147 @@ mod tests {
         // (h) non-typeparam leaf (Int) with empty subst → identity.
         let subst = subst_of(&[]);
         assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
+    }
+
+    // ── task 4235 ζ: substitute_type_params dimension-param (D8) ────────────
+
+    /// (a) A bound ScalarParam substitutes to the concrete Scalar type.
+    ///
+    /// RED until step-4: the leaves arm clones ScalarParam unchanged even when
+    /// Q is in subst.
+    #[test]
+    fn substitute_scalar_param_bound_to_length() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("Q".to_string()), &subst),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+            "ScalarParam(\"Q\") with Q→Scalar{{LENGTH}} should substitute to Scalar{{LENGTH}}"
+        );
+    }
+
+    /// (b) Nested dim-param in Vector3<Q> substitutes in the quantity slot.
+    ///
+    /// RED until step-4: the leaves arm returns ScalarParam unchanged, so the
+    /// Vector quantity slot stays as ScalarParam rather than Scalar{LENGTH}.
+    #[test]
+    fn substitute_scalar_param_inside_vector3_quantity() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Vector { n: 3, quantity: Box::new(Type::ScalarParam("Q".to_string())) },
+                &subst,
+            ),
+            Type::Vector { n: 3, quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }) },
+            "Vector3<ScalarParam(\"Q\")> with Q→LENGTH should become Vector3<Scalar{{LENGTH}}>"
+        );
+    }
+
+    /// (c) Unbound ScalarParam passes through unchanged (R not in subst).
+    ///
+    /// GREEN even before step-4 (the leaves arm already clones ScalarParam).
+    #[test]
+    fn substitute_scalar_param_unbound_passthrough() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("R".to_string()), &subst),
+            Type::ScalarParam("R".to_string()),
+            "unbound ScalarParam(\"R\") should pass through unchanged"
+        );
+    }
+
+    // ── Range<T> parameterized resolution (step-1 RED / task 4576) ───────────
+    // `Range<Length>` and `Range<Real>` must resolve to the Range kind.
+    // Arity guard: Range with 0 or 2 args must return None.
+    // Fails until step-2 adds the "Range" arm to resolve_parameterized_builtin_type.
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_length() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))),
+            "Range<Length> should resolve to Type::Range(Box::new(Type::Scalar{{LENGTH}}))",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_resolves_range_real() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Real")];
+        let mut diags = Vec::new();
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+        assert_eq!(
+            result,
+            Some(Type::Range(Box::new(Type::dimensionless_scalar()))),
+            "Range<Real> should resolve to Type::Range(dimensionless_scalar)",
+        );
+        assert!(diags.is_empty(), "no diagnostics expected; got {:?}", diags);
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_zero() {
+        let reg = TypeAliasRegistry::new();
+        let mut diags = Vec::new();
+        // Range with 0 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &[],
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+        assert_eq!(
+            result, None,
+            "Range with 0 type-args should return None (arity guard)",
+        );
+    }
+
+    #[test]
+    fn resolve_parameterized_builtin_type_range_arity_guard_two() {
+        let reg = TypeAliasRegistry::new();
+        let args = [named_type_expr("Length"), named_type_expr("Angle")];
+        let mut diags = Vec::new();
+        // Range with 2 args → None (wrong arity, hits `_ => return None` fallthrough).
+        let result = resolve_parameterized_builtin_type(
+            "Range",
+            &args,
+            &reg,
+            &mut diags,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+        assert_eq!(
+            result, None,
+            "Range with 2 type-args should return None (arity guard)",
+        );
     }
 }

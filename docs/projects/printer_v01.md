@@ -50,7 +50,11 @@ Z-bed (vs. gantry-Z): gantry kinematics decoupled from Z mass; chamber volume bo
 | Cost | £5-15/m for 6mm braid | Cheaper |
 | Service / replacement | Hours (re-wind capstans) | Minutes |
 
-Vectran is the right rope for a heated chamber: Dyneema softens at ~70°C, Kevlar abrades poorly, steel cable rings and fatigues. Capstan diameter ~30mm (5-7× rope dia) with 5+ wraps gives effectively-infinite holding force; pre-tension via spring-loaded constant-force idler (not screw-set) so it tracks Y-rail thermal expansion.
+Vectran is the right rope for a heated chamber: Dyneema softens at ~70°C, Kevlar abrades poorly, steel cable rings and fatigues.
+
+Drive is by **anchored (winch) capstan, not friction wrap**: both rope ends are fixed to a ~30mm grooved drum, so the coupling is positive — zero slip. A friction capstan would accumulate micro-slip under the rapid, unbalanced reversals and resonant excitation of high-acceleration printing (unacceptable for positional accuracy), and the relative rope/drum creep would shorten tendon life — both rule it out. The drum reels rope onto one side as it pays out the other; its axial length is sized for the full per-axis feed (~1.3m → ~14 turns at 6mm pitch) plus the base wraps, and it is helically grooved so the wrap lay is deterministic. Because the wrap band migrates axially (~one pitch/turn, ~80mm over full travel), each strand runs through a **passive translating fairlead** that tracks the band and holds the fleet angle ≈0 — a guide, not a tensioner, so it adds no compliance. Larger drum/idler D/d trades footprint for rope bend-fatigue life (a tendon-life lever).
+
+Pre-tension is **set-and-locked at assembly** on a rigid adjustable anchor — deliberately *not* a compliant/constant-force idler. A sprung tensioner sits in series with the drive and collapses its stiffness: a pre-tensioned rope drive's stiffness is the *sum* of its two antagonistic strands (k₁+k₂), and a zero-rate device on either strand removes that strand's contribution. Locking the preload rigid keeps the full rope stiffness. The thermal length mismatch (steel / epoxy-granite structure vs. near-zero-CTE Vectran — ~1mm over a ~1m span × 60°C, ≈ a few hundred N at the rope's ~300–700 N/mm) is covered by preload margin and periodic re-tension, with the load-side linear scales closing the position loop; an active servo-held preload is the fallback if drift proves too large.
 
 **Paired in-plane tendons**: every tendon is doubled and routed in the plane of its rail axis, nulling moments around the bearing axis. Standard high-precision-servo practice.
 
@@ -199,6 +203,8 @@ Self-contained projects that don't gate v0.1:
 
 - **CoreXY toolchanger** chosen; alternatives ruled out per analysis above.
 - **Vectran 6mm braid + capstan drives** chosen over toothed belts.
+- **Anchored (winch) capstan over friction wrap** — friction micro-slip under rapid/unbalanced reversals + resonance is unacceptable for accuracy, and friction creep wears the tendon; positive anchoring eliminates both. Re-introduces axial wrap-band migration, handled by a passive translating fairlead.
+- **Set-and-locked rigid pre-tension over a compliant/constant-force tensioner** — a sprung tensioner adds series compliance that collapses the antagonistic drive stiffness (k₁+k₂); thermal drift absorbed by preload margin + periodic re-tension (+ load-side scales), with active servo-held tension as the fallback.
 - **Industrial AC servos + Granite Argon drives** chosen over drone outrunner concept once on-shelf inventory was confirmed (lower inertia, integrated encoders, better fit).
 - **Counter-masses required** by 1000 m/s² stretch goal; designed in from v0.1 even at 100 m/s² baseline.
 - **Z-bed** chosen over gantry-Z for kinematic decoupling and chamber sealing simplicity. Bed parks below build zone behind insulated shutter (no bellows).

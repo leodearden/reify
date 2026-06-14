@@ -952,6 +952,7 @@ mod tests {
             },
             GeometryOp::Fillet {
                 target: GeometryHandleId(1),
+                edges: vec![],
                 radius: Value::length(0.001),
             },
         ];

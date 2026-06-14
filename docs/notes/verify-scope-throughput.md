@@ -1,0 +1,158 @@
+# Per-Task Verify Throughput: `--scope branch` vs `--scope all`
+
+Recorded 2026-06-09 as the T6 evidence artifact for
+`docs/prds/verify-scope-contract.md §7`.
+
+## Methodology
+
+Plan-step counts are derived from the canonical oracle:
+
+```bash
+verify.sh all --profile debug --scope {all,branch} --include-infra --print-plan
+```
+
+run inside an isolated throwaway git repo (branch fixture) containing only
+the scripts `verify.sh` needs — identical to the technique in
+`tests/infra/test_verify_scope.sh`.  For the crate shapes, the
+`REIFY_AFFECTED_CRATES_OVERRIDE` knob pins a deterministic representative
+affected set in place of the cargo-metadata reverse-closure (which requires a
+real workspace).
+
+**Count** = non-comment lines in `--print-plan` output
+(`grep -cE '^[^#]'`).
+
+Measurements were taken 2026-06-09 on a 32-core x86_64 host with warm
+sccache (Rust compilation artifacts already cached).  Timings are
+machine- and load-dependent.
+
+Real-run narrowing uses the actual `cargo metadata` reverse-closure, which
+may include more crates than the representative override used here.  The
+plan-step counts reflect the hermetic fixture counts; wall-clock timings below
+reflect a real run on this host.
+
+## Plan-Step Counts
+
+| Shape | Changed file | Override | scope=all | scope=branch |
+|-------|-------------|---------|-----------|--------------|
+| (a) docs-only | `docs/note.md` | — | 12 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 12 | 12 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 12 | 12 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 12 | 3 |
+
+Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
+drift guard.  Update by re-running the regeneration commands in the section
+below and replacing the counts; then re-run the test to confirm it passes.
+
+<!-- THROUGHPUT-COUNTS:BEGIN -->
+| shape | all | branch |
+|-------|-----|--------|
+| docs-only  | 12 |  0 |
+| reify-doc  | 12 | 12 |
+| reify-eval | 12 | 12 |
+| gui-only   | 12 |  3 |
+<!-- THROUGHPUT-COUNTS:END -->
+
+## Heavy-Work Narrowed Markers
+
+`scope=all` always produces: `cargo clippy --workspace` and
+`cargo nextest run --workspace` (OCCT crates are now in the pool, bounded
+by the nextest occt test-group at max-threads=4; task 4451).
+
+Under `scope=branch` + narrowing:
+
+| Shape | OCCT handling | cargo flags | cargo present |
+|-------|--------------|-------------|---------------|
+| (a) docs-only | N/A | — | no (empty plan) |
+| (b) reify-doc (non-OCCT) | N/A | `-p reify-doc` (not `--workspace`) | yes |
+| (c) reify-eval (OCCT) | in nextest pool, occt group bounds concurrency | `-p reify-eval` (not `--workspace`) | yes |
+| (d) gui-only | N/A | — | no (GUI npm only) |
+
+For shape (b), the scope=branch plan equals scope=all minus: replacing
+`--workspace` with `-p reify-doc` in clippy/nextest (narrowing).
+
+For shape (c), the scope=branch plan equals scope=all minus: replacing
+`--workspace` with `-p reify-eval` in clippy/nextest (narrowing). Task 4451:
+the gated pass is gone; reify-eval runs in the single nextest pool.
+
+For shape (d), 11 of the 12 scope=all steps are Rust; branch scope drops
+all of them and retains only the 3 GUI npm steps.
+
+## Wall-Clock Measurements
+
+### Shape (a): docs-only — scope=branch
+
+Measured on a 32-core x86_64 host with warm sccache, real `verify.sh` run
+(not `--print-plan`) on a branch fixture where only `docs/note.md` is changed:
+
+```
+real  0.233 s
+```
+
+The branch scope detects that only docs were changed, produces an empty plan
+(0 steps), and exits immediately.  The equivalent scope=all run would proceed
+to execute all 12 steps including `cargo clippy --workspace` (≈ 20 s warm)
+and `cargo nextest run --workspace` (≈ 10+ min warm; task 4451: OCCT crates
+are now in the pool, bounded by the nextest occt group max-threads=4).
+
+### Plan-generation overhead (scope=all, --print-plan)
+
+```
+real  0.188 s
+```
+
+Scripting overhead only — plan is printed but no steps execute.
+
+## Delta as Evidence
+
+- **docs-only branch:** saves all 12 steps. Verify exits in < 0.3 s.
+- **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
+  nextest to `-p reify-doc`.  12 vs 12 plan steps (same count; savings are
+  wall-clock from skipping unaffected crate compilation).
+- **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
+  to `-p reify-eval` (task 4451: gated pass folded into the nextest pool).
+  12 vs 12 plan steps.
+- **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
+  3 vs 12 plan steps.
+
+No numeric improvement threshold is asserted here.  The step counts and the
+absent/narrowed heavy-work markers are the evidence.
+
+## Orchestrator Context
+
+The orchestrator runs narrower per-task sub-actions (not `all`):
+
+```bash
+verify.sh test  --scope branch --include-infra   # nextest + infra tests only
+verify.sh lint  --scope branch --include-infra   # clippy + typecheck only
+```
+
+Both inherit the same narrowing logic: a docs-only branch skips both entirely;
+a non-OCCT crate branch narrows each to `-p <affected-crates>`.
+
+## Regenerating Plan-Step Counts
+
+When `verify.sh`'s plan changes, re-derive the counts using the same oracle
+the drift guard in `tests/infra/test_verify_throughput.sh` uses.  Run each
+pair inside a branch fixture (branch off main with only the shape file
+committed) to drive the branch-scope diff correctly:
+
+```bash
+# Shape (a) docs-only (run on a branch with docs/note.md committed)
+bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan | grep -cE '^[^#]' || true
+bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan | grep -cE '^[^#]' || true
+
+# Shape (b) reify-doc (branch with crates/reify-doc/src/lib.rs committed)
+REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc" bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan | grep -cE '^[^#]' || true
+REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan | grep -cE '^[^#]' || true
+
+# Shape (c) reify-eval (branch with crates/reify-eval/src/lib.rs committed)
+REIFY_AFFECTED_CRATES_OVERRIDE="reify-eval" bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan | grep -cE '^[^#]' || true
+REIFY_AFFECTED_CRATES_OVERRIDE="reify-eval" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan | grep -cE '^[^#]' || true
+
+# Shape (d) gui-only (branch with gui/src/editor/foo.ts committed)
+bash scripts/verify.sh all --profile debug --scope all    --include-infra --print-plan | grep -cE '^[^#]' || true
+bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan | grep -cE '^[^#]' || true
+```
+
+After regenerating, update the sentinel count block (added in S4) and re-run
+`tests/infra/test_verify_throughput.sh` to confirm the drift guard passes.

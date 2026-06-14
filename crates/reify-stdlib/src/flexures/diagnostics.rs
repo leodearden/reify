@@ -165,10 +165,25 @@ fn yielding_diagnostic(
 
     // Suggested narrower range = the auto SAFE PRB-valid bound stored in the
     // record, formatted per the joint's dimensional family.
-    let suggestion = match (rec_real(fields, "prb_validity_range"), joint_kind(joint)) {
-        (Some(half), Some("prismatic")) => format!("±{:.3} mm", half * 1e3),
-        (Some(half), _) => format!("±{:.2}°", half.to_degrees()),
-        (None, _) => "the PRB-valid operating range".to_string(),
+    // `prb_validity_range` is a `Value::Range` (since task 4576) — prismatic
+    // families carry Range<Length> (task 4587), angular families Range<Angle>.
+    let suggestion = match joint_kind(joint) {
+        Some("prismatic") => match rec_range_upper_si(
+            fields,
+            "prb_validity_range",
+            DimensionVector::LENGTH,
+        ) {
+            Some(half_m) => format!("±{:.3} mm", half_m * 1e3),
+            None => "the PRB-valid operating range".to_string(),
+        },
+        _ => match rec_range_upper_si(
+            fields,
+            "prb_validity_range",
+            DimensionVector::ANGLE,
+        ) {
+            Some(half_rad) => format!("±{:.2}°", half_rad.to_degrees()),
+            None => "the PRB-valid operating range".to_string(),
+        },
     };
 
     Some(
@@ -263,6 +278,27 @@ fn rec_pressure(fields: &PersistentMap<String, Value>, key: &str) -> Option<f64>
             si_value,
             dimension,
         } if *dimension == DimensionVector::PRESSURE && si_value.is_finite() => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Read the upper-bound SI value from a `Value::Range` field whose upper bound is
+/// a `dimension`-dimensioned finite Scalar. Returns `None` for absent, non-range,
+/// unbounded, non-finite, or wrong-dimension fields.
+fn rec_range_upper_si(
+    fields: &PersistentMap<String, Value>,
+    key: &str,
+    dimension: DimensionVector,
+) -> Option<f64> {
+    match fields.get(&key.to_string())? {
+        Value::Range { upper: Some(up), .. } => match up.as_ref() {
+            Value::Scalar { si_value, dimension: dim }
+                if *dim == dimension && si_value.is_finite() =>
+            {
+                Some(*si_value)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -536,5 +572,42 @@ mod tests {
                 geo.message
             );
         }
+    }
+
+    /// `prb_validity_range` is a `Value::Range` (since task 4576), so the
+    /// yielding-suggestion reader must extract the half-width from the Range's
+    /// upper bound, not from a bare `Value::Real`.  The format is family-gated:
+    /// angular joints get `±X°`, prismatic joints get `±X mm`.
+    #[test]
+    fn yielding_diagnostic_formats_range_per_family() {
+        // (a) Revolute (cantilever): W_FlexureYielding suggestion cites degrees.
+        // yielding_args() declares ±10° which exceeds delta_yield for that geometry.
+        let cantilever_args = yielding_args();
+        let result = crate::eval_builtin("prb_cantilever_beam", &cantilever_args);
+        assert!(!result.is_undef(), "yielding cantilever is a valid joint");
+        let diags = flexure_diagnose("prb_cantilever_beam", &cantilever_args, &result);
+        let msg = &find(&diags, DiagnosticCode::FlexureYielding).message;
+        assert!(msg.contains('°'), "revolute suggestion cites degrees: {msg}");
+        assert!(!msg.contains(" mm"), "revolute suggestion does not cite mm: {msg}");
+
+        // (b) Prismatic (blade): W_FlexureYielding suggestion cites mm.
+        // L=20mm, w=5mm, t=0.5mm, steel → delta_yield ≈ 0.807mm (cantilever formula).
+        // 8-arg form: neutral=0, declared endpoint=2mm > delta_yield → at_yield=true.
+        let prismatic_args = vec![
+            Value::length(0.02),
+            Value::length(0.005),
+            Value::length(0.0005),
+            steel(),
+            origin(),
+            axis_y(),
+            Value::length(0.0),   // neutral offset
+            Value::length(0.002), // declared endpoint = 2 mm > delta_yield
+        ];
+        let result = crate::eval_builtin("prb_prismatic_blade", &prismatic_args);
+        assert!(!result.is_undef(), "yielding prismatic is a valid joint");
+        let diags = flexure_diagnose("prb_prismatic_blade", &prismatic_args, &result);
+        let msg = &find(&diags, DiagnosticCode::FlexureYielding).message;
+        assert!(msg.contains(" mm"), "prismatic suggestion cites mm: {msg}");
+        assert!(!msg.contains('°'), "prismatic suggestion does not cite degrees: {msg}");
     }
 }

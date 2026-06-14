@@ -222,7 +222,7 @@ fn notch_revolute(inputs: &NotchInputs<'_>, k_factor: f64, sigma_factor: f64) ->
         max_stress_at_neutral,
         inputs.yield_si,
         None,
-        theta_lim,
+        symmetric_angle_range(theta_lim),
     );
     attach_compliance(joint, record)
 }
@@ -810,20 +810,18 @@ mod tests {
         // at_yield == false at the auto (safe) endpoint.
         assert_eq!(f("at_yield"), &Value::Bool(false), "auto endpoint is not at yield");
 
-        // prb_validity_range (Real) == the joint range half-angle (5°).
+        // prb_validity_range is now Range<Angle> = [−θ_lim, +θ_lim] (task 4576).
         let (_, up) = range_lower_upper(map_get(&result, "range").expect("range present"));
         let range_half = match up {
             Value::Scalar { si_value, .. } => *si_value,
             other => panic!("range upper Scalar, got {other:?}"),
         };
-        match f("prb_validity_range") {
-            Value::Real(rr) => assert!(
-                (rr - range_half).abs() / range_half < 1e-9
-                    && (rr - prb_limit).abs() / prb_limit < 1e-9,
-                "prb_validity_range {rr} == range half {range_half} == 5°"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - range_half).abs() / range_half < 1e-9
+                && (prb_half - prb_limit).abs() / prb_limit < 1e-9,
+            "prb_validity_range half {prb_half} == range half {range_half} == 5°"
+        );
     }
 
     #[test]
@@ -901,14 +899,13 @@ mod tests {
             other => panic!("yield_margin Real, got {other:?}"),
         }
 
-        // prb_validity_range still advertises the auto SAFE θ_yield, not the declared 10°.
-        match f("prb_validity_range") {
-            Value::Real(rr) => assert!(
-                (rr - theta_yield).abs() / theta_yield < 1e-9,
-                "prb_validity_range stays the auto safe θ_yield {theta_yield}, got {rr}"
-            ),
-            other => panic!("prb_validity_range Real, got {other:?}"),
-        }
+        // prb_validity_range still advertises the auto SAFE θ_yield (not the declared
+        // 10°). Now Range<Angle> (task 4576).
+        let prb_half = angle_range_half_si(f("prb_validity_range"), "prb_validity_range");
+        assert!(
+            (prb_half - theta_yield).abs() / theta_yield < 1e-9,
+            "prb_validity_range stays the auto safe θ_yield {theta_yield}, got half {prb_half}"
+        );
     }
 
     #[test]

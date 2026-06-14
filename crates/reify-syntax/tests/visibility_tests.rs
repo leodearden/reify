@@ -30,7 +30,7 @@ fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
 #[test]
 fn parse_pub_structure() {
     let source = r#"pub structure Bracket {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
 }"#;
     let (decl, errors) = parse_first_decl(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
@@ -46,7 +46,7 @@ fn parse_pub_structure() {
 #[test]
 fn parse_structure_default_not_pub() {
     let source = r#"structure Bracket {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
 }"#;
     let (decl, errors) = parse_first_decl(source);
     assert!(errors.is_empty(), "parse errors: {:?}", errors);
@@ -80,7 +80,7 @@ fn parse_pub_let() {
 #[test]
 fn parse_let_default_not_pub() {
     let source = r#"structure S {
-    param a: Scalar = 1mm
+    param a: Length = 1mm
     let y = a * 2
 }"#;
     let (members, errors) = parse_members(source);

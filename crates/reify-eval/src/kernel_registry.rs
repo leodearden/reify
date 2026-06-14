@@ -218,6 +218,17 @@ pub(crate) fn pick_lexmin_brep_kernel_in<V>(
         .or_else(|| registered.values().next())
 }
 
+/// Returns the canonical registry name for the OpenVDB kernel.
+///
+/// Centralises the `geometry_kernels` index key used by δ's
+/// `project_realization_read_handle` Sdf/Voxel arm so the string is never
+/// a hardcoded literal in `realization_content.rs` — a rename in
+/// `reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME` would break the
+/// projection arm but be caught here by the step-5 test.
+pub(crate) fn openvdb_kernel_name() -> &'static str {
+    reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME
+}
+
 /// Iterate the static linker-collected set of [`KernelRegistration`] records
 /// and materialise a `BTreeMap` keyed on each kernel's name, valued on
 /// **owned** [`CapabilityDescriptor`]s.
@@ -1058,6 +1069,32 @@ mod tests {
             test_synthetic_kernel::NAME_A,
             test_synthetic_kernel::NAME_MESH_ONLY,
         );
+    }
+
+    /// `openvdb_kernel_name()` returns the canonical registry name for the
+    /// OpenVDB kernel — the same string as
+    /// `reify_kernel_openvdb::register::OPENVDB_KERNEL_NAME`.
+    ///
+    /// Pins the centralized accessor used by δ's projection arm so that a
+    /// future rename of the kernel's registry entry is caught here rather
+    /// silently diverging in `realization_content.rs`.
+    ///
+    /// Also asserts (under `has_openvdb`) that `registry()` actually contains
+    /// the key, verifying that the name survives the round-trip through the
+    /// inventory walk and BTreeMap materialization.
+    #[test]
+    fn openvdb_kernel_name_matches_register_constant_and_is_in_registry_under_has_openvdb() {
+        let returned = openvdb_kernel_name();
+
+        #[cfg(has_openvdb)]
+        {
+            assert!(
+                registry().contains_key(returned),
+                "registry() must contain the OpenVDB kernel name {:?} under has_openvdb; \
+                 kernel likely failed to submit its KernelRegistration",
+                returned,
+            );
+        }
     }
 
     /// Contract pin: `pick_lexmin_kernel()` returns the lexicographically

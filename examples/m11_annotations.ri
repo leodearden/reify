@@ -70,7 +70,7 @@ structure def Pedestal {
 // load > 0 cannot be evaluated → Indeterminate.  → INDETERMINATE
 
 @test structure TestUnknownLoad {
-    param load: Scalar = auto
+    param load: Length = auto
     constraint load > 0
 }
 

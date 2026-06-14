@@ -77,7 +77,7 @@ fn assert_auto_rejected_at_operand(source: &str) {
 /// switched from an inline choice to `_binding_value`).
 #[test]
 fn param_declaration_auto_strict_produces_auto_keyword() {
-    assert_auto_strict_at_binding_site("structure S { param x : Scalar = auto }");
+    assert_auto_strict_at_binding_site("structure S { param x : Length = auto }");
 }
 
 /// `let_declaration.value = auto` — strict form must produce an `auto_keyword`
@@ -114,7 +114,7 @@ fn connect_param_assignment_auto_strict_produces_auto_keyword() {
 /// whose `modifier` field text is `"free"`.
 #[test]
 fn param_declaration_auto_free_has_modifier_field() {
-    assert_auto_free_at_binding_site("structure S { param x : Scalar = auto(free) }");
+    assert_auto_free_at_binding_site("structure S { param x : Length = auto(free) }");
 }
 
 /// `let_declaration.value = auto(free)` — must produce an `auto_keyword` node

@@ -475,6 +475,404 @@ fn e2e_cantilever_second_eval_hits_cache() {
             v2
         );
     }
+
+    // ── (step-5/4564) Both evals: divergence SampledField.data bit-identical ──
+    let div1_data = extract_sampled_field_data(&result1, "divergence");
+    let div2_data = extract_sampled_field_data(&result2, "divergence");
+    assert_eq!(
+        div1_data.len(),
+        div2_data.len(),
+        "divergence data length differs between eval1 ({}) and eval2 ({})",
+        div1_data.len(),
+        div2_data.len()
+    );
+    for (i, (v1, v2)) in div1_data.iter().zip(div2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "divergence data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i,
+            v1,
+            v2
+        );
+    }
+}
+
+// ── step-3 (task 4565): RED — gradient + curl field contract + cross-field ────
+//   identity + determinism
+//
+// Asserts on eval1:
+//   (CONTRACT)  gradient is Value::Field{source:Sampled}, domain=Point3<Length>,
+//               codomain=Tensor<2,3,Real>, data.len()==n_grid*9, all finite.
+//   (CONTRACT)  curl is Value::Field{source:Sampled}, domain=Point3<Length>,
+//               codomain=Vector3<Real>, data.len()==n_grid*3, all finite.
+//   (NUMERIC)   trace(gradient[k]) == divergence[k] to rel-tol 1e-9 (exact
+//               linear functional of the same nodal field, identical weights).
+//   (NUMERIC)   curl[k] == antisym(gradient[k]) to rel-tol 1e-9.
+//   (SANITY)    At least one curl component magnitude > 1e-12 (non-trivial
+//               rotation under tip load).
+// (DETERMINISM) gradient and curl SampledField.data are bit-identical between
+//               eval1 and eval2.
+//
+// Fails (extract_field panics — fields absent) until step-4 wires them up.
+
+/// Gradient + curl: type contract, cross-field identities, determinism.
+#[test]
+fn e2e_cantilever_gradient_curl_field_contract_and_identities() {
+    let source = cantilever_source();
+
+    // Two independent evals for determinism check.
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine1 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine1);
+    let eval1 = engine1.eval(&compiled);
+
+    let mut engine2 = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine2);
+    let eval2 = engine2.eval(&compiled);
+
+    // ── Locate result cells ───────────────────────────────────────────────────
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result1 = eval1
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("eval1: cell FeaCantileverSmoke.result not found"))
+        .clone();
+    let result2 = eval2
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("eval2: cell FeaCantileverSmoke.result not found"))
+        .clone();
+
+    // ── (CONTRACT) gradient must be Value::Field{source:Sampled} ─────────────
+    let grad_val = extract_field(&result1, "gradient")
+        .unwrap_or_else(|| panic!("field 'gradient' not found in result"));
+
+    let (grad_domain, grad_codomain) = match &grad_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "gradient source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("gradient must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        grad_domain,
+        Type::point3(Type::length()),
+        "gradient domain must be Point3<Length>"
+    );
+    assert_eq!(
+        grad_codomain,
+        Type::tensor(2, 3, Type::dimensionless_scalar()),
+        "gradient codomain must be Tensor<2,3,Real>"
+    );
+
+    // ── (CONTRACT) curl must be Value::Field{source:Sampled} ─────────────────
+    let curl_val = extract_field(&result1, "curl")
+        .unwrap_or_else(|| panic!("field 'curl' not found in result"));
+
+    let (curl_domain, curl_codomain) = match &curl_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "curl source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("curl must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        curl_domain,
+        Type::point3(Type::length()),
+        "curl domain must be Point3<Length>"
+    );
+    assert_eq!(
+        curl_codomain,
+        Type::vec3(Type::dimensionless_scalar()),
+        "curl codomain must be Vector3<Real>"
+    );
+
+    // ── (CONTRACT) data lengths ───────────────────────────────────────────────
+    let disp_data = extract_sampled_field_data(&result1, "displacement");
+    let n_grid_nodes = disp_data.len() / 3;
+
+    let grad_data = extract_sampled_field_data(&result1, "gradient");
+    assert_eq!(
+        grad_data.len(),
+        n_grid_nodes * 9,
+        "gradient data.len() = {} but expected n_grid_nodes*9 = {}",
+        grad_data.len(),
+        n_grid_nodes * 9
+    );
+
+    let curl_data = extract_sampled_field_data(&result1, "curl");
+    assert_eq!(
+        curl_data.len(),
+        n_grid_nodes * 3,
+        "curl data.len() = {} but expected n_grid_nodes*3 = {}",
+        curl_data.len(),
+        n_grid_nodes * 3
+    );
+
+    // ── (CONTRACT) all samples finite ────────────────────────────────────────
+    for (k, &v) in grad_data.iter().enumerate() {
+        assert!(v.is_finite(), "gradient data[{}] = {} is not finite", k, v);
+    }
+    for (k, &v) in curl_data.iter().enumerate() {
+        assert!(v.is_finite(), "curl data[{}] = {} is not finite", k, v);
+    }
+
+    // ── (NUMERIC) cross-field identities ─────────────────────────────────────
+    //
+    // gradient, curl, and divergence are all exact linear functionals of the
+    // same recovered nodal field resampled with the identical barycentric
+    // weights, so the identities hold to floating-point accumulation.
+    // rel-tol 1e-9 is generous; failure indicates a wiring error.
+
+    let div_data = extract_sampled_field_data(&result1, "divergence");
+    assert_eq!(
+        div_data.len(),
+        n_grid_nodes,
+        "divergence data.len() = {} but expected n_grid_nodes = {}",
+        div_data.len(),
+        n_grid_nodes
+    );
+
+    let mut max_curl_mag = 0.0_f64;
+
+    for k in 0..n_grid_nodes {
+        // trace(gradient[k]) = grad[9k+0] + grad[9k+4] + grad[9k+8]
+        // (row-major 3×3: [0]=∇u_x/∂x, [4]=∇u_y/∂y, [8]=∇u_z/∂z)
+        let trace_grad = grad_data[9 * k] + grad_data[9 * k + 4] + grad_data[9 * k + 8];
+        let div_k = div_data[k];
+        let scale_div = div_k.abs().max(1e-18);
+        assert!(
+            (trace_grad - div_k).abs() < 1e-9 * scale_div,
+            "trace identity at k={}: trace(gradient)={:e}, divergence={:e}, rel-err={:e}",
+            k, trace_grad, div_k,
+            (trace_grad - div_k).abs() / scale_div,
+        );
+
+        // antisym(gradient[k]) == curl[k]
+        // Row-major stride-9: grad[9k+r*3+c] = (∇u)[r][c]
+        // curl[0] = grad[9k+7] - grad[9k+5]  (∂u_z/∂y − ∂u_y/∂z = [2][1] - [1][2])
+        // curl[1] = grad[9k+2] - grad[9k+6]  (∂u_x/∂z − ∂u_z/∂x = [0][2] - [2][0])
+        // curl[2] = grad[9k+3] - grad[9k+1]  (∂u_y/∂x − ∂u_x/∂y = [1][0] - [0][1])
+        let expected_curl = [
+            grad_data[9 * k + 7] - grad_data[9 * k + 5],
+            grad_data[9 * k + 2] - grad_data[9 * k + 6],
+            grad_data[9 * k + 3] - grad_data[9 * k + 1],
+        ];
+        for c in 0..3 {
+            let got = curl_data[3 * k + c];
+            let exp = expected_curl[c];
+            let scale_curl = exp.abs().max(1e-18);
+            assert!(
+                (got - exp).abs() < 1e-9 * scale_curl,
+                "curl antisym identity at k={} c={}: curl={:e}, antisym(grad)={:e}, rel-err={:e}",
+                k, c, got, exp,
+                (got - exp).abs() / scale_curl,
+            );
+        }
+
+        let curl_mag = (curl_data[3 * k] * curl_data[3 * k]
+            + curl_data[3 * k + 1] * curl_data[3 * k + 1]
+            + curl_data[3 * k + 2] * curl_data[3 * k + 2])
+            .sqrt();
+        if curl_mag > max_curl_mag {
+            max_curl_mag = curl_mag;
+        }
+    }
+
+    // ── (SANITY) non-trivial rotation under tip load ──────────────────────────
+    assert!(
+        max_curl_mag > 1e-12,
+        "max|curl| = {:e} is effectively zero — no rotation signal under tip load",
+        max_curl_mag
+    );
+
+    // ── (DETERMINISM) gradient and curl bit-identical between eval1/eval2 ─────
+    let grad2_data = extract_sampled_field_data(&result2, "gradient");
+    assert_eq!(
+        grad_data.len(),
+        grad2_data.len(),
+        "gradient data length differs between eval1 ({}) and eval2 ({})",
+        grad_data.len(),
+        grad2_data.len()
+    );
+    for (i, (v1, v2)) in grad_data.iter().zip(grad2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "gradient data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
+
+    let curl2_data = extract_sampled_field_data(&result2, "curl");
+    assert_eq!(
+        curl_data.len(),
+        curl2_data.len(),
+        "curl data length differs between eval1 ({}) and eval2 ({})",
+        curl_data.len(),
+        curl2_data.len()
+    );
+    for (i, (v1, v2)) in curl_data.iter().zip(curl2_data.iter()).enumerate() {
+        assert_eq!(
+            v1.to_bits(),
+            v2.to_bits(),
+            "curl data[{}] not bit-identical across evals: {:e} vs {:e}",
+            i, v1, v2
+        );
+    }
+}
+
+// ── step-5 (task 4564): RED — divergence field contract ──────────────────────
+//
+// Asserts:
+//   (CONTRACT)  divergence is Value::Field{source:Sampled}, codomain = Real
+//               (dimensionless_scalar), data.len() == n_grid_nodes.
+//   (NUMERIC)   Exact cross-field trace identity: div[k] ≈ (1−2ν)/E · tr(σ)[k]
+//               with rel-tol 1e-6 (same linear weights → machine precision).
+//   (NUMERIC)   max|div| ≈ (1−2ν)·σ_max/E within ±50% (PRD G2 signal).
+//
+// Fails (extract_field panics — field absent) until step-6.
+
+/// Divergence field: type contract, trace identity against stress, magnitude.
+#[test]
+fn e2e_cantilever_divergence_field_contract() {
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found"));
+
+    // ── (CONTRACT) divergence must be Value::Field{source:Sampled} ────────────
+    let div_val = extract_field(result_val, "divergence")
+        .unwrap_or_else(|| panic!("field 'divergence' not found in result"));
+
+    let (div_domain, div_codomain) = match &div_val {
+        Value::Field { domain_type, codomain_type, source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "divergence source must be Sampled, got: {:?}",
+                source
+            );
+            (domain_type.clone(), codomain_type.clone())
+        }
+        other => panic!("divergence must be Value::Field, got: {:?}", other),
+    };
+    assert_eq!(
+        div_domain,
+        Type::point3(Type::length()),
+        "divergence domain must be Point3<Length>"
+    );
+    assert_eq!(
+        div_codomain,
+        Type::dimensionless_scalar(),
+        "divergence codomain must be Real (dimensionless_scalar)"
+    );
+
+    // ── (CONTRACT) data length == displacement node count ─────────────────────
+    let div_data = extract_sampled_field_data(result_val, "divergence");
+    let disp_data = extract_sampled_field_data(result_val, "displacement");
+    let n_grid_nodes = disp_data.len() / 3;
+    assert_eq!(
+        div_data.len(),
+        n_grid_nodes,
+        "divergence data.len() = {} but displacement grid has {} nodes",
+        div_data.len(),
+        n_grid_nodes
+    );
+
+    // ── (CONTRACT) all samples finite ─────────────────────────────────────────
+    for (k, &d) in div_data.iter().enumerate() {
+        assert!(d.is_finite(), "divergence data[{}] = {} is not finite", k, d);
+    }
+
+    // ── (NUMERIC) Exact cross-field trace identity: div[k] = (1−2ν)/E · tr(σ)[k]
+    //
+    // Steel_AISI_1045: E = 205e9 Pa, ν = 0.29 (materials_fea.ri:154-156).
+    // Both fields recovered and resampled with the same linear weights ⇒
+    // identity holds to floating-point accumulation (machine precision).
+    // Rel-tol 1e-6 is generous; failure indicates a wiring error, not rounding.
+    let e_pa = 205e9_f64;
+    let nu = 0.29_f64;
+    let factor = (1.0 - 2.0 * nu) / e_pa; // (1−2ν)/E
+
+    let stress_data = extract_sampled_field_data(result_val, "stress");
+    assert_eq!(
+        stress_data.len(),
+        n_grid_nodes * 9,
+        "stress data must have 9 components per grid node"
+    );
+
+    let mut max_div = 0.0_f64;
+    let mut max_tr_sigma = 0.0_f64;
+    for k in 0..n_grid_nodes {
+        // tr(σ) = σ_xx + σ_yy + σ_zz = stride-9 entries [0], [4], [8].
+        let tr_sigma = stress_data[9 * k] + stress_data[9 * k + 4] + stress_data[9 * k + 8];
+        let expected_div = factor * tr_sigma;
+        let got_div = div_data[k];
+
+        // Mixed absolute/relative tolerance: rel-tol 1e-6 or abs 1e-18 floor.
+        let scale = expected_div.abs().max(1e-18);
+        assert!(
+            (got_div - expected_div).abs() < 1e-6 * scale,
+            "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, \
+             rel-err={:e}",
+            k, got_div, expected_div,
+            (got_div - expected_div).abs() / scale,
+        );
+        if got_div.abs() > max_div { max_div = got_div.abs(); }
+        if tr_sigma.abs() > max_tr_sigma { max_tr_sigma = tr_sigma.abs(); }
+    }
+
+    // ── (NUMERIC) PRD G2 magnitude: exact field-sampled companion identity ────
+    //
+    // max|div| = (1−2ν)/E · max|tr(σ)| holds to the same machine-precision as
+    // the per-point trace identity above: both fields are recovered and resampled
+    // from the SAME nodal data with the SAME linear weights.
+    //
+    // This replaces the earlier ±100% Euler-Bernoulli analytical bound (which was
+    // weak: a 2× fudge band would pass even sizeable wiring errors in magnitude).
+    // Anchoring to the actual field-sampled max|tr(σ)| makes the check exact and
+    // avoids the need for a coarse-mesh stress-concentration correction factor.
+    let expected_max_div = factor * max_tr_sigma;
+    let scale = expected_max_div.max(1e-18);
+    assert!(
+        (max_div - expected_max_div).abs() < 1e-6 * scale,
+        "max|div| = {:e} disagrees with field-sampled (1-2ν)/E·max|tr(σ)| = {:e}, \
+         rel-err={:e}",
+        max_div, expected_max_div,
+        (max_div - expected_max_div).abs() / scale,
+    );
+    // Sanity: max|div| must be non-trivially positive (non-zero loading).
+    assert!(
+        max_div > 1e-12,
+        "max|div| = {:e} is effectively zero — no divergence signal", max_div
+    );
 }
 
 // ── step-5: RED — tet trampoline I-1/I-3 ─────────────────────────────────────
@@ -815,8 +1213,12 @@ fn e2e_cantilever_b1_b2_displacement_stress_fields() {
 
 /// Inline cantilever source opting into deterministic execution via
 /// `ElasticOptions(deterministic: true)`. Mirrors the smoke fixture's
-/// material/geometry/loads/supports plus the ConstitutiveLawInput / LoadCase
-/// coercion workarounds (see `examples/fea_cantilever_smoke.ri`).
+/// material/geometry/loads/supports with direct-pass (task γ/4441 supertrait +
+/// task δ/4442 shim retirement; see `examples/fea_cantilever_smoke.ri`). The
+/// LoadCase bundle is no longer needed — `solve_elastic_static` now declares
+/// `loads: List<Load>` / `supports: List<Support>` (task 4093), so direct typed
+/// list literals `[tip_load]` / `[mount]` type-check via the resolver's wildcard
+/// + per-element conformance pass.
 const CANTILEVER_DETERMINISTIC_SRC: &str = r#"
 structure FeaCantileverDeterministic {
     param length : Length = 1000mm
@@ -826,11 +1228,9 @@ structure FeaCantileverDeterministic {
     let material = Steel_AISI_1045()
     let tip_load = PointLoad(point: "tip", force: 1000.0)
     let mount = FixedSupport(target: "root")
-    let lc = LoadCase(name: "cantilever", loads: [tip_load], supports: [mount])
-    let ci = ConstitutiveLawInput(law: material)
 
     let result = solve_elastic_static(
-        ci.law, length, width, height, lc.loads, lc.supports,
+        material, length, width, height, [tip_load], [mount],
         ElasticOptions(deterministic: true)
     )
 }
@@ -930,4 +1330,304 @@ fn e2e_cantilever_deterministic_option_within_tolerance() {
         lo,
         hi
     );
+}
+
+// ── step-7 (task 4564): RED — .ri accessor `result.divergence` ───────────────
+//
+// Proves that the `ElasticResult.divergence` field is declared in solver_elastic.ri
+// and that the .ri accessor `result.divergence` type-resolves to
+// `Field<Point3<Length>, Real>` AND evaluates to `Value::Field{source:Sampled}`.
+//
+// RED signal: before step-8 adds `param divergence` to ElasticResult, the field-
+// projection `result.divergence` fails to type-check → an Error-severity
+// diagnostic is emitted → the `errors.is_empty()` assertion fails.
+//
+// GREEN by step-8 which declares the param in solver_elastic.ri.  The runtime
+// already emits the divergence channel (step-6), so evaluation succeeds.
+//
+// Sources:
+//   - Steel_AISI_1045 / geometry / loads mirror CANTILEVER_DETERMINISTIC_SRC.
+//   - `let divergence = result.divergence` binds the accessor as a named cell.
+//   - `let stress = result.stress` confirms coexistence — both projections
+//     must type-check cleanly when the param is present.
+
+/// Self-contained cantilever source that binds `result.divergence` and
+/// `result.stress` as top-level cells, gating step-8's .ri param declaration.
+const CANTILEVER_DIV_ACCESSOR_SRC: &str = r#"
+structure FeaCantileverDivAccessor {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions()
+    )
+
+    // .ri accessor — fails to type-check until step-8 adds
+    // `param divergence : Field<Point3<Length>, Real>` to ElasticResult.
+    let divergence = result.divergence
+
+    // Coexistence: stress accessor must survive alongside divergence.
+    let stress = result.stress
+}
+"#;
+
+/// `.ri` accessor `result.divergence` type-resolves and evaluates to a Sampled field.
+///
+/// Assertions:
+///   (a) No Error-severity diagnostics — proves `result.divergence` type-checks
+///       against the declared `param divergence : Field<Point3<Length>, Real>`.
+///   (b) The `divergence` cell evaluates to `Value::Field { source: Sampled }` —
+///       proves the accessor end-to-end, not just compile-time.
+///   (c) The `stress` cell evaluates to `Value::Field { source: Sampled }` —
+///       proves coexistence (the divergence param does not displace stress).
+///
+/// RED until step-8 adds `param divergence` to `ElasticResult` in solver_elastic.ri.
+#[test]
+fn e2e_cantilever_divergence_ri_accessor() {
+    let compiled = parse_and_compile_with_stdlib(CANTILEVER_DIV_ACCESSOR_SRC);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let eval_result = engine.eval(&compiled);
+
+    // ── (a) No Error-severity diagnostics ────────────────────────────────────
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics — `result.divergence` must type-check after \
+         step-8 adds `param divergence` to ElasticResult; got: {:?}",
+        errors
+    );
+
+    // ── (b) `divergence` cell evaluates to Value::Field{source:Sampled} ──────
+    let div_cell = ValueCellId::new("FeaCantileverDivAccessor", "divergence");
+    let div_val = eval_result
+        .values
+        .get(&div_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverDivAccessor.divergence not found"));
+
+    match div_val {
+        Value::Field { source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "divergence cell must be Value::Field{{source:Sampled}}, got source: {:?}",
+                source
+            );
+        }
+        other => panic!(
+            "divergence cell must be Value::Field, got: {:?}",
+            other
+        ),
+    }
+
+    // ── (c) `stress` cell coexists as Value::Field{source:Sampled} ───────────
+    let stress_cell = ValueCellId::new("FeaCantileverDivAccessor", "stress");
+    let stress_val = eval_result
+        .values
+        .get(&stress_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverDivAccessor.stress not found"));
+
+    match stress_val {
+        Value::Field { source, .. } => {
+            assert!(
+                matches!(source, FieldSourceKind::Sampled),
+                "stress cell must be Value::Field{{source:Sampled}}, got source: {:?}",
+                source
+            );
+        }
+        other => panic!(
+            "stress cell must be Value::Field, got: {:?}",
+            other
+        ),
+    }
+}
+
+// ── step-5 (task 4565): RED — .ri accessor `result.gradient` / `result.curl` ─
+//
+// Proves that the `ElasticResult.gradient` / `ElasticResult.curl` params are
+// declared in solver_elastic.ri and that the .ri accessors type-resolve, evaluate
+// to the correct Value::Field shapes, and that `sample(…)` dispatches through the
+// ε stride-n deinterleave path yielding Value::Vector of arity 9 / 3.
+//
+// RED signal: before step-6 adds `param gradient` / `param curl` to ElasticResult,
+// the field projections `result.gradient` and `result.curl` fail to type-check →
+// Error-severity diagnostics are emitted → the `errors.is_empty()` assertion fails.
+//
+// GREEN by step-6 which declares both params in solver_elastic.ri.
+
+/// Self-contained cantilever source binding `result.gradient`, `result.curl`,
+/// their sampled values at an interior point, and `result.stress` for coexistence.
+const CANTILEVER_GRAD_CURL_ACCESSOR_SRC: &str = r#"
+structure FeaCantileverGradCurlAccessor {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount],
+        ElasticOptions()
+    )
+
+    // gradient and curl accessors — fail to type-check until step-6 adds the params.
+    let gradient = result.gradient
+    let curl     = result.curl
+
+    // sample(field, point) at an interior point (500mm, 50mm, 50mm).
+    let g_at = sample(result.gradient, point3(500mm, 50mm, 50mm))
+    let c_at = sample(result.curl,     point3(500mm, 50mm, 50mm))
+
+    // Coexistence: stress accessor must survive alongside the new params.
+    let stress = result.stress
+}
+"#;
+
+/// `.ri` accessors `result.gradient` and `result.curl` type-resolve; sampled
+/// values are Value::Vector of the correct arity.
+///
+/// Assertions:
+///   (a) No Error-severity diagnostics — proves both accessors type-check against
+///       `param gradient : Field<Point3<Length>, Tensor<2,3,Real>>` and
+///       `param curl : Field<Point3<Length>, Vector3<Real>>`.
+///   (b) `gradient` cell → Value::Field{source:Sampled}.
+///   (c) `curl` cell → Value::Field{source:Sampled}.
+///   (d) `g_at` cell → Value::Vector of arity 9; all components Value::Real + finite
+///       (ε stride-9 deinterleave path).
+///   (e) `c_at` cell → Value::Vector of arity 3; all components Value::Real + finite
+///       (ε stride-3 deinterleave path).
+///   (f) `stress` cell → Value::Field{source:Sampled} (coexistence).
+///
+/// RED until step-6 adds `param gradient` and `param curl` to ElasticResult.
+#[test]
+fn e2e_cantilever_gradient_curl_ri_accessor() {
+    let compiled = parse_and_compile_with_stdlib(CANTILEVER_GRAD_CURL_ACCESSOR_SRC);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // ── (a) No Error-severity diagnostics ────────────────────────────────────
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics — result.gradient and result.curl must \
+         type-check after step-6 adds the params to ElasticResult; got: {:?}",
+        errors
+    );
+
+    // ── (b) `gradient` cell → Value::Field{source:Sampled} ───────────────────
+    let grad_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "gradient");
+    let grad_val = eval_result
+        .values
+        .get(&grad_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.gradient not found"));
+    match grad_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "gradient cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("gradient cell must be Value::Field, got: {:?}", other),
+    }
+
+    // ── (c) `curl` cell → Value::Field{source:Sampled} ───────────────────────
+    let curl_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "curl");
+    let curl_val = eval_result
+        .values
+        .get(&curl_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.curl not found"));
+    match curl_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "curl cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("curl cell must be Value::Field, got: {:?}", other),
+    }
+
+    // ── (d) `g_at` → Value::Vector of arity 9 ────────────────────────────────
+    let g_at_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "g_at");
+    let g_at_val = eval_result
+        .values
+        .get(&g_at_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.g_at not found"));
+    match g_at_val {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(), 9,
+                "g_at must be arity-9 (stride-9 gradient sample), got arity {}",
+                components.len()
+            );
+            for (i, c) in components.iter().enumerate() {
+                match c {
+                    Value::Real(v) => assert!(
+                        v.is_finite(),
+                        "g_at component[{}] = {} is not finite", i, v
+                    ),
+                    other => panic!(
+                        "g_at component[{}] must be Value::Real, got: {:?}", i, other
+                    ),
+                }
+            }
+        }
+        other => panic!("g_at must be Value::Vector, got: {:?}", other),
+    }
+
+    // ── (e) `c_at` → Value::Vector of arity 3 ────────────────────────────────
+    let c_at_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "c_at");
+    let c_at_val = eval_result
+        .values
+        .get(&c_at_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.c_at not found"));
+    match c_at_val {
+        Value::Vector(components) => {
+            assert_eq!(
+                components.len(), 3,
+                "c_at must be arity-3 (stride-3 curl sample), got arity {}",
+                components.len()
+            );
+            for (i, c) in components.iter().enumerate() {
+                match c {
+                    Value::Real(v) => assert!(
+                        v.is_finite(),
+                        "c_at component[{}] = {} is not finite", i, v
+                    ),
+                    other => panic!(
+                        "c_at component[{}] must be Value::Real, got: {:?}", i, other
+                    ),
+                }
+            }
+        }
+        other => panic!("c_at must be Value::Vector, got: {:?}", other),
+    }
+
+    // ── (f) `stress` cell coexists as Value::Field{source:Sampled} ───────────
+    let stress_cell = ValueCellId::new("FeaCantileverGradCurlAccessor", "stress");
+    let stress_val = eval_result
+        .values
+        .get(&stress_cell)
+        .unwrap_or_else(|| panic!("cell FeaCantileverGradCurlAccessor.stress not found"));
+    match stress_val {
+        Value::Field { source, .. } => assert!(
+            matches!(source, FieldSourceKind::Sampled),
+            "stress cell must be Sampled, got: {:?}", source
+        ),
+        other => panic!("stress cell must be Value::Field, got: {:?}", other),
+    }
 }

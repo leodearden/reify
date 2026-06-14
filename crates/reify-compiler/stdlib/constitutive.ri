@@ -57,21 +57,15 @@ structure def MaterialFrame {
     param z_axis : Vector3<Length>
 }
 
-// ── ConstitutiveLaw trait ────────────────────────────────────────────────────
-
-// ConstitutiveLaw is the marker trait conformed to by every concrete
-// constitutive law (isotropic, orthotropic, transverse-isotropic). The
-// body is intentionally empty: the contract "produce a 6×6 stiffness D
-// in the material's local frame" is implemented producer-side in Rust
-// (`reify-solver-elastic::constitutive`) and dispatched on the
-// structure-name carried by `Value::StructureInstance`. The stdlib trait
-// exists so `param material : ConstitutiveLaw` resolves in user code
-// (e.g. `AnisotropicMaterial.law` below) and so downstream PRDs can
-// declare their own conforming structures.
+// ── ConstitutiveLaw (declared in materials_fea.ri) ───────────────────────────
 //
-// Empty-marker pattern follows `trait Load { }` in std.fea.multi_case
-// (relaxed in DD1; see fea_multi_case.ri:293).
-trait ConstitutiveLaw { }
+// ConstitutiveLaw is now declared in materials_fea.ri (above ElasticMaterial)
+// so that `trait ElasticMaterial : ConstitutiveLaw` is not a forward-reference
+// (materials_fea loads before constitutive in stdlib_loader.rs — PRD §4.2 γ).
+//
+// OrthotropicMaterial and TransverseIsotropicMaterial below still refine
+// ConstitutiveLaw via the growing prelude — materials_fea is loaded first, so
+// ConstitutiveLaw is in scope when this module compiles.
 
 // ── OrthotropicMaterial ──────────────────────────────────────────────────────
 

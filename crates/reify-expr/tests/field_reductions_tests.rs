@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
-use reify_core::{ContentHash, DimensionVector, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Value, ValueMap};
+use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction, SampledField, SampledGridKind, Value, ValueMap};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -167,6 +167,107 @@ fn wrap_sampled_field(sf: SampledField, domain: Type, codomain: Type) -> (Value,
     (field, field_type)
 }
 
+// ── Bounded-reduction test fixtures ─────────────────────────────────────────
+
+/// Build a `Value::BoundingBox` whose three corner components are either
+/// `Value::Real` (dimensionless) or `Value::Scalar { dimension: dim }`
+/// (dimensioned).
+///
+/// Pass `DimensionVector::DIMENSIONLESS` to get Real components; pass e.g.
+/// `DimensionVector::LENGTH` to get dimensioned Scalar components.
+///
+/// The box is always a 3-component `Value::Point`, matching the canonical
+/// `bounding_box(solid)` shape. For n-D field tests (n < 3), only the first
+/// n axes are inspected by the bounded reductions.
+fn make_bbox(min: [f64; 3], max: [f64; 3], dim: DimensionVector) -> Value {
+    let make_comp = |v: f64| -> Value {
+        if dim.is_dimensionless() {
+            Value::Real(v)
+        } else {
+            Value::Scalar { si_value: v, dimension: dim }
+        }
+    };
+    Value::BoundingBox {
+        min: Box::new(Value::Point(vec![
+            make_comp(min[0]),
+            make_comp(min[1]),
+            make_comp(min[2]),
+        ])),
+        max: Box::new(Value::Point(vec![
+            make_comp(max[0]),
+            make_comp(max[1]),
+            make_comp(max[2]),
+        ])),
+    }
+}
+
+/// Build a `Value::Lambda` with (name, id) param pairs.
+///
+/// Lifted directly from `gradient_tests.rs:69`.  Used for constructing
+/// `Analytical`-source field lambdas in bounded-reduction tests.
+fn make_value_lambda(
+    params: Vec<(&str, ValueCellId)>,
+    body: CompiledExpr,
+    captures: ValueMap,
+) -> Value {
+    Value::Lambda {
+        params: params
+            .into_iter()
+            .map(|(n, id)| (n.to_string(), id))
+            .collect(),
+        body: Box::new(body),
+        captures,
+    }
+}
+
+/// Build a `Value::Field` with an explicit source kind and a lambda value.
+///
+/// Alias for the local `make_field_with_source` helper (which appears later
+/// in this file).  Provided here for semantic clarity in bounded-reduction
+/// test construction, before `make_field_with_source` is visible to the reader.
+///
+/// SAFETY: no code here references `make_field_with_source` at declaration time;
+/// Rust resolves all function names at call time within the same module.
+fn make_analytical_field(
+    domain: Type,
+    codomain: Type,
+    source: FieldSourceKind,
+    lambda: Value,
+) -> (Value, Type) {
+    let field = Value::Field {
+        domain_type: domain.clone(),
+        codomain_type: codomain.clone(),
+        source,
+        lambda: Arc::new(lambda),
+    };
+    let field_type = Type::Field {
+        domain: Box::new(domain),
+        codomain: Box::new(codomain),
+    };
+    (field, field_type)
+}
+
+/// Build a 2-arg `FunctionCall` CompiledExpr for `op(field, bbox)`.
+///
+/// Used as the primary fixture factory for bounded-reduction dispatch tests:
+/// the result is passed to `eval_expr` to exercise the full dispatch chain.
+fn make_bounded_call(
+    op: &str,
+    field: Value,
+    field_type: Type,
+    bounds: Value,
+    result_type: Type,
+) -> CompiledExpr {
+    make_function_call(
+        op,
+        vec![
+            CompiledExpr::literal(field, field_type),
+            CompiledExpr::literal(bounds, Type::BoundingBox),
+        ],
+        result_type,
+    )
+}
+
 // ── Step 1: max over a 1-D Real-codomain Sampled field ──────────────────────
 
 /// `max(field)` over a Sampled 1-D Real-codomain field returns the maximum
@@ -178,12 +279,12 @@ fn max_sampled_field_1d_real_returns_max_data_value() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, 5.0, 3.0, 4.0, 2.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "max",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -204,10 +305,10 @@ fn max_two_arg_scalar_form_unchanged() {
     let expr = make_function_call(
         "max",
         vec![
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            CompiledExpr::literal(Value::Real(5.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(5.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -231,12 +332,12 @@ fn min_sampled_field_1d_real_returns_min_data_value() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, 5.0, 3.0, 4.0, 2.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "min",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -256,10 +357,10 @@ fn min_two_arg_scalar_form_unchanged() {
     let expr = make_function_call(
         "min",
         vec![
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
-            CompiledExpr::literal(Value::Real(5.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(5.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -282,7 +383,7 @@ fn max_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
         dimension: DimensionVector::PRESSURE,
     };
     let sf = make_sampled_1d("stress", vec![0.0, 1.0, 2.0], vec![100e6, 250e6, 175e6]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), pressure.clone());
 
     let expr = make_function_call(
         "max",
@@ -319,7 +420,7 @@ fn argmax_sampled_field_1d_length_domain_returns_coord_at_max_index() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, 5.0, 3.0, 4.0, 2.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -349,12 +450,12 @@ fn argmax_sampled_field_1d_real_domain_returns_real_coord() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, 5.0, 3.0, 4.0, 2.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -375,7 +476,7 @@ fn min_sampled_field_with_pressure_codomain_returns_dimensioned_scalar() {
         dimension: DimensionVector::PRESSURE,
     };
     let sf = make_sampled_1d("stress", vec![0.0, 1.0, 2.0], vec![100e6, 250e6, 175e6]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, pressure.clone());
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), pressure.clone());
 
     let expr = make_function_call(
         "min",
@@ -416,7 +517,7 @@ fn argmin_sampled_field_1d_length_domain_returns_coord_at_min_index() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, 5.0, 3.0, 4.0, 2.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmin",
@@ -466,7 +567,7 @@ fn argmax_sampled_field_2d_length_domain_returns_point2_at_max_index() {
         vec![10.0, 20.0],
         vec![1.0, 2.0, 3.0, 4.0, 9.0, 6.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -508,7 +609,7 @@ fn argmin_sampled_field_2d_length_domain_returns_point2_at_min_index() {
         vec![10.0, 20.0],
         vec![1.0, 2.0, 3.0, 4.0, 9.0, 6.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmin",
@@ -564,7 +665,7 @@ fn argmax_sampled_field_3d_length_domain_returns_point3_at_max_index() {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0,
         ],
     );
-    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -612,7 +713,7 @@ fn argmin_sampled_field_3d_length_domain_returns_point3_at_min_index() {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 99.0, 8.0, 9.0, 10.0, 11.0,
         ],
     );
-    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmin",
@@ -666,11 +767,11 @@ fn make_field_with_source(
     (field, field_type)
 }
 
-/// Build a constant-Real-codomain field over a `Type::Real` domain.
+/// Build a constant-Real-codomain field over a `Type::dimensionless_scalar()` domain.
 /// The lambda slot carries `Value::Undef` — none of the deferred-path tests
 /// sample the field, only check the dispatch outcome (mirrors the Imported case).
 fn make_constant_real_analytical_field(source: FieldSourceKind) -> (Value, Type) {
-    make_field_with_source(Type::Real, Type::Real, source, Value::Undef)
+    make_field_with_source(Type::dimensionless_scalar(), Type::dimensionless_scalar(), source, Value::Undef)
 }
 
 /// Helper: assert all four field reductions return `Value::Undef` on a field
@@ -683,7 +784,7 @@ fn assert_all_reductions_undef(field: Value, field_type: Type, label: &str) {
         let expr = make_function_call(
             op,
             vec![CompiledExpr::literal(field.clone(), field_type.clone())],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let result = eval_expr(&expr, &ctx);
         assert_eq!(
@@ -718,26 +819,38 @@ fn all_reductions_on_composed_field_return_undef() {
 #[test]
 fn all_reductions_on_imported_field_return_undef() {
     let (field, field_type) = make_field_with_source(
-        Type::Real,
-        Type::Real,
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
         FieldSourceKind::Imported,
         Value::Undef,
     );
     assert_all_reductions_undef(field, field_type, "Imported");
 }
 
-/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT
-/// `FieldSourceKind::VonMises` return `Value::Undef` (deferred — PRD §13
-/// line 238). Using `MaxShear` as the representative still-deferred source
-/// after `VonMises` was promoted to a fully-handled source kind in β.
+/// `max`/`min`/`argmax`/`argmin` over a derived source that is NOT yet
+/// fully handled (still deferred) return `Value::Undef`. Using
+/// `Gradient` as the representative still-deferred source after
+/// `VonMises` (task 4085), `MaxShear` (task 4543), and `PrincipalStresses`
+/// (task 4562) were promoted to fully-handled source kinds.
 ///
-/// This test is the surviving "other derived sources stay deferred" pin
-/// after `all_reductions_on_derived_field_return_undef` was repurposed from
-/// `VonMises` to `MaxShear` in task 4085 step S5.
+/// This test is the surviving "other derived sources stay deferred" pin.
+/// Retarget history:
+///   - VonMises → MaxShear (task 4085 step S5)
+///   - MaxShear → PrincipalStresses (task 4543 step S5)
+///   - PrincipalStresses → Gradient (task 4562 step-5)
+///
+/// Gradient (a differential operator) is deferred to the
+/// differential-field-reductions PRD; it is and remains Undef in
+/// `compute_extremum`/`compute_argextremum` via the `_ => Undef` fall-through.
 #[test]
-fn all_reductions_on_derived_non_vonmises_field_return_undef() {
-    let (field, field_type) = make_constant_real_analytical_field(FieldSourceKind::MaxShear);
-    assert_all_reductions_undef(field, field_type, "derived (MaxShear — still deferred)");
+fn all_reductions_on_deferred_differential_field_return_undef() {
+    let (field, field_type) =
+        make_constant_real_analytical_field(FieldSourceKind::Gradient);
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "derived (Gradient — still deferred → differential-field-reductions PRD)",
+    );
 }
 
 // ── Step 17: NaN-skip and empty-data semantics ──────────────────────────────
@@ -769,12 +882,12 @@ fn max_sampled_with_nan_skips_nan_values() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, f64::NAN, 5.0, f64::NAN, 3.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "max",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -800,7 +913,7 @@ fn argmax_sampled_with_nan_skips_nan_values() {
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
         vec![1.0, f64::NAN, 5.0, f64::NAN, 3.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -832,10 +945,10 @@ fn all_reductions_sampled_all_nan_returns_undef() {
     let ctx = EvalContext::simple(&values);
     for op in ["max", "min", "argmax", "argmin"] {
         let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![f64::NAN, f64::NAN]);
-        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
         let expected_type = match op {
             "argmax" | "argmin" => length.clone(),
-            _ => Type::Real,
+            _ => Type::dimensionless_scalar(),
         };
         let expr = make_function_call(
             op,
@@ -864,10 +977,10 @@ fn all_reductions_sampled_empty_data_returns_undef() {
     let ctx = EvalContext::simple(&values);
     for op in ["max", "min", "argmax", "argmin"] {
         let sf = make_sampled_empty();
-        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+        let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
         let expected_type = match op {
             "argmax" | "argmin" => length.clone(),
-            _ => Type::Real,
+            _ => Type::dimensionless_scalar(),
         };
         let expr = make_function_call(
             op,
@@ -884,101 +997,107 @@ fn all_reductions_sampled_empty_data_returns_undef() {
 }
 
 // ── Step 19: argcount-gating regression pins ───────────────────────────────
+//
+// Contract (updated in task 4561): a `Value::BoundingBox` 2nd argument now
+// triggers the bounded reduction path (`compute_*_bounded`).  A non-BoundingBox
+// 2nd arg (e.g. a scalar `Real`) does NOT match the new gate and falls
+// through as before — `max`/`min` to `eval_builtin` → binary numeric form
+// → Undef (Field has no `as_f64`); `argmax`/`argmin` to `eval_builtin` →
+// no binding → Undef.  The positive counterpart (`max(field, bbox)` reduces)
+// is exercised by the new bounded-Sampled tests added in step-1 above.
 
-/// Regression pin: `max(field, scalar)` (2 args, first is Field) must NOT
-/// be intercepted by our 1-arg-Field gate. The dispatch falls through to
-/// `eval_builtin`'s binary `max(a, b)` (`reify-stdlib::numeric.rs:63`),
-/// which expects scalar `as_f64()` operands — `Value::Field` has no
-/// `as_f64()` mapping, so the binary form returns `Value::Undef`.
+/// Regression pin: `max(field, scalar)` (2 args, first is Field, second is
+/// a non-BoundingBox scalar) falls through to the binary numeric form and
+/// returns `Value::Undef` (Field has no `as_f64` mapping).
 ///
-/// This pins the gating contract: the 1-arg-Field arm in `lib.rs` is the
-/// ONLY path that reduces a field. A 2-arg call with a Field first arg
-/// falls through to the binary numeric form and produces `Undef`.
+/// The updated dispatch contract: a `Value::BoundingBox` 2nd arg triggers the
+/// bounded reduction; a non-BoundingBox scalar 2nd arg falls through to
+/// `eval_builtin`'s binary `max(a,b)` which cannot coerce a Field → Undef.
 #[test]
-fn argcount_gating_max_field_then_extra_arg_returns_undef() {
+fn argcount_gating_max_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
     let expr = make_function_call(
         "max",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
         Value::Undef,
-        "max(field, scalar) (2 args) should fall through to binary numeric.rs::max and return Undef (Field has no as_f64)"
+        "max(field, scalar) (non-BoundingBox 2nd arg) should fall through to binary numeric.rs::max → Undef"
     );
 }
 
-/// Same regression pin for `min`.
+/// Same regression pin for `min`: non-BoundingBox scalar 2nd arg → Undef.
 #[test]
-fn argcount_gating_min_field_then_extra_arg_returns_undef() {
+fn argcount_gating_min_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
     let expr = make_function_call(
         "min",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
         Value::Undef,
-        "min(field, scalar) (2 args) should fall through to binary numeric.rs::min and return Undef (Field has no as_f64)"
+        "min(field, scalar) (non-BoundingBox 2nd arg) should fall through to binary numeric.rs::min → Undef"
     );
 }
 
-/// Same regression pin for `argmax` (no binary form — falls through to
-/// `eval_builtin` which has no binding for `argmax`, → `Undef`).
+/// Same regression pin for `argmax`: non-BoundingBox scalar 2nd arg → Undef
+/// (no binary `argmax` form; `eval_builtin` has no binding for `argmax`).
 #[test]
-fn argcount_gating_argmax_field_then_extra_arg_returns_undef() {
+fn argcount_gating_argmax_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
     let expr = make_function_call(
         "argmax",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
         Value::Undef,
-        "argmax(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+        "argmax(field, scalar) (non-BoundingBox 2nd arg) falls through to eval_builtin → Undef (no binding)"
     );
 }
 
-/// Same regression pin for `argmin`.
+/// Same regression pin for `argmin`: non-BoundingBox scalar 2nd arg → Undef.
 #[test]
-fn argcount_gating_argmin_field_then_extra_arg_returns_undef() {
+fn argcount_gating_argmin_field_then_non_bbox_arg_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0]);
-    let (field, field_type) = wrap_sampled_field(sf, Type::Real, Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
     let expr = make_function_call(
         "argmin",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
         Value::Undef,
-        "argmin(field, scalar) (2 args) should fall through to eval_builtin and return Undef (no binding)"
+        "argmin(field, scalar) (non-BoundingBox 2nd arg) falls through to eval_builtin → Undef (no binding)"
     );
 }
 
@@ -1005,7 +1124,7 @@ fn argmax_sampled_field_with_shape_mismatch_returns_undef() {
     };
     // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0, 3.0, 4.0, 100.0]);
-    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -1039,7 +1158,7 @@ fn argmin_sampled_field_with_shape_mismatch_returns_undef() {
     };
     // axis length = 2, prod = 2; data length = 5 — shape mismatch (5 ≠ 2)
     let sf = make_sampled_1d("f", vec![0.0, 1.0], vec![1.0, 2.0, 3.0, 4.0, 100.0]);
-    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmin",
@@ -1079,7 +1198,7 @@ fn argmax_sampled_field_2d_with_shape_mismatch_returns_undef() {
         vec![0.0, 1.0, 2.0],
         vec![1.0, 2.0, 3.0, 4.0, 100.0],
     );
-    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::Real);
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
 
     let expr = make_function_call(
         "argmax",
@@ -1095,6 +1214,675 @@ fn argmax_sampled_field_2d_with_shape_mismatch_returns_undef() {
         Value::Undef,
         "argmax(field) over 2-D field with data.len() != prod(axis_lengths) should return Value::Undef"
     );
+}
+
+// ── Bounded Sampled sub-region tests (step-1 RED / step-2 GREEN) ────────────
+//
+// Fixture: 1-D SampledField with Real domain and Real codomain.
+//   axis  = [0, 1, 2, 3, 4]
+//   data  = [1, 5, 3, 4, 2]
+//   bbox  x ∈ [2, 4] → in-bounds nodes: {x=2→3, x=3→4, x=4→2}
+//
+// Exact expectations (data values, no interpolation):
+//   max   = 4.0  (data at x=3)
+//   min   = 2.0  (data at x=4)
+//   argmax = Value::Real(3.0)  (coord at the max)
+//   argmin = Value::Real(4.0)  (coord at the min)
+//
+// Empty sub-region (bbox x ∈ [10, 20]) — no grid nodes → Undef.
+//
+// **RED before step-2 (Sampled arm not yet implemented).**
+
+/// `max(sampled_1d_field, bbox)` clips to the sub-region and returns the maximum
+/// data value within the bounding box.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → max = 4.0.
+#[test]
+fn max_sampled_field_bounded_subregion_returns_max_in_bbox() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "max(sampled 1-D, bbox x∈[2,4]) should be 4.0 (data at x=3)"
+    );
+}
+
+/// `min(sampled_1d_field, bbox)` clips to the sub-region and returns the minimum
+/// data value within the bounding box.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → min = 2.0.
+#[test]
+fn min_sampled_field_bounded_subregion_returns_min_in_bbox() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("min", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(2.0),
+        "min(sampled 1-D, bbox x∈[2,4]) should be 2.0 (data at x=4)"
+    );
+}
+
+/// `argmax(sampled_1d_field, bbox)` clips to the sub-region and returns the
+/// domain coordinate at the maximum.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → argmax → x=3 → Value::Real(3.0).
+#[test]
+fn argmax_sampled_field_bounded_subregion_returns_coord_at_max() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(3.0),
+        "argmax(sampled 1-D, bbox x∈[2,4]) should be coord 3.0 (data[3]=4 is the max)"
+    );
+}
+
+/// `argmin(sampled_1d_field, bbox)` clips to the sub-region and returns the
+/// domain coordinate at the minimum.
+///
+/// axis [0..4] / data [1,5,3,4,2], bbox x∈[2,4]:
+/// in-bounds {x=2→3, x=3→4, x=4→2} → argmin → x=4 → Value::Real(4.0).
+#[test]
+fn argmin_sampled_field_bounded_subregion_returns_coord_at_min() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+    let bbox = make_bbox([2.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmin", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "argmin(sampled 1-D, bbox x∈[2,4]) should be coord 4.0 (data[4]=2 is the min)"
+    );
+}
+
+/// `max(sampled_1d_field, bbox)` where the bounding box excludes ALL grid nodes
+/// returns `Value::Undef` (empty sub-region).
+///
+/// axis [0..4], bbox x∈[10,20] — no grid points in range → Undef.
+#[test]
+fn max_sampled_field_bounded_empty_subregion_returns_undef() {
+    let sf = make_sampled_1d(
+        "f",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![1.0, 5.0, 3.0, 4.0, 2.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, Type::dimensionless_scalar(), Type::dimensionless_scalar());
+    let bbox = make_bbox([10.0, 0.0, 0.0], [20.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(sampled 1-D, bbox outside all nodes) should return Undef (empty sub-region)"
+    );
+}
+
+// ── Bounded Analytical/Composed grid-sampling tests (step-3 RED / step-4 GREEN) ──
+//
+// The Analytical/Composed arm in compute_bounded_extremum / compute_bounded_argextremum
+// is NOT yet implemented (step-4).  All positive tests below currently return
+// Value::Undef — they become GREEN in step-4.
+//
+// Negative pins (tests 5-8 below) already expect Value::Undef and pass now;
+// they remain GREEN after step-4 lands.
+
+// ── step-3 helper: build an Analytical 1-D lambda ──────────────────────────
+//
+// Lambda `|x| scale * x` over Type::dimensionless_scalar() domain — evaluates to a Real.
+//
+// Body = BinOp::Mul(literal(scale), value_ref(x_id)).
+fn make_linear_lambda(scale: f64) -> Value {
+    let x_id = ValueCellId::new("$lambda_linear.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::literal(Value::Real(scale), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
+    );
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a quadratic-peak lambda ────────────────────────────
+//
+// Lambda `|x| apex - (x - center)^2` — evaluated via `(x-center)*(x-center)`.
+//
+// Body = Sub(literal(apex), Mul(Sub(x_ref, literal(center)), Sub(x_ref, literal(center)))).
+fn make_quadratic_peak_lambda(apex: f64, center: f64) -> Value {
+    let x_id = ValueCellId::new("$lambda_peak.S", "x");
+    let x_ref = || CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
+    let diff = CompiledExpr::binop(
+        BinOp::Sub,
+        x_ref(),
+        CompiledExpr::literal(Value::Real(center), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
+    );
+    let diff2 = CompiledExpr::binop(
+        BinOp::Sub,
+        x_ref(),
+        CompiledExpr::literal(Value::Real(center), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
+    );
+    let sq = CompiledExpr::binop(BinOp::Mul, diff, diff2, Type::dimensionless_scalar());
+    let body = CompiledExpr::binop(
+        BinOp::Sub,
+        CompiledExpr::literal(Value::Real(apex), Type::dimensionless_scalar()),
+        sq,
+        Type::dimensionless_scalar(),
+    );
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a 2-D additive lambda ──────────────────────────────
+//
+// Lambda `|x, y| x + y` — parameters are individually bound; called via
+// `apply_lambda_with_point_unpacking` which auto-unpacks Point(x,y) into (x, y).
+fn make_sum2d_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_sum2d.S", "x");
+    let y_id = ValueCellId::new("$lambda_sum2d.S", "y");
+    let body = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
+    );
+    make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a NaN-returning lambda ─────────────────────────────
+//
+// Lambda `|x| NaN` — body is a literal `Value::Real(f64::NAN)`.
+// Used to verify that all-non-finite results → Undef (the grid-sampler
+// skips non-finite values via `as_f64()` + `is_finite()`).
+fn make_nan_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_nan.S", "x");
+    let body = CompiledExpr::literal(Value::Real(f64::NAN), Type::dimensionless_scalar());
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+// ── step-3 helper: build a Vector-returning lambda ──────────────────────────
+//
+// Lambda `|x| [1, 2, 3]` — body is a literal Vector.
+// `as_f64()` on a Vector returns None → result is skipped by the grid-sampler → Undef.
+fn make_vector_returning_lambda() -> Value {
+    let x_id = ValueCellId::new("$lambda_vec.S", "x");
+    let vec_val = Value::Vector(vec![Value::Real(1.0), Value::Real(2.0), Value::Real(3.0)]);
+    let body = CompiledExpr::literal(vec_val, Type::vec3(Type::dimensionless_scalar()));
+    make_value_lambda(vec![("x", x_id)], body, ValueMap::new())
+}
+
+/// `max(analytical_1d, bbox)` over a monotonic linear field `|x| 3*x`
+/// with bbox x∈[0,4].
+///
+/// Grid: 11 nodes on [0,4] → {0.0, 0.4, 0.8, ..., 4.0}.
+/// Max at x=4 (endpoint, always a grid node) → 3*4 = 12.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_1d_linear_returns_max_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(12.0),
+        "max(|x| 3x, bbox x∈[0,4]) = 12.0 at x=4 (endpoint node, exact)"
+    );
+}
+
+/// `min(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// Min at x=0 (endpoint) → 0.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn min_analytical_1d_linear_returns_min_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("min", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(0.0),
+        "min(|x| 3x, bbox x∈[0,4]) = 0.0 at x=0 (endpoint node, exact)"
+    );
+}
+
+/// `argmax(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// argmax at x=4 → Value::Real(4.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_1d_linear_returns_coord_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(4.0),
+        "argmax(|x| 3x, bbox x∈[0,4]) = 4.0 (endpoint node, exact)"
+    );
+}
+
+/// `argmin(analytical_1d, bbox)` over `|x| 3*x` with bbox x∈[0,4].
+///
+/// argmin at x=0 → Value::Real(0.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmin_analytical_1d_linear_returns_coord_at_endpoint() {
+    let lambda = make_linear_lambda(3.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmin", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(0.0),
+        "argmin(|x| 3x, bbox x∈[0,4]) = 0.0 (endpoint node, exact)"
+    );
+}
+
+/// `max(analytical_1d, bbox)` over a quadratic-peak field `|x| 10-(x-2)^2`
+/// with bbox x∈[0,4].
+///
+/// Grid: 11 nodes on [0,4] → node 5 is x=2.0 (box center, exact because
+/// count is ODD).  f(2.0) = 10 - 0 = 10.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_1d_interior_peak_returns_peak_value() {
+    let lambda = make_quadratic_peak_lambda(10.0, 2.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(10.0),
+        "max(|x| 10-(x-2)^2, bbox x∈[0,4]) = 10.0 (box-center node x=2, exact)"
+    );
+}
+
+/// `argmax(analytical_1d, bbox)` over `|x| 10-(x-2)^2` with bbox x∈[0,4].
+///
+/// argmax at x=2.0 (box-center node) → Value::Real(2.0) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_1d_interior_peak_returns_center_coord() {
+    let lambda = make_quadratic_peak_lambda(10.0, 2.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(2.0),
+        "argmax(|x| 10-(x-2)^2, bbox x∈[0,4]) = 2.0 (box-center node, exact)"
+    );
+}
+
+/// `max(analytical_2d, bbox)` over `|x,y| x+y` with Point2<Real> domain,
+/// bbox [0,2]×[0,3].
+///
+/// Grid: 11×11 nodes.  Max at corner (2.0, 3.0) → f(2,3) = 5.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_analytical_2d_additive_returns_max_at_corner() {
+    let lambda = make_sum2d_lambda();
+    let domain = Type::Point { n: 2, quantity: Box::new(Type::dimensionless_scalar()) };
+    let (field, field_type) = make_analytical_field(domain, Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [2.0, 3.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(5.0),
+        "max(|x,y| x+y, bbox [0,2]×[0,3]) = 5.0 at corner (2,3), exact"
+    );
+}
+
+/// `argmax(analytical_2d, bbox)` over `|x,y| x+y` with Point2<Real> domain,
+/// bbox [0,2]×[0,3].
+///
+/// argmax at corner (2.0, 3.0) → Value::Point([Real(2.0), Real(3.0)]) EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn argmax_analytical_2d_additive_returns_corner_point() {
+    let lambda = make_sum2d_lambda();
+    let domain = Type::Point { n: 2, quantity: Box::new(Type::dimensionless_scalar()) };
+    let (field, field_type) = make_analytical_field(domain, Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [2.0, 3.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("argmax", field, field_type, bbox, Type::Point { n: 2, quantity: Box::new(Type::dimensionless_scalar()) });
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Point(vec![Value::Real(2.0), Value::Real(3.0)]),
+        "argmax(|x,y| x+y, bbox [0,2]×[0,3]) = Point(2.0, 3.0) at corner, exact"
+    );
+}
+
+/// `max(composed_field, bbox)` over a Composed-source field with `|x| 2*x`
+/// lambda, bbox x∈[0,5].
+///
+/// Composed source shares the Analytical grid-sampler path.
+/// Max at x=5 (endpoint) → 2*5 = 10.0 EXACT.
+///
+/// **RED before step-4.**
+#[test]
+fn max_composed_field_bounded_shares_analytical_path() {
+    let lambda = make_linear_lambda(2.0);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Composed, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [5.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Real(10.0),
+        "max(|x| 2x composed, bbox x∈[0,5]) = 10.0 at x=5 (endpoint node, exact)"
+    );
+}
+
+// ── Negative pins: edge-case and source-kind guards ─────────────────────────
+//
+// These tests expect Value::Undef now AND after step-4.
+
+/// `max(analytical, bbox)` where the lambda always returns NaN → Undef.
+///
+/// The grid-sampler skips non-finite values (`as_f64()` + `is_finite()`);
+/// all 11 nodes skipped → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (all-NaN → Undef).
+#[test]
+fn max_analytical_all_nan_lambda_returns_undef() {
+    let lambda = make_nan_lambda();
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(analytical, bbox) where lambda always returns NaN should be Undef"
+    );
+}
+
+/// `max(analytical, bbox)` where the lambda returns a non-orderable Vector → Undef.
+///
+/// The grid-sampler calls `as_f64()` on each lambda result; Vector returns None → skipped.
+/// All nodes skipped → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (non-orderable → Undef).
+#[test]
+fn max_analytical_vector_codomain_returns_undef() {
+    let lambda = make_vector_returning_lambda();
+    let vec3_type = Type::vec3(Type::dimensionless_scalar());
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), vec3_type, FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(analytical, bbox) where lambda returns Vector should be Undef (non-orderable)"
+    );
+}
+
+/// `max(analytical_4d, bbox_3d)` where the domain requires 4 coords but the
+/// BoundingBox only provides 3 → Undef.
+///
+/// GREEN now (Analytical → Undef) and GREEN after step-4 (n > bbox_dim → Undef).
+#[test]
+fn max_analytical_domain_exceeds_bbox_dim_returns_undef() {
+    let lambda = make_linear_lambda(1.0);
+    // Point4<Real> domain — needs 4 bbox coords; our 3-coord bbox only has lo.len()==3.
+    let domain = Type::Point { n: 4, quantity: Box::new(Type::dimensionless_scalar()) };
+    let (field, field_type) = make_analytical_field(domain, Type::dimensionless_scalar(), FieldSourceKind::Analytical, lambda);
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 4.0, 4.0], DimensionVector::DIMENSIONLESS);
+    let expr = make_bounded_call("max", field, field_type, bbox, Type::dimensionless_scalar());
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+    assert_eq!(
+        result,
+        Value::Undef,
+        "max(Point4 domain, 3-coord bbox) should be Undef (domain dim > bbox coord count)"
+    );
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a VonMises-source field with a
+/// **malformed lambda** (`Value::Undef`) returns `Value::Undef` defensively.
+///
+/// The VonMises bounded arm calls `project_von_mises_sampled(lambda)`.  When
+/// `lambda` is `Value::Undef` (not a valid inner tensor `Value::Field { source:
+/// Sampled, .. }`), `project_von_mises_sampled` returns `None` and the bounded
+/// reduction returns `Undef` — the same defensive fallback as the 1-arg VonMises
+/// path for a malformed field.  This test pins that behaviour so the defensive
+/// `None => Undef` arm is not accidentally removed.
+///
+/// For the positive case (well-formed VonMises + real tensor data), see
+/// `bounded_reductions_on_vonmises_field_clips_to_subregion`.
+#[test]
+fn bounded_reductions_on_vonmises_field_with_malformed_lambda_returns_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::VonMises,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::dimensionless_scalar());
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(VonMises field with Undef lambda, bbox) should be Undef (malformed inner field)"
+        );
+    }
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a **well-formed** VonMises-source
+/// field clips the projected scalar sub-region correctly.
+///
+/// Inner tensor field: 1-D axis = [0.0, 1.0, 2.0, 3.0, 4.0], uniaxial windows:
+/// σ_xx = {100e6, 250e6, 175e6, 200e6, 50e6} → vM = {100e6, 250e6, 175e6, 200e6, 50e6}.
+///
+/// Bounding box: x ∈ [1.0, 3.0] → in-bounds nodes at indices 1, 2, 3
+/// → projected values {250e6, 175e6, 200e6}.
+///
+/// Expected:
+/// - max = 250e6 Pa (at x = 1.0)
+/// - min = 175e6 Pa (at x = 2.0)
+/// - argmax = Real(1.0)
+/// - argmin = Real(2.0)
+#[test]
+fn bounded_reductions_on_vonmises_field_clips_to_subregion() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0, 3.0, 4.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+            uniaxial_window(200e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    // Domain of inner tensor field is Real (raw float coords).
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::dimensionless_scalar());
+
+    // Outer VonMises field: domain=Real, codomain=PRESSURE, lambda=inner tensor field.
+    let (vonmises_field, vonmises_field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        pressure.clone(),
+        FieldSourceKind::VonMises,
+        inner_tensor_field,
+    );
+
+    // Bounding box: x ∈ [1.0, 3.0] (clips to indices 1, 2, 3).
+    let bbox = make_bbox([1.0, 0.0, 0.0], [3.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(vonmises_field, bbox) — should return 250e6 Pa (projected max in sub-region)
+    let max_expr = make_bounded_call(
+        "max",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar { si_value: 250e6, dimension: DimensionVector::PRESSURE },
+        "max(VonMises field, bbox=[1,3]) should return 250e6 Pa (vM max in sub-region)"
+    );
+
+    // min(vonmises_field, bbox) — should return 175e6 Pa
+    let min_expr = make_bounded_call(
+        "min",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar { si_value: 175e6, dimension: DimensionVector::PRESSURE },
+        "min(VonMises field, bbox=[1,3]) should return 175e6 Pa (vM min in sub-region)"
+    );
+
+    // argmax(vonmises_field, bbox) — should return Real(1.0) (coord at index 1)
+    let argmax_expr = make_bounded_call(
+        "argmax",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Real(1.0),
+        "argmax(VonMises field, bbox=[1,3]) should return Real(1.0) (coord of vM max)"
+    );
+
+    // argmin(vonmises_field, bbox) — should return Real(2.0) (coord at index 2)
+    let argmin_expr = make_bounded_call(
+        "argmin",
+        vonmises_field.clone(),
+        vonmises_field_type.clone(),
+        bbox.clone(),
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Real(2.0),
+        "argmin(VonMises field, bbox=[1,3]) should return Real(2.0) (coord of vM min)"
+    );
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over an Imported-source field → Undef.
+#[test]
+fn bounded_reductions_on_imported_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::Imported,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::dimensionless_scalar());
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(Imported field, bbox) should be Undef (bounded form not supported for Imported)"
+        );
+    }
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a MaxShear-source field → Undef.
+#[test]
+fn bounded_reductions_on_derived_maxshear_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::MaxShear,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::dimensionless_scalar());
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(MaxShear field, bbox) should be Undef (bounded form not supported for derived)"
+        );
+    }
 }
 
 // ── Step S1: max / min reduce a VonMises-derived Sampled field ──────────────
@@ -1190,11 +1978,11 @@ fn max_min_von_mises_derived_sampled_field_returns_correct_extremum() {
             uniaxial_window(175e6),
         ],
     );
-    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::dimensionless_scalar());
 
     // Directly construct the VonMises-source field (lambda = inner tensor field).
     let (vonmises_field, vonmises_field_type) = make_field_with_source(
-        Type::Real,
+        Type::dimensionless_scalar(),
         pressure.clone(),
         FieldSourceKind::VonMises,
         inner_tensor_field,
@@ -1259,10 +2047,10 @@ fn b3_max_of_von_mises_field_via_eval_expr_dispatch() {
             uniaxial_window(175e6),
         ],
     );
-    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::Real);
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::dimensionless_scalar());
 
     let (vonmises_field, vonmises_field_type) = make_field_with_source(
-        Type::Real,
+        Type::dimensionless_scalar(),
         pressure.clone(),
         FieldSourceKind::VonMises,
         inner_tensor_field,
@@ -1513,7 +2301,7 @@ fn all_reductions_on_vonmises_field_with_non_sampled_lambda_return_undef() {
     };
     // VonMises field whose lambda is Value::Undef (not a Sampled Field).
     let (field, field_type) = make_field_with_source(
-        Type::Real,
+        Type::dimensionless_scalar(),
         pressure,
         FieldSourceKind::VonMises,
         Value::Undef,
@@ -1552,7 +2340,7 @@ fn all_reductions_on_vonmises_field_with_stride_violation_return_undef() {
         }
     };
     let inner_tensor_field = Value::Field {
-        domain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
         codomain_type: Type::Matrix {
             m: 3,
             n: 3,
@@ -1562,7 +2350,7 @@ fn all_reductions_on_vonmises_field_with_stride_violation_return_undef() {
         lambda: Arc::new(Value::SampledField(bad_sf)),
     };
     let (field, field_type) = make_field_with_source(
-        Type::Real,
+        Type::dimensionless_scalar(),
         pressure,
         FieldSourceKind::VonMises,
         inner_tensor_field,
@@ -1595,9 +2383,9 @@ fn all_reductions_on_vonmises_field_with_all_nan_windows_return_undef() {
             [f64::NAN; 9],
         ],
     );
-    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::Real);
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::dimensionless_scalar());
     let (field, field_type) = make_field_with_source(
-        Type::Real,
+        Type::dimensionless_scalar(),
         pressure,
         FieldSourceKind::VonMises,
         inner_tensor_field,
@@ -1672,5 +2460,1396 @@ fn reductions_on_vonmises_field_with_partial_nan_windows_skip_nan() {
             dimension: DimensionVector::LENGTH,
         },
         "argmax(VonMises field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
+
+// ── Step S1 (MaxShear): max / min reduce a MaxShear-derived Sampled field ───
+//
+// These tests are RED before the MaxShear arm is implemented in
+// `field_reductions.rs` (returns Value::Undef at the catch-all).
+// After step-4 they become GREEN.
+//
+// Uniaxial window convention: window_i = [σ_i, 0, 0, 0, 0, 0, 0, 0, 0].
+// For a uniaxial tensor the only non-zero principal stress is σ_xx,
+// so max_shear = σ_xx / 2 exactly.
+
+/// `max` / `min` over a MaxShear-source field whose lambda is a 1-D Sampled
+/// tensor field (directly constructed, bypassing `compute_max_shear` wrapping).
+///
+/// Uniaxial windows: σ_xx = {100e6, 250e6, 175e6} → τ_max = σ/2 =
+/// {50e6, 125e6, 87.5e6}. Expected: max = 125e6 Pa, min = 50e6 Pa.
+///
+/// **RED before step-4**: MaxShear arm returns `Value::Undef`.
+#[test]
+fn max_min_max_shear_derived_sampled_field_returns_correct_extremum() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // Directly construct the MaxShear-source field (lambda = inner tensor field).
+    let (maxshear_field, maxshear_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(maxshear_field) should be 125e6 Pa (= 250e6 / 2)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(maxshear_field.clone(), maxshear_field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 125e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(MaxShear field) should return 125e6 Pa (τ_max of σ=250e6 window)"
+    );
+
+    // min(maxshear_field) should be 50e6 Pa (= 100e6 / 2)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(maxshear_field, maxshear_field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar {
+            si_value: 50e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min(MaxShear field) should return 50e6 Pa (τ_max of σ=100e6 window)"
+    );
+}
+
+/// `argmax` / `argmin` over a MaxShear-source 1-D field with LENGTH domain.
+///
+/// Same inner field as above: σ = {100e6, 250e6, 175e6} → τ = {50e6, 125e6, 87.5e6}.
+/// argmax → index 1 → coord 1.0 m; argmin → index 0 → coord 0.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_argmin_max_shear_field_1d_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(175e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let (maxshear_field, maxshear_field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(maxshear_field.clone(), maxshear_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(MaxShear 1-D field) should return coord at projected max (index 1 → 1.0 m)"
+    );
+
+    // argmin → index 0 → coord 0.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(maxshear_field, maxshear_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(MaxShear 1-D field) should return coord at projected min (index 0 → 0.0 m)"
+    );
+}
+
+/// Partial-NaN skip: windows [NaN×9, uniaxial(250e6), NaN×9] →
+/// projected τ = [NaN, 125e6, NaN] → max = 125e6 Pa, argmax → coord 1.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn reductions_on_max_shear_field_with_partial_nan_windows_skip_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],           // out-of-solid sentinel
+            uniaxial_window(250e6),  // finite: τ_max = 125e6 Pa
+            [f64::NAN; 9],           // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        pressure.clone(),
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: 125e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 125e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(MaxShear field with partial NaN) should skip NaN and return 125e6 Pa"
+    );
+
+    // argmax → the finite window at axis index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(MaxShear field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
+
+/// Defensive: all four reductions return `Value::Undef` when the MaxShear
+/// field's lambda is NOT a Sampled `Value::Field` (e.g. `Value::Undef`).
+///
+/// Pins the `project_max_shear_sampled` level-1 defensive arm (non-Sampled
+/// lambda → None → Undef).
+#[test]
+fn all_reductions_on_max_shear_field_with_non_sampled_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        pressure,
+        FieldSourceKind::MaxShear,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(field, field_type, "MaxShear with non-Sampled lambda (Undef)");
+}
+
+/// All four reductions return `Value::Undef` when every MaxShear window is NaN
+/// (all-out-of-solid FEA sentinel).
+///
+/// Pins the FEA out-of-solid path: `compute_max_shear_3x3([NaN; 9])` returns
+/// `f64::NAN` (eigenvalues → None → NAN), the `is_finite()` gate in
+/// `argmax_argmin_index` skips every window, and all reductions return Undef.
+/// Also validates that the `debug_assert` NaN short-circuit added in step-2 does
+/// NOT panic on all-NaN input (regression pin for the symmetry-assert fix).
+#[test]
+fn reductions_on_max_shear_field_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::dimensionless_scalar());
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        pressure,
+        FieldSourceKind::MaxShear,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "MaxShear with all-NaN windows (all-out-of-solid → Undef)",
+    );
+}
+
+// ── Step S1 (SafetyFactor): max / min reduce a SafetyFactor-derived field ───
+//
+// These tests are RED before the SafetyFactor arm is implemented in
+// `field_reductions.rs` (returns Value::Undef at the catch-all).
+// After step-6 they become GREEN.
+//
+// SafetyFactor lambda = Value::List[inner_tensor_field, yield_val].
+// For uniaxial σ: vM = σ exactly → SF = yield / σ.
+
+/// `max` / `min` over a SafetyFactor-source field.
+///
+/// Inner tensor field: uniaxial σ = {100e6, 250e6, 50e6} → vM = σ →
+/// SF = 250e6 / {100e6, 250e6, 50e6} = {2.5, 1.0, 5.0} (dimensionless Real).
+/// Expected: max = Real(5.0), min = Real(1.0).
+///
+/// **RED before step-6**.
+#[test]
+fn max_min_safety_factor_derived_sampled_field_returns_correct_extremum() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Build the inner Sampled tensor field (stride-9 uniaxial windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // SafetyFactor lambda = Value::List[tensor_field, yield_val]
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+
+    // SafetyFactor field: domain=Length, codomain=Real (dimensionless)
+    let (sf_field, sf_field_type) = make_field_with_source(
+        length.clone(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → Real(5.0) (SF of σ=50e6 window: 250e6/50e6=5.0)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(sf_field.clone(), sf_field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(5.0),
+        "max(SafetyFactor field) should return Real(5.0) (SF of σ=50e6 window)"
+    );
+
+    // min → Real(1.0) (SF of σ=250e6 window: 250e6/250e6=1.0)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(sf_field, sf_field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(1.0),
+        "min(SafetyFactor field) should return Real(1.0) (SF of σ=250e6 window)"
+    );
+}
+
+/// `argmax` / `argmin` over a SafetyFactor-source 1-D field.
+///
+/// σ = {100e6, 250e6, 50e6} → SF = {2.5, 1.0, 5.0}.
+/// argmax → index 2 → coord 2.0 m; argmin → index 1 → coord 1.0 m.
+///
+/// **RED before step-6**.
+#[test]
+fn argmax_argmin_safety_factor_field_1d_returns_coord() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            uniaxial_window(100e6),
+            uniaxial_window(250e6),
+            uniaxial_window(50e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (sf_field, sf_field_type) = make_field_with_source(
+        length.clone(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → index 2 → coord 2.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(sf_field.clone(), sf_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(SafetyFactor 1-D field) should return coord at SF max (index 2 → 2.0 m)"
+    );
+
+    // argmin → index 1 → coord 1.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(sf_field, sf_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(SafetyFactor 1-D field) should return coord at SF min (index 1 → 1.0 m)"
+    );
+}
+
+/// All-hydrostatic windows: vM = 0, SF = yield/0 = +∞.
+/// The is_finite() reduction gate skips +∞, so all reductions return Undef.
+///
+/// Pins the hydrostatic-poison convention (matches the `safety_factor` builtin:
+/// yield/0 → +∞ → `sanitize_value` → Undef; the is_finite() gate in
+/// `argmax_argmin_index` enforces the same outcome for the field reduction).
+#[test]
+fn reductions_on_safety_factor_field_with_hydrostatic_windows_return_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+
+    // Hydrostatic window: [p, 0, 0, 0, p, 0, 0, 0, p] — vM = 0.
+    let p = 100e6_f64;
+    let hydrostatic_window: [f64; 9] = [p, 0.0, 0.0, 0.0, p, 0.0, 0.0, 0.0, p];
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![hydrostatic_window, hydrostatic_window],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "SafetyFactor with hydrostatic windows (vM=0 → SF=+∞ → skipped → Undef)",
+    );
+}
+
+/// All four reductions return `Value::Undef` when every SafetyFactor window is
+/// NaN (all-out-of-solid FEA sentinel).
+///
+/// Pins the out-of-solid path: `yield / compute_von_mises_3x3([NaN; 9])` =
+/// `yield / NaN` = NaN, which is non-finite and skipped by `is_finite()`,
+/// so all reductions return Undef.
+#[test]
+fn reductions_on_safety_factor_field_all_nan_windows_return_undef() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, length.clone());
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let lambda = Value::List(vec![inner_tensor_field, yield_val]);
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        lambda,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "SafetyFactor with all-NaN windows (all-out-of-solid → Undef)",
+    );
+}
+
+/// Defensive: all four reductions return `Value::Undef` for malformed
+/// SafetyFactor lambda — pins the `project_safety_factor_sampled` defensive arms.
+///
+/// Tests three malformed cases:
+/// (1) non-List lambda (Value::Undef) — level-1 guard rejects non-List.
+/// (2) wrong-arity List (3 elements) — level-1 guard rejects `len != 2`.
+/// (3) non-numeric yield (Value::Undef in list position 1) — `yield_val.as_f64()` returns None.
+#[test]
+fn all_reductions_on_safety_factor_field_with_malformed_lambda_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+
+    // Case 1: non-List lambda
+    let (field1, field_type1) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        Value::Undef,
+    );
+    assert_all_reductions_undef(
+        field1,
+        field_type1,
+        "SafetyFactor with non-List lambda (Undef)",
+    );
+
+    // Build a valid inner tensor field for cases 2 and 3.
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![uniaxial_window(100e6), uniaxial_window(200e6)],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::dimensionless_scalar());
+
+    // Case 2: wrong-arity List (3 elements instead of 2)
+    let yield_val = Value::Scalar {
+        si_value: 250e6,
+        dimension: DimensionVector::PRESSURE,
+    };
+    let (field2, field_type2) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![
+            inner_tensor_field.clone(),
+            yield_val.clone(),
+            Value::Real(0.0),
+        ]),
+    );
+    assert_all_reductions_undef(
+        field2,
+        field_type2,
+        "SafetyFactor with wrong-arity List (3 elements)",
+    );
+
+    // Case 3: non-numeric yield (Value::Undef in position 1)
+    let (field3, field_type3) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        pressure,
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field, Value::Undef]),
+    );
+    assert_all_reductions_undef(
+        field3,
+        field_type3,
+        "SafetyFactor with non-numeric yield (Undef in position 1)",
+    );
+}
+
+/// 2-arg `max|min|argmax|argmin(field, bbox)` over a SafetyFactor-source field → Undef.
+///
+/// Mirrors `bounded_reductions_on_derived_maxshear_field_return_undef`:
+/// the bounded form is not supported for derived SafetyFactor fields.
+#[test]
+fn bounded_reductions_on_derived_safetyfactor_field_return_undef() {
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        Value::Undef,
+    );
+    let bbox = make_bbox([0.0, 0.0, 0.0], [4.0, 0.0, 0.0], DimensionVector::DIMENSIONLESS);
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+    for op in ["max", "min", "argmax", "argmin"] {
+        let expr = make_bounded_call(op, field.clone(), field_type.clone(), bbox.clone(), Type::dimensionless_scalar());
+        assert_eq!(
+            eval_expr(&expr, &ctx),
+            Value::Undef,
+            "{op}(SafetyFactor field, bbox) should be Undef (bounded form not supported for derived)"
+        );
+    }
+}
+
+// ── Robustness: non-positive yield strength ──────────────────────────────────
+
+/// All four reductions return `Value::Undef` when the SafetyFactor yield
+/// strength is zero or negative (physically meaningless values).
+///
+/// Pins the `project_safety_factor_sampled` non-positive-yield guard:
+/// `yield_f64 <= 0.0 → None → Undef`.  Without this guard, `0.0 / vM = 0.0`
+/// and `negative / vM < 0` would silently produce finite extrema that are
+/// nonsensical as safety factors.
+///
+/// Uses a valid inner tensor field (uniaxial windows) so the projection
+/// path would yield finite results if the yield guard were absent.
+#[test]
+fn all_reductions_on_safety_factor_field_with_non_positive_yield_return_undef() {
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0],
+        vec![uniaxial_window(100e6), uniaxial_window(200e6)],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, Type::dimensionless_scalar());
+
+    // Case 1: zero yield — 0.0 / vM = 0.0 (finite but meaningless without guard).
+    let (field1, field_type1) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field.clone(), Value::Real(0.0)]),
+    );
+    assert_all_reductions_undef(
+        field1,
+        field_type1,
+        "SafetyFactor with zero yield (0.0 → non-positive guard → Undef)",
+    );
+
+    // Case 2: negative yield — physically impossible yield strength.
+    let (field2, field_type2) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        Type::dimensionless_scalar(),
+        FieldSourceKind::SafetyFactor,
+        Value::List(vec![inner_tensor_field, Value::Real(-250e6)]),
+    );
+    assert_all_reductions_undef(
+        field2,
+        field_type2,
+        "SafetyFactor with negative yield (-250e6 → non-positive guard → Undef)",
+    );
+}
+
+// ── Task 4562: PrincipalStresses reductions ──────────────────────────────────
+//
+// PrincipalStresses is a pointwise tensor→LIST projection: each stride-9
+// stress-tensor window eigen-decomposes to a List of 3 principal stresses
+// (ascending: eigs[0]=σ₃ min, eigs[2]=σ₁ max).
+//
+// Diagonal windows hit the `p1 ≤ 1e-30` short-circuit in
+// `compute_eigenvalues_3x3` (off-diagonal entries are 0), so eigenvalues
+// equal the sorted diagonal entries EXACTLY — no floating-point error,
+// so `assert_eq!` on exact `Value::Scalar` values is sound.
+//
+// Tests are RED before step-2 / step-4 implement the PrincipalStresses arm.
+
+/// Diagonal 3×3 symmetric window with principal stresses (a, b, c):
+/// [a,0,0, 0,b,0, 0,0,c] (row-major, off-diagonal = 0).
+///
+/// `compute_eigenvalues_3x3` hits the `p1 ≤ 1e-30` diagonal short-circuit
+/// and returns `sort([a, b, c])` with NO floating arithmetic — eigenvalues
+/// equal the diagonal entries exactly, so `assert_eq!` on `Value::Scalar`
+/// values is safe.
+fn diagonal_window(a: f64, b: f64, c: f64) -> [f64; 9] {
+    [a, 0.0, 0.0, 0.0, b, 0.0, 0.0, 0.0, c]
+}
+
+/// `max` / `min` over a PrincipalStresses-source field whose lambda is a 1-D
+/// Sampled tensor field with diagonal windows.
+///
+/// Windows: diag(100e6, 20e6, 30e6), diag(50e6, 40e6, 60e6), diag(10e6, -70e6, 5e6).
+/// Eigenvalues (ascending) per window:
+///   - w0: [20e6, 30e6, 100e6]  → min_entry=20e6,  max_entry=100e6
+///   - w1: [40e6, 50e6,  60e6]  → min_entry=40e6,  max_entry=60e6
+///   - w2: [-70e6, 5e6,  10e6]  → min_entry=-70e6, max_entry=10e6
+///
+/// Global max = max(100e6, 60e6, 10e6) = 100e6 Pa.
+/// Global min = min(20e6, 40e6, -70e6) = -70e6 Pa.
+///
+/// The PrincipalStresses field has `codomain = List(Scalar<PRESSURE>)`;
+/// the reduction unwraps to the element type and returns `Value::Scalar<PRESSURE>`.
+///
+/// **RED before step-2**: PrincipalStresses arm returns `Value::Undef`.
+#[test]
+fn max_min_principal_stresses_derived_sampled_field_returns_correct_extremum() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    // Build the inner Sampled tensor field (stride-9 diagonal windows).
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            diagonal_window(100e6, 20e6, 30e6),
+            diagonal_window(50e6, 40e6, 60e6),
+            diagonal_window(10e6, -70e6, 5e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+
+    // Construct the PrincipalStresses-source field (lambda = inner tensor field,
+    // codomain = List(Scalar<PRESSURE>)).
+    let (ps_field, ps_field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max(ps_field) should be 100e6 Pa (global max principal stress)
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(ps_field.clone(), ps_field_type.clone())],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 100e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(PrincipalStresses field) should return 100e6 Pa (global max eigenvalue)"
+    );
+
+    // min(ps_field) should be -70e6 Pa (global min principal stress)
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(ps_field, ps_field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Scalar {
+            si_value: -70e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "min(PrincipalStresses field) should return -70e6 Pa (global min eigenvalue)"
+    );
+}
+
+/// Partial-NaN skip: windows [NaN×9, diag(15e6, 25e6, 8e6), NaN×9].
+/// Eigenvalues for the finite window (diagonal short-circuit):
+///   sort([15e6, 25e6, 8e6]) = [8e6, 15e6, 25e6] → max_entry = 25e6.
+/// NaN windows eigen-decompose to NaN and are skipped by the `is_finite()` gate.
+/// Expected: max = 25e6 Pa.
+///
+/// **RED before step-2**.
+#[test]
+fn max_principal_stresses_field_with_partial_nan_windows_skips_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],                     // out-of-solid sentinel
+            diagonal_window(15e6, 25e6, 8e6),  // finite: max_entry = 25e6 Pa
+            [f64::NAN; 9],                     // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → the single finite projected window: eigs[2] = 25e6 Pa
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Scalar {
+            si_value: 25e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(PrincipalStresses field with partial NaN) should skip NaN and return 25e6 Pa"
+    );
+}
+
+/// `argmax` / `argmin` over a PrincipalStresses-source 1-D field with LENGTH domain.
+///
+/// Same three diagonal windows as the value-extremum test:
+///   w0 at coord 0.0 m: diag(100e6, 20e6, 30e6) → max_entry=100e6, min_entry=20e6
+///   w1 at coord 1.0 m: diag(50e6,  40e6, 60e6) → max_entry=60e6,  min_entry=40e6
+///   w2 at coord 2.0 m: diag(10e6, -70e6,  5e6) → max_entry=10e6,  min_entry=-70e6
+///
+/// argmax → projected max entries = {100e6, 60e6, 10e6} → index 0 → coord 0.0 m.
+/// argmin → projected min entries = {20e6, 40e6, -70e6} → index 2 → coord 2.0 m.
+///
+/// Only the domain coord is surfaced (not the winning entry index) — mirrors
+/// the scalar argextremum path and all sibling derived kinds.
+///
+/// **RED before step-4**: PrincipalStresses arm in compute_argextremum returns Undef.
+#[test]
+fn argmax_argmin_principal_stresses_field_1d_returns_coord() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let inner_sf = make_sampled_tensor_1d(
+        "stress",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            diagonal_window(100e6, 20e6, 30e6),
+            diagonal_window(50e6, 40e6, 60e6),
+            diagonal_window(10e6, -70e6, 5e6),
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(inner_sf, length.clone());
+    let (ps_field, ps_field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → projected max-entries = {100e6, 60e6, 10e6} → index 0 → coord 0.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(ps_field.clone(), ps_field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 0.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(PrincipalStresses 1-D field) should return coord 0.0 m (index 0, max entry=100e6)"
+    );
+
+    // argmin → projected min-entries = {20e6, 40e6, -70e6} → index 2 → coord 2.0 m
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(ps_field, ps_field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(PrincipalStresses 1-D field) should return coord 2.0 m (index 2, min entry=-70e6)"
+    );
+}
+
+/// Partial-NaN skip for argmax: windows [NaN×9, diag(15e6, 25e6, 8e6), NaN×9]
+/// over axis [0, 1, 2].  Only window at index 1 is finite; max_entry = eigs[2]
+/// = 25e6 → the only candidate → argmax coord = 1.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_principal_stresses_field_with_partial_nan_skips_nan() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+
+    let sf = make_sampled_tensor_1d(
+        "partial_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            [f64::NAN; 9],                     // out-of-solid sentinel
+            diagonal_window(15e6, 25e6, 8e6),  // finite: max_entry=25e6, min_entry=8e6
+            [f64::NAN; 9],                     // out-of-solid sentinel
+        ],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(sf, length.clone());
+    let (field, field_type) = make_field_with_source(
+        length.clone(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → only finite window at index 1 → coord 1.0 m
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(PrincipalStresses field with partial NaN) should skip NaN and return coord 1.0 m"
+    );
+}
+
+/// All four reductions return `Value::Undef` when every PrincipalStresses
+/// window is all-NaN (all-out-of-solid FEA sentinel).
+///
+/// Pins the NaN-skip + all-finite-absent → Undef chain:
+/// `compute_eigenvalues_3x3([NaN; 9])` returns `Some([NaN, NaN, NaN])`,
+/// the selected entry is NaN, the `is_finite()` gate in
+/// `argmax_argmin_index` / `reduce_sampled_extremum` skips every window,
+/// and all four reductions return `Value::Undef`.
+///
+/// Mirrors `reductions_on_max_shear_field_all_nan_windows_return_undef`.
+#[test]
+fn reductions_on_principal_stresses_field_all_nan_windows_return_undef() {
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let list_pressure = Type::List(Box::new(pressure.clone()));
+    let nan_sf = make_sampled_tensor_1d(
+        "all_nan",
+        vec![0.0, 1.0],
+        vec![[f64::NAN; 9], [f64::NAN; 9]],
+    );
+    let inner_tensor_field = wrap_sampled_tensor_field(nan_sf, Type::dimensionless_scalar());
+    let (field, field_type) = make_field_with_source(
+        Type::dimensionless_scalar(),
+        list_pressure,
+        FieldSourceKind::PrincipalStresses,
+        inner_tensor_field,
+    );
+    assert_all_reductions_undef(
+        field,
+        field_type,
+        "PrincipalStresses with all-NaN windows (all-out-of-solid → Undef)",
+    );
+}
+
+// ── Task 4566 γ — vector/tensor-magnitude Sampled reduction ──────────────────
+//
+// Steps 1–6: add `max/min/argmax/argmin` over vector/tensor-codomain Sampled
+// fields by pointwise Euclidean (Frobenius for tensors) magnitude.
+
+// ── γ step 1: vector-codomain magnitude max/min ─────────────────────────────
+
+/// `max` / `min` over a 1-D `Length`-domain, `Vector3<Real>`-codomain Sampled
+/// field reduce by pointwise Euclidean magnitude.
+///
+/// Flat stride-3 buffer: node 0 = (3,4,0), node 1 = (0,0,0), node 2 = (6,8,0).
+/// Magnitudes: [5, 0, 10] → max Value::Real(10.0), min Value::Real(0.0).
+///
+/// **RED before step-2**: current Sampled arm flat-reduces the buffer,
+/// returning the max *component* (8.0) instead of max magnitude (10.0).
+#[test]
+fn max_min_vector3_sampled_field_reduces_by_magnitude() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    // Flat stride-3 buffer: nodes 0/1/2 = (3,4,0)|(0,0,0)|(6,8,0).
+    let sf = make_sampled_1d(
+        "vec3",
+        vec![0.0, 1.0, 2.0],
+        vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length, codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(10.0),
+        "max(Vector3 Sampled) should return max Euclidean magnitude 10.0"
+    );
+
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(0.0),
+        "min(Vector3 Sampled) should return min Euclidean magnitude 0.0"
+    );
+}
+
+/// Dimensioned `Vector3<Pressure>` codomain: max magnitude preserves the
+/// element dimension.
+///
+/// Windows: (3e6,4e6,0)|(0,0,0)|(6e6,8e6,0) → magnitudes [5e6, 0, 10e6] Pa.
+/// max → Value::Scalar{si_value:10e6, dimension:PRESSURE}.
+///
+/// **RED before step-2**.
+#[test]
+fn max_vector3_dimensioned_sampled_field_preserves_dimension() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    let codomain = Type::vec3(pressure.clone());
+
+    let sf = make_sampled_1d(
+        "vec3_pa",
+        vec![0.0, 1.0, 2.0],
+        vec![3e6, 4e6, 0.0, 0.0, 0.0, 0.0, 6e6, 8e6, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length, codomain);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 10e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(Vector3<Pressure> Sampled) should preserve PRESSURE dimension on magnitude result"
+    );
+}
+
+/// NaN window in a `Vector3<Real>`-codomain field is skipped by the existing
+/// `is_finite()` gate; an all-NaN buffer returns `Value::Undef`.
+///
+/// Partial-NaN: (3,4,0)|(NaN,NaN,NaN)|(6,8,0) → max magnitude = 10.0.
+/// All-NaN: NaN×9 per node → Value::Undef.
+///
+/// **RED before step-2**.
+#[test]
+fn max_vector3_sampled_field_skips_nan_window() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    // Partial NaN: middle window is all-NaN.
+    let sf_partial = make_sampled_1d(
+        "vec3_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            3.0,      4.0,      0.0,
+            f64::NAN, f64::NAN, f64::NAN,
+            6.0,      8.0,      0.0,
+        ],
+    );
+    let (field, field_type) =
+        wrap_sampled_field(sf_partial, length.clone(), codomain.clone());
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Real(10.0),
+        "max(partial-NaN Vector3 Sampled) should skip NaN window and return 10.0"
+    );
+
+    // All-NaN: every element of the flat buffer is NaN.
+    let sf_all_nan = make_sampled_1d(
+        "vec3_all_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            f64::NAN, f64::NAN, f64::NAN,
+            f64::NAN, f64::NAN, f64::NAN,
+            f64::NAN, f64::NAN, f64::NAN,
+        ],
+    );
+    let (field2, field_type2) =
+        wrap_sampled_field(sf_all_nan, length, codomain);
+    let max_expr2 = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field2, field_type2)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr2, &EvalContext::simple(&ValueMap::new())),
+        Value::Undef,
+        "max(all-NaN Vector3 Sampled) should return Value::Undef"
+    );
+}
+
+/// REGRESSION: `Real`-codomain (stride-1) Sampled field stays sign-preserving
+/// after the magnitude-path change. data = [-5, -1, -3] → max = -1.0, NOT 5.0.
+///
+/// Confirms the scalar/divergence path bypasses the magnitude branch.
+/// This test MUST be GREEN even before step-2 (it pins the existing behavior).
+#[test]
+fn max_scalar_sampled_field_stays_sign_preserving_regression() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let sf = make_sampled_1d(
+        "scalar_neg",
+        vec![0.0, 1.0, 2.0],
+        vec![-5.0, -1.0, -3.0],
+    );
+    let (field, field_type) =
+        wrap_sampled_field(sf, length, Type::dimensionless_scalar());
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Real(-1.0),
+        "max(negative scalar Sampled) should return -1.0 (sign-preserving, NOT abs)"
+    );
+}
+
+// ── γ step 3: vector-codomain argmax/argmin ──────────────────────────────────
+
+/// `argmax` / `argmin` over a 1-D `Length`-domain, `Vector3<Real>`-codomain
+/// Sampled field return the domain coord of the window with max/min magnitude.
+///
+/// axis = [0, 1, 2] m; windows: node 0 = (3,4,0) |w|=5, node 1 = (0,0,0)
+/// |w|=0, node 2 = (6,8,0) |w|=10.
+/// argmax → coord of index 2 = Value::Scalar{2.0, LENGTH}.
+/// argmin → coord of index 1 = Value::Scalar{1.0, LENGTH}.
+///
+/// **RED before step-4**: current Sampled argextremum decomposes a flat
+/// per-component index, not a per-window magnitude index.
+#[test]
+fn argmax_argmin_vector3_sampled_field_returns_coord_of_magnitude_extremum() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg",
+        vec![0.0, 1.0, 2.0],
+        vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 6.0, 8.0, 0.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // argmax → window with magnitude 10.0 is at index 2, coord 2.0 m.
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(Vector3 Sampled) should return coord 2.0 m (index 2, max magnitude 10.0)"
+    );
+
+    // argmin → window with magnitude 0.0 is at index 1, coord 1.0 m.
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Scalar {
+            si_value: 1.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmin(Vector3 Sampled) should return coord 1.0 m (index 1, min magnitude 0.0)"
+    );
+}
+
+/// NaN window in a `Vector3<Real>`-codomain field is skipped for argmax too;
+/// only the finite-magnitude windows are candidates.
+///
+/// axis = [0, 1, 2] m; windows: (3,4,0)|(NaN,NaN,NaN)|(6,8,0).
+/// Finite magnitudes: index 0 = 5.0, index 2 = 10.0.
+/// argmax → index 2, coord 2.0 m.
+///
+/// **RED before step-4**.
+#[test]
+fn argmax_vector3_sampled_field_skips_nan_window() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let sf = make_sampled_1d(
+        "vec3_arg_nan",
+        vec![0.0, 1.0, 2.0],
+        vec![
+            3.0,      4.0,      0.0,
+            f64::NAN, f64::NAN, f64::NAN,
+            6.0,      8.0,      0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, length.clone(), codomain);
+
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        length.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 2.0,
+            dimension: DimensionVector::LENGTH,
+        },
+        "argmax(partial-NaN Vector3 Sampled) should skip NaN window and return coord 2.0 m"
+    );
+}
+
+// ── γ step 5: tensor-codomain (stride-9) Frobenius magnitude reduction ───────
+
+/// `max`, `min`, `argmax`, and `argmin` over a `Point3<Length>`-domain,
+/// `Tensor<2,3,Real>`-codomain Sampled field, validating the Frobenius-norm
+/// magnitude machinery for tensor codomains.
+///
+/// The fixture uses `source:Sampled` with `Tensor<2,3,Real>` codomain — the
+/// shape that `result.gradient` will eventually carry — but it is a synthetic
+/// Sampled fixture, NOT a real Gradient differential-source field.
+/// A `FieldSourceKind::Gradient` field still returns `Undef`; end-to-end
+/// wiring of `.gradient` through the evaluation pipeline is task θ's gate.
+///
+/// Grid: Regular3D, axis0=[0.0, 1.0], axis1=[0.0], axis2=[0.0] → grid_count=2.
+/// Flat stride-9 data:
+///   node 0 = (2,3,6, 0,0,0, 0,0,0) → Frobenius = √(4+9+36) = 7.0
+///   node 1 = (1,2,2, 0,0,0, 0,0,0) → √(1+4+4) = 3.0
+/// max    → Value::Real(7.0)   (node 0, Frobenius 7.0)
+/// min    → Value::Real(3.0)   (node 1, Frobenius 3.0)
+/// argmax → Point([0.0,0.0,0.0] LENGTH) (coord of node 0: axis0=0.0)
+/// argmin → Point([1.0,0.0,0.0] LENGTH) (coord of node 1: axis0=1.0)
+#[test]
+fn max_argmax_tensor2x3_sampled_field_reduces_by_frobenius_norm() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    // Tensor<2,3,Real> codomain: rank=2, n=3, quantity=Real → stride = 3^2 = 9.
+    let codomain = Type::tensor(2, 3, Type::dimensionless_scalar());
+    // Point3<Length> domain (3 axes, each Length).
+    let domain = Type::point3(length.clone());
+
+    // Regular3D grid: axis0 has 2 nodes (grid_count=2), axis1/axis2 have 1 node.
+    // data: 2 × 9 = 18 floats.
+    let sf = make_sampled_3d(
+        "tensor_grad",
+        vec![0.0, 1.0],   // axis0: 2 nodes
+        vec![0.0],        // axis1: 1 node
+        vec![0.0],        // axis2: 1 node
+        vec![
+            // node 0: (2,3,6, 0,0,0, 0,0,0) → Frobenius = sqrt(4+9+36) = 7.0
+            2.0, 3.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // node 1: (1,2,2, 0,0,0, 0,0,0) → sqrt(1+4+4) = 3.0
+            1.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), codomain);
+
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // max → Frobenius norm 7.0 at node 0 → Value::Real(7.0).
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &ctx),
+        Value::Real(7.0),
+        "max(Tensor<2,3,Real> Sampled) should return max Frobenius norm 7.0"
+    );
+
+    // min → Frobenius norm 3.0 at node 1 → Value::Real(3.0).
+    let min_expr = make_function_call(
+        "min",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        Type::dimensionless_scalar(),
+    );
+    assert_eq!(
+        eval_expr(&min_expr, &ctx),
+        Value::Real(3.0),
+        "min(Tensor<2,3,Real> Sampled) should return min Frobenius norm 3.0"
+    );
+
+    // argmax → node 0 has max Frobenius norm → coord = Point([0.0 m, 0.0 m, 0.0 m]).
+    let argmax_expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field.clone(), field_type.clone())],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmax_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]),
+        "argmax(Tensor<2,3,Real> Sampled) should return coord of node 0 (max Frobenius 7.0)"
+    );
+
+    // argmin → node 1 has min Frobenius norm → coord = Point([1.0 m, 0.0 m, 0.0 m]).
+    let argmin_expr = make_function_call(
+        "argmin",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+    assert_eq!(
+        eval_expr(&argmin_expr, &ctx),
+        Value::Point(vec![
+            Value::Scalar { si_value: 1.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+        ]),
+        "argmin(Tensor<2,3,Real> Sampled) should return coord of node 1 (min Frobenius 3.0)"
+    );
+}
+
+/// Dimensioned `Tensor<2,3,Pressure>` codomain: `max` returns the Frobenius norm
+/// wrapped in the element dimension (Pressure), mirroring the Vector<Pressure>
+/// test `max_vector3_dimensioned_sampled_field_preserves_dimension`.
+///
+/// Exercises the `magnitude_codomain` → `Type::Tensor` arm returning
+/// `quantity.as_ref()` = Pressure, which is different from the dimensionless
+/// Vector arm tested earlier, confirming both arms reach `reduce_sampled_extremum`
+/// with the correct element-quantity type.
+///
+/// Grid: same 2-node Regular3D shape (axis0=[0,1], axis1=[0], axis2=[0]).
+/// Data scaled to Pa:
+///   node 0 = (2e6, 3e6, 6e6, 0, …) → Frobenius = 7e6 Pa
+///   node 1 = (1e6, 2e6, 2e6, 0, …) → 3e6 Pa
+/// max → Value::Scalar { si_value: 7e6, dimension: PRESSURE }.
+#[test]
+fn max_tensor2x3_dimensioned_sampled_field_preserves_dimension() {
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let pressure = Type::Scalar {
+        dimension: DimensionVector::PRESSURE,
+    };
+    // Tensor<2,3,Pressure>: each component is in Pa → stride = 9.
+    let codomain = Type::tensor(2, 3, pressure.clone());
+    let domain = Type::point3(length.clone());
+
+    let sf = make_sampled_3d(
+        "tensor_grad_pa",
+        vec![0.0, 1.0],   // axis0: 2 nodes
+        vec![0.0],        // axis1: 1 node
+        vec![0.0],        // axis2: 1 node
+        vec![
+            // node 0: Frobenius = sqrt(4e12 + 9e12 + 36e12) = 7e6 Pa
+            2e6, 3e6, 6e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            // node 1: Frobenius = sqrt(1e12 + 4e12 + 4e12) = 3e6 Pa
+            1e6, 2e6, 2e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain, codomain);
+
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(field, field_type)],
+        pressure.clone(),
+    );
+    assert_eq!(
+        eval_expr(&max_expr, &EvalContext::simple(&ValueMap::new())),
+        Value::Scalar {
+            si_value: 7e6,
+            dimension: DimensionVector::PRESSURE,
+        },
+        "max(Tensor<2,3,Pressure> Sampled) should preserve PRESSURE dimension on Frobenius result"
     );
 }

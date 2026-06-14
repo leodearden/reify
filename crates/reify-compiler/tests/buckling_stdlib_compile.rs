@@ -155,8 +155,8 @@ fn buckling_options_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("n_modes", Type::Int),
         ("mode", Type::String),
-        ("sigma", Type::Real),
-        ("tol", Type::Real),
+        ("sigma", Type::dimensionless_scalar()),
+        ("tol", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         ("auto_dense", Type::Bool),
         ("element_order", Type::Enum("ElementOrder".to_string())),
@@ -422,7 +422,7 @@ fn mode_struct_has_eigenvalue_and_mode_shape_params() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("eigenvalue", Type::Real),
+        ("eigenvalue", Type::dimensionless_scalar()),
         (
             "mode_shape",
             Type::Field {

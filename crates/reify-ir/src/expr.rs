@@ -194,6 +194,22 @@ pub enum CompiledExprKind {
         /// — those operations act on surrounding-scope refs only.
         lets: Vec<(String, CompiledExpr)>,
     },
+    /// Compiler-inserted Selector→`List<Geometry>` coercion node (task 4118, γ).
+    ///
+    /// Wraps an inner expression whose `result_type` is `Selector(k)` and
+    /// presents a `result_type` of `List<Geometry>`. Emitted by the compiler
+    /// at the THREE coercion sites — param-binding, the `single()`/list-helper
+    /// path, and the `IndexAccess` object — gated on the β
+    /// `type_compat::type_compatible(List<Geometry>, Selector(k))` rule.
+    ///
+    /// Evaluation is split by layer:
+    /// - The registry-free `reify-expr` evaluator is a PASSTHROUGH: it
+    ///   evaluates the inner selector to a `Value::Selector` and returns it
+    ///   unchanged (real List resolution needs a `GeometryKernel`).
+    /// - The kernel-bearing post-process (`reify-eval`) resolves the selector
+    ///   via `topology_selectors::resolve` into a `Value::List` of
+    ///   `Value::GeometryHandle`s.
+    ResolveSelector { selector: Box<CompiledExpr> },
 }
 
 /// Determinacy predicate kinds.
@@ -321,7 +337,7 @@ impl CompiledFunction {
     /// and any producer that does not need to supply defaults:
     ///
     /// ```ignore
-    /// let params = vec![("x".to_string(), Type::Real)];
+    /// let params = vec![("x".to_string(), Type::dimensionless_scalar())];
     /// CompiledFunction {
     ///     name: "f".to_string(),
     ///     is_pub: false,
@@ -354,7 +370,7 @@ pub struct CompiledFnBody {
 ///
 /// Bytes `[20]`–`[23]` are reserved by `CachedResult::content_hash` in
 /// `reify-eval/src/cache.rs` (a distinct hash domain; sharing bytes would
-/// confuse future readers). Next new `CompiledExpr` variant: use `[28]`.
+/// confuse future readers). Next new `CompiledExpr` variant: use `[29]`.
 pub const TAG_LITERAL: u8 = 0;
 pub const TAG_VALUE_REF: u8 = 1;
 pub const TAG_BIN_OP: u8 = 2;
@@ -382,6 +398,12 @@ pub const TAG_MATCH: u8 = 24;
 pub const TAG_PURPOSE_REFLECTIVE_AGGREGATION: u8 = 25;
 pub const TAG_REFLECTIVE_CELL_LIST: u8 = 26;
 pub const TAG_CROSS_SUB_GEOMETRY_REF: u8 = 27;
+/// task 4118 (γ): compiler-inserted Selector→`List<Geometry>` coercion node.
+/// Uses `[28]` per the header note above — bytes `[20]`–`[23]` are
+/// convention-reserved for `CachedResult::content_hash`'s distinct domain, so
+/// the next free `CompiledExpr` tag after `TAG_CROSS_SUB_GEOMETRY_REF` (27) is
+/// 28. (The plan's draft cited 21; superseded by the in-code reservation.)
+pub const TAG_RESOLVE_SELECTOR: u8 = 28;
 
 impl CompiledExpr {
     /// Create a literal expression.
@@ -569,6 +591,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.walk(f);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.walk(f);
             }
         }
     }
@@ -840,6 +865,12 @@ impl CompiledExpr {
                     result_type,
                 )
             }
+            CompiledExprKind::ResolveSelector { selector } => {
+                // Rebuild via `resolve_selector` so the variant (and its fixed
+                // List<Geometry> result_type) survive the hash-rebuild path.
+                let new_selector = selector.map_value_refs(f);
+                CompiledExpr::resolve_selector(new_selector)
+            }
         }
     }
 
@@ -994,6 +1025,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.collect_value_refs_inner(refs);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.collect_value_refs_inner(refs);
             }
         }
     }
@@ -1169,6 +1203,27 @@ impl CompiledExpr {
         }
     }
 
+    /// Create a `ResolveSelector` coercion node (task 4118, γ).
+    ///
+    /// Wraps `selector` (whose `result_type` is expected to be `Selector(k)`)
+    /// and fixes the node's `result_type` to `List<Geometry>`. The result type
+    /// is NOT a parameter — the coercion target is invariant by construction,
+    /// which keeps the three compiler insertion sites (param-binding,
+    /// `single()`/list-helper, `IndexAccess` object) from each having to
+    /// re-derive it. Hash seeds with `TAG_RESOLVE_SELECTOR` so a wrapped
+    /// selector cannot collide with the bare inner expression.
+    pub fn resolve_selector(selector: CompiledExpr) -> Self {
+        let content_hash =
+            ContentHash::of(&[TAG_RESOLVE_SELECTOR]).combine(selector.content_hash);
+        CompiledExpr {
+            kind: CompiledExprKind::ResolveSelector {
+                selector: Box::new(selector),
+            },
+            result_type: Type::List(Box::new(Type::Geometry)),
+            content_hash,
+        }
+    }
+
     /// Rewrite all `ValueRef` cell IDs whose entity matches `from_entity`,
     /// replacing the entity part with `to_entity`. This is used during purpose
     /// activation to remap compiled references from the purpose's parameter
@@ -1326,6 +1381,9 @@ impl CompiledExpr {
                     def.remap_entity(from_entity, to_entity);
                 }
             }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.remap_entity(from_entity, to_entity);
+            }
         }
     }
 
@@ -1479,6 +1537,9 @@ impl CompiledExpr {
                 for (_, def) in defaults {
                     def.remap_cell(from, to);
                 }
+            }
+            CompiledExprKind::ResolveSelector { selector } => {
+                selector.remap_cell(from, to);
             }
         }
     }
@@ -2192,14 +2253,14 @@ mod tests {
         let unrelated = ValueCellId::new("U", "z");
 
         // ValueRef(old) → BinOp ValueRef(old) > ValueRef(other)
-        let lhs = CompiledExpr::value_ref(old.clone(), Type::Real);
-        let rhs = CompiledExpr::value_ref(other.clone(), Type::Real);
+        let lhs = CompiledExpr::value_ref(old.clone(), Type::dimensionless_scalar());
+        let rhs = CompiledExpr::value_ref(other.clone(), Type::dimensionless_scalar());
         let binop = CompiledExpr::binop(BinOp::Gt, lhs, rhs, Type::Bool);
 
         // Quantifier with variable_id == old, predicate references determinacy on old
         let det =
             CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, old.clone());
-        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let coll = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar())));
         let quant = CompiledExpr::quantifier(
             QuantifierKind::ForAll,
             "p".to_string(),
@@ -2209,13 +2270,13 @@ mod tests {
         );
 
         // Lambda with captures = [old, unrelated] and param_ids = [old]
-        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::Real);
+        let lambda_body = CompiledExpr::value_ref(unrelated.clone(), Type::dimensionless_scalar());
         let lambda = CompiledExpr::lambda(
-            vec![("p".to_string(), Some(Type::Real))],
+            vec![("p".to_string(), Some(Type::dimensionless_scalar()))],
             vec![old.clone()],
             lambda_body,
             vec![old.clone(), unrelated.clone()],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
 
         // Combine all under a top-level BinOp so a single remap_cell call walks them.
@@ -2223,14 +2284,14 @@ mod tests {
         // since they have different result types and BinOp wants matching children.
         let cond_then = CompiledExpr::list_literal(
             vec![binop, quant, lambda],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
-        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::Real)));
+        let cond_else = CompiledExpr::list_literal(vec![], Type::List(Box::new(Type::dimensionless_scalar())));
         let mut tree = make_conditional(
             CompiledExpr::literal(Value::Bool(true), Type::Bool),
             cond_then,
             cond_else,
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         tree.remap_cell(&old, &new_id);
@@ -2320,7 +2381,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         match &expr.kind {
@@ -2333,7 +2394,7 @@ mod tests {
             }
             other => panic!("expected PurposeReflectiveAggregation, got {other:?}"),
         }
-        assert_eq!(expr.result_type, Type::List(Box::new(Type::Real)));
+        assert_eq!(expr.result_type, Type::List(Box::new(Type::dimensionless_scalar())));
     }
 
     /// step-3 (task-2289): `walk` visits the placeholder node itself but has no
@@ -2343,7 +2404,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let mut count = 0;
         expr.walk(&mut |_| count += 1);
@@ -2357,7 +2418,7 @@ mod tests {
         let expr = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         assert!(expr.collect_value_refs().is_empty());
     }
@@ -2378,9 +2439,9 @@ mod tests {
 
         let cell_x = ValueCellId::new("E", "x");
         let cell_y = ValueCellId::new("E", "y");
-        let elem_x = CompiledExpr::value_ref(cell_x.clone(), Type::Real);
-        let elem_y = CompiledExpr::value_ref(cell_y.clone(), Type::Real);
-        let result_type = Type::List(Box::new(Type::Real));
+        let elem_x = CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar());
+        let elem_y = CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar());
+        let result_type = Type::List(Box::new(Type::dimensionless_scalar()));
 
         let rcl = CompiledExpr::reflective_cell_list(
             vec![elem_x.clone(), elem_y.clone()],
@@ -2418,8 +2479,8 @@ mod tests {
         // RCL must differ from ListLiteral with the same elements (tag-byte isolation).
         let ll = CompiledExpr::list_literal(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
             result_type.clone(),
         );
@@ -2441,9 +2502,9 @@ mod tests {
     #[test]
     fn reflective_cell_list_walk_traverses_elements() {
         let elements: Vec<CompiledExpr> = (0..3)
-            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::Real))
+            .map(|i| CompiledExpr::value_ref(ValueCellId::new("E", format!("c{i}")), Type::dimensionless_scalar()))
             .collect();
-        let rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::dimensionless_scalar())));
         let mut count = 0;
         rcl.walk(&mut |_| count += 1);
         assert_eq!(count, 4, "walk must visit root + 3 element nodes");
@@ -2459,10 +2520,10 @@ mod tests {
         let cell_b = ValueCellId::new("E", "b");
         let rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_a.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_a.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_b.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let refs = rcl.collect_value_refs();
         assert_eq!(
@@ -2482,10 +2543,10 @@ mod tests {
         let cell_y = ValueCellId::new("E", "y");
         let mut rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         rcl.remap_entity("E", "F");
 
@@ -2514,10 +2575,10 @@ mod tests {
         let cell_new = ValueCellId::new("E2", "x_new");
         let mut rcl = CompiledExpr::reflective_cell_list(
             vec![
-                CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-                CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+                CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
             ],
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         rcl.remap_cell(&cell_x, &cell_new);
 
@@ -2551,12 +2612,12 @@ mod tests {
     fn reflective_cell_list_panics_in_debug_when_element_is_not_value_ref() {
         let cell_a = ValueCellId::new("E", "a");
         let elements = vec![
-            CompiledExpr::value_ref(cell_a, Type::Real),
+            CompiledExpr::value_ref(cell_a, Type::dimensionless_scalar()),
             CompiledExpr::literal(Value::Int(0), Type::Int),
         ];
         // Must panic in debug builds because the second element is a Literal,
         // not a ValueRef.
-        let _rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::Real)));
+        let _rcl = CompiledExpr::reflective_cell_list(elements, Type::List(Box::new(Type::dimensionless_scalar())));
     }
 
     // ── end task-2552 tests ───────────────────────────────────────────────────
@@ -2687,22 +2748,22 @@ mod tests {
         let a = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let b = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let different_kind = CompiledExpr::purpose_reflective_aggregation(
             "subject".to_string(),
             "geometric_params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let different_param = CompiledExpr::purpose_reflective_aggregation(
             "other".to_string(),
             "params".to_string(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
 
         assert_eq!(
@@ -2825,7 +2886,7 @@ mod tests {
         );
 
         // arity 1
-        let params1 = vec![("x".to_string(), Type::Real)];
+        let params1 = vec![("x".to_string(), Type::dimensionless_scalar())];
         let defaults1 = CompiledFunction::no_defaults_for(&params1);
         assert_eq!(
             defaults1.len(),
@@ -2839,8 +2900,8 @@ mod tests {
 
         // arity 2
         let params2 = vec![
-            ("x".to_string(), Type::Real),
-            ("y".to_string(), Type::Real),
+            ("x".to_string(), Type::dimensionless_scalar()),
+            ("y".to_string(), Type::dimensionless_scalar()),
         ];
         let defaults2 = CompiledFunction::no_defaults_for(&params2);
         assert_eq!(

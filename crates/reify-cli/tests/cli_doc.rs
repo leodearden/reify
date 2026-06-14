@@ -416,8 +416,7 @@ fn doc_o_flag_writes_markdown_without_extra_trailing_newline() {
     );
 
     // (b) Emit to stdout without -o.
-    let (stdout_status, stdout_output, stdout_stderr) =
-        run_doc(&["--format", "markdown", &path]);
+    let (stdout_status, stdout_output, stdout_stderr) = run_doc(&["--format", "markdown", &path]);
     assert!(
         stdout_status.success(),
         "reify doc --format markdown must exit 0.\n\

@@ -8,7 +8,7 @@
 //
 // Compiles clean under parse_and_compile_with_stdlib (no Error diagnostics).
 structure SolveFail {
-    param x: Scalar = auto
+    param x: Length = auto
 
     constraint x >= 2mm
     constraint x <= 8mm

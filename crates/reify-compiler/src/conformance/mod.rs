@@ -292,6 +292,115 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
+/// Check that each `Param`-kind value cell with a default expression in
+/// `template` has a default whose type is compatible with the declared
+/// `cell_type`, for nominal leaf types (task-4584):
+///
+/// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
+///   comment below for rationale — concretely, a `StructureRef` default for a
+///   `StructureRef` param is intentionally not rejected here because nominal-name
+///   mismatch does not imply incompatibility in Reify at eval time) and calls
+///   [`emit_structure_ref_mismatch`] directly for clearly incompatible primitive
+///   types (String, Int, …).  Does **not** delegate to `walk_param_against_arg`.
+///   Skips if `default_expr.result_type` is `Type::Error` (anti-cascade).
+///
+/// - **`Type::Geometry`** params: uses a geometry-function-aware predicate rather
+///   than `type_compatible` — geometry constructors compile to a scalar placeholder
+///   (GHR-γ), so plain `type_compatible(Geometry, result_type)` would falsely reject
+///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
+///
+/// All other cell types (Real, Int, List, …) are out of scope for this pass.
+pub(crate) fn check_param_default_conformance(
+    template: &TopologyTemplate,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for vc in &template.value_cells {
+        if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        let Some(default) = &vc.default_expr else {
+            continue;
+        };
+        match &vc.cell_type {
+            Type::StructureRef(_) => {
+                // Anti-cascade: skip when the default expression itself had a compile error.
+                if matches!(default.result_type, Type::Error) {
+                    continue;
+                }
+                // Get the effective type, accounting for FunctionCall→StructureRef promotion
+                // (e.g. `Steel_AISI_1045()` may carry a numeric fallback result_type but
+                // its callee IS a known structure template → promote to StructureRef).
+                let promoted =
+                    promote_function_call_to_structure_ref(default, template_registry);
+                let effective_ty = promoted.as_ref().unwrap_or(&default.result_type);
+                // Conservatively skip when the effective type is plausibly structure-
+                // compatible at the eval level:
+                //   • StructureRef(_) — a concrete type used as default for an abstract-like
+                //     param (e.g. `Steel_AISI_1045` default for `Material`) is valid in Reify;
+                //     nominal-name mismatch here does NOT imply incompatibility.
+                //   • TraitObject(_) — may resolve to a conforming struct at evaluation.
+                //   • TypeParam(_) — unresolved generic; conformance decided at instantiation.
+                //   • Geometry — carries no nominal identity to verify here.
+                // Only emit for clearly incompatible primitive types (String, Int, Scalar, …).
+                if matches!(
+                    effective_ty,
+                    Type::StructureRef(_)
+                        | Type::TraitObject(_)
+                        | Type::TypeParam(_)
+                        | Type::Geometry
+                ) {
+                    continue;
+                }
+                let mut ctx = WalkCtx {
+                    arg_name: vc.id.member.as_str(),
+                    span: vc.span,
+                    templates: template_registry,
+                    traits: trait_registry,
+                    diagnostics,
+                };
+                emit_structure_ref_mismatch(&vc.cell_type, effective_ty, &mut ctx);
+            }
+            Type::Geometry => {
+                // Anti-cascade: skip when the default expression itself had an error or
+                // is an unresolved type param — both are unverifiable.
+                if matches!(default.result_type, Type::Error | Type::TypeParam(_)) {
+                    continue;
+                }
+                // Geometry constructors (box/cylinder/...) compile to a
+                // `Type::dimensionless_scalar()` PLACEHOLDER (GHR-γ), so
+                // `type_compatible(Geometry, default.result_type)` would FALSELY reject
+                // every legitimate geometry default.  Instead we detect geometry by:
+                //   1. result_type is already Type::Geometry (a let-bound geometry ref), or
+                //   2. the callee is a known geometry function (box/cylinder/sphere/...).
+                // This is the same signal `check_leaf_trait_conformance` uses for args.
+                let is_geometry_default = matches!(default.result_type, Type::Geometry)
+                    || extract_function_call_name(default)
+                        .map(is_geometry_function)
+                        .unwrap_or(false);
+                if !is_geometry_default {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
+                            vc.id.member, default.result_type
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+                        .with_label(DiagnosticLabel::new(
+                            vc.span,
+                            format!(
+                                "expected a geometry expression, got '{}'",
+                                default.result_type
+                            ),
+                        )),
+                    );
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
 /// Context bundle threaded through the four recursive walker helpers.
 ///
 /// Collects the five fields that were previously repeated as trailing arguments
@@ -338,7 +447,7 @@ fn promote_function_call_to_structure_ref(
     arg: &CompiledExpr,
     templates: &HashMap<String, &TopologyTemplate>,
 ) -> Option<Type> {
-    if !matches!(arg.result_type, Type::Real | Type::Int) {
+    if !matches!(arg.result_type, Type::Scalar { .. } | Type::Int) {
         return None;
     }
     let name = extract_function_call_name(arg)?;
@@ -576,6 +685,30 @@ fn emit_leaf_conformance_for_arg_type(
     }
 }
 
+/// Emit a single `Diagnostic::error` with
+/// [`DiagnosticCode::TypeNotConformingToStructureRef`] when an arg type does not
+/// match a `Type::StructureRef` param (task-4584).
+///
+/// Modelled on [`emit_leaf_conformance_for_arg_type`]: one diagnostic, one label
+/// at `ctx.span`, message names the required structure and the offending type.
+fn emit_structure_ref_mismatch(
+    param_type: &Type,
+    arg_type: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -667,6 +800,22 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 );
             }
         },
+        // Leaf: param type is a StructureRef (nominal structure type, task-4584).
+        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
+        // generic — conformance decided at instantiation), Geometry (carries no
+        // nominal identity to verify here), or TraitObject (may resolve to a conforming
+        // struct). For all other concrete arg types, reject when type_compatible returns
+        // false (String/Int/different-StructureRef are genuine nominal mismatches).
+        (Type::StructureRef(_), arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !type_compatible(param_type, arg_ty) {
+                emit_structure_ref_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
         // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
         // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,
@@ -914,15 +1063,18 @@ fn check_leaf_trait_conformance(
         // amend, reviewer_comprehensive robustness_false_positive).
         Type::TypeParam(_) => {}
         _ => {
-            // Anti-cascade: when arg_type is a numeric fallback (Real or Int)
-            // and arg_call_name is Some but the callee was not in the template
-            // registry (so promotion returned None), an "undefined function"
-            // diagnostic already fired for that unknown call. Emitting
-            // "type 'real'/'int' does not conform to trait 'X'" here would be
-            // misleading — the numeric type is the expression compiler's
-            // fallback for unresolved calls, not the author's intended type.
-            // Suppress.
-            if matches!(arg_type, Type::Real | Type::Int) && arg_call_name.is_some() {
+            // Anti-cascade: when arg_type is a dimensionless-scalar/Int fallback
+            // and arg_call_name refers to an UNKNOWN callee (not in the template
+            // registry, so promotion returned None, and not a known geometry
+            // function), an "undefined function" diagnostic already fired.
+            // Emitting "type does not conform to trait 'X'" here would be
+            // misleading — the fallback type is not the author's intended type.
+            // Geometry functions (box, sphere, …) return dimensionless_scalar()
+            // as a compile-time placeholder and are NOT unknown; they must NOT
+            // be suppressed so a non-geometry trait receives the correct error.
+            if matches!(arg_type, Type::Scalar { .. } | Type::Int)
+                && arg_call_name.is_some_and(|n| !is_geometry_function(n))
+            {
                 return;
             }
             // Neither StructureRef nor TraitObject — cannot conform to a trait.
@@ -1196,7 +1348,7 @@ mod tests {
                     name: "req".to_string(),
                     has_self: true,
                     params: vec![],
-                    return_type: Type::Real,
+                    return_type: Type::dimensionless_scalar(),
                 }),
                 span: SourceSpan::empty(0),
             }],
@@ -1339,7 +1491,7 @@ mod tests {
                     name: fn_name.to_string(),
                     has_self: true,
                     params: vec![],
-                    return_type: Type::Real,
+                    return_type: Type::dimensionless_scalar(),
                 }),
                 span: SourceSpan::empty(0),
             }],
@@ -1610,7 +1762,7 @@ mod tests {
         assert_eq!(entry.function.name, "area");
         assert_eq!(
             entry.function.return_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "the injected default's compiled return type should be Real"
         );
     }
@@ -1769,36 +1921,36 @@ mod tests {
     /// `structure_members` is a local binding inside `check_trait_conformance` and is not
     /// directly observable from outside the function.  Rather than restructuring the API,
     /// this test uses three negative-assertion sentinels as a proxy for correct
-    /// `Type::Enum("Direction")` resolution:
+    /// `Type::Enum("Polarity")` resolution:
     ///
     /// - Absence of **"unresolved type"** → both `dir` and `kind` were resolved (not fallen
-    ///   back to `Type::Real`)
+    ///   back to `Type::dimensionless_scalar()`)
     /// - Absence of **"type mismatch"** → the resolved types matched the trait's
-    ///   `Type::Enum("Direction")` requirements
+    ///   `Type::Enum("Polarity")` requirements
     /// - Absence of **"missing required member"** → both members appeared in `structure_members`
     ///
-    /// Together these three imply `Type::Enum("Direction")` was produced.  A regression that
-    /// accidentally resolves enum params to `Type::Real` would trip "type mismatch", and one
+    /// Together these three imply `Type::Enum("Polarity")` was produced.  A regression that
+    /// accidentally resolves enum params to `Type::dimensionless_scalar()` would trip "type mismatch", and one
     /// that omits a member from `structure_members` would trip "missing required member".
     #[test]
     fn check_trait_conformance_resolves_enum_typed_param_and_let() {
-        // Direction enum defined in the same module
+        // Polarity enum defined in the same module
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
 
-        // TypeExpr for `Direction` (bare named type, no type_args)
+        // TypeExpr for `Polarity` (bare named type, no type_args)
         let direction_type_expr = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
-                name: "Direction".to_string(),
+                name: "Polarity".to_string(),
                 type_args: vec![],
             },
             span: SourceSpan::empty(0),
         };
 
-        // TraitDir: requires `param dir : Direction` and `let kind : Direction`
+        // TraitDir: requires `param dir : Polarity` and `let kind : Polarity`
         let trait_dir = CompiledTrait {
             name: "TraitDir".to_string(),
             is_pub: false,
@@ -1808,12 +1960,12 @@ mod tests {
             required_members: vec![
                 TraitRequirement {
                     name: "dir".to_string(),
-                    kind: RequirementKind::Param(Type::Enum("Direction".to_string())),
+                    kind: RequirementKind::Param(Type::Enum("Polarity".to_string())),
                     span: SourceSpan::empty(0),
                 },
                 TraitRequirement {
                     name: "kind".to_string(),
-                    kind: RequirementKind::Let(Type::Enum("Direction".to_string())),
+                    kind: RequirementKind::Let(Type::Enum("Polarity".to_string())),
                     span: SourceSpan::empty(0),
                 },
             ],
@@ -1823,7 +1975,7 @@ mod tests {
             pragmas: vec![],
         };
 
-        // Structure S : TraitDir { param dir : Direction; let kind : Direction = 0.0; }
+        // Structure S : TraitDir { param dir : Polarity; let kind : Polarity = 0.0; }
         let structure_def = reify_ast::StructureDef {
             name: "S".to_string(),
             doc: None,
@@ -1884,7 +2036,7 @@ mod tests {
             diagnostics
         );
 
-        // No "type mismatch" → both resolved to Type::Enum("Direction"), satisfying the trait
+        // No "type mismatch" → both resolved to Type::Enum("Polarity"), satisfying the trait
         let mismatch_diags: Vec<_> = diagnostics
             .iter()
             .filter(|d| d.message.contains("type mismatch"))
@@ -1913,7 +2065,7 @@ mod tests {
     /// reach today: it hand-builds a `RequirementKind::Let` requirement (not parseable
     /// from reify source — see `let_type_disambiguation_tests.rs:470-497` and
     /// esc-1951-6) and verifies that the Option B guard in `available_defaults`
-    /// suppresses the phantom `(name, Let) -> Type::Real` entry for names recorded in
+    /// suppresses the phantom `(name, Let) -> Type::dimensionless_scalar()` entry for names recorded in
     /// `pass2_skipped`.
     ///
     /// ## Scenario
@@ -1928,14 +2080,14 @@ mod tests {
     /// ## Expected behavior (post-fix)
     ///
     /// The `pass2_skipped.contains(name)` guard in the `DefaultKind::Let` arm of
-    /// `available_defaults` returns `None` before reaching the `Type::Real` fallback.
+    /// `available_defaults` returns `None` before reaching the `Type::dimensionless_scalar()` fallback.
     /// The `RequirementKind::Let` lookup for "x" finds no entry → the `None` arm fires →
     /// correct "missing required member" diagnostic (not the spurious "available default
     /// has Real" phantom type-mismatch).
     ///
     /// ## Pre-fix behavior (should NOT happen after fix)
     ///
-    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::Real`.
+    /// Without the guard, `available_defaults` contained `("x", Let) -> Type::dimensionless_scalar()`.
     /// The lookup found it, `implicitly_converts_to(Real, Length)` was false, and a
     /// spurious "requirement expects …, available default has Real" diagnostic was emitted.
     #[test]
@@ -1993,7 +2145,7 @@ mod tests {
         };
 
         // TraitZ: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope,
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope,
         // and records "x" in pass2_skipped (no inferred_let_exprs cache entry).
         let trait_z = CompiledTrait {
             name: "TraitZ".to_string(),
@@ -2084,7 +2236,7 @@ mod tests {
             .collect();
         assert!(
             phantom_diags.is_empty(),
-            "Option B fix violated: phantom `(x, Let) -> Type::Real` advertisement caused \
+            "Option B fix violated: phantom `(x, Let) -> Type::dimensionless_scalar()` advertisement caused \
              a spurious type-mismatch diagnostic. Expected no phantom diagnostic. Got: {:?}",
             phantom_diags
         );
@@ -2185,7 +2337,7 @@ mod tests {
             content_hash: ContentHash(0),
         };
         // Unannotated Let: `let x = 5.5` — cell_type: None
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" already in scope
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" already in scope
         // (from the annotated Let above), and records "x" in pass2_skipped.
         let unannotated_let_decl = reify_ast::LetDecl {
             name: "x".to_string(),
@@ -2343,13 +2495,13 @@ mod tests {
 
     /// Test that a `param` annotation with `EnumName<T>` (non-empty type_args) emits a
     /// user-facing `Diagnostic::error` with the message
-    /// "enum `Direction` does not accept type arguments".
+    /// "enum `Polarity` does not accept type arguments".
     ///
     /// Unlike a `debug_assert!`, the diagnostic is emitted in both debug and release builds,
     /// so this test validates the error is always surfaced to users regardless of build profile.
     #[test]
     fn enum_with_type_args_emits_error_diagnostic() {
-        // Direction<Something> — non-empty type_args that should trigger the diagnostic
+        // Polarity<Something> — non-empty type_args that should trigger the diagnostic
         let bogus_type_arg = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
                 name: "Something".to_string(),
@@ -2359,14 +2511,14 @@ mod tests {
         };
         let direction_with_args = reify_ast::TypeExpr {
             kind: reify_ast::TypeExprKind::Named {
-                name: "Direction".to_string(),
+                name: "Polarity".to_string(),
                 type_args: vec![bogus_type_arg],
             },
             span: SourceSpan::empty(0),
         };
 
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
@@ -2415,7 +2567,7 @@ mod tests {
     ///
     /// The positive assertion (`unresolved.len() == 1`) is the load-bearing check here:
     /// it verifies that an unknown parameterized type name falls through to the
-    /// "unresolved type" diagnostic rather than silently resolving to `Type::Real` or
+    /// "unresolved type" diagnostic rather than silently resolving to `Type::dimensionless_scalar()` or
     /// emitting a spurious "does not accept type arguments" error.
     #[test]
     fn unknown_named_type_with_type_args_produces_unresolved_diagnostic() {
@@ -2436,7 +2588,7 @@ mod tests {
         };
 
         let enum_defs = vec![reify_ir::EnumDef {
-            name: "Direction".to_string(),
+            name: "Polarity".to_string(),
             variants: vec!["In".to_string(), "Out".to_string()],
             doc: None,
         }];
@@ -2607,19 +2759,19 @@ mod tests {
     /// Pins the `Some(default_type) =>` type-mismatch branch at conformance.rs:411-423
     /// for the `RequirementKind::Let` path when the inferred-let type is incompatible.
     ///
-    /// `implicitly_converts_to(Type::Real, Type::length())` is false — `Real` and
+    /// `implicitly_converts_to(Type::dimensionless_scalar(), Type::length())` is false — `Real` and
     /// `Scalar { LENGTH }` are distinct types with no implicit conversion
     /// (type_compat.rs:3-96).
     ///
     /// ## Scenario
     ///
     /// Identical to `inferred_let_expr_satisfies_let_requirement` except the let
-    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::Real`)
+    /// expression is `ExprKind::NumberLiteral(5.5)` (inferred `Type::dimensionless_scalar()`)
     /// instead of `QuantityLiteral { 80.0, "mm" }`.
     ///
     /// ## Expected behavior
     ///
-    /// `available_defaults` advertises `("x", Let) -> Type::Real` (via the
+    /// `available_defaults` advertises `("x", Let) -> Type::dimensionless_scalar()` (via the
     /// `inferred_let_exprs.get("x")` fallback). The `Some(default_type) =>` arm
     /// fires → exactly one "type mismatch" + "available default" + "x" diagnostic.
     /// No "missing required member" for "x" (the default IS present in
@@ -2645,7 +2797,7 @@ mod tests {
         };
 
         // TraitB: `let x = 5.5` (unannotated; cell_type: None).
-        // Pass 2 compiles NumberLiteral(5.5) → Type::Real, finds "x" vacant in scope,
+        // Pass 2 compiles NumberLiteral(5.5) → Type::dimensionless_scalar(), finds "x" vacant in scope,
         // caches in inferred_let_exprs.
         let trait_b = CompiledTrait {
             name: "TraitB".to_string(),
@@ -2879,7 +3031,7 @@ mod tests {
             refinements: vec![],
             required_members: vec![TraitRequirement {
                 name: "w".to_string(),
-                kind: RequirementKind::Param(Type::Real),
+                kind: RequirementKind::Param(Type::dimensionless_scalar()),
                 span: SourceSpan::empty(0),
             }],
             defaults: vec![],
@@ -2954,7 +3106,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -3105,8 +3257,8 @@ mod tests {
         );
         assert_eq!(
             out.inferred_let_exprs[&("y".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::Real,
-            "Expected Type::Real for a floating-point number literal 2.5"
+            Type::dimensionless_scalar(),
+            "Expected Type::dimensionless_scalar() for a floating-point number literal 2.5"
         );
     }
 
@@ -3497,7 +3649,7 @@ mod tests {
     /// `let x = []` — an empty list literal — causes `compile_expr` to push a
     /// `Severity::Warning` diagnostic ("cannot infer element type of empty list literal,
     /// defaulting to Real") but emits **no** `Severity::Error`.  The expression compiles
-    /// successfully to `Type::List(Box::new(Type::Real))`.
+    /// successfully to `Type::List(Box::new(Type::dimensionless_scalar()))`.
     ///
     /// ## What this test locks in
     ///
@@ -3511,7 +3663,7 @@ mod tests {
     ///   (a) At least 1 diagnostic emitted, and ALL diagnostics have non-Error severity.
     ///   (b) `pass2_compile_errors` is empty — the warning must NOT be classified as failure.
     ///   (c) `("x", Let)` is present in `inferred_let_exprs`.
-    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::Real))`.
+    ///   (d) The cached expression has `result_type == Type::List(Box::new(Type::dimensionless_scalar()))`.
     ///   (e) The scope slot for "x" is occupied after Pass 2 and holds the inferred type
     ///       `Type::List(Real)` — verified via the non-mutating `scope.resolve("x")` probe.
     #[test]
@@ -3599,7 +3751,7 @@ mod tests {
         // (d) The cached expression has the expected inferred type for an empty list literal.
         assert_eq!(
             out.inferred_let_exprs[&("x".to_string(), AvailableDefaultKind::Let)].result_type,
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             "Expected Type::List(Real) for an empty list literal (defaulting to Real element type)"
         );
 
@@ -3614,7 +3766,7 @@ mod tests {
         );
         assert_eq!(
             resolved.unwrap().1,
-            &Type::List(Box::new(Type::Real)),
+            &Type::List(Box::new(Type::dimensionless_scalar())),
             "Expected scope slot for 'x' to hold the inferred Type::List(Real) after Pass 2; \
              got: {:?}",
             resolved.unwrap().1
@@ -3853,7 +4005,7 @@ mod tests {
             TraitDefault {
                 name: Some("x".to_string()),
                 kind: DefaultKind::Param {
-                    cell_type: Type::Real,
+                    cell_type: Type::dimensionless_scalar(),
                     default_decl: param_decl,
                 },
                 span: SourceSpan::empty(0),
@@ -3893,8 +4045,8 @@ mod tests {
         );
         assert_eq!(
             available_defaults[&("x".to_string(), AvailableDefaultKind::Param)],
-            Type::Real,
-            "Expected Type::Real for key ('x', Param)"
+            Type::dimensionless_scalar(),
+            "Expected Type::dimensionless_scalar() for key ('x', Param)"
         );
     }
 
@@ -4123,7 +4275,7 @@ mod tests {
         let mut ctx = MergeContext::new();
         ctx.requirements = vec![TraitRequirement {
             name: "w".to_string(),
-            kind: RequirementKind::Param(Type::Real),
+            kind: RequirementKind::Param(Type::dimensionless_scalar()),
             span: SourceSpan::empty(0),
         }];
 
@@ -4275,7 +4427,7 @@ mod tests {
 
         // Structure param member "w" exists but has wrong type: Real, not Length
         let mut structure_param_members: HashMap<String, Type> = HashMap::new();
-        structure_param_members.insert("w".to_string(), Type::Real);
+        structure_param_members.insert("w".to_string(), Type::dimensionless_scalar());
         let structure_let_members: HashMap<String, Type> = HashMap::new();
         let available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         let mut diagnostics: Vec<Diagnostic> = vec![];
@@ -4347,7 +4499,7 @@ mod tests {
         let mut available_defaults: HashMap<(String, AvailableDefaultKind), Type> = HashMap::new();
         available_defaults.insert(
             ("w".to_string(), AvailableDefaultKind::Param),
-            Type::Real, // Wrong type — Length is required
+            Type::dimensionless_scalar(), // Wrong type — Length is required
         );
         let mut diagnostics: Vec<Diagnostic> = vec![];
 
@@ -4488,7 +4640,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -4710,7 +4862,7 @@ mod tests {
     ///
     /// ## Fixture
     ///
-    /// A single Param default for "x" (cell_type = Type::Real, no default expression),
+    /// A single Param default for "x" (cell_type = Type::dimensionless_scalar(), no default expression),
     /// with `pass1_param_skipped = {"x"}`.  The injection loop must skip "x" entirely:
     /// - `value_cells.is_empty()` — no Param cell emitted
     /// - `constraints.is_empty()` — no constraint emitted
@@ -4751,7 +4903,7 @@ mod tests {
         ctx.defaults = vec![TraitDefault {
             name: Some("x".to_string()),
             kind: DefaultKind::Param {
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_decl: param_decl,
             },
             span: SourceSpan::empty(0),
@@ -4824,7 +4976,7 @@ mod tests {
     /// defaults bypass the inferred cache entirely.
     #[test]
     fn resolve_let_advertised_type_prefers_annotation_over_inferred() {
-        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
         let result = resolve_let_advertised_type(&Some(Type::length()), Some(&inferred));
         assert_eq!(
             result,
@@ -4842,11 +4994,11 @@ mod tests {
     /// unannotated lets: names in `pass2_compile_errors` never reach this helper.
     #[test]
     fn resolve_let_advertised_type_uses_inferred_when_no_annotation() {
-        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let inferred = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
         let result = resolve_let_advertised_type(&None, Some(&inferred));
         assert_eq!(
             result,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "Expected inferred type (Real) when no annotation is present"
         );
     }
@@ -5031,8 +5183,8 @@ mod tests {
             kind: ValueCellKind::Let,
             visibility: Visibility::Private,
             is_aux: false,
-            cell_type: Type::Real,
-            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::Real)),
+            cell_type: Type::dimensionless_scalar(),
+            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::dimensionless_scalar())),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
         }
@@ -5049,7 +5201,7 @@ mod tests {
     /// the value_cells arm — the arm that contains the recursive call to
     /// `infer_traits_for_expr_in_env(expr, self)`.
     ///
-    /// # Why `Type::Real`
+    /// # Why `Type::dimensionless_scalar()`
     ///
     /// A non-geometry type confirms the fixture bypasses the realization arm
     /// and only exercises the value_cells fallback where the recursion lives.
@@ -5181,7 +5333,7 @@ mod tests {
             kind: ValueCellKind::Let,
             visibility: Visibility::Private,
             is_aux: false,
-            cell_type: Type::Real,
+            cell_type: Type::dimensionless_scalar(),
             default_expr: Some(diff_expr),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
@@ -5594,7 +5746,7 @@ mod tests {
     #[test]
     fn l2_joint_constructor_name_mapping_exhaustive() {
         // Build a minimal FunctionCall CompiledExpr for a given constructor name.
-        // result_type = Type::Real (arbitrary — Path B ignores it and keeys on
+        // result_type = Type::dimensionless_scalar() (arbitrary — Path B ignores it and keeys on
         // the function.name string).
         let make_call = |name: &str| -> CompiledExpr {
             CompiledExpr {
@@ -5605,7 +5757,7 @@ mod tests {
                     },
                     args: vec![],
                 },
-                result_type: Type::Real,
+                result_type: Type::dimensionless_scalar(),
                 content_hash: ContentHash(0),
             }
         };
@@ -5647,6 +5799,231 @@ mod tests {
             resolve_joint_nominal_type(&make_call("unknown_joint")).as_deref(),
             None,
             "unknown constructor must return None (not a recognized joint builtin)"
+        );
+    }
+
+    // ── task-4584 step-1: walk_param_against_arg_type StructureRef leaf arm ──
+
+    /// RED until step-2 (impl): `walk_param_against_arg_type` currently falls
+    /// through the `_` arm silently for `Type::StructureRef` params, so no
+    /// diagnostic is emitted even for clear mismatches like String-arg vs Part-param.
+    ///
+    /// (a) String-typed arg against StructureRef("Part") param → exactly one
+    ///     `TypeNotConformingToStructureRef`.
+    #[test]
+    fn structureref_param_rejects_string_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::String,
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef diagnostic for String arg \
+             against Part param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (b) Matching `StructureRef("Part")` arg against `StructureRef("Part")`
+    ///     param → ZERO diagnostics (identity passes).
+    #[test]
+    fn structureref_param_accepts_same_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Part".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "expected ZERO diagnostics for Part arg vs Part param (identity), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// (c) Different `StructureRef("Other")` arg against `StructureRef("Part")`
+    ///     param → exactly one `TypeNotConformingToStructureRef` (nominal mismatch).
+    #[test]
+    fn structureref_param_rejects_different_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Other".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef for Other vs Part, \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (d) `Type::TypeParam` and `Type::Error` args against a `StructureRef`
+    ///     param → ZERO diagnostics (anti-cascade / unverifiable skip).
+    #[test]
+    fn structureref_param_skips_typeparam_and_error_args() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+
+        // Type::TypeParam — unresolved generic, skip.
+        let typeparam_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::TypeParam("T".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &typeparam_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "TypeParam arg must emit ZERO diagnostics (unverifiable), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+
+        // Type::Error — anti-cascade, check_fn_arg_conformance returns early.
+        let error_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "y"),
+            Type::Error,
+        );
+        let mut diagnostics2: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &error_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics2,
+        );
+        assert_eq!(
+            diagnostics2.len(),
+            0,
+            "Type::Error arg must emit ZERO diagnostics (anti-cascade early return), \
+             got {}: {:?}",
+            diagnostics2.len(),
+            diagnostics2,
+        );
+    }
+
+    /// Pin the intentional leniency in `check_param_default_conformance` for the
+    /// `Type::StructureRef` arm: a `StructureRef("Other")` effective type in the
+    /// default expression is conservatively **skipped** (zero diagnostics), even
+    /// though the param's declared cell_type is `StructureRef("Part")`.
+    ///
+    /// ## Why this is intentional
+    ///
+    /// In Reify, a concrete structure type used as a default for a param that is
+    /// declared with a *different* structure name is not necessarily incompatible —
+    /// structural compatibility is assessed at evaluation time, not by a nominal
+    /// name comparison alone (e.g. `param material : Material = Steel_AISI_1045()`
+    /// is a common valid pattern).  The `check_param_default_conformance` arm
+    /// therefore skips StructureRef effective types and only rejects clearly
+    /// incompatible *primitive* types (String, Int, …).
+    ///
+    /// This contrasts with the constructor-arg path (`walk_param_against_arg_type`
+    /// StructureRef arm) which uses `type_compatible` and does reject a
+    /// `StructureRef("Other")` arg for a `StructureRef("Part")` param.  The two
+    /// paths are deliberately asymmetric on this case; this test pins that gap so
+    /// any future tightening is made consciously.
+    #[test]
+    fn structureref_param_default_with_different_structureref_silently_accepted() {
+        // Build a Param cell: `param part : Part = <expr of type Other>`.
+        let param_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "part"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::StructureRef("Part".to_string()),
+            default_expr: Some(CompiledExpr::value_ref(
+                ValueCellId::new("OtherStruct", "instance"),
+                Type::StructureRef("Other".to_string()),
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        };
+        let template = minimal_template("Test", vec![param_cell]);
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "StructureRef default for StructureRef param with different name must emit \
+             ZERO diagnostics (intentional leniency — not a primitive mismatch), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
         );
     }
 }

@@ -1,0 +1,4 @@
+joint revolute(a: Axis, b: Axis, stop: Plane) with angle: Angle in 0deg..120deg = {
+    coaxial(a, b)
+    on(a.point, stop)
+}

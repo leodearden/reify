@@ -66,6 +66,10 @@ export interface DebugStores {
       designTreeHeight: number;
       propertyHeight: number;
       constraintHeight: number;
+      /** Height of the diagnostics/problems panel in pixels (task-4404 ε). */
+      problemsHeight?: number;
+      /** Whether the problems panel is collapsed (task-4404 ε). */
+      problemsCollapsed?: boolean;
     };
     /** Accept a plain value or a functional updater, matching the layoutStore setter signature. */
     setEditorWidth: (v: number | ((prev: number) => number)) => void;
@@ -73,6 +77,10 @@ export interface DebugStores {
     setDesignTreeHeight: (v: number | ((prev: number) => number)) => void;
     setPropertyHeight: (v: number | ((prev: number) => number)) => void;
     setConstraintHeight: (v: number | ((prev: number) => number)) => void;
+    /** resize_panes: problems panel height setter (task-4404 ε). */
+    setProblemsHeight?: (v: number | ((prev: number) => number)) => void;
+    /** resize_panes: problems panel collapsed setter (task-4404 ε). */
+    setProblemsCollapsed?: (v: boolean | ((prev: boolean) => boolean)) => void;
   };
 }
 

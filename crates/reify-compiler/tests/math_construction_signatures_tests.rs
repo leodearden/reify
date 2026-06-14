@@ -19,8 +19,8 @@ use common::compile_with_stdlib_helper;
 use reify_core::{Severity, Type};
 
 /// A structure whose four `let` members are the construction-builtin calls.
-/// Bare numeric literals type as `Type::Real` (dimensionless), so every inferred
-/// quantity slot is `Type::Real`.
+/// Bare numeric literals type as `Type::dimensionless_scalar()` (dimensionless), so every inferred
+/// quantity slot is `Type::dimensionless_scalar()`.
 const CONSTRUCT_SOURCE: &str = r#"
 structure def Constructed {
     let v = vec([1.0, 2.0, 3.0, 4.0])
@@ -68,7 +68,7 @@ fn vec_cell_types_as_vector_n4_real() {
         construct_cell_type("v"),
         Type::Vector {
             n: 4,
-            quantity: Box::new(Type::Real)
+            quantity: Box::new(Type::dimensionless_scalar())
         },
         "vec([1,2,3,4]) cell must type as Vector{{n:4, quantity:Real}}"
     );
@@ -83,7 +83,7 @@ fn matrix_cell_types_as_tensor_rank2_n2_real() {
         Type::Tensor {
             rank: 2,
             n: 2,
-            quantity: Box::new(Type::Real)
+            quantity: Box::new(Type::dimensionless_scalar())
         },
         "matrix([[1,2],[3,4]]) cell must type as Tensor{{rank:2, n:2, quantity:Real}}"
     );
@@ -97,7 +97,7 @@ fn diag_cell_types_as_tensor_rank2_n3_real() {
         Type::Tensor {
             rank: 2,
             n: 3,
-            quantity: Box::new(Type::Real)
+            quantity: Box::new(Type::dimensionless_scalar())
         },
         "diag([3,5,7]) cell must type as Tensor{{rank:2, n:3, quantity:Real}}"
     );
@@ -111,7 +111,7 @@ fn identity_cell_types_as_dimensionless_tensor_rank2_n4() {
         Type::Tensor {
             rank: 2,
             n: 4,
-            quantity: Box::new(Type::Real)
+            quantity: Box::new(Type::dimensionless_scalar())
         },
         "identity(4) cell must type as dimensionless Tensor{{rank:2, n:4, quantity:Real}}"
     );

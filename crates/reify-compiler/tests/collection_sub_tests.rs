@@ -76,7 +76,7 @@ fn parse_instantiation_sub_form() {
 #[test]
 fn compile_collection_sub() {
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S { sub bolts : List<Bolt> }
     "#;
     let compiled = parse_and_compile(source);
@@ -98,7 +98,7 @@ fn compile_collection_sub() {
 #[test]
 fn compile_instantiation_sub() {
     let source = r#"
-        structure Rib { param width : Scalar = 5mm }
+        structure Rib { param width : Length = 5mm }
         structure S { sub rib = Rib() }
     "#;
     let compiled = parse_and_compile(source);
@@ -121,7 +121,7 @@ fn compile_instantiation_sub() {
 #[test]
 fn compile_count_constraint() {
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             param n : Int = 4
             sub bolts : List<Bolt>
@@ -173,7 +173,7 @@ fn compile_count_constraint() {
 #[test]
 fn compile_indexed_collection_member_access() {
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 4
@@ -258,7 +258,7 @@ fn compile_count_constraint_before_sub_declaration() {
     // The constraint `bolts.count == n` appears BEFORE the `sub bolts : List<Bolt>` declaration.
     // This tests that the compiler handles forward-referenced sub declarations.
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             param n : Int = 4
             constraint bolts.count == n
@@ -301,7 +301,7 @@ fn compile_count_constraint_before_sub_declaration() {
 #[test]
 fn compile_bolts_count_expression() {
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 4
@@ -349,7 +349,7 @@ fn compile_dynamic_index_collection_member_access() {
     // When index is non-literal (a param), the compiler takes the dynamic-index path.
     // The collection base should be a ValueRef to __list_bolts, NOT a Literal(Undef).
     let source = r#"
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             param idx : Int = 0
             sub bolts : List<Bolt>
@@ -422,8 +422,8 @@ fn compile_indexed_member_access_multi_member_child() {
     // subs, not just the first.
     let source = r#"
         structure Bolt {
-            param diameter : Scalar = 10mm
-            param grade : Scalar = 8.8
+            param diameter : Length = 10mm
+            param grade : Length = 8.8
         }
         structure S {
             sub bolts : List<Bolt>
@@ -507,7 +507,7 @@ fn compile_collection_sub_as_standalone_identifier() {
     // A bare collection sub name (`bolts`) should resolve to ValueRef(__list_bolts),
     // not produce an 'unresolved name' error.
     let source = r#"
-        structure Bolt { param grade : Scalar = 8.8 }
+        structure Bolt { param grade : Length = 8.8 }
         structure S {
             sub bolts : List<Bolt>
             constraint bolts.count == 3
@@ -595,7 +595,7 @@ fn mixed_sub_types_instance_qualified_access() {
     );
 
     // Positive correctness check: verify that d1 and d2 resolved to the expected
-    // ValueRef IDs and types — not the ICE fallback (Type::Real) or an error result.
+    // ValueRef IDs and types — not the ICE fallback (Type::dimensionless_scalar()) or an error result.
     //
     // For non-collection subs, InstanceQualifiedAccess produces a ValueRef scoped to
     // "Outer.part" with the element type from Inner (Length).
@@ -678,8 +678,8 @@ fn compile_collection_identifier_after_noncollection_sub() {
     // collection-specific resolution — after the refactor sub_member_types covers
     // BOTH subs, so only the gate distinguishes them.
     let source = r#"
-        structure Rib { param width : Scalar = 5mm }
-        structure Bolt { param diameter : Scalar = 10mm }
+        structure Rib { param width : Length = 5mm }
+        structure Bolt { param diameter : Length = 10mm }
         structure S {
             sub rib = Rib()
             sub bolts : List<Bolt>
@@ -751,7 +751,7 @@ fn mixed_sub_types_wrong_trait_diagnostic() {
             param diameter : Length
         }
         trait UnrelatedTrait {
-            param weight : Scalar
+            param weight : Length
         }
         structure Inner : MechTrait {
             param diameter : Length = 5mm

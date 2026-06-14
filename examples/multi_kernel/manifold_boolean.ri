@@ -1,0 +1,42 @@
+// Task 3437 (ζ) — PRD §7.3 / §8: Manifold execute arm integration gate.
+//
+// Fixture for engine_routes_overlapping_box_union_to_manifold_mesh in
+// crates/reify-eval/tests/manifold_cross_kernel_real.rs.
+//
+// Two PARTIALLY-overlapping 10mm BRep boxes united into one Mesh-terminal
+// body.  No #kernel(...) pragma — Manifold routing is demanded-repr-driven:
+// build(ExportFormat::Stl) causes compute_demanded_reprs to mark the terminal
+// realization Mesh, which makes the dispatcher route the union to Manifold
+// (Mesh-capable) preceded by an OCCT BRep→Mesh tessellation stage.
+//
+// The OCCT-failure premise is DROPPED (task 3437 resolution).  Real OCCT
+// meshes ingest into Manifold via the bit-exact vertex weld in
+// manifold_from_reify_mesh (task #4329, kernel.rs:199-243).
+//
+// Box geometry:
+//   box_a = box(10mm, 10mm, 10mm) — first box at origin.
+//   box_b_raw = box(10mm, 10mm, 10mm) — second box before translation.
+//   box_b = translate(box_b_raw, 5mm, 0mm, 0mm) — shifted 5mm in X
+//   (50% overlap with box_a along X, common slab x∈[0,5]mm).
+//   body = union(box_a, box_b) — the terminal Mesh-demanded realization.
+//
+// Named bindings are required so compute_demanded_reprs can resolve the
+// sub-refs (GeomRef::Sub) in the union op via name_to_idx.  Without named
+// intermediate lets, inline sub-expressions compile to anonymous refs that
+// are absent from name_to_idx, triggering the conservative BRep path.
+//
+// Entity name: OverlapUnion
+// Terminal realization let: body (highest realization index)
+
+structure OverlapUnion {
+    // A named param is required so the eval-state value-cell graph has an entry
+    // for entity "OverlapUnion".  Without at least one param, propagate_subject_to_descendants
+    // returns [] → active_tolerance_scope stays empty → demanded_tol = None →
+    // RealizationCache insert is skipped → test_terminal_handle returns None.
+    param offset : Length = 5mm
+
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b = translate(box_b_raw, offset, 0mm, 0mm)
+    let body = union(box_a, box_b)
+}

@@ -1,0 +1,9 @@
+module platform_linux
+
+pub structure def LinuxCore {
+    param id : Real
+}
+
+pub structure def Platform {
+    param core : LinuxCore
+}

@@ -32,7 +32,7 @@ fn render(value: Value) -> Value {
                 name: name.to_string(),
                 qualified_name: format!("std::{name}"),
             },
-            args: vec![CompiledExpr::literal(value, Type::Real)],
+            args: vec![CompiledExpr::literal(value, Type::dimensionless_scalar())],
         },
         result_type: Type::String,
         content_hash: hash,

@@ -23,6 +23,9 @@
 #                                            tracked modifications — untracked new files not
 #                                            classified). Fails wide to all on error.
 #                                  Default: all.
+#   --narrow                       With --scope staged: narrow test/check/clippy passes to
+#                                  the affected-crate set. No-op for --scope branch (already
+#                                  narrowing) and --scope all (always full workspace, C1).
 #   --include-infra                Also run the cheap static infra checks
 #                                  (sync_comments / run_all on the test side;
 #                                  pm-standardization / event-inventory on the lint side).
@@ -37,10 +40,13 @@
 # Environment baked in (mirrors orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
 #   - . ~/.cargo/env
 #   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
-#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver  ONLY when that FIFO
-#     exists (else cargo uses its own per-process job pool). This is a COMPILE-time
-#     concurrency control; OCCT TEST-execution concurrency is bounded by a separate
-#     mechanism (the semaphore wrapper + --test-threads=1 below).
+#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:<role-fifo>  ONLY when the role's FIFO exists
+#     (else cargo uses its own per-process job pool). Role→FIFO selection:
+#       merge → ${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}
+#       task  → ${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}
+#     Var-names and defaults match scripts/jobserver-balancer.py (α, task 4516).
+#     This is a COMPILE-time concurrency control; TEST-execution concurrency is
+#     bounded by a separate mechanism (the semaphore wrapper + --test-threads=1 below).
 #   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
@@ -63,13 +69,13 @@
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
 #                                  used as the first test-phase plan entry (test/all).
 #
-# OCCT safety:
+# OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
-#   cargo's test-binary parallelism. Cross-WORKTREE contention (concurrent worktrees)
-#   is bounded by an N-slot counting semaphore in scripts/cargo-test-occt-gated.sh;
-#   intra-process contention is bounded by `-- --test-threads=1`. The OCCT-touching
-#   crate set is
-#   defined exactly once in scripts/occt-scope-lib.sh and shared with the drift test.
+#   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
+#   by the nextest `occt` test-group (max-threads = 4) in .config/nextest.toml; this
+#   limits peak OCCT RSS to ≤4×~2GiB ≈ 8GiB, well within the 32GiB host headroom.
+#   The OCCT-touching crate set is defined exactly once in scripts/occt-scope-lib.sh
+#   and shared with the nextest.toml filter drift check.
 
 set -euo pipefail
 
@@ -84,8 +90,36 @@ fi
 # shellcheck source=scripts/occt-scope-lib.sh
 source "$SCRIPT_DIR/occt-scope-lib.sh"
 
+# Shared release-sensitivity scope logic (release_declared_set / release_sensitive_set).
+if [ ! -f "$SCRIPT_DIR/release-scope-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/release-scope-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/release-scope-lib.sh
+source "$SCRIPT_DIR/release-scope-lib.sh"
+
+# Affected-crate reverse-closure (Phase-2 narrowing: maps changed files → workspace crates).
+if [ ! -f "$SCRIPT_DIR/affected-crates-lib.sh" ]; then
+    echo "verify.sh: ERROR — scripts/affected-crates-lib.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/affected-crates-lib.sh
+source "$SCRIPT_DIR/affected-crates-lib.sh"
+
+# Test-run counting semaphore (PRD test-run-concurrency-semaphore §3A/§5 D2/D5/D6).
+# Holds one slot (FD 9) across ALL test passes via @@SEMAPHORE_ACQUIRE@@/@@SEMAPHORE_RELEASE@@
+# sentinels in the PLAN array (see add_test_passes / executor below).
+# Bypassed on DF_VERIFY_ROLE=merge or REIFY_TEST_SEMAPHORE_DISABLE=1; knob
+# REIFY_TEST_SEMAPHORE_CONCURRENCY controls the slot count (default 1).
+if [ ! -f "$SCRIPT_DIR/lib_test_semaphore.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_test_semaphore.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_test_semaphore.sh
+source "$SCRIPT_DIR/lib_test_semaphore.sh"
+
 usage() {
-    sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -220,6 +254,7 @@ ACTION=""
 PROFILE="debug"
 PROFILE_EXPLICIT=0   # set to 1 if --profile was given explicitly; keeps explicit authoritative
 SCOPE="all"
+NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
 
@@ -239,6 +274,8 @@ while [ "$#" -gt 0 ]; do
             SCOPE="${2:?--scope requires an argument}"; shift 2 ;;
         --scope=*)
             SCOPE="${1#*=}"; shift ;;
+        --narrow)
+            NARROW=1; shift ;;
         --include-infra)
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
@@ -318,6 +355,16 @@ if [ -n "$_MERGE_HEAD" ] && [ -f "$_MERGE_HEAD" ] && [ "$SCOPE" != "all" ]; then
     SCOPE="all"
 fi
 
+# Defensive belt-and-braces (contract C2): the merge gate never narrows. The
+# dark-factory orchestrator's post-merge verify stamps DF_VERIFY_ROLE=merge;
+# force --scope all so a future caller cannot hand the merge gate a narrowing
+# scope (branch/staged). Independent of the role-driven --profile default above
+# and of the affected-crate machinery. Mirrors the MERGE_HEAD force.
+if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: DF_VERIFY_ROLE=merge — forcing --scope all (merge gate never narrows, contract C2)" >&2
+    SCOPE="all"
+fi
+
 # Run all relative-path commands from the repo root, matching how both the
 # orchestrator (project_root) and the git hook ($ROOT) invoke verification.
 cd "$REPO_ROOT"
@@ -369,14 +416,23 @@ apply_env() {
     export CARGO_INCREMENTAL=0
     ENV_LINES+=("export CARGO_INCREMENTAL=0")
 
-    # Inherit the shared global jobserver ONLY when its FIFO exists; otherwise
+    # Inherit the shared global jobserver ONLY when the role's FIFO exists; otherwise
     # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
     # stale fifo path when reify-jobserver.service is down would wedge cargo.
-    if [ -p /tmp/reify-jobserver ]; then
-        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:/tmp/reify-jobserver"
-        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver")
+    # Role→FIFO selection: merge → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
+    #                       task  → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
+    # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
+    local _jb_fifo
+    if [ "$DF_VERIFY_ROLE" = "merge" ]; then
+        _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
     else
-        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no /tmp/reify-jobserver FIFO) — cargo uses its own job pool")
+        _jb_fifo="${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}"
+    fi
+    if [ -p "$_jb_fifo" ]; then
+        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
+        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
+    else
+        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no $_jb_fifo FIFO) — cargo uses its own job pool")
     fi
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
@@ -397,7 +453,11 @@ apply_env
 # ---------------------------------------------------------------------------
 RUN_RUST=0
 RUN_GUI=0
+# RUN_OCCT_GATE: diagnostic-only after task 4451 folded OCCT into the nextest pool.
+# Still computed (gate=1 when OCCT-touching files change) and printed in the
+# --print-plan header for observability; it no longer gates any test emission.
 RUN_OCCT_GATE=0
+CHANGED_FILES_RAW=""   # post-.task/ filtered file list; set by decide_scope for branch/staged
 
 # is_occt_crate <crate-name> — true iff the crate is in the declared OCCT set.
 _OCCT_DECLARED="$(occt_declared_set)"
@@ -473,6 +533,10 @@ decide_scope() {
         esac
     done <<< "$_files"
 
+    # Capture for Phase-2 narrowing (after .task/ filter). scope=all returns early
+    # above, leaving CHANGED_FILES_RAW="" (never narrowing-eligible).
+    CHANGED_FILES_RAW="$_files"
+
     RUN_RUST=$rust
     # Any Rust change implies the (fast) GUI checks too.
     RUN_GUI=$(( rust | gui ))
@@ -481,26 +545,140 @@ decide_scope() {
 decide_scope
 
 # ---------------------------------------------------------------------------
+# Selective infra test injection (task 4523).
+#
+# After decide_scope, read verify-pipeline-infra-tests.txt to derive
+# SELECTED_INFRA_GLOBS: the set of infra-test globs whose artifact was changed
+# on this branch/staged diff.  Empty under scope=all (CHANGED_FILES_RAW="").
+#
+# Design notes (see task 4523 decisions):
+#   • Map is read inline (NOT via a sourced lib) so the throughput/gui_feature
+#     auto-discovery greps don't flag it.  _VP_INFRA_MAP uses a variable
+#     assignment; no 'source' directive for this map — fixture-check greps skip it.
+#   • [ -f ] guard degrades gracefully in fixtures that omit the map.
+#   • GLOB (not explicit names) so future test_verify_*.sh guards are
+#     auto-covered without a map edit.
+# ---------------------------------------------------------------------------
+SELECTED_INFRA_GLOBS=""
+
+select_infra_tests() {
+    local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
+    # Graceful degradation: absent map or empty changed-file list -> empty.
+    [ -f "$_VP_INFRA_MAP" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _artifact _glob _f _line
+    while IFS= read -r _line; do
+        # Each row: <artifact-path>  <infra-test-glob>
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob"     ] || continue
+        while IFS= read -r _f; do
+            [ -z "$_f" ] && continue
+            if [ "$_f" = "$_artifact" ]; then
+                # Append glob to selection if not already present (whole-token
+                # dedup via space sentinels — prevents false dedup when one
+                # glob is a substring of another, e.g. a specific path vs a
+                # broader wildcard pattern).
+                case " $SELECTED_INFRA_GLOBS " in
+                    *" $_glob "*) : ;;
+                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
+                esac
+                break
+            fi
+        done <<< "$CHANGED_FILES_RAW"
+    done < <(grep -v '^\s*#' "$_VP_INFRA_MAP" | grep -v '^\s*$')
+}
+select_infra_tests
+
+# ---------------------------------------------------------------------------
+# Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
+#
+# Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
+# scope=all is structurally unreachable for narrowing (C1 — returns early in
+# decide_scope, leaving CHANGED_FILES_RAW="", and the condition is never true).
+# --narrow is a no-op for scope=branch (already narrowing) and scope=all
+# (condition never true).
+#
+# REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
+# separated crate names). When set AND narrowing is eligible, used verbatim in
+# place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
+# knob idiom and allows hermetic --print-plan assertions in the workspace-less
+# fixture (where cargo metadata fails and affected_crates() always returns ALL).
+# ---------------------------------------------------------------------------
+AFFECTED=""
+NARROW_ACTIVE=0
+AFFECTED_ALL_FLAGS=""
+
+_narrowing_eligible=0
+if [ "$SCOPE" = "branch" ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+    _narrowing_eligible=1
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
+        # Operator/testability override: use verbatim crate list.
+        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+    elif [ -n "$CHANGED_FILES_RAW" ]; then
+        # Real run: compute reverse-closure from the captured changed-file list.
+        _af_args=()
+        while IFS= read -r _af_f; do
+            [ -n "$_af_f" ] && _af_args+=("$_af_f")
+        done <<< "$CHANGED_FILES_RAW"
+        if [ "${#_af_args[@]}" -gt 0 ]; then
+            AFFECTED="$(affected_crates "${_af_args[@]}")"
+        fi
+    fi
+    # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
+    if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
+        NARROW_ACTIVE=1
+    fi
+fi
+
+if [ "$NARROW_ACTIVE" -eq 1 ]; then
+    # Build the affected-crate -p flag string. Task 4451: no gated/ungated split;
+    # all affected crates (including OCCT ones) go through the single nextest pass,
+    # with the occt test-group (max-threads=24, env-driven) bounding their concurrency.
+    # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
+    # shellcheck disable=SC2086
+    for _nc in $AFFECTED; do
+        [ -z "$_nc" ] && continue
+        AFFECTED_ALL_FLAGS+=" -p $_nc"
+    done
+    AFFECTED_ALL_FLAGS="${AFFECTED_ALL_FLAGS# }"
+    # Guard: a whitespace-only REIFY_AFFECTED_CRATES_OVERRIDE passes the non-empty check
+    # above but word-splits to nothing, leaving all flag vars empty. Empty AFFECTED_ALL_FLAGS
+    # with NARROW_ACTIVE=1 would cause narrowed cargo check/clippy to run with no -p selector
+    # and narrowed test passes to emit zero commands (silent coverage gap). Fall back to
+    # full-workspace to preserve the fail-wide invariant for a malformed knob value.
+    if [ -z "$AFFECTED_ALL_FLAGS" ]; then
+        NARROW_ACTIVE=0
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Plan construction (built ONCE; print vs execute branches only at the leaves)
 # ---------------------------------------------------------------------------
 PLAN=()
 add() { PLAN+=("$1"); }
 
-# OCCT crate flags, in occt-touching-crates.txt order.
-_OCCT_CRATES=()
-while IFS= read -r _c; do [ -n "$_c" ] && _OCCT_CRATES+=("$_c"); done <<<"$_OCCT_DECLARED"
-P_FLAGS=""
-EXCLUDE_FLAGS=""
-for _c in "${_OCCT_CRATES[@]}"; do
-    P_FLAGS+=" -p $_c"
-    EXCLUDE_FLAGS+=" --exclude $_c"
-done
-P_FLAGS="${P_FLAGS# }"
-EXCLUDE_FLAGS="${EXCLUDE_FLAGS# }"
+# Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
+# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
+# env-driven) bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
+# reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
+# correctly drop out of the release pass; the debug full-workspace pass covers them.
+_RELEASE_DECLARED="$(release_declared_set)"
+_RELEASE_ALL_FLAGS=""
+while IFS= read -r _rc; do
+    [ -z "$_rc" ] && continue
+    _RELEASE_ALL_FLAGS+=" -p $_rc"
+done <<<"$_RELEASE_DECLARED"
+_RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 
-# Ungated tail runner: prefer cargo-nextest (one global pool over ~hundreds of
-# test binaries) with a graceful fallback to plain `cargo test` when nextest is
-# not installed. OCCT crates are excluded from this pass (they run gated).
+# Test runner: prefer cargo-nextest (one global pool over ~hundreds of test
+# binaries, OCCT concurrency bounded by the occt test-group) with a graceful
+# fallback to plain `cargo test -- --test-threads=1` when nextest is not installed.
 NEXTEST=0
 if cargo nextest --version >/dev/null 2>&1; then
     NEXTEST=1
@@ -518,6 +696,70 @@ wrap_subshell() {
     esac
 }
 
+# Memoized temp nextest config path (populated on first NEXTEST=1 execute-mode pass in
+# emit_nextest_pass).  scripts/gen-nextest-config.sh writes a full copy of
+# .config/nextest.toml with the occt literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS
+# value (default 24).  nextest --config overrides CARGO config only (NO-OP for test-groups
+# on 0.9.136); --config-file is required to actually override the occt group max-threads.
+# In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
+# is a hermetic, side-effect-free oracle; execute mode generates the real file).
+_NEXTEST_CONFIG_FILE=""
+
+_verify_cleanup() {
+    if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
+        rm -f "$_NEXTEST_CONFIG_FILE"
+    fi
+}
+trap '_verify_cleanup' EXIT
+
+# emit_nextest_pass <selector> <rel> <outer_timeout>
+# Emit a single nextest (or cargo-test fallback) pass.
+# selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
+# rel: "" (debug) or " --release"
+# outer_timeout: e.g. "60m" or "75m"
+# Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
+# Task 4503/γ: env-driven occt cap via REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).
+# scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
+# _NEXTEST_CONFIG_FILE) passed as --config-file; nextest --config overrides CARGO
+# config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
+# In --print-plan mode a static placeholder path is emitted instead of a real temp
+# path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
+emit_nextest_pass() {
+    local selector="$1" rel="$2" outer_timeout="$3"
+    local cmd
+    if [ "$NEXTEST" -eq 1 ]; then
+        local _cfg_path
+        if [ "$PRINT_PLAN" -eq 1 ]; then
+            # Print mode: emit a representative placeholder so --print-plan is a
+            # pure, hermetic oracle — no subprocess, no temp file created.
+            # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
+            # assertions (tests/infra/test_occt_gated_scope.sh Test 9) can still
+            # match the pattern without requiring a real file on disk.
+            # This path is intentionally NOT re-runnable; only execute mode produces
+            # a real config file (memoized in _NEXTEST_CONFIG_FILE).
+            _cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+        else
+            # Execute mode: generate the nextest config once per process (memoized).
+            # Produces a full copy of .config/nextest.toml with the occt cap rewritten
+            # to the resolved env value; removed by _verify_cleanup on EXIT.
+            if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+            fi
+            _cfg_path="$_NEXTEST_CONFIG_FILE"
+        fi
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
+    else
+        # Fallback: single-threaded (OCCT serialization via the nextest occt group is
+        # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
+    fi
+    # FD 9 is the held semaphore slot; close it for each gated child so daemon
+    # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
+    # wedge the slot after the test pass exits (2026-04-20 wedge class).
+    # Harmless no-op when the slot was not acquired (merge-exempt or disabled).
+    add "$cmd 9<&-"
+}
+
 add_test_passes() {
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
@@ -525,36 +767,69 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
-    local profile rel gated_timeout outer_timeout ungated
-    # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
-    # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
-    # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
-    # the old 30m; the OCCT gate hit the old 2700s). sccache shares rustc output
-    # across worktrees, so warm runs finish well inside these — the larger caps only
-    # bite a genuinely cold cache. NOTE: the gated values are asserted in
-    # tests/infra/test_occt_flock_gate.sh (Test 17) — keep them in sync.
+    # Acquire the test-run semaphore slot AFTER psi-gate so the scarce held
+    # slot is not occupied during a PSI pressure wait (PRD §5 D2).
+    # The executor calls test_semaphore_acquire here; the printer emits a comment.
+    add "@@SEMAPHORE_ACQUIRE@@"
+
+    local profile rel outer_timeout
+    # Outer timeout: single unified budget re-derived from η/4521's authoritative
+    # real-load floor (task 4520/ζ′).
+    # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
+    # with warm host sccache — see docs/prds/jobserver-merge-priority-balancer
+    # .acceptance-report.md §"ζ′/4520 budget floor (authoritative)").
+    # Derivation: ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) =
+    # 3596 s → rounded up to clean minute-granularity = 60m (3600 s).
+    # Bound 3600 s > floor 798.9 s by construction. The 4.5× margin weights ambient
+    # production contention on top of the quiet-box measurement (the η report endorses
+    # the standing ≈4.5× headroom as appropriate). The debug --workspace pass (all
+    # crates) is the HEAVIER compile and already clears 60m battle-tested (task 4453,
+    # zero exit-124 under η's real-load gate); the lighter release-sensitive-subset
+    # pass clears 60m a fortiori — the prior 75m release budget was load-inconsistent
+    # band-aid lineage (esc-4178/esc-4180/#4447/#4453).
+    # NOTE: both outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
+    # (Test 17 — debug pass, Test 17b — release pass) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; gated_timeout=4800; outer_timeout="75m"
+            rel=" --release"; outer_timeout="60m"
         else
-            rel=""; gated_timeout=3600; outer_timeout="60m"
+            rel=""; outer_timeout="60m"
         fi
 
-        # Gated pass: OCCT-touching crates, bounded via the semaphore wrapper,
-        # single-threaded. No outer timeout — the wrapper owns it via
-        # REIFY_OCCT_TEST_TIMEOUT (lock-wait time does not consume the budget).
-        if [ "$RUN_OCCT_GATE" -eq 1 ]; then
-            add "REIFY_OCCT_TEST_TIMEOUT=${gated_timeout} ./scripts/cargo-test-occt-gated.sh ${CARGO_PRIO}cargo test ${P_FLAGS}${rel} -- --test-threads=1"
-        fi
-
-        # Ungated tail: everything except the OCCT crates, full concurrency.
-        if [ "$NEXTEST" -eq 1 ]; then
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run --workspace ${EXCLUDE_FLAGS}${rel}"
+        if [ "$profile" = "release" ]; then
+            # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
+            # The nextest occt group (max-threads=24, env-driven) bounds concurrency for OCCT-touching
+            # release-sensitive crates (e.g. reify-eval). Only crates with
+            # debug_assertions/overflow-checks-dependent tests need to re-run in release;
+            # the DEBUG full-workspace pass covers every other crate.
+            # NARROW_ACTIVE is intentionally not applied here. The release pass is
+            # scoped by release-sensitivity (task/4390), not the affected-crate set
+            # (task/4060). Over-running the full release-sensitive set on a rare
+            # --profile both --scope branch is safe (fail-wide), and avoids entangling
+            # two orthogonal scoping axes — do not "fix" this by narrowing this pass.
+            emit_nextest_pass "$_RELEASE_ALL_FLAGS" "$rel" "$outer_timeout"
         else
-            ungated="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test --workspace ${EXCLUDE_FLAGS}${rel} -- --test-threads=1"
+            # Debug pass.
+            if [ "$NARROW_ACTIVE" -eq 1 ]; then
+                # Narrowed debug pass: all affected crates (including OCCT) in one nextest
+                # pass. Task 4451: no gated/ungated split; the nextest occt group bounds
+                # OCCT concurrency (C3 completeness: an OCCT crate enters the affected set
+                # as a reverse-dep of a changed non-OCCT crate even when RUN_OCCT_GATE=0).
+                emit_nextest_pass "$AFFECTED_ALL_FLAGS" "$rel" "$outer_timeout"
+            else
+                # Full-workspace debug pass (scope=all and non-narrow branch/staged).
+                # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
+                # the nextest occt test-group (max-threads=24, env-driven) bounds their concurrency.
+                emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
+            fi
         fi
-        add "$ungated"
     done
+
+    # Release the semaphore slot after all passes complete.
+    # The executor calls test_semaphore_release; the printer emits a comment.
+    # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
+    # so the failure path needs no explicit release sentinel.
+    add "@@SEMAPHORE_RELEASE@@"
 }
 
 build_plan() {
@@ -574,12 +849,94 @@ build_plan() {
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
+        if [ "$NARROW_ACTIVE" -eq 1 ]; then
+            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
+        else
+            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
+        fi
+    fi
+
+    # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
+    # meaningful when there is a GUI check to run — the GUI has a test side
+    # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
+    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
+    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
+    #
+    # The GUI typecheck (tsc --noEmit) now runs whenever this block runs — on the
+    # TEST side as well as the lint side — not lint-only as before. Rationale: the
+    # orchestrator's inner TDD loop runs `verify.sh test --scope branch` (npm test
+    # = vitest), which never type-checks; a type-only break that renders fine at
+    # runtime (e.g. a solid-js <Show> function-child rejected by the non-keyed
+    # overload) therefore stayed invisible through development and only surfaced at
+    # lint/merge time — by which point, since any Rust change forces RUN_GUI=1, it
+    # blocks every task's branch verify on an inherited error. Putting tsc on the
+    # test side catches this class in the cheap inner loop. The block is built ONCE
+    # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
+    # exactly once — no double-run.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (the expensive pole) so a broken
+    # gui tsc fails the plan in ~minutes, not after 85 min of Rust build+test.
+    # (task #4448 / incident fix for #4446)
+    #
+    # BOUNDED node||cargo OVERLAP (task #4448, Leo's directive): when a rust
+    # foreground cheap gate (clippy/gui-feature-check) is also emitted for this
+    # action (DO_LINT=1 && RUN_RUST=1), background the node lane so it runs
+    # concurrently with those gates. Node npm runs off the rustc jobserver →
+    # zero jobserver contention. bg PID variable persists across plan entries
+    # because the executor evals every entry in this shell (same-shell eval).
+    # For action=test there is no rust foreground gate; the node lane stays plain
+    # (pure fail-fast reorder, no overlap). For action=typecheck the node lane is
+    # empty (gui block gated on test||lint) → unchanged.
+    local _gui_cmd="" _sidecar_cmd="" _ts_cmd="" _node_lane=""
+    if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
+        # typecheck always (whenever the block runs, test OR lint); npm test only
+        # on the test side.
+        local gui_inner="npm ci && npm run typecheck"
+        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
+        _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
+
+        # sidecar has no vitest side; both typecheck passes run whenever the block does.
+        local sidecar_inner="npm ci && npm run typecheck && npm run typecheck:test"
+        _sidecar_cmd="if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
+
+        _ts_cmd="if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"
+        _node_lane="${_gui_cmd} && ${_sidecar_cmd} && ${_ts_cmd}"
+    fi
+
+    # Overlap path: background the node lane BEFORE the foreground rust cheap
+    # gates (clippy + gui-feature-check) so they run concurrently. The bg PID
+    # variable persists into the join entry below (same executor shell).
+    #
+    # Cleanup trap: registered in the same eval so it fires on any EXIT (success
+    # or failure). If a foreground rust gate fails before the wait join, the
+    # executor calls exit and the trap kills the still-running npm job instead of
+    # orphaning it.
+    #
+    # The kill is wrapped in an `if ...; then :; fi` rather than a bare sequence.
+    # On the happy path `wait` has already reaped the job before EXIT fires, so
+    # the kill returns 1 (no such process). Under the script's `set -euo
+    # pipefail`, a *bare* `kill ...; true` poisons the exit code: bash aborts the
+    # trap body at the failing kill BEFORE reaching `true`, flipping a fully
+    # passing run (rc=0 after "all checks passed") to rc=1 (regression from
+    # commit 9b398f7a26; esc-3993-22, independently reproduced under bash 5.2 as
+    # esc-4431-30). An `if` *condition* is exempt from set -e, so
+    # `if kill ...; then :; fi` swallows the no-such-process failure without
+    # aborting — and still reaps the job on the fail path (kill succeeds → `:`).
+    # NOTE: "|| true" is intentionally avoided here — the npm ci hardening test
+    # (test_npm_ci_hardening.sh Test 3) asserts that no plan line contains
+    # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
+    # the `if`-guard achieves the same set -e safety without that token.
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+        if [ "$NARROW_ACTIVE" -eq 1 ]; then
+            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
+        else
+            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+        fi
     fi
 
     # gui-feature compile-check: type-check reify-gui's #[cfg(feature="gui")] code
@@ -601,45 +958,25 @@ build_plan() {
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
     fi
 
-    # test: gated + ungated cargo passes, per profile.
-    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add_test_passes
+    # Overlap join: wait for the background node lane before infra checks / pole.
+    # Maximises the concurrency window (join as late as possible while still
+    # preceding the expensive pole and infra checks).
+    if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
+        add 'wait "$_VERIFY_NODE_BG_PID"'
     fi
 
-    # GUI ecosystem (npm). Rust changes imply these too; they are fast. Only
-    # meaningful when there is a GUI check to run — the GUI has a test side
-    # (npm test) and a typecheck (npm run typecheck) but no `cargo check`
-    # analogue, so a pure typecheck action skips it entirely (verify.sh's own
-    # `typecheck` action is cargo-check-only; the GUI ecosystem has no equivalent).
-    #
-    # The GUI typecheck (tsc --noEmit) now runs whenever this block runs — on the
-    # TEST side as well as the lint side — not lint-only as before. Rationale: the
-    # orchestrator's inner TDD loop runs `verify.sh test --scope branch` (npm test
-    # = vitest), which never type-checks; a type-only break that renders fine at
-    # runtime (e.g. a solid-js <Show> function-child rejected by the non-keyed
-    # overload) therefore stayed invisible through development and only surfaced at
-    # lint/merge time — by which point, since any Rust change forces RUN_GUI=1, it
-    # blocks every task's branch verify on an inherited error. Putting tsc on the
-    # test side catches this class in the cheap inner loop. The block is built ONCE
-    # (not per-profile), so a single `&& npm run typecheck` means action=all runs it
-    # exactly once — no double-run.
-    if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
-        # typecheck always (whenever the block runs, test OR lint); npm test only
-        # on the test side.
-        local gui_inner="npm ci && npm run typecheck"
-        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
-        add "if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
-
-        # sidecar has no vitest side; both typecheck passes run whenever the block does.
-        local sidecar_inner="npm ci && npm run typecheck && npm run typecheck:test"
-        add "if test -f gui/sidecar/package-lock.json; then $(wrap_subshell gui/sidecar 10 "$sidecar_inner"); fi"
-
-        add "if test -f tree-sitter-reify/package-lock.json; then $(wrap_subshell tree-sitter-reify 10 "npm ci"); fi"
+    # Plain path: node lane as sequential lines (no foreground rust gate, e.g. action=test).
+    if [ -n "$_node_lane" ] && { [ "$DO_LINT" -eq 0 ] || [ "$RUN_RUST" -eq 0 ]; }; then
+        add "$_gui_cmd"
+        add "$_sidecar_cmd"
+        add "$_ts_cmd"
     fi
 
     # Cheap static infra checks (opt-in). Test-side and lint-side, mirroring the
     # historical orchestrator split. Tied to RUN_RUST (the heavy gate) so a
     # frontend-only or docs-only staged commit stays fast.
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
@@ -650,6 +987,33 @@ build_plan() {
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
         fi
     fi
+
+    # Selective infra injection (task 4523): task-level path runs the infra
+    # drift-guards for any changed verify-pipeline artifact.  FAIL-FAST: emitted
+    # BEFORE add_test_passes (the expensive long-pole).  One guarded for-loop
+    # per glob — the glob literal is embedded in the emitted subshell command
+    # and expands at EXECUTION time under CWD=REPO_ROOT.
+    # set -f / set +f prevents the shell from pathname-expanding the token
+    # during loop iteration here at build time, so the literal glob string
+    # (e.g. tests/infra/test_verify_*.sh) always reaches the emitted plan.
+    # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
+    # (a superset), so the selective subset would double-run hermetic tests.
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
+        local _glob
+        set -f  # disable pathname expansion: keep glob tokens as literals
+        for _glob in $SELECTED_INFRA_GLOBS; do
+            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+        done
+        set +f
+    fi
+
+    # test: gated + ungated cargo passes, per profile.
+    # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
+    # nextest run + OCCT-gated passes). All cheap gates run before this.
+    # (task #4448 fail-fast reorder)
+    if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
+        add_test_passes
+    fi
 }
 build_plan
 
@@ -659,6 +1023,7 @@ build_plan
 if [ "$PRINT_PLAN" -eq 1 ]; then
     echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
@@ -666,7 +1031,17 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# (no commands — nothing to verify for this action/scope)"
     fi
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
-        printf '%s\n' "$_cmd"
+        case "$_cmd" in
+            '@@SEMAPHORE_ACQUIRE@@')
+                printf '# >>> test-run semaphore: ACQUIRE held slot — TEST-EXECUTION gated region BEGINS (held in verify.sh, not a fire-and-return line)\n'
+                ;;
+            '@@SEMAPHORE_RELEASE@@')
+                printf '# <<< test-run semaphore: RELEASE held slot — TEST-EXECUTION gated region ENDS\n'
+                ;;
+            *)
+                printf '%s\n' "$_cmd"
+                ;;
+        esac
     done
     exit 0
 fi
@@ -677,6 +1052,20 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
 fi
 
 for _cmd in "${PLAN[@]}"; do
+    case "$_cmd" in
+        '@@SEMAPHORE_ACQUIRE@@')
+            test_semaphore_acquire || {
+                _rc=$?
+                echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
+                exit "$_rc"
+            }
+            continue
+            ;;
+        '@@SEMAPHORE_RELEASE@@')
+            test_semaphore_release || true
+            continue
+            ;;
+    esac
     echo "verify.sh: + $_cmd" >&2
     eval "$_cmd" || {
         _rc=$?

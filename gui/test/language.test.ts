@@ -138,10 +138,15 @@ describe('auto-indent', () => {
     // Line 2 starts at offset: 'structure S {\n'.length = 14
     const line2Start = doc.indexOf('\n') + 1;
     // Force synchronous parse before querying indentation.
-    // Without this, getIndentation can return null under high load because
-    // CodeMirror's lazy parser may not have completed yet.
-    ensureSyntaxTree(state, state.doc.length);
-    const indent = getIndentation(state, line2Start);
+    // ensureSyntaxTree advances ParseContext.tree but does NOT update the
+    // immutable LanguageState.tree snapshot that syntaxTree(state) returns.
+    // A no-op state.update({}) triggers LanguageState.apply(), which detects
+    // the divergence and builds a new LanguageState from the updated context.
+    // Use a generous timeout (2 s) so even a heavily-loaded CI host finishes
+    // parsing this 32-character document before the check.
+    ensureSyntaxTree(state, state.doc.length, 2000);
+    const readyState = state.update({}).state;
+    const indent = getIndentation(readyState, line2Start);
     // delimitedIndent on Block should produce a non-zero indent level
     expect(indent).not.toBeNull();
     expect(indent!).toBeGreaterThan(0);

@@ -22,7 +22,7 @@ fn parse_members(source: &str) -> (Vec<MemberDecl>, Vec<ParseError>) {
 fn parse_match_three_arms() {
     let source = r#"enum Direction { In, Out, Bidi }
 structure S {
-    param d : Scalar
+    param d : Length
     let x = match d { In => 1, Out => 2, Bidi => 3 }
 }"#;
     let (members, errors) = parse_members(source);

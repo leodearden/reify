@@ -251,8 +251,7 @@ fn build_sub_placement_export_has_two_product_solids() {
     );
 
     // Read the exported STEP and count manifold solid B-Reps.
-    let step_bytes =
-        std::fs::read(&result.output_path).expect("failed to read exported STEP file");
+    let step_bytes = std::fs::read(&result.output_path).expect("failed to read exported STEP file");
     let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
 
     let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();

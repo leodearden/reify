@@ -20,8 +20,8 @@
 
 use crate::graph::ValueCellNode;
 use reify_compiler::CompiledPurpose;
-use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_ir::{CompiledExprKind, PersistentMap, Value};
+use reify_core::ValueCellId;
+use reify_ir::PersistentMap;
 use std::collections::{BTreeSet, HashMap};
 
 /// One extracted tolerance scope root: the entity-ref the purpose was bound
@@ -44,22 +44,18 @@ pub(crate) struct ToleranceBinding {
 ///
 /// # Validation gates
 ///
-/// 1. **Outer shape:** top-level `UserFunctionCall("RepresentationWithin", [arg0, arg1])`.
-/// 2. **Subject (arg0):** `ValueRef` whose `result_type` is `StructureRef(_)` AND whose
-///    `ValueCellId.entity` matches one of `purpose.params[*].name` (the "bare-purpose-param"
-///    contract). A `ValueRef` to a non-param entity is rejected even if it happens to be
-///    typed `StructureRef(_)`, so an unrelated structure reference doesn't silently
-///    bind a tolerance to an entity it has no semantic connection to.
-/// 3. **Tolerance literal (arg1):** `Literal(Value::Scalar { dimension == LENGTH, si_value })`
-///    where `si_value.is_finite() && si_value >= 0.0`. Non-finite values (NaN, ±Inf) and
-///    negative finite values have no semantics for a tolerance — and worse, both would
-///    propagate into the scope and corrupt downstream consumers. NaN sticks because
-///    `merge_with_min` could never displace it (NaN comparisons evaluate false); a
-///    negative literal would win `merge_with_min` against any positive contributor and
-///    then panic `combine_demanded_tolerance`'s debug-assert `is_finite() && >= 0.0`
-///    in debug builds (or silently win an `o.min(p)` race in release). The
-///    `>= 0.0` half of the gate restores the symmetry `tolerance_combine.rs`'s
-///    "Recognition-shape twin" docstring claims with `extract_output_tolerance_bound`.
+/// Shape recognition (gates 2-4) is delegated to
+/// `crate::tolerance_combine::match_representation_within_shape`, which matches
+/// both the `UserFunctionCall` and the compiler-resolved `FunctionCall { ResolvedFunction }`
+/// IR variants. Gates specific to this extractor follow:
+///
+/// 1. **Param membership:** `subject_cell_id.entity` must appear in `purpose.params[*].name`
+///    (the "bare-purpose-param" contract). A `ValueRef` to a non-param entity is rejected
+///    even if it passes the shape gates, so an unrelated structure reference doesn't
+///    silently bind a tolerance to an entity it has no semantic connection to.
+/// 2. **Per-param binding:** the subject entity is looked up in `bindings` to resolve the
+///    actual bound entity. If not found, the constraint is skipped (safe no-op — C2 ensures
+///    every declared param has a binding for validly-activated purposes).
 ///
 /// # Per-param binding
 ///
@@ -78,36 +74,22 @@ pub(crate) fn extract_tolerance_bindings(
 ) -> Vec<ToleranceBinding> {
     let mut result = Vec::new();
     for constraint in &purpose.constraints {
-        // Match: top-level UserFunctionCall("RepresentationWithin", [arg0, arg1])
-        let (function_name, args) = match &constraint.expr.kind {
-            CompiledExprKind::UserFunctionCall {
-                function_name,
-                args,
-            } => (function_name, args),
-            _ => continue,
+        // Gates 2-4: shape recognition delegated to the shared helper
+        // (`match_representation_within_shape` in tolerance_combine) — both the
+        // UFC and the compiler-resolved FunctionCall IR variants are handled
+        // there. The scope-specific gates (param membership + binding resolution)
+        // follow below.
+        let Some((subject_cell_id, _struct_name, si_value)) =
+            crate::tolerance_combine::match_representation_within_shape(&constraint.expr)
+        else {
+            continue;
         };
-        if function_name != "RepresentationWithin" {
-            continue;
-        }
-        if args.len() != 2 {
-            continue;
-        }
 
-        // arg0 must be a ValueRef whose result_type is StructureRef(_) AND whose
-        // entity matches one of the purpose's param names. The entity check is
-        // what enforces the "bare-purpose-param subject" contract documented at
-        // the module level — without it, a `RepresentationWithin(<unrelated
-        // StructureRef ValueRef>, tol)` would silently bind a tolerance to an
-        // unrelated entity. Today's compiler emits no such shape, but matching
-        // the documented contract prevents surprises when a real producer comes online.
-        let subject_arg = &args[0];
-        let subject_cell_id = match &subject_arg.kind {
-            CompiledExprKind::ValueRef(id) => id,
-            _ => continue,
-        };
-        if !matches!(subject_arg.result_type, Type::StructureRef(_)) {
-            continue;
-        }
+        // Scope-specific gate: subject entity must be one of the purpose's
+        // declared params. Enforces the "bare-purpose-param subject" contract
+        // documented at the module level — without it, a
+        // `RepresentationWithin(<unrelated StructureRef ValueRef>, tol)` would
+        // silently bind a tolerance to an unrelated entity.
         if !purpose
             .params
             .iter()
@@ -116,30 +98,15 @@ pub(crate) fn extract_tolerance_bindings(
             continue;
         }
 
-        // Resolve the param's bound entity from the bindings slice. Each param routes
-        // to its own entity so multi-param purposes produce per-param ToleranceBindings
-        // rather than collapsing all constraints onto a single ref.
+        // Resolve the param's bound entity from the bindings slice. Each param
+        // routes to its own entity so multi-param purposes produce per-param
+        // ToleranceBindings rather than collapsing all constraints onto one ref.
         let subject_entity = match bindings.iter().find(|(p, _)| p == &subject_cell_id.entity) {
             Some((_, entity)) => entity.clone(),
-            // Param not in bindings — skip. Defensively safe; valid activations guarantee
-            // every declared param has a binding (C2).
+            // Param not in bindings — skip. Defensively safe; valid activations
+            // guarantee every declared param has a binding (C2).
             None => continue,
         };
-
-        // arg1 must be a Literal(Value::Scalar { dimension == LENGTH, si_value })
-        // where si_value.is_finite() && si_value >= 0.0 — see gate-3 in the
-        // function docstring above for the full rationale.
-        let tol_arg = &args[1];
-        let si_value = match &tol_arg.kind {
-            CompiledExprKind::Literal(Value::Scalar {
-                si_value,
-                dimension,
-            }) if *dimension == DimensionVector::LENGTH => *si_value,
-            _ => continue,
-        };
-        if !crate::tolerance_gate::is_valid_tolerance_si(si_value) {
-            continue;
-        }
 
         result.push(ToleranceBinding {
             subject_entity,
@@ -199,13 +166,13 @@ mod tests {
     use crate::graph::ValueCellNode;
     use reify_compiler::ValueCellKind;
     use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
-    use reify_ir::{BinOp, CompiledExpr, PersistentMap, Value};
+    use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, PersistentMap, ResolvedFunction, Value};
     use reify_test_support::builders::CompiledPurposeBuilder;
     use std::collections::HashMap;
 
     /// Build a one-cell `PersistentMap` entry shaped like the existing
     /// `engine_purposes.rs` unit-test fixtures: a `Param` cell typed
-    /// `Type::Real`, with a content_hash derived from the member name.
+    /// `Type::dimensionless_scalar()`, with a content_hash derived from the member name.
     fn insert_param_cell(
         cells: &mut PersistentMap<ValueCellId, ValueCellNode>,
         entity: &str,
@@ -217,7 +184,7 @@ mod tests {
             ValueCellNode {
                 id: id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str(&format!("{}.{}", entity, member)),
             },
@@ -292,8 +259,8 @@ mod tests {
         // (b) BinOp(Gt, ValueRef(...), Literal(Real(0.0))) — wrong outer node kind.
         let binop_constraint = CompiledExpr::binop(
             BinOp::Gt,
-            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(ValueCellId::new("subject", "thickness"), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             Type::Bool,
         );
 
@@ -583,6 +550,238 @@ mod tests {
     /// in step-2 of task 4070: `extract_tolerance_bindings` now resolves each
     /// matched constraint's subject param against the `bindings` slice so
     /// multi-param purposes produce per-param `ToleranceBinding`s.
+    /// Regression lock: `extract_tolerance_bindings` (scope side) and
+    /// `recognize_representation_within` (combine side) must agree on every
+    /// `CompiledExpr` shape in the shared fixture set.
+    ///
+    /// Each fixture's subject `ValueRef` entity is declared as a purpose param
+    /// ("subject") with a matching binding, so the scope-only membership and
+    /// binding gates always pass — the shared shape gate is the sole decider.
+    ///
+    /// Before the routing fix the resolved-`FunctionCall` fixture drives RED:
+    /// the combine side recognises it (`Some`) but the still-hand-rolled scope
+    /// side does not (empty `Vec`).
+    #[test]
+    fn extract_tolerance_bindings_agrees_with_recognize_representation_within_on_fixture_set() {
+        let subject_vref = || {
+            CompiledExpr::value_ref(
+                ValueCellId::new("subject", "self"),
+                Type::StructureRef("Bracket".to_string()),
+            )
+        };
+        let len_tol = |si: f64| {
+            CompiledExpr::literal(
+                Value::Scalar { si_value: si, dimension: DimensionVector::LENGTH },
+                Type::Scalar { dimension: DimensionVector::LENGTH },
+            )
+        };
+
+        // Resolved FunctionCall variant (RED driver before routing fix) —
+        // mirrors reify-ir's `make_function_call` helper (expr.rs:1827).
+        let f_resolved_fc = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "RepresentationWithin".to_string(),
+                    qualified_name: "std::RepresentationWithin".to_string(),
+                },
+                args: vec![subject_vref(), len_tol(1e-6)],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of("RepresentationWithin".as_bytes()),
+        };
+        let f_wrong_name_fc = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "ToleranceWithin".to_string(),
+                    qualified_name: "std::ToleranceWithin".to_string(),
+                },
+                args: vec![subject_vref(), len_tol(1e-6)],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of("ToleranceWithin".as_bytes()),
+        };
+
+        // Each case: (label, expr, expected_si — None means no-match expected).
+        let cases: Vec<(&str, CompiledExpr, Option<f64>)> = vec![
+            // Gate-2 variant coverage.
+            (
+                "canonical UFC",
+                representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH),
+                Some(1e-6),
+            ),
+            (
+                "resolved FunctionCall",
+                f_resolved_fc,
+                Some(1e-6),
+            ),
+            (
+                "wrong name UFC",
+                CompiledExpr::user_function_call(
+                    "ToleranceWithin".to_string(),
+                    vec![subject_vref(), len_tol(1e-6)],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            ("wrong name resolved FC", f_wrong_name_fc, None),
+            // Arity gate.
+            (
+                "arity-1 UFC",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![subject_vref()],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            // Gate-3: arg0 shape.
+            (
+                "non-ValueRef arg0",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![
+                        CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
+                        len_tol(1e-6),
+                    ],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            (
+                "non-StructureRef arg0",
+                CompiledExpr::user_function_call(
+                    "RepresentationWithin".to_string(),
+                    vec![
+                        CompiledExpr::value_ref(
+                            ValueCellId::new("subject", "self"),
+                            Type::dimensionless_scalar(),
+                        ),
+                        len_tol(1e-6),
+                    ],
+                    Type::Bool,
+                ),
+                None,
+            ),
+            // Gate-4a: dimension.
+            (
+                "DIMENSIONLESS tol",
+                representation_within_constraint("subject", "Bracket", 1.0, DimensionVector::DIMENSIONLESS),
+                None,
+            ),
+            // Gate-4b/c: is_valid_tolerance_si.
+            (
+                "NaN tol",
+                representation_within_constraint("subject", "Bracket", f64::NAN, DimensionVector::LENGTH),
+                None,
+            ),
+            (
+                "+Inf tol",
+                representation_within_constraint("subject", "Bracket", f64::INFINITY, DimensionVector::LENGTH),
+                None,
+            ),
+            (
+                "negative tol",
+                representation_within_constraint("subject", "Bracket", -1e-6, DimensionVector::LENGTH),
+                None,
+            ),
+            // Zero is the exact >= 0.0 lower boundary (accepted).
+            (
+                "zero tol",
+                representation_within_constraint("subject", "Bracket", 0.0, DimensionVector::LENGTH),
+                Some(0.0),
+            ),
+            // Non-call outer expr.
+            (
+                "bare Real-literal",
+                CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar()),
+                None,
+            ),
+        ];
+
+        for (label, expr, expected_si) in &cases {
+            let purpose = CompiledPurposeBuilder::new("p")
+                .param("subject", "Structure")
+                .constraint("subject", 0, None, expr.clone())
+                .build();
+            let scope_bindings = extract_tolerance_bindings(
+                &purpose,
+                &[("subject".to_string(), "Inst".to_string())],
+            );
+            let combine_result =
+                crate::tolerance_combine::recognize_representation_within(expr);
+
+            let scope_matches = !scope_bindings.is_empty();
+            let combine_matches = combine_result.is_some();
+            let should_match = expected_si.is_some();
+
+            assert_eq!(
+                scope_matches,
+                combine_matches,
+                "fixture '{label}': scope ({scope_matches}) and combine ({combine_matches}) disagree"
+            );
+            assert_eq!(
+                scope_matches,
+                should_match,
+                "fixture '{label}': expected {} but got {}",
+                if should_match { "match" } else { "no-match" },
+                if scope_matches { "match" } else { "no-match" },
+            );
+
+            if let Some(expected_tol) = expected_si {
+                assert_eq!(
+                    scope_bindings.len(),
+                    1,
+                    "fixture '{label}': expected exactly one binding"
+                );
+                assert_eq!(
+                    scope_bindings[0].subject_entity, "Inst",
+                    "fixture '{label}': subject_entity must be 'Inst'"
+                );
+                assert_eq!(
+                    scope_bindings[0].si_tolerance, *expected_tol,
+                    "fixture '{label}': si_tolerance must equal {expected_tol}"
+                );
+            }
+        }
+    }
+
+    /// Scope-vs-combine divergence lock: when a param IS a declared purpose
+    /// param (membership gate passes) but has NO entry in the `bindings` slice,
+    /// `extract_tolerance_bindings` must skip the constraint and return empty —
+    /// while `recognize_representation_within` (combine side) still returns Some.
+    ///
+    /// C2 guarantees every declared param has a binding in valid activations, so
+    /// this branch is defensively unreachable in production.  The test locks the
+    /// scope-specific binding-resolution gate so it cannot silently widen.
+    ///
+    /// Together with `extract_tolerance_bindings_rejects_value_ref_to_non_purpose_param`
+    /// (param-membership gate) this covers both scope-only divergence paths that the
+    /// drift-agreement test deliberately elides (its fixtures always pass both scope gates).
+    #[test]
+    fn extract_tolerance_bindings_skips_param_with_no_binding_entry() {
+        let constraint_expr =
+            representation_within_constraint("subject", "Bracket", 1e-6, DimensionVector::LENGTH);
+
+        let purpose = CompiledPurposeBuilder::new("manufacturing")
+            .param("subject", "Structure")
+            .constraint("subject", 0, None, constraint_expr.clone())
+            .build();
+
+        // Bindings slice is empty — "subject" param is declared but has no binding.
+        let scope_bindings = extract_tolerance_bindings(&purpose, &[]);
+        let combine_result =
+            crate::tolerance_combine::recognize_representation_within(&constraint_expr);
+
+        assert!(
+            scope_bindings.is_empty(),
+            "scope must skip a declared param with no binding entry (binding-resolution gate)"
+        );
+        assert!(
+            combine_result.is_some(),
+            "combine side must still recognise the shape (scope gate must not affect combine)"
+        );
+    }
+
     #[test]
     fn extract_tolerance_bindings_threads_each_param_to_its_bound_entity() {
         let constraint_part =

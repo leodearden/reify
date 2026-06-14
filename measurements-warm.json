@@ -1,0 +1,918 @@
+{
+  "nproc": 32,
+  "baseline": {
+    "service": "single-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "merge_wall": 363.1870239439886,
+    "task_walls": [
+      363.188157933997
+    ],
+    "exit_codes": [
+      0,
+      1
+    ],
+    "exit_124_count": 0,
+    "occupancy": [
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112528.187446947
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112533.188178367
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112538.18834005
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112543.18849591
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112548.189109373
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112553.191135401
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112558.191340282
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112563.191487652
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112568.191669447
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112573.19183007
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112578.193109911
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112583.193296078
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112588.193460963
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112593.193625825
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112598.193798795
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112603.193975472
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112608.195242727
+      },
+      {
+        "merge": 31,
+        "task": 0,
+        "timestamp": 1112613.195404339
+      },
+      {
+        "merge": 28,
+        "task": 0,
+        "timestamp": 1112618.195567769
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112623.195767796
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112628.197872573
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112633.198198884
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112638.198464963
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112643.202757103
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112648.202966168
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112653.203254899
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112658.203464169
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112663.203897235
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112668.20415092
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112673.2091904
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112678.2095311
+      },
+      {
+        "merge": 0,
+        "task": 0,
+        "timestamp": 1112683.209792218
+      },
+      {
+        "merge": 30,
+        "task": 0,
+        "timestamp": 1112688.210033894
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112693.210224479
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112698.214528144
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112703.21633981
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112708.217192972
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112713.218248111
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112718.218487314
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112723.218759455
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112728.219142254
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112733.224257428
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112738.224540983
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112743.226220983
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112748.226564474
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112753.226764734
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112758.2272712
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112763.227475096
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112768.227652611
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112773.227836504
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112778.228053604
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112783.228256653
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112788.229279093
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112793.229976434
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112798.230483115
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112803.230882935
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112808.231206104
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112813.231506842
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112818.231766308
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112823.232101282
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112828.232453154
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112833.232780285
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112838.233143564
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112843.233537721
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112848.233798817
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112853.233999322
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112858.235269857
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112863.235611828
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112868.238143867
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112873.238393366
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112878.238586393
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112883.23875372
+      },
+      {
+        "merge": 32,
+        "task": 0,
+        "timestamp": 1112888.238928375
+      }
+    ],
+    "busy_fraction": 0.874994466438843
+  },
+  "dual_pool": {
+    "service": "dual-pool",
+    "regime": "mixed",
+    "cache_state": "warm",
+    "merge_wall": 394.3171883248724,
+    "task_walls": [
+      513.0882247600239
+    ],
+    "exit_codes": [
+      0,
+      0
+    ],
+    "exit_124_count": 0,
+    "occupancy": [
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112891.401155409
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112896.403129346
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112901.403313827
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112906.403520576
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112911.403836814
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112916.404232708
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112921.404566543
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112926.408131126
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112931.408344839
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112936.410287374
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112941.410457344
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112946.410698913
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112951.410853081
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112956.410988227
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112961.411168832
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112966.411325016
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112971.411491339
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112976.411722209
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112981.41187558
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112986.412182987
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112991.412321455
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1112996.412893448
+      },
+      {
+        "merge": 1,
+        "task": 31,
+        "timestamp": 1113001.413076953
+      },
+      {
+        "merge": 24,
+        "task": 7,
+        "timestamp": 1113006.41404873
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113011.414244963
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113016.419141542
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113021.421214134
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113026.421489512
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113031.421684729
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113036.421916805
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113041.42324916
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113046.426218599
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113051.428417184
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113056.428615504
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113061.428847354
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113066.429578788
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113071.429881234
+      },
+      {
+        "merge": 1,
+        "task": 31,
+        "timestamp": 1113076.430108241
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113081.430348058
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113086.430515275
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113091.43077539
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113096.437235108
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113101.437415711
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113106.437570384
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113111.437705647
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113116.437876848
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113121.438194146
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113126.438457105
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113131.439157198
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113136.444204811
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113141.444542365
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113146.444877239
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113151.445257212
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113156.451708509
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113161.453329379
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113166.454260984
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113171.454591243
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113176.45505143
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113181.455777915
+      },
+      {
+        "merge": 1,
+        "task": 27,
+        "timestamp": 1113186.456213001
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113191.456610117
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113196.456830523
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113201.457114418
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113206.457439302
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113211.457788285
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113216.458091118
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113221.458352909
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113226.459159816
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113231.459435056
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113236.459661216
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113241.459904596
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113246.460301903
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113251.4605665
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113256.460774927
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113261.462204963
+      },
+      {
+        "merge": 1,
+        "task": 0,
+        "timestamp": 1113266.462428569
+      },
+      {
+        "merge": 1,
+        "task": 22,
+        "timestamp": 1113271.468204734
+      },
+      {
+        "merge": 1,
+        "task": 30,
+        "timestamp": 1113276.468408599
+      },
+      {
+        "merge": 1,
+        "task": 30,
+        "timestamp": 1113281.470105779
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113286.470276503
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113291.47116999
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113296.471335472
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113301.471517624
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113306.471681355
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113311.471845326
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113316.472069955
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113321.472248774
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113326.472403293
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113331.472582059
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113336.472822124
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113341.473058919
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113346.473262885
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113351.47349041
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113356.473697594
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113361.473899959
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113366.479164726
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113371.479367819
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113376.479550311
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113381.479760643
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113386.479944534
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113391.480130235
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113396.480274066
+      },
+      {
+        "merge": 24,
+        "task": 8,
+        "timestamp": 1113401.480430066
+      }
+    ],
+    "busy_fraction": 0.8945408881271003
+  },
+  "utilization_tolerance": 0.03
+}

@@ -14,8 +14,8 @@ use reify_core::Type;
 /// (a) Vector<3,Real> -> Tensor<1,3,Real> is allowed.
 #[test]
 fn vector_to_tensor1_same_type() {
-    let from = Type::vec3(Type::Real);
-    let to = Type::tensor(1, 3, Type::Real);
+    let from = Type::vec3(Type::dimensionless_scalar());
+    let to = Type::tensor(1, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Vector<3,Real> should convert to Tensor<1,3,Real>"
@@ -25,8 +25,8 @@ fn vector_to_tensor1_same_type() {
 /// (b) Tensor<1,3,Real> -> Vector<3,Real> is allowed (reverse direction).
 #[test]
 fn tensor1_to_vector_same_type() {
-    let from = Type::tensor(1, 3, Type::Real);
-    let to = Type::vec3(Type::Real);
+    let from = Type::tensor(1, 3, Type::dimensionless_scalar());
+    let to = Type::vec3(Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Tensor<1,3,Real> should convert to Vector<3,Real>"
@@ -47,8 +47,8 @@ fn vector_to_tensor1_scalar_quantity() {
 /// (d) Vector<2,Real> -> Tensor<1,3,Real> is NOT allowed — N mismatch.
 #[test]
 fn vector_to_tensor1_n_mismatch() {
-    let from = Type::vec2(Type::Real);
-    let to = Type::tensor(1, 3, Type::Real);
+    let from = Type::vec2(Type::dimensionless_scalar());
+    let to = Type::tensor(1, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Vector<2,Real> should NOT convert to Tensor<1,3,Real> (N mismatch)"
@@ -58,7 +58,7 @@ fn vector_to_tensor1_n_mismatch() {
 /// (e) Vector<3,Real> -> Tensor<1,3,Scalar[m]> is NOT allowed — quantity mismatch.
 #[test]
 fn vector_to_tensor1_quantity_mismatch() {
-    let from = Type::vec3(Type::Real);
+    let from = Type::vec3(Type::dimensionless_scalar());
     let to = Type::tensor(1, 3, Type::length());
     assert!(
         !implicitly_converts_to(&from, &to),
@@ -112,22 +112,22 @@ fn scalar_to_tensor0_dimension_mismatch() {
     );
 }
 
-/// (e) Type::Real -> Tensor<0,3,Real> is allowed — dimensionless scalar-like.
+/// (e) Type::dimensionless_scalar() -> Tensor<0,3,Real> is allowed — dimensionless scalar-like.
 #[test]
 fn real_to_tensor0() {
-    let from = Type::Real;
-    let to = Type::tensor(0, 3, Type::Real);
+    let from = Type::dimensionless_scalar();
+    let to = Type::tensor(0, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Real should convert to Tensor<0,3,Real>"
     );
 }
 
-/// (f) Tensor<0,2,Real> -> Type::Real is allowed.
+/// (f) Tensor<0,2,Real> -> Type::dimensionless_scalar() is allowed.
 #[test]
 fn tensor0_to_real() {
-    let from = Type::tensor(0, 2, Type::Real);
-    let to = Type::Real;
+    let from = Type::tensor(0, 2, Type::dimensionless_scalar());
+    let to = Type::dimensionless_scalar();
     assert!(
         implicitly_converts_to(&from, &to),
         "Tensor<0,2,Real> should convert to Real"
@@ -139,8 +139,8 @@ fn tensor0_to_real() {
 /// (a) Tensor<2,3,Real> -> Matrix<3,3,Real> is allowed (square, matching N).
 #[test]
 fn tensor2_to_square_matrix_real() {
-    let from = Type::tensor(2, 3, Type::Real);
-    let to = Type::matrix(3, 3, Type::Real);
+    let from = Type::tensor(2, 3, Type::dimensionless_scalar());
+    let to = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Tensor<2,3,Real> should convert to Matrix<3,3,Real>"
@@ -161,8 +161,8 @@ fn tensor2_to_square_matrix_length() {
 /// (c) Matrix<3,3,Real> -> Tensor<2,3,Real> is NOT allowed (Matrix->Tensor is rejected).
 #[test]
 fn matrix_to_tensor2_rejected() {
-    let from = Type::matrix(3, 3, Type::Real);
-    let to = Type::tensor(2, 3, Type::Real);
+    let from = Type::matrix(3, 3, Type::dimensionless_scalar());
+    let to = Type::tensor(2, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Matrix<3,3,Real> should NOT convert to Tensor<2,3,Real> (one-way rule)"
@@ -172,8 +172,8 @@ fn matrix_to_tensor2_rejected() {
 /// (d) Tensor<2,3,Real> -> Matrix<3,4,Real> is NOT allowed (non-square matrix).
 #[test]
 fn tensor2_to_non_square_matrix_rejected() {
-    let from = Type::tensor(2, 3, Type::Real);
-    let to = Type::matrix(3, 4, Type::Real);
+    let from = Type::tensor(2, 3, Type::dimensionless_scalar());
+    let to = Type::matrix(3, 4, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<2,3,Real> should NOT convert to Matrix<3,4,Real> (non-square)"
@@ -183,8 +183,8 @@ fn tensor2_to_non_square_matrix_rejected() {
 /// (e) Tensor<2,3,Real> -> Matrix<4,4,Real> is NOT allowed (N mismatch).
 #[test]
 fn tensor2_to_matrix_n_mismatch() {
-    let from = Type::tensor(2, 3, Type::Real);
-    let to = Type::matrix(4, 4, Type::Real);
+    let from = Type::tensor(2, 3, Type::dimensionless_scalar());
+    let to = Type::matrix(4, 4, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<2,3,Real> should NOT convert to Matrix<4,4,Real> (N mismatch)"
@@ -194,8 +194,8 @@ fn tensor2_to_matrix_n_mismatch() {
 /// (f) Tensor<1,3,Real> -> Matrix<3,3,Real> is NOT allowed (wrong rank, rank-1 not rank-2).
 #[test]
 fn tensor1_to_matrix_rejected() {
-    let from = Type::tensor(1, 3, Type::Real);
-    let to = Type::matrix(3, 3, Type::Real);
+    let from = Type::tensor(1, 3, Type::dimensionless_scalar());
+    let to = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<1,3,Real> should NOT convert to Matrix<3,3,Real> (rank-1, not rank-2)"
@@ -208,7 +208,7 @@ fn tensor1_to_matrix_rejected() {
 #[test]
 fn identity_real() {
     assert!(
-        implicitly_converts_to(&Type::Real, &Type::Real),
+        implicitly_converts_to(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()),
         "Real -> Real should always be true (identity)"
     );
 }
@@ -217,7 +217,7 @@ fn identity_real() {
 #[test]
 fn int_to_real_not_an_implicit_conversion() {
     assert!(
-        !implicitly_converts_to(&Type::Int, &Type::Real),
+        !implicitly_converts_to(&Type::Int, &Type::dimensionless_scalar()),
         "Int -> Real is NOT an implicit tensor conversion"
     );
 }
@@ -227,9 +227,9 @@ fn int_to_real_not_an_implicit_conversion() {
 fn point_to_tensor1_rejected() {
     let from = Type::Point {
         n: 3,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
-    let to = Type::tensor(1, 3, Type::Real);
+    let to = Type::tensor(1, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Point<3,Real> should NOT convert to Tensor<1,3,Real>"
@@ -239,8 +239,8 @@ fn point_to_tensor1_rejected() {
 /// (d) Vector<3,Real> -> Matrix<3,3,Real> is NOT allowed (no Vector->Matrix shortcut).
 #[test]
 fn vector_to_matrix_rejected() {
-    let from = Type::vec3(Type::Real);
-    let to = Type::matrix(3, 3, Type::Real);
+    let from = Type::vec3(Type::dimensionless_scalar());
+    let to = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Vector<3,Real> should NOT directly convert to Matrix<3,3,Real>"
@@ -250,8 +250,8 @@ fn vector_to_matrix_rejected() {
 /// (e) Tensor<3,2,Real> -> anything other than itself is NOT allowed.
 #[test]
 fn tensor_rank3_to_vector_rejected() {
-    let from = Type::tensor(3, 2, Type::Real);
-    let to = Type::vec2(Type::Real);
+    let from = Type::tensor(3, 2, Type::dimensionless_scalar());
+    let to = Type::vec2(Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<3,2,Real> should NOT convert to Vector"
@@ -269,8 +269,8 @@ fn tensor_rank3_to_vector_rejected() {
 /// Tensor<0,3,Real> -> Tensor<0,5,Real> should be allowed (rule 2c: same Q, any N).
 #[test]
 fn tensor0_different_n_same_quantity_convertible_forward() {
-    let from = Type::tensor(0, 3, Type::Real);
-    let to = Type::tensor(0, 5, Type::Real);
+    let from = Type::tensor(0, 3, Type::dimensionless_scalar());
+    let to = Type::tensor(0, 5, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Tensor<0,3,Real> should convert to Tensor<0,5,Real> (N irrelevant for rank-0)"
@@ -280,8 +280,8 @@ fn tensor0_different_n_same_quantity_convertible_forward() {
 /// Tensor<0,5,Real> -> Tensor<0,3,Real> should be allowed (rule 2c: symmetric, any N).
 #[test]
 fn tensor0_different_n_same_quantity_convertible_reverse() {
-    let from = Type::tensor(0, 5, Type::Real);
-    let to = Type::tensor(0, 3, Type::Real);
+    let from = Type::tensor(0, 5, Type::dimensionless_scalar());
+    let to = Type::tensor(0, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&from, &to),
         "Tensor<0,5,Real> should convert to Tensor<0,3,Real> (N irrelevant for rank-0)"
@@ -291,8 +291,8 @@ fn tensor0_different_n_same_quantity_convertible_reverse() {
 /// (f) Tensor<0,3,Real> -> Tensor<1,3,Real> is NOT allowed (different ranks, no rule covers this).
 #[test]
 fn tensor0_to_tensor1_rejected() {
-    let from = Type::tensor(0, 3, Type::Real);
-    let to = Type::tensor(1, 3, Type::Real);
+    let from = Type::tensor(0, 3, Type::dimensionless_scalar());
+    let to = Type::tensor(1, 3, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<0,3,Real> should NOT convert to Tensor<1,3,Real>"
@@ -339,7 +339,7 @@ fn tensor0_different_n_scalar_quantity_mismatch_rejected() {
 /// so Rule 2c inheriting their transitivity must also require leaf-Q.
 #[test]
 fn rule_2c_rejects_compound_q_vector_different_n() {
-    let q = Type::vec3(Type::Real);
+    let q = Type::vec3(Type::dimensionless_scalar());
     let from = Type::tensor(0, 3, q.clone());
     let to = Type::tensor(0, 5, q);
     assert!(
@@ -353,7 +353,7 @@ fn rule_2c_rejects_compound_q_vector_different_n() {
 /// Parallels `rule_2a_rejects_compound_from_tensor2`.
 #[test]
 fn rule_2c_rejects_compound_q_tensor_different_n() {
-    let q = Type::tensor(2, 3, Type::Real);
+    let q = Type::tensor(2, 3, Type::dimensionless_scalar());
     let from = Type::tensor(0, 3, q.clone());
     let to = Type::tensor(0, 5, q);
     assert!(
@@ -367,7 +367,7 @@ fn rule_2c_rejects_compound_q_tensor_different_n() {
 /// Parallels `rule_2a_rejects_compound_from_point`.
 #[test]
 fn rule_2c_rejects_compound_q_point_different_n() {
-    let q = Type::point3(Type::Real);
+    let q = Type::point3(Type::dimensionless_scalar());
     let from = Type::tensor(0, 3, q.clone());
     let to = Type::tensor(0, 5, q);
     assert!(
@@ -388,8 +388,8 @@ fn rule_2c_rejects_compound_q_point_different_n() {
 /// Vector<3,Real> -> Tensor<0,3,Vector<3,Real>> should be rejected.
 #[test]
 fn rule_2a_rejects_compound_from_vector() {
-    let from = Type::vec3(Type::Real);
-    let to = Type::tensor(0, 3, Type::vec3(Type::Real));
+    let from = Type::vec3(Type::dimensionless_scalar());
+    let to = Type::tensor(0, 3, Type::vec3(Type::dimensionless_scalar()));
     assert!(
         !implicitly_converts_to(&from, &to),
         "Vector<3,Real> -> Tensor<0,3,Vector<3,Real>> must be rejected (compound from_ty)"
@@ -400,8 +400,8 @@ fn rule_2a_rejects_compound_from_vector() {
 /// Tensor<0,3,Vector<3,Real>> -> Vector<3,Real> should be rejected.
 #[test]
 fn rule_2b_rejects_compound_to_vector() {
-    let from = Type::tensor(0, 3, Type::vec3(Type::Real));
-    let to = Type::vec3(Type::Real);
+    let from = Type::tensor(0, 3, Type::vec3(Type::dimensionless_scalar()));
+    let to = Type::vec3(Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<0,3,Vector<3,Real>> -> Vector<3,Real> must be rejected (compound to_ty)"
@@ -413,8 +413,8 @@ fn rule_2b_rejects_compound_to_vector() {
 /// ensuring Rule 3's Tensor<2>->Matrix asymmetry isn't accidentally subverted.
 #[test]
 fn rule_2a_rejects_compound_from_tensor2() {
-    let from = Type::tensor(2, 3, Type::Real);
-    let to = Type::tensor(0, 3, Type::tensor(2, 3, Type::Real));
+    let from = Type::tensor(2, 3, Type::dimensionless_scalar());
+    let to = Type::tensor(0, 3, Type::tensor(2, 3, Type::dimensionless_scalar()));
     assert!(
         !implicitly_converts_to(&from, &to),
         "Tensor<2,3,Real> -> Tensor<0,3,Tensor<2,3,Real>> must be rejected (compound from_ty)"
@@ -427,8 +427,8 @@ fn rule_2a_rejects_compound_from_tensor2() {
 /// Covers reviewer suggestion #1 (robustness of the compound-type guard).
 #[test]
 fn rule_2a_rejects_compound_from_point() {
-    let from = Type::point3(Type::Real);
-    let to = Type::tensor(0, 3, Type::point3(Type::Real));
+    let from = Type::point3(Type::dimensionless_scalar());
+    let to = Type::tensor(0, 3, Type::point3(Type::dimensionless_scalar()));
     assert!(
         !implicitly_converts_to(&from, &to),
         "Point<3,Real> -> Tensor<0,3,Point<3,Real>> must be rejected (compound from_ty)"
@@ -451,7 +451,7 @@ fn bool_to_tensor0_same_quantity_allowed() {
 #[test]
 fn bool_to_tensor0_real_rejected() {
     let from = Type::Bool;
-    let to = Type::tensor(0, 1, Type::Real);
+    let to = Type::tensor(0, 1, Type::dimensionless_scalar());
     assert!(
         !implicitly_converts_to(&from, &to),
         "Bool -> Tensor<0,1,Real> should NOT be allowed (Bool != Real)"
@@ -463,8 +463,8 @@ fn bool_to_tensor0_real_rejected() {
 /// (a) type_compatible(Tensor<1,3,Real>, Vector<3,Real>) == true (bidirectional).
 #[test]
 fn type_compatible_tensor1_vector_bidirectional_a() {
-    let t = Type::tensor(1, 3, Type::Real);
-    let v = Type::vec3(Type::Real);
+    let t = Type::tensor(1, 3, Type::dimensionless_scalar());
+    let v = Type::vec3(Type::dimensionless_scalar());
     assert!(
         type_compatible(&t, &v),
         "type_compatible(Tensor<1,3,Real>, Vector<3,Real>) should be true"
@@ -474,8 +474,8 @@ fn type_compatible_tensor1_vector_bidirectional_a() {
 /// (b) type_compatible(Vector<3,Real>, Tensor<1,3,Real>) == true (other direction).
 #[test]
 fn type_compatible_tensor1_vector_bidirectional_b() {
-    let v = Type::vec3(Type::Real);
-    let t = Type::tensor(1, 3, Type::Real);
+    let v = Type::vec3(Type::dimensionless_scalar());
+    let t = Type::tensor(1, 3, Type::dimensionless_scalar());
     assert!(
         type_compatible(&v, &t),
         "type_compatible(Vector<3,Real>, Tensor<1,3,Real>) should be true"
@@ -486,7 +486,7 @@ fn type_compatible_tensor1_vector_bidirectional_b() {
 #[test]
 fn type_compatible_int_real_widening_preserved() {
     assert!(
-        type_compatible(&Type::Real, &Type::Int),
+        type_compatible(&Type::dimensionless_scalar(), &Type::Int),
         "type_compatible(Real, Int) should be true (Int->Real widening)"
     );
 }
@@ -497,7 +497,7 @@ fn type_compatible_int_real_widening_preserved() {
 #[test]
 fn type_compatible_int_real_widening_is_asymmetric() {
     assert!(
-        !type_compatible(&Type::Int, &Type::Real),
+        !type_compatible(&Type::Int, &Type::dimensionless_scalar()),
         "type_compatible(Int, Real) should be false — Real->Int narrowing is not allowed"
     );
 }
@@ -505,8 +505,8 @@ fn type_compatible_int_real_widening_is_asymmetric() {
 /// (d) type_compatible(Tensor<2,3,Real>, Matrix<3,3,Real>) == true.
 #[test]
 fn type_compatible_tensor2_matrix() {
-    let t = Type::tensor(2, 3, Type::Real);
-    let m = Type::matrix(3, 3, Type::Real);
+    let t = Type::tensor(2, 3, Type::dimensionless_scalar());
+    let m = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         type_compatible(&t, &m),
         "type_compatible(Tensor<2,3,Real>, Matrix<3,3,Real>) should be true"
@@ -518,8 +518,8 @@ fn type_compatible_tensor2_matrix() {
 /// Matrix->Tensor is not a direct implicit conversion, the reverse (Tensor->Matrix) is.
 #[test]
 fn type_compatible_matrix_tensor2_symmetric() {
-    let m = Type::matrix(3, 3, Type::Real);
-    let t = Type::tensor(2, 3, Type::Real);
+    let m = Type::matrix(3, 3, Type::dimensionless_scalar());
+    let t = Type::tensor(2, 3, Type::dimensionless_scalar());
     assert!(
         type_compatible(&m, &t),
         "type_compatible(Matrix<3,3,Real>, Tensor<2,3,Real>) should be true (symmetric check)"
@@ -539,7 +539,7 @@ fn type_compatible_matrix_tensor2_symmetric() {
 #[test]
 fn type_compatible_identity_real() {
     assert!(
-        type_compatible(&Type::Real, &Type::Real),
+        type_compatible(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()),
         "type_compatible(Real, Real) must be true (identity)"
     );
 }
@@ -556,7 +556,7 @@ fn type_compatible_identity_int() {
 /// type_compatible(Vector<3,Real>, Vector<3,Real>) == true.
 #[test]
 fn type_compatible_identity_vector() {
-    let t = Type::vec3(Type::Real);
+    let t = Type::vec3(Type::dimensionless_scalar());
     assert!(
         type_compatible(&t, &t),
         "type_compatible(Vector<3,Real>, Vector<3,Real>) must be true (identity)"
@@ -566,7 +566,7 @@ fn type_compatible_identity_vector() {
 /// type_compatible(Tensor<2,3,Real>, Tensor<2,3,Real>) == true.
 #[test]
 fn type_compatible_identity_tensor2() {
-    let t = Type::tensor(2, 3, Type::Real);
+    let t = Type::tensor(2, 3, Type::dimensionless_scalar());
     assert!(
         type_compatible(&t, &t),
         "type_compatible(Tensor<2,3,Real>, Tensor<2,3,Real>) must be true (identity)"
@@ -576,7 +576,7 @@ fn type_compatible_identity_tensor2() {
 /// type_compatible(Matrix<3,3,Real>, Matrix<3,3,Real>) == true.
 #[test]
 fn type_compatible_identity_matrix() {
-    let t = Type::matrix(3, 3, Type::Real);
+    let t = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         type_compatible(&t, &t),
         "type_compatible(Matrix<3,3,Real>, Matrix<3,3,Real>) must be true (identity)"
@@ -601,7 +601,7 @@ fn type_compatible_identity_matrix() {
 #[test]
 fn error_wildcard_implicit_from_error_to_real() {
     assert!(
-        implicitly_converts_to(&Type::Error, &Type::Real),
+        implicitly_converts_to(&Type::Error, &Type::dimensionless_scalar()),
         "implicitly_converts_to(Error, Real) must be true (anti-cascade guard, task-1912)"
     );
 }
@@ -646,7 +646,7 @@ fn error_wildcard_implicit_error_to_list() {
 /// `implicitly_converts_to(Error, Option<Real>) == true` — compound type.
 #[test]
 fn error_wildcard_implicit_error_to_option() {
-    let to = Type::Option(Box::new(Type::Real));
+    let to = Type::Option(Box::new(Type::dimensionless_scalar()));
     assert!(
         implicitly_converts_to(&Type::Error, &to),
         "implicitly_converts_to(Error, Option<Real>) must be true (anti-cascade guard, task-1912)"
@@ -665,7 +665,7 @@ fn error_wildcard_implicit_error_to_scalar() {
 /// `implicitly_converts_to(Error, Vector<3,Real>) == true` — shape-carrying type.
 #[test]
 fn error_wildcard_implicit_error_to_vector() {
-    let to = Type::vec3(Type::Real);
+    let to = Type::vec3(Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&Type::Error, &to),
         "implicitly_converts_to(Error, Vector<3,Real>) must be true (anti-cascade guard, task-1912)"
@@ -675,7 +675,7 @@ fn error_wildcard_implicit_error_to_vector() {
 /// `implicitly_converts_to(Error, Tensor<2,3,Real>) == true` — shape-carrying type.
 #[test]
 fn error_wildcard_implicit_error_to_tensor() {
-    let to = Type::tensor(2, 3, Type::Real);
+    let to = Type::tensor(2, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&Type::Error, &to),
         "implicitly_converts_to(Error, Tensor<2,3,Real>) must be true (anti-cascade guard, task-1912)"
@@ -685,7 +685,7 @@ fn error_wildcard_implicit_error_to_tensor() {
 /// `implicitly_converts_to(Error, Matrix<3,3,Real>) == true` — shape-carrying type.
 #[test]
 fn error_wildcard_implicit_error_to_matrix() {
-    let to = Type::matrix(3, 3, Type::Real);
+    let to = Type::matrix(3, 3, Type::dimensionless_scalar());
     assert!(
         implicitly_converts_to(&Type::Error, &to),
         "implicitly_converts_to(Error, Matrix<3,3,Real>) must be true (anti-cascade guard, task-1912)"
@@ -715,7 +715,7 @@ fn error_wildcard_implicit_error_to_matrix() {
 #[test]
 #[should_panic(expected = "consumer/target side of implicitly_converts_to")]
 fn error_wildcard_implicit_to_error_debug_panics_real() {
-    let _ = implicitly_converts_to(&Type::Real, &Type::Error);
+    let _ = implicitly_converts_to(&Type::dimensionless_scalar(), &Type::Error);
 }
 
 /// Consumer-side contract (debug): `implicitly_converts_to(Scalar[m], Error)` panics.
@@ -753,7 +753,7 @@ fn error_wildcard_implicit_to_error_debug_panics_scalar() {
 #[test]
 #[should_panic(expected = "param/expected side of type_compatible")]
 fn type_compatible_param_error_debug_panics_real() {
-    let _ = type_compatible(&Type::Error, &Type::Real);
+    let _ = type_compatible(&Type::Error, &Type::dimensionless_scalar());
 }
 
 /// Param-side contract (debug): `type_compatible(Error, List<Int>)` panics.
@@ -778,15 +778,15 @@ fn type_compatible_param_error_debug_panics_list() {
 #[test]
 fn type_compatible_error_wildcard_mirror_all_variants() {
     let cases: Vec<(&str, Type)> = vec![
-        ("Real", Type::Real),
+        ("Real", Type::dimensionless_scalar()),
         ("Int", Type::Int),
         ("Bool", Type::Bool),
         ("String", Type::String),
         ("Scalar[m]", Type::length()),
         ("List<Int>", Type::List(Box::new(Type::Int))),
-        ("Option<Real>", Type::Option(Box::new(Type::Real))),
-        ("Vector<3,Real>", Type::vec3(Type::Real)),
-        ("Matrix<3,3,Real>", Type::matrix(3, 3, Type::Real)),
+        ("Option<Real>", Type::Option(Box::new(Type::dimensionless_scalar()))),
+        ("Vector<3,Real>", Type::vec3(Type::dimensionless_scalar())),
+        ("Matrix<3,3,Real>", Type::matrix(3, 3, Type::dimensionless_scalar())),
     ];
     for (label, param_ty) in &cases {
         assert!(

@@ -47,6 +47,7 @@ structure def AllTopologySelectorsWiring {
     let bottom_edges         = edges_at_height(body, 0mm, 0.01mm)
     let neighbors            = adjacent_faces(body, single(top_faces))
     let shared               = shared_edges(single(top_faces), single(top_faces))
-    let centroid             = center_of_mass(body, 7850.0)
-    let inertia_tensor       = moment_of_inertia(body, 7850.0)
+    let density              = 7850kg/m^3
+    let centroid             = center_of_mass(body, density)
+    let inertia_tensor       = moment_of_inertia(body, density)
 }

@@ -57,19 +57,30 @@ pub(crate) fn compile_function(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+    // Build the subset of dimension-kinded type params (those declared with `Q: Dimension`).
+    // Kept alongside `type_param_names` so the FnUnknownTypeParam gate + INV-6/INV-10
+    // back-compat are bit-for-bit unchanged; the kinded resolver consults this set
+    // first in the Scalar/Vector3/Point3 arms and the bare-name path (task ε).
+    let dim_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+        .map(|tp| tp.name.clone())
+        .collect();
     // Resolve parameter types.
     //
     // `param_type_resolved[i]` is `true` when the i-th param's declared type resolved
     // successfully. It is used below to gate the default-type check: if the type failed
     // to resolve, the root-cause "unresolved type" diagnostic is already queued and
-    // emitting a secondary FnParamDefaultTypeMismatch (against the `Type::Real` fallback)
+    // emitting a secondary FnParamDefaultTypeMismatch (against the `Type::dimensionless_scalar()` fallback)
     // would be confusing noise.
     let mut params: Vec<(String, Type)> = Vec::new();
     let mut param_type_resolved: Vec<bool> = Vec::new();
     for p in &fn_def.params {
-        let (ty, resolved) = match resolve_type_expr_with_aliases(
+        let (ty, resolved) = match resolve_type_expr_with_aliases_kinded(
             &p.type_expr,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -85,7 +96,7 @@ pub(crate) fn compile_function(
                     &fn_def.name,
                     "unresolved type",
                 );
-                (Type::Real, false) // fallback; `resolved` flag prevents cascade in default check
+                (Type::dimensionless_scalar(), false) // fallback; `resolved` flag prevents cascade in default check
             }
         };
         params.push((p.name.clone(), ty));
@@ -120,9 +131,11 @@ pub(crate) fn compile_function(
 
     // Type-check default expressions against their declared param types.
     //
-    // Uses strict equality (via `fn_param_default_compatible`) matching the policy
-    // in `resolve_function_overload` and `try_default_padding`'s prefix check —
-    // a default value is conceptually inserted at the padded call site, so the
+    // Uses strict equality (via `fn_param_default_compatible`). The definition-
+    // site default-expression-vs-param-type check is strict; `try_default_padding`'s
+    // PREFIX check (provided args vs leading params) uses the same trait/type-param
+    // wildcard predicate as `resolve_function_overload` and is NOT strict equality.
+    // A default value is conceptually inserted at the padded call site, so the
     // definition-site check must be at least as strict as the call-site check.
     //
     // The zip over three lockstep collections (fn_def.params, param_defaults, params)
@@ -131,7 +144,7 @@ pub(crate) fn compile_function(
     //
     // The `type_ok` gate skips params whose declared type failed to resolve. The
     // root-cause "unresolved type" diagnostic is already queued; emitting a
-    // secondary FnParamDefaultTypeMismatch (against the Type::Real fallback) would
+    // secondary FnParamDefaultTypeMismatch (against the Type::dimensionless_scalar() fallback) would
     // be confusing noise — e.g. `fn f(x: Bogus = "hi")` would otherwise show both
     // "unresolved type: Bogus" AND "default type mismatch: Real vs String".
     for (((p, compiled_default), (_, param_ty)), &type_ok) in fn_def
@@ -167,9 +180,10 @@ pub(crate) fn compile_function(
     // Resolve return type
     let return_type = match &fn_def.return_type {
         Some(te) => {
-            match resolve_type_expr_with_aliases(
+            match resolve_type_expr_with_aliases_kinded(
                 te,
                 &type_param_names,
+                &dim_param_names,
                 alias_registry,
                 diagnostics,
                 structure_names,
@@ -185,11 +199,11 @@ pub(crate) fn compile_function(
                         &fn_def.name,
                         "unresolved return type",
                     );
-                    Type::Real
+                    Type::dimensionless_scalar()
                 }
             }
         }
-        None => Type::Real, // default return type
+        None => Type::dimensionless_scalar(), // default return type
     };
 
     // Create a scope with function params registered.
@@ -339,6 +353,13 @@ pub(crate) fn compile_assoc_function(
         .iter()
         .map(|tp| tp.name.clone())
         .collect();
+    // Dimension-kinded subset (mirrors compile_function; empty for today's assoc fns).
+    let dim_param_names: HashSet<String> = fn_def
+        .type_params
+        .iter()
+        .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
+        .map(|tp| tp.name.clone())
+        .collect();
     let receiver_type = Type::StructureRef(conformer_name.to_string());
 
     // Resolve parameter types. The leading `is_self` receiver maps to the
@@ -350,9 +371,10 @@ pub(crate) fn compile_assoc_function(
             params.push((p.name.clone(), receiver_type.clone()));
             continue;
         }
-        let ty = match resolve_type_expr_with_aliases(
+        let ty = match resolve_type_expr_with_aliases_kinded(
             &p.type_expr,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -368,7 +390,7 @@ pub(crate) fn compile_assoc_function(
                     &fn_def.name,
                     "unresolved type",
                 );
-                Type::Real
+                Type::dimensionless_scalar()
             }
         };
         params.push((p.name.clone(), ty));
@@ -389,9 +411,10 @@ pub(crate) fn compile_assoc_function(
 
     // Resolve return type (defaults to Real when unannotated).
     let return_type = match &fn_def.return_type {
-        Some(te) => match resolve_type_expr_with_aliases(
+        Some(te) => match resolve_type_expr_with_aliases_kinded(
             te,
             &type_param_names,
+            &dim_param_names,
             alias_registry,
             diagnostics,
             structure_names,
@@ -407,10 +430,10 @@ pub(crate) fn compile_assoc_function(
                     &fn_def.name,
                     "unresolved return type",
                 );
-                Type::Real
+                Type::dimensionless_scalar()
             }
         },
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     };
 
     // Body scope with all params (including the `self` receiver) registered so a
@@ -531,7 +554,8 @@ pub(crate) fn resolve_field_type_name(
 /// updating only here.
 fn field_codomain_compatible(body_ty: &Type, codomain_ty: &Type) -> bool {
     implicitly_converts_to(body_ty, codomain_ty)
-        || matches!((body_ty, codomain_ty), (Type::Int, Type::Real))
+        || (matches!(body_ty, Type::Int)
+            && matches!(codomain_ty, Type::Scalar { dimension } if dimension.is_dimensionless()))
 }
 
 /// Compile a field declaration into a CompiledField.
@@ -543,7 +567,7 @@ pub(crate) fn compile_field(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
     // Resolve domain and codomain types. DimensionalOp cannot appear as a field type —
-    // emit exactly one diagnostic and fall back to Type::Real without forwarding a
+    // emit exactly one diagnostic and fall back to Type::dimensionless_scalar() without forwarding a
     // sentinel "<unknown>" string to resolve_field_type_name (which would push a second
     // confusing diagnostic for the placeholder name).
     let domain_type = match &field_def.domain_type.kind {
@@ -562,7 +586,7 @@ pub(crate) fn compile_field(
                         "unexpected dimensional expression",
                     )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
@@ -573,7 +597,7 @@ pub(crate) fn compile_field(
                         "integer literal not allowed in this position",
                     )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         // Auto type-args cannot appear as a field domain type; resolution deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => {
@@ -585,7 +609,7 @@ pub(crate) fn compile_field(
                         "auto type-arg not allowed in this position",
                     )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         // Qualified assoc-type refs cannot appear as a field domain type here;
         // resolution deferred to task ιₑ.
@@ -598,7 +622,7 @@ pub(crate) fn compile_field(
                         "associated type not yet resolved in this position",
                     )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
     };
     let codomain_type = match &field_def.codomain_type.kind {
@@ -620,7 +644,7 @@ pub(crate) fn compile_field(
                     "unexpected dimensional expression",
                 )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         reify_ast::TypeExprKind::IntegerLiteral(_) => {
             diagnostics.push(
@@ -634,7 +658,7 @@ pub(crate) fn compile_field(
                     "integer literal not allowed in this position",
                 )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         // Auto type-args cannot appear as a field codomain type; resolution deferred to task 3477/3558.
         reify_ast::TypeExprKind::Auto { .. } => {
@@ -649,7 +673,7 @@ pub(crate) fn compile_field(
                     "auto type-arg not allowed in this position",
                 )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
         // Qualified assoc-type refs cannot appear as a field codomain type here;
         // resolution deferred to task ιₑ.
@@ -665,7 +689,7 @@ pub(crate) fn compile_field(
                     "associated type not yet resolved in this position",
                 )),
             );
-            Type::Real
+            Type::dimensionless_scalar()
         }
     };
 
@@ -1020,13 +1044,13 @@ mod tests {
     /// Build a composed expression representing `outer_name(inner_name(dummy_literal))`.
     ///
     /// The dummy literal is typed `Real` to match the `domain_type` of the inner
-    /// field (`Type::Real`) in all current test cases. `check_field_composition_types`
+    /// field (`Type::dimensionless_scalar()`) in all current test cases. `check_field_composition_types`
     /// only validates inter-function wiring (inner.codomain → outer.domain) and does
     /// not check argument types against the inner field's domain, so the dummy type
     /// currently has no effect on test outcomes. It is kept consistent with the inner
     /// domain to avoid spurious failures if argument-type checking is added later.
     fn make_composition_expr(outer_name: &str, inner_name: &str) -> CompiledExpr {
-        let dummy = CompiledExpr::literal(Value::Real(0.0), Type::Real);
+        let dummy = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
         let inner_call = CompiledExpr {
             kind: CompiledExprKind::FunctionCall {
                 function: ResolvedFunction {
@@ -1035,7 +1059,7 @@ mod tests {
                 },
                 args: vec![dummy],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: ContentHash(0),
         };
         CompiledExpr {
@@ -1046,7 +1070,7 @@ mod tests {
                 },
                 args: vec![inner_call],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: ContentHash(0),
         }
     }
@@ -1057,8 +1081,8 @@ mod tests {
     /// outer.domain as TO.
     #[test]
     fn field_composition_allows_vector_to_tensor1() {
-        let inner = make_field("inner", Type::Real, Type::vec3(Type::Real));
-        let outer = make_field("outer", Type::tensor(1, 3, Type::Real), Type::Real);
+        let inner = make_field("inner", Type::dimensionless_scalar(), Type::vec3(Type::dimensionless_scalar()));
+        let outer = make_field("outer", Type::tensor(1, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1075,8 +1099,8 @@ mod tests {
     /// Rule 3 is one-way (Tensor<2>→Matrix, NOT Matrix→Tensor<2>): one diagnostic.
     #[test]
     fn field_composition_rejects_matrix_to_tensor2() {
-        let inner = make_field("inner", Type::Real, Type::matrix(3, 3, Type::Real));
-        let outer = make_field("outer", Type::tensor(2, 3, Type::Real), Type::Real);
+        let inner = make_field("inner", Type::dimensionless_scalar(), Type::matrix(3, 3, Type::dimensionless_scalar()));
+        let outer = make_field("outer", Type::tensor(2, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1104,8 +1128,8 @@ mod tests {
     /// Rule 3 applies (Tensor<2,N,Q> → Matrix<N,N,Q>): zero diagnostics.
     #[test]
     fn field_composition_allows_tensor2_to_matrix() {
-        let inner = make_field("inner", Type::Real, Type::tensor(2, 3, Type::Real));
-        let outer = make_field("outer", Type::matrix(3, 3, Type::Real), Type::Real);
+        let inner = make_field("inner", Type::dimensionless_scalar(), Type::tensor(2, 3, Type::dimensionless_scalar()));
+        let outer = make_field("outer", Type::matrix(3, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1132,8 +1156,8 @@ mod tests {
     /// their `__field.<name>` cell IDs (deduplicated, order-independent).
     #[test]
     fn collect_composed_field_dependencies_finds_both_field_refs() {
-        let inner = make_field("inner", Type::Real, Type::Real);
-        let outer = make_field("outer", Type::Real, Type::Real);
+        let inner = make_field("inner", Type::dimensionless_scalar(), Type::dimensionless_scalar());
+        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let expr = make_composition_expr("outer", "inner");
         let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
         registry.insert("inner", &inner);
@@ -1168,7 +1192,7 @@ mod tests {
         // Build `outer(outer(dummy))` — a self-nested call with the same
         // outer name appearing twice. Even when the inner call resolves to
         // the same field, the helper emits a single dep entry.
-        let outer = make_field("outer", Type::Real, Type::Real);
+        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let expr = make_composition_expr("outer", "outer");
         let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
         registry.insert("outer", &outer);
@@ -1212,17 +1236,17 @@ mod tests {
     /// (only the integration test in `field_compile_tests.rs` would fail).
     #[test]
     fn collect_composed_field_dependencies_walks_lambda_body() {
-        let inner = make_field("inner", Type::Real, Type::Real);
-        let outer = make_field("outer", Type::Real, Type::Real);
+        let inner = make_field("inner", Type::dimensionless_scalar(), Type::dimensionless_scalar());
+        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
         let body = make_composition_expr("outer", "inner");
         let lambda_expr = CompiledExpr {
             kind: CompiledExprKind::Lambda {
-                params: vec![("p".to_string(), Some(Type::Real))],
+                params: vec![("p".to_string(), Some(Type::dimensionless_scalar()))],
                 param_ids: vec![ValueCellId::new("$lambda0", "p")],
                 body: Box::new(body),
                 captures: vec![],
             },
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: ContentHash(0),
         };
         let mut registry: HashMap<&str, &CompiledField> = HashMap::new();

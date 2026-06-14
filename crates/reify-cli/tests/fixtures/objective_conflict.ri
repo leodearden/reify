@@ -5,8 +5,8 @@
 // default weight 1.0 / priority 0).  `reify check` must exit non-zero and
 // print "E_OBJECTIVE_CONFLICT" to stderr.
 structure S {
-    param mass: Scalar = auto
-    param stiffness: Scalar = auto
+    param mass: Length = auto
+    param stiffness: Length = auto
     minimize mass
     maximize stiffness
 }

@@ -12,8 +12,9 @@ use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
     CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
     FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, KernelHandle, KernelId, LoftOpHistoryRecords, Operation, ReprKind,
-    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
+    GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    Operation, ReprKind, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    ValueMap, VolumeMesh,
 };
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
 use reify_solver_elastic::{
@@ -702,7 +703,65 @@ fn populate_attribute_history(
                 history,
             )
         }
+        AttributeHistory::LocalFeature(history) => {
+            // Local-feature ops (fillet / chamfer): one target shape.
+            let target_handle = match geom_op {
+                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                _ => {
+                    return Err(reify_ir::QueryError::QueryFailed(format!(
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
+                         GeometryOp: {:?}",
+                        geom_op
+                    )));
+                }
+            };
+            populate_local_feature_op(
+                table,
+                kernel,
+                feature_id,
+                target_handle,
+                result_handle,
+                history,
+            )
+        }
     }
+}
+
+/// Propagate local-feature (fillet / chamfer) history onto the result shape.
+///
+/// Mirrors [`populate_boolean_op`] but extracts target faces/edges/vertices
+/// (three parent slices) rather than two operand face/edge slices.
+/// Delegates to [`propagate_attributes_via_local_feature_history`] which runs
+/// four independent per-stream cross-kind passes (face_modified←faces,
+/// face_generated←edges, edge_modified←edges, edge_generated←vertices).
+///
+/// Failure semantics are identical to [`populate_boolean_op`]: a `QueryError`
+/// returned here surfaces as `Diagnostic::warning` at the call site — never a
+/// Failed-realization regression (per task-2574 convention).
+fn populate_local_feature_op(
+    table: &mut TopologyAttributeTable,
+    kernel: &mut dyn GeometryKernel,
+    feature_id: &FeatureId,
+    target_handle: GeometryHandleId,
+    result_handle: GeometryHandleId,
+    history: &LocalFeatureOpHistoryRecords,
+) -> Result<(), reify_ir::QueryError> {
+    let target_faces = kernel.extract_faces(target_handle)?;
+    let target_edges = kernel.extract_edges(target_handle)?;
+    let target_vertices = kernel.extract_vertices(target_handle)?;
+    let result_faces = kernel.extract_faces(result_handle)?;
+    let result_edges = kernel.extract_edges(result_handle)?;
+
+    crate::topology_attribute_propagation::propagate_attributes_via_local_feature_history(
+        table,
+        &target_faces,
+        &target_edges,
+        &target_vertices,
+        &result_faces,
+        &result_edges,
+        history,
+        feature_id,
+    )
 }
 
 /// Build per-cap-face vertex-index-lists by position-matching cap-face vertex
@@ -1084,7 +1143,8 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::Sphere { .. }
         | GeometryOp::Tube { .. }
         | GeometryOp::Cone { .. }
-        | GeometryOp::Wedge { .. } => ParentHandles::Inline([z, z], 0),
+        | GeometryOp::Wedge { .. }
+        | GeometryOp::Torus { .. } => ParentHandles::Inline([z, z], 0),
 
         // Curve constructors — no parent handles.
         GeometryOp::LineSegment { .. }
@@ -1095,9 +1155,10 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         | GeometryOp::NurbsCurve { .. } => ParentHandles::Inline([z, z], 0),
 
         // Profile face producers — no parent handles.
-        GeometryOp::RectangleProfile { .. } | GeometryOp::CircleProfile { .. } => {
-            ParentHandles::Inline([z, z], 0)
-        }
+        GeometryOp::RectangleProfile { .. }
+        | GeometryOp::CircleProfile { .. }
+        | GeometryOp::PolygonProfile { .. }
+        | GeometryOp::EllipseProfile { .. } => ParentHandles::Inline([z, z], 0),
 
         // Pipe — kernel-internal circle profile; no user-facing parent.
         GeometryOp::Pipe { .. } => ParentHandles::Inline([z, z], 0),
@@ -1124,7 +1185,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => ParentHandles::Inline([*target, z], 1),
+        | GeometryOp::OffsetSolid { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
 
         // Single-profile sweep ops — profile only; path/spine excluded.
         // Per `populate_attribute_history` (engine_build.rs:103-114):
@@ -1194,7 +1257,9 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
-        | GeometryOp::Shell { target, .. } => {
+        | GeometryOp::OffsetSolid { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::ZoneSlab { target, .. } => {
             sub(target);
         }
 
@@ -1222,6 +1287,7 @@ fn substitute_op_parents(
         | GeometryOp::Tube { .. }
         | GeometryOp::Cone { .. }
         | GeometryOp::Wedge { .. }
+        | GeometryOp::Torus { .. }
         | GeometryOp::LineSegment { .. }
         | GeometryOp::Arc { .. }
         | GeometryOp::Helix { .. }
@@ -1230,6 +1296,8 @@ fn substitute_op_parents(
         | GeometryOp::NurbsCurve { .. }
         | GeometryOp::RectangleProfile { .. }
         | GeometryOp::CircleProfile { .. }
+        | GeometryOp::PolygonProfile { .. }
+        | GeometryOp::EllipseProfile { .. }
         | GeometryOp::Pipe { .. } => {}
 
         // Topology selectors — never inserted into the realization graph.
@@ -1324,6 +1392,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Tube { .. } => Operation::PrimitiveTube,
         GeometryOp::Cone { .. } => Operation::PrimitiveCone,
         GeometryOp::Wedge { .. } => Operation::PrimitiveWedge,
+        GeometryOp::Torus { .. } => Operation::PrimitiveTorus,
 
         // Booleans
         GeometryOp::Union { .. } => Operation::BooleanUnion,
@@ -1336,6 +1405,8 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
+        GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
         // Transform
         GeometryOp::Translate { .. } => Operation::TransformTranslate,
@@ -1374,6 +1445,8 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Profile face producers
         GeometryOp::RectangleProfile { .. } => Operation::ProfileRectangle,
         GeometryOp::CircleProfile { .. } => Operation::ProfileCircle,
+        GeometryOp::PolygonProfile { .. } => Operation::ProfilePolygon,
+        GeometryOp::EllipseProfile { .. } => Operation::ProfileEllipse,
 
         // Topology selectors — never inserted into the realization graph;
         // Split is dispatched via GeometryKernel::execute_split at eval time.
@@ -1421,7 +1494,8 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         BooleanUnion | BooleanDifference | BooleanIntersection => Some(BREP_MESH),
 
         // Modify — BRep-only consumers
-        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken => Some(BREP_ONLY),
+        ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
+        | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1456,7 +1530,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         // document the conscious 'not a Mesh-accepting consumer' decision and
         // satisfy the strum-completeness test (test d, step-3).
         PrimitiveBox | PrimitiveCylinder | PrimitiveSphere | PrimitiveTube | PrimitiveCone
-        | PrimitiveWedge => {
+        | PrimitiveWedge | PrimitiveTorus => {
             Some(BREP_ONLY)
         }
 
@@ -1465,7 +1539,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
         | CurveNurbsCurve => Some(BREP_ONLY),
 
         // Profile face producers — sources (no geometric input); same rationale.
-        ProfileRectangle | ProfileCircle => Some(BREP_ONLY),
+        ProfileRectangle | ProfileCircle | ProfilePolygon | ProfileEllipse => Some(BREP_ONLY),
 
         // Catch-all: genuinely-new future variants → conservative (None).
         // Unreachable for all current variants (strum test above enforces this).
@@ -1499,6 +1573,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             PrimitiveKind::Tube => Operation::PrimitiveTube,
             PrimitiveKind::Cone => Operation::PrimitiveCone,
             PrimitiveKind::Wedge => Operation::PrimitiveWedge,
+            PrimitiveKind::Torus => Operation::PrimitiveTorus,
         },
         CompiledGeometryOp::Boolean { op, .. } => match op {
             BooleanOp::Union => Operation::BooleanUnion,
@@ -1511,6 +1586,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
+            ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
+            ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
             TransformKind::Translate => Operation::TransformTranslate,
@@ -1547,6 +1624,8 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Profile { kind, .. } => match kind {
             ProfileKind::Rectangle => Operation::ProfileRectangle,
             ProfileKind::Circle => Operation::ProfileCircle,
+            ProfileKind::Polygon => Operation::ProfilePolygon,
+            ProfileKind::Ellipse => Operation::ProfileEllipse,
         },
     }
 }
@@ -1953,6 +2032,10 @@ impl Engine {
                     // snapshot graph node below via disjoint-field borrows
                     // of `self.geometry_kernels` vs. `self.eval_state`.
                     let mut produced_repr_out: Option<ReprKind> = None;
+                    // Task 4248 piece-3: capture step_handles length before
+                    // this realization to identify its terminal handle (mirrors
+                    // the handle_start bookkeeping in build() at ~:2299).
+                    let handle_start_snap = step_handles.len();
                     Engine::execute_realization_ops(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -1987,6 +2070,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -1995,12 +2079,22 @@ impl Engine {
                     // executor borrows above. On rollback / no-op the
                     // executor leaves the channel `None` and we skip the
                     // write so the construction-time default survives.
-                    if let Some(repr) = produced_repr_out
-                        && let Some(state) = self.eval_state.as_mut()
+                    //
+                    // Task 4248 piece-3: also write `produced_kernel` from the
+                    // terminal KernelHandle (step_handles grew ↔ ops executed).
+                    // Independent of produced_repr_out so cache-hit realizations
+                    // that set only one channel still record their kernel.
+                    if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
-                        node.produced_repr = repr;
+                        if let Some(repr) = produced_repr_out {
+                            node.produced_repr = repr;
+                        }
+                        if step_handles.len() > handle_start_snap {
+                            node.produced_kernel =
+                                step_handles.last().map(|h| h.kernel);
+                        }
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -2072,6 +2166,7 @@ impl Engine {
                     &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
+                    &self.swept_kind_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -2175,6 +2270,19 @@ impl Engine {
         // dispatcher call should be counted against the build that hasn't
         // entered the per-realization op loop yet.
         self.last_dispatch_count = 0;
+        // Task 4355 β: capture declaration-order execution order for the
+        // assert_dag_complete gate.  Realizations are visited in the same
+        // order as the build loop below (templates × realizations in
+        // declaration order, which compile_builder/entities_phase guarantees
+        // is topological for non-recursive structures).  Captured here, once,
+        // before any kernel work, so the assert can fire even when the
+        // geometry block is skipped (no kernel registered).
+        #[cfg(debug_assertions)]
+        let exec_order: Vec<RealizationNodeId> = module
+            .templates
+            .iter()
+            .flat_map(|t| t.realizations.iter().map(|r| r.id.clone()))
+            .collect();
         // GHR-δ §5: clear the realization→handle validity map and reset the
         // revalidation slow-path counter at the start of the build; the
         // per-template `post_process_geometry_handle_cells` below repopulates
@@ -2362,6 +2470,7 @@ impl Engine {
                             .copied()
                             .unwrap_or(ReprKind::BRep),
                         &mut self.last_dispatch_count,
+                        r_idx + 1 == template.realizations.len(),
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -2374,12 +2483,22 @@ impl Engine {
                     // `build_snapshot` mirror for the full rationale; both
                     // call sites use disjoint-field borrows of
                     // `self.geometry_kernels` vs. `self.eval_state`.
-                    if let Some(repr) = produced_repr_out
-                        && let Some(state) = self.eval_state.as_mut()
+                    //
+                    // Task 4248 piece-3: also write `produced_kernel` from the
+                    // terminal KernelHandle already bookmarked above via
+                    // `handle_start` / `terminal_handles[t_idx][r_idx]`.
+                    // Independent of produced_repr_out so cache-hit realizations
+                    // still record their kernel.
+                    if let Some(state) = self.eval_state.as_mut()
                         && let Some(node) =
                             state.snapshot.graph.realizations.get_mut(&realization.id)
                     {
-                        node.produced_repr = repr;
+                        if let Some(repr) = produced_repr_out {
+                            node.produced_repr = repr;
+                        }
+                        if step_handles.len() > handle_start {
+                            node.produced_kernel = step_handles.last().map(|h| h.kernel);
+                        }
                     }
                     // Arch §9.1 lines 868–877: kernel error on a realization →
                     // mark realization NodeId as Failed { error } and emit one
@@ -2448,6 +2567,7 @@ impl Engine {
                     &self.meta_map,
                     default_kernel.as_mut(),
                     &self.topology_attribute_table,
+                    &self.swept_kind_table,
                     &mut diagnostics,
                 );
                 // Task 3441: snapshot this template's `named_steps` so a
@@ -2576,9 +2696,132 @@ impl Engine {
             None
         };
 
+        // Task 4355 β: assert_dag_complete gate — debug-only, zero release overhead.
+        // Runs on EVERY build (geometry_output block may be skipped when no kernel
+        // is registered, but the snapshot graph is always populated by check() above).
+        // No-op when eval_state is None (empty module or compile-only build).
+        #[cfg(debug_assertions)]
+        if let Some(state) = self.eval_state.as_ref() {
+            crate::dirty::assert_dag_complete_from_graph(
+                &state.snapshot.graph,
+                &module.fields,
+                &exec_order,
+            );
+        }
+
+        // Task 4357 δ: unified build-DAG cycle contract. When the active
+        // scheduler is UnifiedDag, run the pure structural planner
+        // (`run_unified_pass`) over α's forward dependency-trace graph and append
+        // its E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics to the build result.
+        //
+        // UNLIKE the β assert block above, this is deliberately NOT
+        // `#[cfg(debug_assertions)]`-gated: the driver emits real user-facing
+        // diagnostics that must surface in RELEASE builds too. On an acyclic
+        // module the driver's residue is empty and it emits zero diagnostics, so
+        // the BuildResult stays byte-identical to the LegacyMultiPass default.
+        // No-op when eval_state is None (empty module or compile-only build) or
+        // when the scheduler is LegacyMultiPass (the default). The driver is a
+        // pure planner — it executes no nodes; ε wires executors onto the
+        // schedule and retires the legacy loop.
+        //
+        // KNOWN δ behaviour — cyclic modules carry TWO cycle reports. On a cyclic
+        // input the legacy `detect_let_cycle` (engine_eval.rs) has already pushed
+        // its own UN-CODED "circular let-binding dependency" diagnostic into this
+        // same Vec via check()/eval(), so under UnifiedDag the structured
+        // `DiagnosticCode::EvalCycle` is ADDITIVE alongside it — one user cycle
+        // surfaces both a legacy (code-less) and a unified (coded) report. This is
+        // intentional for δ's additive, byte-preserving-on-acyclic wiring: the
+        // driver itself emits exactly ONE EvalCycle per SCC (pinned by the
+        // integration test), and de-duplicating against / retiring the legacy
+        // emission belongs to ε, which replaces the legacy build loop wholesale.
+        // Acyclic inputs are unaffected (residue == ∅ ⇒ zero added diagnostics).
+        if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+            && let Some(state) = self.eval_state.as_ref()
+        {
+            let pass = crate::engine_fixpoint::run_unified_pass(
+                &state.snapshot.graph,
+                &state.trace_map,
+            );
+            // δ consumes ONLY `pass.diagnostics` here; `pass.schedule`
+            // (`Vec<NodeId>`) and `pass.residue` (`HashSet<NodeId>`) are
+            // intentionally materialized then dropped. In δ the driver is purely
+            // the cycle-contract gate — the schedule is consumed by ε's executors
+            // once they replace the legacy build loop, so it is built now to keep
+            // `run_unified_pass` a single (schedule, residue, diagnostics) entry
+            // point across both stages. The discard cost is O(V+E) and rides the
+            // UnifiedDag path ONLY, which is gated OFF by default (LegacyMultiPass
+            // ⇒ this whole block is skipped), so the production default pays
+            // nothing. A diagnostics-only entry point was weighed and declined: it
+            // would fork the driver right before ε needs the full triple back.
+            diagnostics.extend(pass.diagnostics);
+        }
+
+        // Task 4229: re-check geometry-derived constraints after the realization
+        // loop. Constraints that reference geometry-derived `let` cells — e.g.
+        // `Rigid`'s positive-definiteness constraint on
+        // `moi_principal = eigenvalues(moment_of_inertia(geometry, …))` — cannot
+        // resolve during the `check()` above: the geometry kernel is only invoked
+        // by the realization loop, so those cells are still `Undef` at the initial
+        // constraint-check time and the constraint comes out `Indeterminate`
+        // ("undefined inputs"). Now that the realization loop has patched the
+        // geometry-derived cells into `values`, re-evaluate the active constraints
+        // against the completed value map and adopt any verdict that resolved from
+        // `Indeterminate` → `Satisfied`/`Violated`. A previously
+        // `Satisfied`/`Violated` constraint cannot regress here, because the
+        // re-check only ADDS now-resolved geometry cells (no prior value changes),
+        // so we deliberately only touch entries that were `Indeterminate`.
+        let mut constraint_results = check_result.constraint_results;
+        if constraint_results
+            .iter()
+            .any(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
+        {
+            let determinacy = self.eval_state.as_ref().map(|s| &s.snapshot.values);
+            let (recheck_results, recheck_diags) =
+                self.check_constraints_against_templates(module, &values, determinacy);
+            for entry in constraint_results.iter_mut() {
+                if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
+                    continue;
+                }
+                let Some(new_sat) = recheck_results
+                    .iter()
+                    .find(|r| r.id == entry.id)
+                    .map(|r| r.satisfaction)
+                else {
+                    continue;
+                };
+                if new_sat == reify_ir::Satisfaction::Indeterminate {
+                    continue;
+                }
+                // Match the stale/fresh constraint diagnostics by the same needle
+                // the checker embeds: the constraint label when present (the id is
+                // rewritten to the label by `labeled_diagnostics`), else the raw id.
+                let needle = entry
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| entry.id.to_string());
+                // Drop the stale "indeterminate: undefined inputs" warning emitted
+                // by the first `check()` for this constraint.
+                diagnostics.retain(|d| {
+                    !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+                        && d.message.contains(&needle))
+                });
+                // Carry over any fresh non-indeterminate diagnostic the re-check
+                // produced for this constraint (e.g. a `ConstraintViolated` error
+                // when an indefinite override fails positive-definiteness).
+                for d in &recheck_diags {
+                    if d.code != Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+                        && d.message.contains(&needle)
+                    {
+                        diagnostics.push(d.clone());
+                    }
+                }
+                entry.satisfaction = new_sat;
+            }
+        }
+
         BuildResult {
             values,
-            constraint_results: check_result.constraint_results,
+            constraint_results,
             geometry_output,
             diagnostics,
             resolved_params: check_result.resolved_params,
@@ -2712,6 +2955,7 @@ impl Engine {
                         .copied()
                         .unwrap_or(ReprKind::BRep),
                     &mut self.last_dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -3471,6 +3715,7 @@ impl Engine {
                     // default-kernel tessellate call).
                     ReprKind::BRep,
                     &mut *dispatch_count,
+                    r_idx + 1 == template.realizations.len(),
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -3535,6 +3780,7 @@ impl Engine {
                 meta_map,
                 default_kernel.as_mut(),
                 topology_attribute_table,
+                &*swept_kind_table,
                 diagnostics,
             );
             // Task 3441: snapshot this template's `named_steps` so a later
@@ -3767,6 +4013,15 @@ impl Engine {
         // and passes a mutable reference into it; the cache-hit short-circuit
         // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
         dispatch_count: &mut usize,
+        // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
+        // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
+        // should probe or insert into the `RealizationCache`. Intermediate
+        // realizations all share the same `entity` cache key; if we probe/insert
+        // for them we get false hits (realization N finds realization N-1's
+        // result for the same entity key) which violates the per-build
+        // reset invariant and produces wrong geometry (the intermediate let-
+        // binding gets the terminal's handle instead of its own).
+        is_terminal_realization: bool,
     ) {
         let RealizationOutputs {
             step_handles,
@@ -3847,7 +4102,8 @@ impl Engine {
         // fallback could serve the Step entry to the Stl demand — cannot arise in
         // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
         // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
-        if let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
+        if is_terminal_realization
+        && let (Some(tol), Some(name)) = (demanded_tol, realization_name) {
             let cache_probe = realization_cache
                 .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
                 .map(|&handle| (handle, cache_repr))
@@ -3916,7 +4172,7 @@ impl Engine {
                 );
                 return;
             }
-        }
+        } // end is_terminal_realization cache-probe guard
 
         let mut had_failure = false;
         // Step-14 (task ε / 3436): captures the terminal output [`ReprKind`]
@@ -4124,30 +4380,31 @@ impl Engine {
                                 (name, plan_output_repr(registry, plan, operation))
                             }
                             Some(plan) => {
-                                // Task 4050 step-8: the MULTI-STAGE CONVERSION
-                                // EXECUTOR. A non-empty `plan.conversions` chain
-                                // names the repr crossings to perform before the
-                                // final op runs on `plan.kernel`. v0.3-ε executes
-                                // exactly one crossing — BRep→Mesh via the source
-                                // kernel's `tessellate` — so every stage must
-                                // classify as `ConversionProjection::Tessellate`
-                                // (step-6); any other stage surfaces as a
-                                // realization-failed diagnostic (mirroring the
-                                // kernel-error arm below) rather than a panic. Since
-                                // the only ε-executable projection is BRep→Mesh, a
-                                // multi-stage chain necessarily contains a
-                                // non-`(BRep,Mesh)` stage and is rejected here, so
-                                // the single-stage "tessellate each parent once"
-                                // walk below is correct for every chain that passes.
+                                // Task 4422 step-4: restructured MULTI-STAGE
+                                // CONVERSION EXECUTOR. A non-empty `plan.conversions`
+                                // chain names the repr crossings to perform before the
+                                // final op runs on `plan.kernel`. The recipe is:
                                 //
-                                // For the surviving single BRep→Mesh stage and each
-                                // prior-stage input handle of the op: tessellate the
-                                // handle on the stage's source kernel → Mesh, then
-                                // ingest the Mesh on the target kernel (`plan.kernel`)
-                                // → a fresh handle. The converted handles are
-                                // substituted as the op's inputs and the op then runs
-                                // on `plan.kernel` via the common execute path below.
-                                // (Intermediate caching: step-12; rollback: step-14.)
+                                //   BRep→Mesh (tessellate on source kernel) +
+                                //   Mesh→Voxel-or-Mesh (ingest_mesh on plan.kernel)
+                                //
+                                // run EXACTLY ONCE per op-input parent for the whole
+                                // chain regardless of stage count. Mesh is the
+                                // universal interchange: the final ingest into
+                                // plan.kernel realises Mesh→Mesh (Manifold) or
+                                // Mesh→Voxel (OpenVDB) depending on plan.kernel.
+                                //
+                                // Phase 1 validates every stage via
+                                // `v03_conversion_projection`: an unknown crossing
+                                // surfaces as a realization-failed diagnostic rather
+                                // than a panic. Phase 2 executes the single
+                                // tessellate+ingest recipe per parent, keying the
+                                // intermediate cache at the chain's terminal `to`.
+                                // This reduces to the prior behaviour for the 1-stage
+                                // BRep→Mesh chain, so cross_kernel_handoff and all
+                                // inline conversion-path/caching/rollback tests stay
+                                // GREEN. (Intermediate caching: step-12; rollback:
+                                // step-14.)
 
                                 // The target kernel must be present in the map.
                                 if !kernels.contains_key(plan.kernel.as_str()) {
@@ -4171,9 +4428,9 @@ impl Engine {
                                     break;
                                 }
 
-                                // Per-stage tessellation tolerance for each BRep→Mesh
-                                // source projection (default-tess tolerance when the
-                                // caller threaded no demanded tolerance).
+                                // Tessellation tolerance for the BRep→Mesh source
+                                // projection (default-tess tolerance when the caller
+                                // threaded no demanded tolerance).
                                 let per_stage_tol = per_stage_tolerance_for_plan(
                                     plan,
                                     demanded_tol.unwrap_or(Engine::DEFAULT_TESSELLATION_TOLERANCE),
@@ -4183,40 +4440,144 @@ impl Engine {
                                 let parents: Vec<GeometryHandleId> =
                                     parent_handles_for_op(&geom_op).as_slice().to_vec();
 
-                                // Walk the chain: tessellate (source) then ingest
-                                // (target) each input, recording old→new id pairs.
                                 let mut substitution: HashMap<GeometryHandleId, GeometryHandleId> =
                                     HashMap::new();
                                 let mut conversion_error: Option<String> = None;
-                                'convert: for (stage_kernel, from, to) in &plan.conversions {
-                                    if crate::dispatcher::v03_conversion_projection(*from, *to)
-                                        .is_none()
+
+                                // ── Phase 1: validate stages + find source ────────
+                                // Walk the chain as a VALIDATION gate. Each stage
+                                // must classify as a known ConversionProjection:
+                                // - Tessellate: records the source kernel name (the
+                                //   kernel that tessellates BRep → Mesh).
+                                // - Voxelize: realised by ingest_mesh on plan.kernel
+                                //   below; no separate action needed here.
+                                // Unknown stage → graceful degradation.
+                                // Contiguity is also validated: each stage's `from`
+                                // must equal the prior stage's `to`.  Out-of-order
+                                // chains (e.g. Mesh→Voxel before BRep→Mesh) would
+                                // silently mis-key the intermediate cache under the
+                                // single-recipe executor.
+                                let mut tessellate_source: Option<&'static str> = None;
+                                // prev_to tracks the prior stage's output repr for
+                                // the contiguity check below.
+                                let mut prev_to: Option<ReprKind> = None;
+                                // Terminal `to` drives the intermediate cache key
+                                // (Mesh for 1-stage BRep→Mesh, Voxel for 2-stage).
+                                // Safe: this arm is only reached for non-empty chains.
+                                let terminal_to = plan
+                                    .conversions
+                                    .last()
+                                    .map(|(_, _, to)| *to)
+                                    .unwrap_or(ReprKind::Mesh);
+                                for (stage_kernel, from, to) in &plan.conversions {
+                                    // Contiguity assertion: each stage's `from` must
+                                    // equal the prior stage's `to`.  Detects
+                                    // out-of-order chains a future dispatcher change
+                                    // could accidentally produce.
+                                    if let Some(expected) = prev_to
+                                        && *from != expected
                                     {
                                         conversion_error = Some(format!(
-                                            "conversion stage {from:?}→{to:?} for op '{operation:?}' \
-                                         is not executable in v0.3-ε (only BRep→Mesh \
-                                         tessellation is supported)",
+                                            "internal error: conversion chain for op \
+                                             '{operation:?}' is non-contiguous: stage \
+                                             {from:?}→{to:?} follows a stage that \
+                                             produced {expected:?}; chain must be ordered \
+                                             (e.g. BRep→Mesh then Mesh→Voxel)",
                                         ));
-                                        break 'convert;
+                                        break;
                                     }
-                                    let source_name = (*stage_kernel).as_registry_name();
-                                    for &pid in &parents {
+                                    prev_to = Some(*to);
+
+                                    use crate::dispatcher::{
+                                        ConversionProjection, v03_conversion_projection,
+                                    };
+                                    match v03_conversion_projection(*from, *to) {
+                                        None => {
+                                            conversion_error = Some(format!(
+                                                "conversion stage {from:?}→{to:?} for op \
+                                                 '{operation:?}' is not executable in v0.3-β \
+                                                 (supported: BRep→Mesh, Mesh→Voxel)",
+                                            ));
+                                            break;
+                                        }
+                                        Some(ConversionProjection::Tessellate) => {
+                                            // Guard: a chain may contain AT MOST one
+                                            // BRep→Mesh Tessellate stage.  Two
+                                            // Tessellate stages would mean two distinct
+                                            // source kernels, which the single-recipe
+                                            // executor cannot represent — surface it as
+                                            // a graceful diagnostic rather than
+                                            // silently using the last one seen.
+                                            if tessellate_source.is_some() {
+                                                conversion_error = Some(format!(
+                                                    "conversion chain for op '{operation:?}' \
+                                                     has more than one Tessellate stage \
+                                                     (BRep→Mesh); only one is supported \
+                                                     in v0.3-β",
+                                                ));
+                                            } else {
+                                                tessellate_source =
+                                                    Some((*stage_kernel).as_registry_name());
+                                            }
+                                        }
+                                        Some(ConversionProjection::Voxelize) => {
+                                            // Realised by ingest_mesh on plan.kernel in
+                                            // phase 2.  Guard: the Voxelize stage's
+                                            // recorded kernel must match plan.kernel —
+                                            // the executor always ingests into
+                                            // plan.kernel, so a mismatch would ingest
+                                            // into the wrong kernel silently.
+                                            if stage_kernel.as_registry_name()
+                                                != plan.kernel.as_str()
+                                            {
+                                                conversion_error = Some(format!(
+                                                    "internal error: Voxelize stage kernel \
+                                                     '{}' does not match plan.kernel '{}' \
+                                                     for op '{operation:?}'; executor would \
+                                                     ingest into the wrong kernel",
+                                                    stage_kernel.as_registry_name(),
+                                                    plan.kernel,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                if conversion_error.is_none() && tessellate_source.is_none() {
+                                    conversion_error = Some(format!(
+                                        "internal error: conversion chain for op \
+                                         '{operation:?}' has no Tessellate stage (no \
+                                         BRep→Mesh source kernel found in plan.conversions)"
+                                    ));
+                                }
+
+                                // ── Phase 2: tessellate + ingest once per parent ──
+                                // For each parent: tessellate on the Tessellate-stage
+                                // source kernel → Mesh, then ingest the Mesh into
+                                // plan.kernel → fresh handle. The ingest call voxelises
+                                // when plan.kernel is an OpenVDB kernel (Mesh→Voxel)
+                                // and is a trivial Mesh→Mesh pass-through when
+                                // plan.kernel is a Manifold/similar kernel.
+                                if conversion_error.is_none() {
+                                    let source_name =
+                                        tessellate_source.expect("checked above");
+                                    'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
                                         // key for THIS input — distinct per input
-                                        // (local step index) and stable across
-                                        // rebuilds (see `conversion_intermediate_entity_id`).
-                                        let intermediate_entity = conversion_intermediate_entity_id(
-                                            &realization_id.entity,
-                                            pid,
-                                            &realization_step_ids,
-                                        );
+                                        // (stable across rebuilds; see
+                                        // `conversion_intermediate_entity_id`).
+                                        let intermediate_entity =
+                                            conversion_intermediate_entity_id(
+                                                &realization_id.entity,
+                                                pid,
+                                                &realization_step_ids,
+                                            );
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant tessellate+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
                                             &intermediate_entity,
-                                            *to,
+                                            terminal_to,
                                             per_stage_tol,
                                             NO_OPTIONS,
                                         ) {
@@ -4224,17 +4585,20 @@ impl Engine {
                                             continue;
                                         }
                                         // Cache miss: tessellate on the source kernel
-                                        // (`&self`); the borrow is released before the
+                                        // (`&self`); borrow released before the
                                         // `&mut` ingest borrow below.
                                         let mesh = match kernels.get(source_name) {
-                                            Some(src) => match src.tessellate(pid, per_stage_tol) {
-                                                Ok(mesh) => mesh,
-                                                Err(e) => {
-                                                    conversion_error =
-                                                        Some(format!("tessellation error: {e}"));
-                                                    break 'convert;
+                                            Some(src) => {
+                                                match src.tessellate(pid, per_stage_tol) {
+                                                    Ok(mesh) => mesh,
+                                                    Err(e) => {
+                                                        conversion_error = Some(format!(
+                                                            "tessellation error: {e}"
+                                                        ));
+                                                        break 'convert;
+                                                    }
                                                 }
-                                            },
+                                            }
                                             None => {
                                                 conversion_error = Some(format!(
                                                     "internal error: conversion source kernel \
@@ -4245,6 +4609,8 @@ impl Engine {
                                             }
                                         };
                                         // Ingest into the target kernel (`&mut`).
+                                        // For a Manifold kernel this is Mesh→Mesh;
+                                        // for an OpenVDB kernel this is Mesh→Voxel.
                                         let ingested = kernels
                                             .get_mut(plan.kernel.as_str())
                                             .expect("plan.kernel presence checked above")
@@ -4264,14 +4630,14 @@ impl Engine {
                                                 };
                                                 realization_cache.insert(
                                                     &intermediate_entity,
-                                                    *to,
+                                                    terminal_to,
                                                     per_stage_tol,
                                                     NO_OPTIONS,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
                                                     intermediate_entity,
-                                                    *to,
+                                                    terminal_to,
                                                     per_stage_tol,
                                                 ));
                                                 substitution.insert(pid, handle.id);
@@ -4302,8 +4668,8 @@ impl Engine {
                                 // Point the final op at the converted handles and
                                 // route it to the target kernel via the common
                                 // execute path. `plan_output_repr` of the final op on
-                                // `plan.kernel` (=Mesh) becomes this op's produced
-                                // repr.
+                                // `plan.kernel` becomes this op's produced repr
+                                // (Mesh for Manifold, Voxel for OpenVDB).
                                 substitute_op_parents(&mut geom_op, &substitution);
                                 (
                                     plan.kernel.clone(),
@@ -4750,7 +5116,9 @@ impl Engine {
                 if let Some(name) = realization_name {
                     named_steps.insert(name.to_string(), last);
                 }
-                if let (Some(tol), Some(_name)) = (demanded_tol, realization_name) {
+                if is_terminal_realization
+                    && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)
+                {
                     // **Task 4050 step-10 (gap 4)**: key the INSERT on the
                     // RESOLVED terminal repr (`last_produced_repr`), falling
                     // back to `cache_repr` only when no op captured a repr. On
@@ -4760,6 +5128,20 @@ impl Engine {
                     // resolved BRep because no Mesh kernel was linked) this
                     // stores at BRep, so a later Mesh lookup correctly MISSES
                     // rather than handing back a BRep handle as if it were Mesh.
+                    //
+                    // **Task 3437 (ζ): guard INSERT on is_terminal_realization.**
+                    // Non-terminal realizations (intermediate let-bindings in
+                    // a structure) share the same `entity` cache key as the
+                    // terminal.  Without this guard, box_a's BRep handle would
+                    // be stored at `(entity, BRep, tol)` before the terminal's
+                    // ops run.  On a Mesh-capable engine the terminal's BRep
+                    // fallback probe would then find the intermediate handle,
+                    // and since that same handle is recorded in
+                    // `feature_tag_table` (from its own op run earlier in this
+                    // build), the per-build reset debug_assert fires.  Only the
+                    // TERMINAL realization's result is a valid cache entry for
+                    // the entity+tol key — intermediate lets are intra-build
+                    // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
                     realization_cache.insert(
                         &realization_id.entity,
@@ -5245,15 +5627,26 @@ impl Engine {
     /// name, an unresolvable body arg) are left untouched — the geometry_ops
     /// `None`-means-skip contract.
     ///
-    /// The geometric fields (`mass`/`com`/`inertia`) stay the deferred
-    /// `Value::Undef` sentinel until the KGQ kernel query
-    /// (`moment_of_inertia`, task 3620) is wired by the supervisor — see
-    /// `try_eval_body_mass_props`'s `TODO(3620)`. The existing MassProperties
+    /// The KGQ kernel query is wired (task 4237 / KGQ-λ): when the body
+    /// resolves to a `Value::GeometryHandle`,
+    /// [`crate::dynamics_ops::try_eval_body_mass_props`] routes the
+    /// Volume / CenterOfMass / InertiaTensor queries through the kernel, so
+    /// the geometric fields (`mass`/`com`/`inertia`) carry real values.
+    /// Bodies without a geometry handle (and kernel-error downgrades) keep
+    /// the deferred `Value::Undef` sentinel; the existing MassProperties
     /// PSD hook (engine_eval.rs) classifies an `Undef` inertia as `Skip`, so
-    /// the deferred instance is neither clobbered nor flagged.
+    /// such instances are neither clobbered nor flagged.
+    ///
+    /// **Ordering contract (task 4538):** this pass runs AFTER both selector
+    /// passes (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`)
+    /// inside `run_post_processes`. A body produced by a selector (e.g.
+    /// `single(edges(s))`) would still be `Value::Undef` if this pass ran
+    /// first, causing the kernel queries to be silently skipped. The ordering
+    /// is pinned by the regression test
+    /// `run_post_processes_selector_produced_body_gets_real_mass_props`.
     ///
     /// Takes `kernel: &dyn GeometryKernel` (immutable — the dispatch only holds
-    /// the kernel for the future geometric query and does not mutate it);
+    /// the kernel for the geometric query and does not mutate it);
     /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
     /// Called from `run_post_processes` so build / build_snapshot /
     /// tessellate_from_values agree on the patched value (task 3745).
@@ -5284,6 +5677,40 @@ impl Engine {
             ) {
                 values.insert(cell.id.clone(), value);
             }
+        }
+    }
+
+    /// Build-time mechanism-mass pre-derivation pass (task 4472, rung (b)).
+    ///
+    /// Iterates all entries in `values`, calls
+    /// [`crate::dynamics_ops::derive_mechanism_mass_props`] on each, and
+    /// writes back any `Some(patched)` results after the iteration loop (so
+    /// the immutable borrow from `values.iter()` is fully released before the
+    /// mutable insert). Non-mechanism cells and mechanism cells with no
+    /// geometry-backed body are silently skipped (the `None`-means-skip
+    /// post-process contract).
+    ///
+    /// Takes `kernel: &dyn GeometryKernel` (immutable — the derivation pass
+    /// only issues read-only KGQ round-trips and does not mutate the kernel);
+    /// `run_post_processes` reborrows its `&mut dyn` kernel as `&*kernel`.
+    /// Wired into `run_post_processes` AFTER the selector passes (resolves the
+    /// task-3620 ordering guard — see the comment in `run_post_processes`).
+    fn post_process_mechanism_mass_props(
+        values: &mut ValueMap,
+        kernel: &dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect all patched (id, value) pairs first, then insert — avoids
+        // holding the immutable `values.iter()` borrow while mutating `values`.
+        let patches: Vec<(reify_core::identity::ValueCellId, reify_ir::Value)> = values
+            .iter()
+            .filter_map(|(id, v)| {
+                crate::dynamics_ops::derive_mechanism_mass_props(v, kernel, diagnostics)
+                    .map(|patched| (id.clone(), patched))
+            })
+            .collect();
+        for (id, patched) in patches {
+            values.insert(id, patched);
         }
     }
 
@@ -5376,27 +5803,9 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         kernel: &mut dyn GeometryKernel,
         table: &TopologyAttributeTable,
+        swept_kinds: &SweptKindTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
-        // a fourth explicit call at each build / build_snapshot /
-        // tessellate_from_values site — so all three sites pick it up
-        // automatically (task 3745 consolidation contract). Reborrows the
-        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
-        // (deferred, task 3620) geometric query and does not mutate it.
-        //
-        // ORDERING — TODO(3620): this pass runs BEFORE the selector passes
-        // (`post_process_topology_selectors` / `post_process_ad_hoc_selectors`).
-        // That is safe ONLY while the geometric mass/com/inertia query is
-        // deferred: `body_mass_props`'s body arg resolves to an already-eval'd
-        // let-bound `Value` and the geometric fields are the `Undef` sentinel,
-        // so reading the body before the selector passes cannot observe a stale
-        // value. When the KGQ kernel seam (task 3620) is wired and geometry stops
-        // being deferred, RE-EVALUATE this position: a body produced by a
-        // selector post-process would not yet be populated when this pass reads
-        // it, yielding incorrect geometry — at which point this call likely must
-        // move AFTER the selector passes (or gain an explicit dependency
-        // ordering). Do not wire 3620 without revisiting this ordering.
         // GHR-ζ (task 3608): whole-handle geometry-query dispatch
         // (volume / area / centroid / bounding_box). Added here — rather than a
         // separate explicit call at each build / build_snapshot /
@@ -5415,8 +5824,25 @@ impl Engine {
             &*kernel,
             diagnostics,
         );
-        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
         Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        // geometric-relations ε: feature → datum projections (`feature.axis` /
+        // `.plane` / `.point` / `.dir`). Placed AFTER post_process_topology_selectors
+        // so the receiver body handles (`let cyl = revolve(...)`) are populated as
+        // `Value::GeometryHandle` cells, and BEFORE post_process_derived_lets so a
+        // pure let depending on a projected datum sees the patched value.
+        Engine::post_process_feature_datum_projections(
+            template,
+            values,
+            kernel,
+            swept_kinds,
+            diagnostics,
+        );
+        // task 4229: re-evaluate Let cells whose expressions depend on
+        // topology-selector-derived cells (e.g. `moi_principal =
+        // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
+        // patched above). Must run after `post_process_topology_selectors` so
+        // the patched values are visible.
+        Engine::post_process_derived_lets(template, values, functions, meta_map, diagnostics);
         Engine::post_process_ad_hoc_selectors(
             template,
             named_steps,
@@ -5425,6 +5851,44 @@ impl Engine {
             table,
             diagnostics,
         );
+        // RBD-β (task 3829): body_mass_props dispatch. Added here — rather than
+        // a fourth explicit call at each build / build_snapshot /
+        // tessellate_from_values site — so all three sites pick it up
+        // automatically (task 3745 consolidation contract). Reborrows the
+        // `&mut` kernel as `&dyn`: the dispatch only holds the kernel for the
+        // geometric query and does not mutate it.
+        //
+        // ORDERING CONTRACT (task 4538): this pass runs LAST — after
+        // post_process_geometry_queries, post_process_topology_selectors, and
+        // post_process_ad_hoc_selectors — so every handle-producing pass has
+        // populated body handles before mass-props reads them. A body whose
+        // cell is produced by a selector pass (e.g. `single(edges(s))`) would
+        // still be `Value::Undef` when mass-props ran in the old (pre-4538)
+        // position, yielding `Undef` geometric fields even though the KGQ
+        // kernel query is live (task 4237 / KGQ-λ). The correct order is
+        // enforced by the regression test
+        // `run_post_processes_selector_produced_body_gets_real_mass_props`
+        // (engine_build.rs tests, task 4538 step-1).
+        //
+        // No inverse dependency: the selector and geometry-query passes consume
+        // geometry handles / points, never a MassProperties value, so this call
+        // has no consumer within run_post_processes and is safe to run last.
+        //
+        // Sibling task 4472 (post_process_mechanism_mass_props) is also
+        // specified to run after the selector passes; when added it should be
+        // placed here, after post_process_body_mass_props.
+        Engine::post_process_body_mass_props(template, values, &*kernel, diagnostics);
+        // Mechanism-mass pre-derivation pass (task 4472, rung (b)). Placed here,
+        // after post_process_body_mass_props, exactly as the ORDERING CONTRACT
+        // above (task 4538) directs: both mass-props passes run AFTER the
+        // selector passes, so every handle-producing pass has populated body
+        // handles before either pass issues its LIVE (non-deferred) per-body
+        // kernel query. Running this before the selector passes would risk
+        // reading a mechanism body whose value a selector post-process has not
+        // yet populated. This is the mechanism-body half of the task-3620
+        // wiring that task 4538 re-evaluated and resolved by moving the
+        // body-mass pass last; the same resolution covers this sibling pass.
+        Engine::post_process_mechanism_mass_props(values, &*kernel, diagnostics);
     }
 
     /// Post-process value cells for a template after `execute_realization_ops`
@@ -5475,6 +5939,137 @@ impl Engine {
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
+            } else if let Some(value) = crate::geometry_ops::try_eval_resolve_selector(
+                // Task 4118 (γ): the compiler-inserted `ResolveSelector` coercion
+                // node (and `IndexAccess` over a selector) resolves a typed
+                // `Value::Selector` cell to a `Value::List<Geometry>` HERE. The
+                // inner selector is reconstructed INLINE from its nested
+                // FunctionCall, so the "do not chain through value cells"
+                // invariant above is preserved — no dependency on another
+                // selector cell already being patched in this loop.
+                default_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            ) {
+                values.insert(cell.id.clone(), value);
+            }
+        }
+    }
+
+    /// Post-process value cells whose initializer is a feature → datum projection
+    /// (`feature.axis` / `.plane` / `.point` / `.dir`), geometric-relations ε
+    /// (design §7.2).
+    ///
+    /// The compiler lowers such a projection to a `MethodCall` whose receiver is
+    /// a realized `Value::GeometryHandle` cell; the pure `eval_expr` path cannot
+    /// reach the kernel, the construction history, or the dedup primitive, so it
+    /// leaves the cell at `Value::Undef`. This pass resolves each still-`Undef`
+    /// cell via [`crate::geometry_ops::try_eval_feature_datum_projection`], which
+    /// builds the feature's deduplicated datum bundle (analytic ∪ the
+    /// `swept_kinds` construction history) and refines it to the requested
+    /// projection — a unique datum ⇒ its `Value`, a zero/many group ⇒ a
+    /// select-a-subfeature `FeatureDatumAmbiguous` error + `Value::Undef`.
+    ///
+    /// Cells whose dispatch returns `None` (non-projection initializer, or a
+    /// receiver that is not a realized geometry handle — e.g. a β datum receiver
+    /// `axis.dir`, owned by the pure projection path) are left untouched.
+    ///
+    /// **Ordering contract**: must run AFTER `post_process_topology_selectors` so
+    /// the receiver body handles are populated, and BEFORE
+    /// `post_process_derived_lets` so a pure let depending on a projected datum
+    /// sees the patched value.
+    fn post_process_feature_datum_projections(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        swept_kinds: &SweptKindTable,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect (cell id, expr) for still-`Undef` cells first, to avoid holding
+        // a borrow on `values` while also inserting into it (parallels
+        // `post_process_derived_lets`). A projection cell is `Undef` after the
+        // pure eval pass, so the filter is both an optimisation and correct.
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            if let Some(value) = crate::geometry_ops::try_eval_feature_datum_projection(
+                &expr,
+                values,
+                kernel,
+                swept_kinds,
+                diagnostics,
+            ) {
+                values.insert(cell_id, value);
+            }
+        }
+    }
+
+    /// Re-evaluate `Let` value cells that are still `Undef` after the
+    /// topology-selector post-processing pass (`post_process_topology_selectors`).
+    ///
+    /// Some `Let` cells depend on geometry-derived cells that are patched by
+    /// `post_process_topology_selectors` AFTER the main `evaluate_params_and_lets_unified`
+    /// pass.  During the main pass, the geometry-derived cell is still `Undef`
+    /// (the kernel hasn't been queried yet), so any pure-math let that depends
+    /// on it also evaluates to `Undef`.  Example: task 4229's
+    /// `let moi_principal = eigenvalues(moment_of_inertia)` where
+    /// `moment_of_inertia` is patched by `post_process_topology_selectors`.
+    ///
+    /// This pass iterates over `Let`-kind cells that are currently `Undef`
+    /// and re-evaluates their `default_expr` using the now-updated `values`
+    /// map.  Only cells whose re-evaluation yields a non-`Undef` result are
+    /// updated — cells whose arguments are still `Undef` (missing kernel,
+    /// no geometry) remain `Undef` and are left untouched.
+    ///
+    /// **Ordering contract**: must run after `post_process_topology_selectors`
+    /// (and `post_process_geometry_queries`) so that patched-in geometry-derived
+    /// values are visible; runs before `post_process_body_mass_props` and
+    /// `post_process_mechanism_mass_props` (those passes do not produce `Let`
+    /// cells that downstream pure-math lets could consume).
+    fn post_process_derived_lets(
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        _diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Collect candidates first to avoid holding a borrow on `values`
+        // while also inserting into it.
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    // Skip expressions that contain a CrossSubGeometryRef — those
+                    // are consumed by entity.rs at the bare-let drop site and must
+                    // never reach `reify_expr::eval_expr`, which `unreachable!()`s
+                    // on them (see reify-expr/src/lib.rs:179, task-3508).
+                    .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            let new_val = {
+                let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+                reify_expr::eval_expr(&expr, &ctx)
+            };
+            if !new_val.is_undef() {
+                values.insert(cell_id, new_val);
             }
         }
     }
@@ -6277,6 +6872,8 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyZoneSlab, ReprKind::BRep),
+                (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
                 (Operation::TransformRotate, ReprKind::BRep),
                 (Operation::TransformScale, ReprKind::BRep),
@@ -6450,6 +7047,8 @@ mod tests {
                 // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
                 ReprKind::BRep,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
 
@@ -6509,6 +7108,8 @@ mod tests {
                 // parameter.
                 demanded_repr,
                 &mut self.dispatch_count,
+                // Test helpers operate on a single realization; it is always terminal.
+                true,
             );
         }
     }
@@ -7682,6 +8283,67 @@ mod tests {
         }
     }
 
+    /// openvdb-like counting kernel: `ingest_mesh` bumps a shared counter and
+    /// returns a fresh handle (the Mesh→Voxel target projection via voxelising ingest),
+    /// `execute` bumps a shared counter (the final cross-kernel `BooleanUnion` op runs
+    /// here), and `tessellate` returns `Err(TessError::TessellationFailed)` mirroring the
+    /// real OpenVDB stub — the real kernel cannot tessellate Voxel handles back to Mesh.
+    /// `query` / `export` delegate to an inner [`MockGeometryKernel`].
+    struct CountingVoxelizerKernel {
+        inner: reify_test_support::mocks::MockGeometryKernel,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        execute_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        next_ingest_id: u64,
+    }
+
+    impl reify_ir::GeometryKernel for CountingVoxelizerKernel {
+        fn execute(
+            &mut self,
+            op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.execute_count.lock().unwrap() += 1;
+            self.inner.execute(op)
+        }
+
+        fn query(
+            &self,
+            q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            self.inner.query(q)
+        }
+
+        fn export(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            self.inner.export(handle, format, writer)
+        }
+
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            // Mirrors the real OpenVDB stub: Voxel handles cannot be tessellated
+            // back to Mesh via this kernel — the executor must NOT call this.
+            Err(reify_ir::TessError::TessellationFailed(
+                "openvdb stub: tessellate not supported".into(),
+            ))
+        }
+
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            *self.ingest_count.lock().unwrap() += 1;
+            let id = reify_ir::GeometryHandleId(self.next_ingest_id);
+            self.next_ingest_id += 1;
+            Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
     /// step-7(A) CONVERSION PATH (RED). With `demanded_repr = Mesh`, the
     /// dispatcher routes the terminal `BooleanUnion` to the Mesh-capable
     /// `"manifold"` kernel, preceded by a single BRep→Mesh conversion stage
@@ -7840,6 +8502,327 @@ mod tests {
             state.produced_repr_out,
             Some(ReprKind::Mesh),
             "produced_repr_out must be Mesh for the cross-kernel realization"
+        );
+    }
+
+    /// step-3 TWO-STAGE BRep→Voxel EXECUTOR (RED). With `demanded_repr = Voxel`
+    /// and kernels `"occt"` (CountingTessellateKernel) + `"openvdb"`
+    /// (CountingVoxelizerKernel), the two-stage chain
+    /// `[(occt,BRep,Mesh),(openvdb,Mesh,Voxel)]` must run EXACTLY ONCE per
+    /// op-input parent: `occt.tessellate` × 2 → Mesh, `openvdb.ingest_mesh`
+    /// × 2 → Voxel handle; then the union runs on `"openvdb"` once.
+    ///
+    /// RED: the current per-stage executor re-processes stage-2
+    /// `(openvdb,Mesh,Voxel)` by calling `openvdb.tessellate(brep_pid)` →
+    /// `TessError::TessellationFailed` → conversion-error diagnostic, so the
+    /// no-error / ingest==2 / terminal assertions fail.
+    #[test]
+    fn execute_realization_ops_conversion_path_two_stage_brep_to_voxel() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        // Shared call counters, read back after the call via the Arc clones.
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "openvdb".to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 2000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Mesh);
+        // openvdb: (BooleanUnion, Voxel) + (Convert{Mesh}, Voxel).
+        // For demanded = Voxel / available = {BRep} the dispatcher yields plan:
+        // { kernel: "openvdb", conversions: [(Occt,BRep,Mesh),(OpenVdb,Mesh,Voxel)] }.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![
+                (Operation::BooleanUnion, ReprKind::Voxel),
+                (
+                    Operation::Convert {
+                        from: ReprKind::Mesh,
+                    },
+                    ReprKind::Voxel,
+                ),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("MyDesign", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("Cross"),
+            SourceSpan::new(0, 0),
+            ReprKind::Voxel,
+            None,
+        );
+
+        // The two-stage conversion must succeed: no error diagnostics, no
+        // kernel_error_out.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "two-stage BRep→Voxel conversion must not emit error diagnostics, got: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "two-stage BRep→Voxel conversion must leave kernel_error_out None, got {:?}",
+            state.kernel_error_out
+        );
+
+        // (a) occt.tessellate fires once per BooleanUnion input handle = 2.
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "occt.tessellate must be called once per union input handle (2)"
+        );
+        // (b) openvdb.ingest_mesh fires once per converted input = 2.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "openvdb.ingest_mesh must be called once per converted input (2)"
+        );
+        // (c) openvdb runs the final BooleanUnion exactly once.
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            1,
+            "openvdb must run the final BooleanUnion exactly once"
+        );
+
+        // The terminal pushed handle is an OpenVdb handle (plan.kernel).
+        let terminal = state
+            .step_handles
+            .last()
+            .expect("a terminal handle must be pushed on success");
+        assert_eq!(
+            terminal.kernel,
+            KernelId::OpenVdb,
+            "terminal handle must be tagged KernelId::OpenVdb, got {:?}",
+            terminal.kernel
+        );
+
+        // produced_repr surfaced as Voxel (plan_output_repr of the union on openvdb).
+        assert_eq!(
+            state.produced_repr_out,
+            Some(ReprKind::Voxel),
+            "produced_repr_out must be Voxel for the two-stage BRep→Voxel realization"
+        );
+    }
+
+    /// Amendment (suggestion 4): NEGATIVE — unsupported conversion crossing
+    /// degrades gracefully (no kernel work performed).
+    ///
+    /// Exercises the Phase-1 validation gate: when the dispatcher produces a
+    /// chain containing a crossing that `v03_conversion_projection` classifies
+    /// as `None` (e.g. a direct `BRep→Voxel` stage, which is not one of the
+    /// two supported crossings), the executor must emit exactly one
+    /// `Error`-severity diagnostic and must perform zero kernel work —
+    /// `ingest_mesh` and `execute` (for the final op) must never be called.
+    ///
+    /// Scenario: "occt" registers `(Convert{from:BRep}, Voxel)` — a
+    /// single-step BRep→Voxel crossing.  The dispatcher BFS finds a plan
+    /// `{kernel:"openvdb", conversions:[(Occt,BRep,Voxel)]}`.  Phase 1 calls
+    /// `v03_conversion_projection(BRep, Voxel)` → `None` → `conversion_error`.
+    #[test]
+    fn execute_realization_ops_conversion_path_unsupported_crossing_degrades_gracefully() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        // "occt": produces BRep primitives and claims a direct BRep→Voxel
+        // Convert edge (unsupported crossing in v0.3-β).
+        kernels.insert("occt".to_string(), Box::new(MockGeometryKernel::new()));
+        // "openvdb": counts ingest_mesh + execute calls so the test can assert
+        // they never fire on the error path.
+        kernels.insert(
+            "openvdb".to_string(),
+            Box::new(CountingVoxelizerKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 4000,
+            }),
+        );
+
+        // occt: (PrimitiveBox, BRep) + (Convert{BRep}, Voxel) — the direct
+        // BRep→Voxel crossing is not one of the two β-supported shapes.
+        // openvdb: (BooleanUnion, Voxel) only — no Convert capability.
+        //
+        // Dispatcher BFS for demanded=Voxel / available={BRep}:
+        //   pop(BRep): expand via occt's (Convert{BRep},Voxel) → (Voxel,[occt,BRep,Voxel])
+        //   pop(Voxel): openvdb supports (BooleanUnion,Voxel) → plan found.
+        // Phase 1: v03_conversion_projection(BRep,Voxel) = None → error.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Voxel,
+                ),
+            ],
+        };
+        let desc_openvdb = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Voxel)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("openvdb".to_string(), &desc_openvdb);
+
+        // Two BRep primitives + one BooleanUnion consuming them.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("BadConv", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("BadConv"),
+            SourceSpan::new(0, 0),
+            ReprKind::Voxel,
+            None,
+        );
+
+        // Must emit at least one Error diagnostic (the unsupported crossing).
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            !errors.is_empty(),
+            "an unsupported BRep→Voxel crossing must emit an Error diagnostic, \
+             got no errors (diagnostics: {:?})",
+            state.diagnostics,
+        );
+        // Pin that the error originated from the Phase-1 classification gate
+        // (v03_conversion_projection(BRep,Voxel) = None), not from a None
+        // dispatch plan or some other unrelated code path.  The gate message
+        // always contains "not executable in v0.3-β"; if the error comes from
+        // elsewhere (e.g. dispatch returns None / NoKernelChain path) the test
+        // would still pass the non-empty check above, but for the wrong reason.
+        assert!(
+            errors
+                .iter()
+                .any(|d| d.message.contains("not executable in v0.3-\u{03b2}")),
+            "the Error diagnostic must originate from the Phase-1 classification \
+             gate (message must contain 'not executable in v0.3-β'); \
+             got: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>(),
+        );
+
+        // No kernel work must have been performed after the Phase-1 error.
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            0,
+            "ingest_mesh must not be called when the conversion stage is unsupported"
+        );
+        assert_eq!(
+            *union_count.lock().unwrap(),
+            0,
+            "BooleanUnion must not run when the conversion stage is unsupported"
         );
     }
 
@@ -9309,6 +10292,7 @@ mod tests {
             Case {
                 op: GeometryOp::Fillet {
                     target: GeometryHandleId(7),
+                    edges: vec![],
                     radius: Value::Real(0.001),
                 },
                 expected: vec![GeometryHandleId(7)],
@@ -9351,6 +10335,14 @@ mod tests {
                 label: "Thicken → [target]",
             },
             Case {
+                op: GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(85),
+                    distance: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(85)],
+                label: "OffsetSolid → [target]",
+            },
+            Case {
                 op: GeometryOp::Shell {
                     target: GeometryHandleId(84),
                     thickness: Value::Real(0.002),
@@ -9360,8 +10352,17 @@ mod tests {
                 label: "Shell → [target]",
             },
             Case {
+                op: GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(90),
+                    width: Value::Real(0.002),
+                },
+                expected: vec![GeometryHandleId(90)],
+                label: "ZoneSlab → [target]",
+            },
+            Case {
                 op: GeometryOp::Draft {
                     target: GeometryHandleId(70),
+                    faces: vec![],
                     angle: Value::Real(0.1),
                     plane: GeometryHandleId(71),
                 },
@@ -9659,6 +10660,14 @@ mod tests {
                 expected: Operation::PrimitiveWedge,
                 label: "Wedge → PrimitiveWedge",
             },
+            Case {
+                op: GeometryOp::Torus {
+                    major_radius: r(0.02),
+                    minor_radius: r(0.005),
+                },
+                expected: Operation::PrimitiveTorus,
+                label: "Torus → PrimitiveTorus",
+            },
             // Booleans
             Case {
                 op: GeometryOp::Union {
@@ -9688,6 +10697,7 @@ mod tests {
             Case {
                 op: GeometryOp::Fillet {
                     target: h(1),
+                    edges: vec![],
                     radius: r(0.001),
                 },
                 expected: Operation::ModifyFillet,
@@ -9713,6 +10723,7 @@ mod tests {
             Case {
                 op: GeometryOp::Draft {
                     target: h(1),
+                    faces: vec![],
                     angle: r(0.1),
                     plane: h(2),
                 },
@@ -9726,6 +10737,22 @@ mod tests {
                 },
                 expected: Operation::ModifyThicken,
                 label: "Thicken → ModifyThicken",
+            },
+            Case {
+                op: GeometryOp::ZoneSlab {
+                    target: h(1),
+                    width: r(0.002),
+                },
+                expected: Operation::ModifyZoneSlab,
+                label: "ZoneSlab → ModifyZoneSlab",
+            },
+            Case {
+                op: GeometryOp::OffsetSolid {
+                    target: h(1),
+                    distance: r(0.002),
+                },
+                expected: Operation::ModifyOffsetSolid,
+                label: "OffsetSolid → ModifyOffsetSolid",
             },
             // Transform
             Case {
@@ -9955,6 +10982,22 @@ mod tests {
                 op: GeometryOp::CircleProfile { radius: r(0.008) },
                 expected: Operation::ProfileCircle,
                 label: "CircleProfile → ProfileCircle",
+            },
+            // Profiles (task-4161)
+            Case {
+                op: GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+                },
+                expected: Operation::ProfilePolygon,
+                label: "PolygonProfile → ProfilePolygon",
+            },
+            Case {
+                op: GeometryOp::EllipseProfile {
+                    semi_major: r(0.010),
+                    semi_minor: r(0.005),
+                },
+                expected: Operation::ProfileEllipse,
+                label: "EllipseProfile → ProfileEllipse",
             },
         ];
 
@@ -10901,6 +11944,702 @@ mod tests {
              after cache-hit short-circuit (both-tables case)"
         );
     }
+
+    // ── step-1 (task 4538): pass-ordering regression test ─────────────────────
+
+    /// Regression guard (task 4538): `run_post_processes` must populate `mp`
+    /// with real mass-props when the body is a selector-produced
+    /// `Value::GeometryHandle`.
+    ///
+    /// Before task 4538 this test would have failed: `post_process_body_mass_props`
+    /// ran before the selector passes, so `sel_body` was still `Value::Undef` when
+    /// the mass-props pass read it → body arg had no geometry handle → all three
+    /// geometric fields (`mass`/`com`/`inertia`) stayed `Value::Undef`.
+    /// The reorder (step-2) placed the selector passes first; this test now guards
+    /// the corrected order — a future re-reordering would immediately fail here.
+    ///
+    /// A SANITY PRECONDITION (`post_process_topology_selectors` on a clone)
+    /// verifies that the selector expression is correctly constructed; a RED
+    /// failure in the MAIN assertion is therefore unambiguously about ordering.
+    ///
+    /// Template:
+    ///   `sel_body` = `single(edges(s))` — a selector-produced geometry handle
+    ///   `mp`       = `body_mass_props(sel_body, rho)` — reads sel_body
+    ///
+    /// MockGeometryKernel:
+    ///   `extract_edges(parent_id)` → `[edge_id]`    (one edge → single() unwraps)
+    ///   `Volume(edge_id)` → `Real(3.0)`              (mass = 2000 × 3 = 6000)
+    ///   `CenterOfMass(edge_id, 2000.0)` → JSON CoM
+    ///   `InertiaTensor(edge_id, 2000.0)` → nested list inertia
+    #[test]
+    fn run_post_processes_selector_produced_body_gets_real_mass_props() {
+        use reify_core::{ContentHash, DimensionVector, RealizationNodeId, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
+        use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
+
+        // ── geometry-handle fixture IDs ───────────────────────────────────────
+        let parent_id = GeometryHandleId(100);
+        let edge_id = GeometryHandleId(101);
+        let parent_rr = RealizationNodeId::new("Design", 0);
+        let parent_hash: [u8; 32] = [0xAA; 32];
+
+        // ── value-cell IDs ────────────────────────────────────────────────────
+        let s_cell = ValueCellId::new("Design", "s");
+        let sel_body_cell = ValueCellId::new("Design", "sel_body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mp_cell = ValueCellId::new("Design", "mp");
+
+        // ── local helper: build a one-arg FunctionCall CompiledExpr ──────────
+        //
+        // Follows the pattern of `call_expr` in dynamics_ops::tests:674 and
+        // `topology_selector_call_one_value_ref` in geometry_ops::tests:11837.
+        fn one_arg_call(fn_name: &str, arg: CompiledExpr, result_type: Type) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(arg.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![arg],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── local helper: build a two-arg FunctionCall CompiledExpr ──────────
+        fn two_arg_call(
+            fn_name: &str,
+            a1: CompiledExpr,
+            a2: CompiledExpr,
+            result_type: Type,
+        ) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(a1.content_hash)
+                .combine(a2.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![a1, a2],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── default_expr for sel_body: single(edges(s)) ──────────────────────
+        //
+        // `edges(s)` → FunctionCall("edges", [ValueRef(s_cell, Geometry)])
+        //   `try_eval_topology_selector` returns Value::Selector(Edge, All)
+        //
+        // `single(edges(s))` → FunctionCall("single", [edges_expr])
+        //   `try_eval_resolve_selector` matches the `single` arm (geometry_ops
+        //   :3031), resolves the inner selector via `resolve_selector_to_list`,
+        //   gets a one-element list, and unwraps the sole Value::GeometryHandle.
+        //
+        // Note: the inner arg is a bare FunctionCall (not wrapped in
+        // ResolveSelector) — handled by the "Defensive" arm at geometry_ops:3037.
+        let s_vref = CompiledExpr::value_ref(s_cell.clone(), Type::Geometry);
+        let edges_expr = one_arg_call(
+            "edges",
+            s_vref,
+            Type::List(Box::new(Type::Geometry)),
+        );
+        let single_edges_expr = one_arg_call("single", edges_expr, Type::Geometry);
+
+        // ── default_expr for mp: body_mass_props(sel_body, rho) ──────────────
+        //
+        // Mirrors the call_expr helper in dynamics_ops::tests:674.  The body
+        // arg is a ValueRef to sel_body — which starts as Undef (no
+        // GeometryHandle) and is patched to a GeometryHandle by the selector
+        // pass if the ordering is correct.
+        let sel_body_vref =
+            CompiledExpr::value_ref(sel_body_cell.clone(), Type::Geometry);
+        let rho_vref =
+            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let mp_expr = two_arg_call(
+            "body_mass_props",
+            sel_body_vref,
+            rho_vref,
+            Type::StructureRef("MassProperties".to_string()),
+        );
+
+        // ── TopologyTemplate: two Let cells ──────────────────────────────────
+        //
+        // `sel_body` — post_process_topology_selectors patches this Undef →
+        //              GeometryHandle{edge_id} via try_eval_resolve_selector
+        // `mp`       — post_process_body_mass_props reads sel_body and
+        //              assembles the MassProperties instance
+        //
+        // `s` and `rho` are seeded directly in the ValueMap; the selector and
+        // mass-props passes read them from `values` without needing template
+        // cells (only cells with default_expr are iterated by the passes).
+        let template = TopologyTemplateBuilder::new("Design")
+            .let_binding(
+                "Design",
+                "sel_body",
+                Type::Geometry,
+                single_edges_expr.clone(),
+            )
+            .let_binding(
+                "Design",
+                "mp",
+                Type::StructureRef("MassProperties".to_string()),
+                mp_expr,
+            )
+            .build();
+
+        // ── initial ValueMap ──────────────────────────────────────────────────
+        // sel_body and mp start as Undef (the pure eval_expr left them there);
+        // the post-process passes must promote them to real values.
+        let mut values = ValueMap::new();
+        values.insert(
+            s_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: parent_rr.clone(),
+                upstream_values_hash: parent_hash,
+                kernel_handle: parent_id,
+            },
+        );
+        values.insert(sel_body_cell.clone(), Value::Undef);
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+        values.insert(mp_cell.clone(), Value::Undef);
+
+        // ── MockGeometryKernel fixture ────────────────────────────────────────
+        // Volume = 3.0 m³ → expected mass = 2000.0 × 3.0 = 6000.0 kg
+        // CoM injected as JSON; inertia as nested list with distinct diagonal.
+        let injected_com =
+            Value::String("{\"x\":0.01,\"y\":0.02,\"z\":0.03}".to_string());
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_edges(parent_id, vec![edge_id])
+            .with_volume_result(edge_id, Value::Real(3.0))
+            .with_center_of_mass_result(edge_id, 2000.0, injected_com)
+            .with_inertia_tensor_result(edge_id, 2000.0, injected_inertia);
+
+        let named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let table = TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        // ── SANITY PRECONDITION ───────────────────────────────────────────────
+        //
+        // Run `post_process_topology_selectors` alone on a fresh clone to
+        // confirm that the single(edges(s)) expression is correctly built and
+        // resolves to a Value::GeometryHandle{edge_id}. If this assertion fires,
+        // the bug is in the selector expression itself; if it passes, any
+        // failure in the MAIN assertion below is unambiguously about ordering.
+        {
+            let mut values_clone = values.clone();
+            let mut kernel2 =
+                MockGeometryKernel::new().with_extracted_edges(parent_id, vec![edge_id]);
+            let mut diags2: Vec<Diagnostic> = Vec::new();
+            Engine::post_process_topology_selectors(
+                &template,
+                &named_steps,
+                &mut values_clone,
+                &mut kernel2 as &mut dyn GeometryKernel,
+                &mut diags2,
+            );
+            let patched = values_clone
+                .get(&sel_body_cell)
+                .expect("sel_body must be present after post_process_topology_selectors");
+            assert!(
+                matches!(
+                    patched,
+                    Value::GeometryHandle { kernel_handle, .. }
+                        if *kernel_handle == edge_id
+                ),
+                "SANITY: post_process_topology_selectors must patch sel_body to \
+                 GeometryHandle{{kernel_handle: {edge_id:?}}}; got: {patched:?}"
+            );
+        }
+
+        // ── MAIN ASSERTION ────────────────────────────────────────────────────
+        //
+        // Before task 4538 (post_process_body_mass_props ran BEFORE selectors):
+        //   body_mass_props read sel_body = Undef → no handle → mp's mass/
+        //   com/inertia fields stayed Undef — this assertion would have failed.
+        //
+        // Fixed order (task 4538 / step-2):
+        //   post_process_topology_selectors runs first → sel_body becomes
+        //   GeometryHandle{edge_id} → body_mass_props queries the kernel →
+        //   mass = density × Volume = 2000.0 × 3.0 = 6000.0.
+        Engine::run_post_processes(
+            &template,
+            &named_steps,
+            &mut values,
+            &functions,
+            &meta_map,
+            &mut kernel as &mut dyn GeometryKernel,
+            &table,
+            &SweptKindTable::default(),
+            &mut diagnostics,
+        );
+
+        let mp_val = values
+            .get(&mp_cell)
+            .expect("mp must be present in values after run_post_processes");
+        let data = match mp_val {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "mp must be a MassProperties StructureInstance after \
+                 run_post_processes; got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+
+        // `mass` must not be Undef: this is the ordering-contract assertion.
+        // On the RED path the selector pass hasn't run yet so there is no
+        // GeometryHandle → mass stays Undef.
+        let mass_field = data
+            .fields
+            .get("mass")
+            .expect("MassProperties must have a `mass` field");
+        assert!(
+            !matches!(mass_field, Value::Undef),
+            "ordering regression: `post_process_body_mass_props` ran before the \
+             selector passes populated `sel_body` (task 4538 fix). \
+             Expected mass = density × volume = 2000.0 × 3.0 = 6000.0; \
+             got: {mass_field:?}"
+        );
+        let mass = match mass_field {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(m) => *m,
+            other => panic!("mass must be a numeric Scalar or Real; got {other:?}"),
+        };
+        assert!(
+            (mass - 6000.0_f64).abs() < 1e-9,
+            "mass = density × volume = 2000.0 × 3.0 = 6000.0; got {mass}"
+        );
+
+        // CoM and inertia: assert non-Undef (real kernel values).
+        let com_field = data
+            .fields
+            .get("com")
+            .expect("MassProperties must have a `com` field");
+        assert!(
+            !matches!(com_field, Value::Undef),
+            "com must not be Undef after run_post_processes; got {com_field:?}"
+        );
+
+        let inertia_field = data
+            .fields
+            .get("inertia")
+            .expect("MassProperties must have an `inertia` field");
+        let inertia = crate::dynamics_psd::inertia_3x3_from_value(inertia_field)
+            .expect("inertia must parse as 3×3 via inertia_3x3_from_value");
+        assert!(
+            (inertia[0][0] - 1.0).abs() < 1e-9,
+            "inertia[0][0] must be 1.0; got {}",
+            inertia[0][0]
+        );
+        assert!(
+            (inertia[1][1] - 2.0).abs() < 1e-9,
+            "inertia[1][1] must be 2.0; got {}",
+            inertia[1][1]
+        );
+        assert!(
+            (inertia[2][2] - 3.0).abs() < 1e-9,
+            "inertia[2][2] must be 3.0; got {}",
+            inertia[2][2]
+        );
+
+        // Explicit density arg → no default-water diagnostic.
+        assert!(
+            diagnostics.iter().all(|d| {
+                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsDefaultDensity))
+            }),
+            "explicit density must suppress the default-water warning; \
+             diagnostics: {diagnostics:?}"
+        );
+    }
+
+    /// Regression guard (task 4538, direct-body path): a body cell that already
+    /// holds a `Value::GeometryHandle` before `run_post_processes` runs must
+    /// still produce real mass-props in the new (last) ordering.
+    ///
+    /// The reorder moved `post_process_body_mass_props` to the end of
+    /// `run_post_processes`; this test confirms the common pre-existing case
+    /// (a directly let-bound body, not produced by a selector) is unaffected —
+    /// real values arrive regardless of whether mass-props runs first or last
+    /// relative to the selector passes.
+    #[test]
+    fn run_post_processes_direct_body_gets_real_mass_props() {
+        use reify_core::{ContentHash, DimensionVector, RealizationNodeId, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
+        use reify_test_support::{builders::TopologyTemplateBuilder, mocks::MockGeometryKernel};
+
+        let body_id = GeometryHandleId(200);
+        let body_rr = RealizationNodeId::new("Design", 0);
+        let body_hash: [u8; 32] = [0xBBu8; 32];
+
+        let body_cell = ValueCellId::new("Design", "body");
+        let rho_cell = ValueCellId::new("Design", "rho");
+        let mp_cell = ValueCellId::new("Design", "mp");
+
+        // ── two-arg helper (mirrors the one in the selector-produced test) ────
+        fn two_arg_call(
+            fn_name: &str,
+            a1: CompiledExpr,
+            a2: CompiledExpr,
+            result_type: Type,
+        ) -> CompiledExpr {
+            let content_hash = ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(ContentHash::of_str(fn_name))
+                .combine(a1.content_hash)
+                .combine(a2.content_hash);
+            CompiledExpr {
+                kind: CompiledExprKind::FunctionCall {
+                    function: ResolvedFunction {
+                        name: fn_name.to_string(),
+                        qualified_name: fn_name.to_string(),
+                    },
+                    args: vec![a1, a2],
+                },
+                result_type,
+                content_hash,
+            }
+        }
+
+        // ── default_expr for mp: body_mass_props(body, rho) ──────────────────
+        let body_vref = CompiledExpr::value_ref(body_cell.clone(), Type::Geometry);
+        let rho_vref =
+            CompiledExpr::value_ref(rho_cell.clone(), Type::dimensionless_scalar());
+        let mp_expr = two_arg_call(
+            "body_mass_props",
+            body_vref,
+            rho_vref,
+            Type::StructureRef("MassProperties".to_string()),
+        );
+
+        // Only `mp` needs a template cell; body and rho are seeded in the
+        // ValueMap and read directly by `post_process_body_mass_props`.
+        let template = TopologyTemplateBuilder::new("Design")
+            .let_binding(
+                "Design",
+                "mp",
+                Type::StructureRef("MassProperties".to_string()),
+                mp_expr,
+            )
+            .build();
+
+        let mut values = ValueMap::new();
+        values.insert(
+            body_cell.clone(),
+            Value::GeometryHandle {
+                realization_ref: body_rr,
+                upstream_values_hash: body_hash,
+                kernel_handle: body_id,
+            },
+        );
+        values.insert(
+            rho_cell.clone(),
+            Value::Scalar {
+                si_value: 2000.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+        values.insert(mp_cell.clone(), Value::Undef);
+
+        // Volume = 5.0 m³ → expected mass = 2000.0 × 5.0 = 10000.0 kg
+        let injected_com =
+            Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string());
+        let injected_inertia = Value::List(vec![
+            Value::List(vec![Value::Real(4.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(5.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(6.0)]),
+        ]);
+        let mut kernel = MockGeometryKernel::new()
+            .with_volume_result(body_id, Value::Real(5.0))
+            .with_center_of_mass_result(body_id, 2000.0, injected_com)
+            .with_inertia_tensor_result(body_id, 2000.0, injected_inertia);
+
+        let named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let functions: Vec<CompiledFunction> = Vec::new();
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let table = TopologyAttributeTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        Engine::run_post_processes(
+            &template,
+            &named_steps,
+            &mut values,
+            &functions,
+            &meta_map,
+            &mut kernel as &mut dyn GeometryKernel,
+            &table,
+            &SweptKindTable::default(),
+            &mut diagnostics,
+        );
+
+        let mp_val = values
+            .get(&mp_cell)
+            .expect("mp must be present after run_post_processes");
+        let data = match mp_val {
+            Value::StructureInstance(d) => d,
+            other => panic!(
+                "direct body: mp must be a MassProperties StructureInstance; \
+                 got {other:?}"
+            ),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+
+        let mass_field = data
+            .fields
+            .get("mass")
+            .expect("MassProperties must have a `mass` field");
+        let mass = match mass_field {
+            Value::Scalar { si_value, .. } => *si_value,
+            Value::Real(m) => *m,
+            other => panic!(
+                "direct body: mass must be a numeric Scalar or Real; got {other:?}"
+            ),
+        };
+        assert!(
+            (mass - 10_000.0_f64).abs() < 1e-9,
+            "direct body: mass = density × volume = 2000.0 × 5.0 = 10000.0; \
+             got {mass}"
+        );
+
+        let com_field = data
+            .fields
+            .get("com")
+            .expect("MassProperties must have a `com` field");
+        assert!(
+            !matches!(com_field, Value::Undef),
+            "direct body: com must not be Undef after run_post_processes; \
+             got {com_field:?}"
+        );
+    }
+}
+
+// ── populate_attribute_history LocalFeature unit tests (step-3, RED) ────────
+
+/// Tests for `populate_attribute_history` with `AttributeHistory::LocalFeature`.
+///
+/// RED: `AttributeHistory::LocalFeature` variant and the dispatch arm in
+/// `populate_attribute_history` do not exist yet. Tests compile after step-4.
+#[cfg(test)]
+mod populate_local_feature_tests {
+    use reify_ir::{
+        AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord,
+        LocalFeatureOpHistoryRecords, ModEntry, QueryError, Role, TopologyAttribute,
+        TopologyAttributeTable, Value,
+    };
+    use reify_test_support::mocks::MockGeometryKernel;
+
+    use super::populate_attribute_history;
+
+    fn fillet_fid() -> FeatureId {
+        FeatureId::new("Fillet#realization[0]")
+    }
+
+    fn make_attr(fid: &FeatureId, role: Role, local_index: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: fid.clone(),
+            role,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        }
+    }
+
+    fn hrec(parent_subshape_index: u32, result_subshape_index: u32) -> HistoryRecord {
+        HistoryRecord {
+            parent_index: 0,
+            parent_subshape_index,
+            result_subshape_index,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fillet: face_generated cross-kind split (1 parent edge → 2 result faces)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn fillet_local_feature_dispatches_and_propagates_face_generated_split() {
+        // Handles
+        let target = GeometryHandleId(1);
+        let result = GeometryHandleId(100);
+        let parent_face = GeometryHandleId(10);
+        let parent_edge = GeometryHandleId(20);
+        let parent_vertex = GeometryHandleId(30);
+        let result_face_a = GeometryHandleId(110);
+        let result_face_b = GeometryHandleId(111);
+        let result_edge = GeometryHandleId(120);
+
+        // Mock: target extraction + result extraction
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(target, vec![parent_face])
+            .with_extracted_edges(target, vec![parent_edge])
+            .with_extracted_vertices(target, vec![parent_vertex])
+            .with_extracted_faces(result, vec![result_face_a, result_face_b])
+            .with_extracted_edges(result, vec![result_edge]);
+
+        // Seed: parent_edge has an attribute (its Role::NewEdge propagates to 2 result faces)
+        let fid = FeatureId::new("Box#realization[0]");
+        let splitting_fid = fillet_fid();
+        let mut table = TopologyAttributeTable::default();
+        table.record(parent_face, make_attr(&fid, Role::Side, 0));
+        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 5));
+
+        // History: one parent edge → two result faces (cross-kind split)
+        let history = LocalFeatureOpHistoryRecords {
+            face_generated: vec![hrec(0, 0), hrec(0, 1)],
+            ..Default::default()
+        };
+        let attr_history = AttributeHistory::LocalFeature(history);
+
+        let geom_op = GeometryOp::Fillet {
+            target,
+            edges: vec![],
+            radius: Value::Real(0.001),
+        };
+
+        populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &splitting_fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect("fillet LocalFeature dispatch should succeed");
+
+        // Both result faces inherit parent_edge's attr + split ModEntry
+        for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+            let attr = table
+                .lookup(handle)
+                .unwrap_or_else(|| panic!("{handle:?} must have attr after fillet propagation"));
+            assert_eq!(attr.feature_id, fid);
+            assert_eq!(attr.role, Role::NewEdge);
+            assert_eq!(attr.local_index, 5);
+            assert_eq!(
+                attr.mod_history,
+                vec![ModEntry {
+                    splitting_feature_id: splitting_fid.clone(),
+                    split_index: expected_split_index,
+                }],
+                "result face {handle:?} must have split ModEntry at index {expected_split_index}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Chamfer: edge_generated cross-kind pass-through (1 parent edge → 1 result edge)
+    // -----------------------------------------------------------------------
+    #[test]
+    fn chamfer_local_feature_dispatches_and_propagates_edge_modified_passthrough() {
+        let target = GeometryHandleId(2);
+        let result = GeometryHandleId(200);
+        let parent_face = GeometryHandleId(11);
+        let parent_edge = GeometryHandleId(21);
+        let parent_vertex = GeometryHandleId(31);
+        let result_face = GeometryHandleId(210);
+        let result_edge = GeometryHandleId(220);
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(target, vec![parent_face])
+            .with_extracted_edges(target, vec![parent_edge])
+            .with_extracted_vertices(target, vec![parent_vertex])
+            .with_extracted_faces(result, vec![result_face])
+            .with_extracted_edges(result, vec![result_edge]);
+
+        let fid = FeatureId::new("Box#realization[0]");
+        let splitting_fid = fillet_fid();
+        let mut table = TopologyAttributeTable::default();
+        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 3));
+
+        // edge_modified: 1 parent edge → 1 result edge (pure pass-through)
+        let history = LocalFeatureOpHistoryRecords {
+            edge_modified: vec![hrec(0, 0)],
+            ..Default::default()
+        };
+        let attr_history = AttributeHistory::LocalFeature(history);
+
+        let geom_op = GeometryOp::Chamfer {
+            target,
+            distance: Value::Real(0.001),
+        };
+
+        populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &splitting_fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect("chamfer LocalFeature dispatch should succeed");
+
+        let attr = table
+            .lookup(result_edge)
+            .expect("result_edge must have attr after chamfer propagation");
+        assert_eq!(attr.feature_id, fid);
+        assert_eq!(attr.role, Role::NewEdge);
+        assert_eq!(attr.local_index, 3);
+        assert!(
+            attr.mod_history.is_empty(),
+            "1→1 pass-through must not add ModEntry; got {:?}",
+            attr.mod_history
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Guard: non-Fillet/Chamfer GeometryOp with AttributeHistory::LocalFeature
+    //        must return Err(QueryError::QueryFailed).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn local_feature_with_non_fillet_chamfer_geom_op_returns_query_failed() {
+        let profile = GeometryHandleId(4);
+        let result = GeometryHandleId(300);
+
+        // Empty mock — the error must fire before any kernel extraction.
+        let mut kernel = MockGeometryKernel::new();
+        let mut table = TopologyAttributeTable::default();
+        let fid = fillet_fid();
+
+        let attr_history = AttributeHistory::LocalFeature(LocalFeatureOpHistoryRecords::default());
+
+        // Use Extrude (not Fillet/Chamfer) as the mismatched op.
+        let geom_op = GeometryOp::Extrude {
+            profile,
+            distance: Value::Real(0.01),
+        };
+
+        let err = populate_attribute_history(
+            &mut table,
+            &mut kernel,
+            &fid,
+            &geom_op,
+            result,
+            &attr_history,
+        )
+        .expect_err("non-Fillet/Chamfer op with LocalFeature history must return QueryFailed");
+
+        match err {
+            QueryError::QueryFailed(_) => {}
+            other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+        }
+    }
 }
 
 // ── dispatch_volume_mesh unit tests ──────────────────────────────────────────
@@ -11770,6 +13509,8 @@ mod mixed_region_tests {
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
+            Operation::ModifyOffsetSolid,
         ] {
             assert!(
                 op_accepts_repr(&mod_op, ReprKind::BRep),
@@ -12130,5 +13871,194 @@ mod mixed_region_tests {
                  classify it BRep-vs-Mesh per PRD §3a.4 (task 4049)"
             );
         }
+    }
+}
+
+// ── post_process_mechanism_mass_props unit tests (task 4472 step-7) ───────────
+//
+// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+// The test calls it directly to verify the engine pass iterates values and
+// writes `derived_mass_props` back into mechanism cells.
+
+#[cfg(test)]
+mod post_process_mechanism_mass_props_tests {
+    use std::collections::BTreeMap;
+
+    use reify_core::{RealizationNodeId, Severity};
+    use reify_core::identity::ValueCellId;
+    use reify_ir::{GeometryHandleId, Value, ValueMap};
+    use reify_test_support::mocks::MockGeometryKernel;
+
+    use super::Engine;
+
+    /// Fixed kernel handle for the geometry-backed body in these tests.
+    const HANDLE_ID: GeometryHandleId = GeometryHandleId(77);
+
+    /// Build a minimal mechanism `Value::Map`: kind="mechanism", bodies=[body]
+    /// where body.solid is the given `solid_value`.
+    fn one_body_mechanism(solid_value: Value) -> Value {
+        let mut body = BTreeMap::new();
+        body.insert(Value::String("id".to_string()), Value::Int(0));
+        body.insert(Value::String("solid".to_string()), solid_value);
+
+        let mut mech = BTreeMap::new();
+        mech.insert(
+            Value::String("kind".to_string()),
+            Value::String("mechanism".to_string()),
+        );
+        mech.insert(
+            Value::String("bodies".to_string()),
+            Value::List(vec![Value::Map(body)]),
+        );
+        Value::Map(mech)
+    }
+
+    /// Build a `Value::GeometryHandle` for `HANDLE_ID`.
+    fn geometry_handle() -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Design", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: HANDLE_ID,
+        }
+    }
+
+    /// Build a `MockGeometryKernel` with injected Volume / CenterOfMass /
+    /// InertiaTensor replies for `HANDLE_ID` at the water-default density
+    /// (1000.0 kg/m³). Volume=6.0 → mass=6000.0 kg.
+    fn mock_kernel() -> MockGeometryKernel {
+        let inertia = Value::List(vec![
+            Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+            Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+        ]);
+        MockGeometryKernel::new()
+            .with_volume_result(HANDLE_ID, Value::Real(6.0))
+            .with_center_of_mass_result(
+                HANDLE_ID,
+                1000.0,
+                Value::String("{\"x\":0.1,\"y\":0.2,\"z\":0.3}".to_string()),
+            )
+            .with_inertia_tensor_result(HANDLE_ID, 1000.0, inertia)
+    }
+
+    /// The engine pass must iterate over a ValueMap containing a mechanism cell,
+    /// call `derive_mechanism_mass_props`, and write the patched mechanism back
+    /// into the ValueMap so that values.get(cell_id) yields a mechanism whose
+    /// first body carries `derived_mass_props`.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_writes_derived_back_into_value_map() {
+        let cell_id = ValueCellId::new("Design", "mech");
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), one_body_mechanism(geometry_handle()));
+
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // The mechanism cell must now hold a patched value.
+        let patched = values
+            .get(&cell_id)
+            .expect("mechanism cell must still be present after pass");
+
+        // Extract the first body from the patched mechanism.
+        let mech_map = match patched {
+            Value::Map(m) => m,
+            other => panic!("mechanism cell must be a Map, got {other:?}"),
+        };
+        let bodies = match mech_map.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("patched mechanism missing bodies"),
+        };
+        assert_eq!(bodies.len(), 1, "must have exactly one body");
+        let body_map = match &bodies[0] {
+            Value::Map(b) => b,
+            other => panic!("body must be a Map, got {other:?}"),
+        };
+
+        // The body must carry `derived_mass_props` (additive write).
+        let derived = body_map
+            .get(&Value::String("derived_mass_props".to_string()))
+            .expect("body must carry derived_mass_props after engine pass");
+
+        // Must be a MassProperties StructureInstance.
+        let data = match derived {
+            Value::StructureInstance(d) => d,
+            other => panic!("derived_mass_props must be a StructureInstance, got {other:?}"),
+        };
+        assert_eq!(
+            data.type_name, "MassProperties",
+            "derived_mass_props type_name must be MassProperties"
+        );
+
+        // The original `solid` GeometryHandle must still be present — additive write.
+        assert!(
+            body_map.contains_key(&Value::String("solid".to_string())),
+            "body must still carry `solid` after additive pass"
+        );
+
+        // No diagnostics expected on the success path.
+        assert!(
+            diags.is_empty(),
+            "no diagnostics expected on success path; got: {diags:?}"
+        );
+    }
+
+    /// A ValueMap cell that is NOT a mechanism (e.g. a plain Real) must be
+    /// left untouched by the pass.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_leaves_non_mechanism_cells_untouched() {
+        let cell_id = ValueCellId::new("Design", "x");
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), Value::Real(42.0));
+
+        let kernel = mock_kernel();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // Cell must still hold its original value.
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&Value::Real(42.0)),
+            "non-mechanism cell must be left untouched"
+        );
+        assert!(diags.is_empty(), "no diagnostics for non-mechanism cells");
+    }
+
+    /// A geometry-backed body whose kernel query fails (no injected results) must
+    /// cause the pass to skip that body (emit a Warning), and since no body was
+    /// patched the mechanism cell is left with its original value unchanged.
+    ///
+    /// RED: `Engine::post_process_mechanism_mass_props` does not exist yet.
+    #[test]
+    fn post_process_mechanism_mass_props_emits_warning_on_kernel_failure() {
+        let cell_id = ValueCellId::new("Design", "mech");
+        let original = one_body_mechanism(geometry_handle());
+        let mut values = ValueMap::new();
+        values.insert(cell_id.clone(), original.clone());
+
+        // Bare kernel — no replies injected, so Volume query will fail.
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        Engine::post_process_mechanism_mass_props(&mut values, &kernel, &mut diags);
+
+        // Cell must be unchanged (no body was patched).
+        assert_eq!(
+            values.get(&cell_id),
+            Some(&original),
+            "mechanism cell must be unchanged when kernel fails for all bodies"
+        );
+
+        // A Warning diagnostic must be emitted.
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Warning),
+            "must emit a Warning when kernel query fails; got: {diags:?}"
+        );
     }
 }

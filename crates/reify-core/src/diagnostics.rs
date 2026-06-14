@@ -227,6 +227,23 @@ pub enum DiagnosticCode {
     /// accepted. Non-fatal — the op is still lowered (mirrors [`GeometryUnbounded`]).
     /// See `docs/prds/geometry-primitive-constructors.md` task α.
     GeometryProfileRequired,
+    /// Origin: the eval `ModifyKind::Fillet` 3-arg arm in
+    /// `crates/reify-eval/src/geometry_ops.rs` (curated-fillet anti-zero-edges guard).
+    /// Canonical message form:
+    /// `"fillet(...): edge selector resolved to zero edges"`.
+    ///
+    /// Emitted as a `Severity::Error` when a *present* (3-arg
+    /// `fillet(solid, edges, radius)`) edge selector resolves to an **empty**
+    /// vector. This is a hard user error: the op must NEVER silently fall through
+    /// to the all-edges path (which would fake-complete the build with an
+    /// unintended geometry — the task-3295 trap). The 2-arg back-compat form
+    /// `fillet(solid, radius)` has no selector argument, so its empty edge list
+    /// legitimately means all-edges and does NOT emit this code.
+    ///
+    /// The PRD-prose mnemonic is `E_EMPTY_SELECTION` (see
+    /// `docs/prds/geometry-modify-sweep-completion.md`); per the `E_*` → Error
+    /// severity convention this is always a blocking error.
+    EmptyEdgeSelection,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
     /// Replaces canonical messages:
     /// - `"constraint <id> violated"` (Bool(false) branch, Severity::Error)
@@ -240,8 +257,23 @@ pub enum DiagnosticCode {
     /// makes that non-breaking).
     ConstraintViolated,
     /// Origin: `crates/reify-constraints/src/lib.rs::SimpleConstraintChecker::check`.
-    /// Replaces canonical message:
-    /// `"constraint <id> indeterminate: undefined inputs"` (Undef branch, Severity::Warning)
+    /// Replaces two canonical message forms (Undef branch, Severity::Warning):
+    ///
+    /// - `"constraint <id> indeterminate: undefined inputs: <cells>"` — emitted when
+    ///   ≥1 leaf `ValueRef` in the constraint expression resolves to `Value::Undef`
+    ///   (data is absent). `<cells>` is a comma-separated list of the undefined cell
+    ///   names (deduped, sorted alphabetically) via `ValueCellId::Display`
+    ///   (`"entity.member"` format). Note: `collect_value_refs()` also returns
+    ///   `CrossSubGeometryRef` IDs; those are treated the same as ordinary cell IDs
+    ///   and will appear here if absent from the `ValueMap`.
+    ///
+    /// - `"constraint <id> indeterminate: operator undefined for these operand kinds: <kinds>"`
+    ///   — emitted when all leaf `ValueRef`s are defined but the operator is undefined
+    ///   for the given operand kinds (e.g. comparing a Tensor to a Scalar, or comparing
+    ///   scalars of mismatched dimensions). `<kinds>` is a comma-separated list of the
+    ///   distinct operand kinds (deduped, sorted alphabetically) such as `"Tensor"`,
+    ///   `"Scalar<m>"`, `"Enum<MyType>"`. When the expression has no `ValueRef` leaves
+    ///   (literal-only), the `": <kinds>"` suffix is omitted.
     ConstraintIndeterminate,
     /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`,
     ///          `crates/reify-constraints/src/solvespace.rs::SolveSpaceSolver`, and
@@ -320,6 +352,18 @@ pub enum DiagnosticCode {
     /// from the same dispatch path; downstream tooling that wants to surface
     /// these as harder failures can filter by code at the consumer side.
     FieldSampledInvalidConfig,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: points must form a uniformly-spaced 1-D regular grid (<reason>)"`.
+    ///
+    /// Emitted when the `points` argument to `from_samples(points, values, method)` is not
+    /// a valid 1-D regular grid. Reasons include: non-scalar elements (e.g. Point2/Point3),
+    /// length mismatch between points and values, fewer than 2 points, non-positive or
+    /// non-uniform spacing. The builtin returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_FIELD_SAMPLES_NOT_GRID`. Severity is `Error`
+    /// (unlike the sibling `W_FIELD_SAMPLED_INVALID_CONFIG` which is a Warning).
+    FieldSamplesNotGrid,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -360,6 +404,20 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
     InterpolationDeferred,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: interpolation method '<variant>' is not supported by from_samples \
+    ///  (supported: Linear, NearestNeighbor, Cubic)"`.
+    ///
+    /// Emitted when the `method` argument to `from_samples(points, values, method)` is a
+    /// `Value::Enum { type_name: "InterpolationMethod", .. }` variant that `from_samples`
+    /// does not support. Currently fires for `"RBF"` and `"Kriging"` (and any
+    /// unrecognized variant). These are HARD errors in `from_samples` — unlike
+    /// `interp::resolve_method`, which falls back to Linear with a Warning. The builtin
+    /// returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_INTERP_METHOD_UNSUPPORTED`. Severity is `Error`.
+    InterpMethodUnsupported,
     /// Origin: `crates/reify-compiler/src/expr.rs` (binary-op `Add`/`Sub` site and
     ///          range-bounds site), via `crates/reify-compiler/src/type_compat::format_dimension_mismatch_diagnostic`.
     /// Canonical message form: `"dimension mismatch in {op}: {left} vs {right}"`.
@@ -427,6 +485,64 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
     TopologyTagStale,
+    /// Origin: `crates/reify-compiler/src/units.rs` (`selector_composition_result_type`),
+    /// called from `crates/reify-compiler/src/expr.rs` (selector-composition ladder arm).
+    /// Emitted as an `Error` when a selector composition (`union`/`intersect`/`difference`)
+    /// violates the K1 kind-closure invariant (all operands must share the same
+    /// `SelectorKind`).
+    ///
+    /// Two message variants are emitted under this code (distinguished by message text):
+    ///
+    /// 1. **Mixed-kind composition** — all operands are selectors but of different kinds
+    ///    (e.g. `Face` and `Edge`):
+    ///    `"selector composition kind mismatch: cannot compose <KindA> and <KindB>"`
+    ///    Label at the composition call site: `"mixed-kind selector composition"`.
+    ///
+    /// 2. **Non-selector operand mixed with selectors** — at least one operand is not a
+    ///    `Type::Selector` at all (e.g. `union(faces(b), box(…))`):
+    ///    `"selector composition requires all operands to be selectors; N non-selector \
+    ///     operand(s) found"`
+    ///    Label at the composition call site: `"non-selector operand in selector composition"`.
+    ///
+    /// Exactly one diagnostic is emitted per composition call site in both cases; the
+    /// result type is inferred as `Type::Selector(first_kind)` for downstream anti-cascade.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_SELECTOR_KIND_MISMATCH`
+    /// (see `docs/prds/topology-selector-value-type.md` §11.2).
+    SelectorKindMismatch,
+    /// Origin: `crates/reify-compiler/src/builtin_signatures.rs` (task 4493,
+    /// type-hygiene ζ).
+    /// Emitted as `Severity::Error` when a call site passes a statically-known
+    /// argument whose type is a DEFINITE mismatch with the builtin's expected
+    /// dimensioned-scalar arg type.
+    ///
+    /// Canonical message form:
+    /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}"`
+    ///
+    /// where:
+    /// - `{builtin}` — the builtin function name (e.g., `"moment_of_inertia"`).
+    /// - `{arg_name}` — the parameter name (e.g., `"density"`, `"tol"`, `"h"`).
+    /// - `{type_name}` — the expected physical quantity name (e.g., `"Density"`,
+    ///   `"Angle"`, `"Length"`), mirroring the γ runtime `ArgRejection::message`
+    ///   wording so compile-time and runtime diagnostics read consistently.
+    /// - `{actual}` — the actual resolved argument type (`Type::Display`), e.g.,
+    ///   `"Real"` for a bare `7850.0`, `"Bool"` for a boolean, `"Scalar[m]"` for
+    ///   a length scalar.
+    ///
+    /// Distinct from [`DimensionMismatch`] (which has Add/Sub-specific semantics)
+    /// and [`SelectorKindMismatch`] (selector-composition invariant): minted as a
+    /// dedicated code because the builtin-arg mismatch can be a *kind* mismatch
+    /// (e.g., `Bool` where `Density` is expected), not only a dimension mismatch,
+    /// and because it names the builtin's parameter contract rather than an
+    /// operator-level invariant — following the `SelectorKindMismatch` minting
+    /// precedent (diagnostics.rs §"minting rationale").
+    ///
+    /// Gradualism (PRD decision 6): `Type::Error` (poison) and `Type::TypeParam`
+    /// (unresolved generic) are silently skipped; only concrete types fire.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
+    /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
+    ArgTypeMismatch,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
@@ -719,6 +835,70 @@ pub enum DiagnosticCode {
     /// `docs/prds/v0_2/auto-resolution-backtracking.md` §"Resolved design
     /// decisions").
     AutoTypeParamCrossProductSizeExceeded,
+    /// Origin: `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    ///
+    /// Canonical message form:
+    /// `"auto type-parameter BFS fallback assignment is jointly infeasible:
+    /// parameters [<names>] exceed <bound> (depth bound max_depth=<N>|cross-product
+    /// cap max_cross_product_size=<C>); BFS assignment [<T=fqn>, …] violates
+    /// constraint(s) [<id>, …] under joint check. No substitution produced."`
+    ///
+    /// Where:
+    /// - `<names>` lists the `auto:` type-parameter names (declared order).
+    /// - The `<bound>` clause identifies which fallback fired: either
+    ///   `depth bound max_depth=<N>` (from `AutoTypeParamDepthBoundExceeded`)
+    ///   or `cross-product cap max_cross_product_size=<C>` (from
+    ///   `AutoTypeParamCrossProductSizeExceeded`) — derived from the `code`
+    ///   argument passed to the helper.
+    /// - `[<T=fqn>, …]` is the per-param assignment BFS returned.
+    /// - `[<id>, …]` are the `ConstraintNodeId`s that returned `Violated`
+    ///   in the single joint `check_constraints_leaf` call.
+    ///
+    /// Emitted as `Severity::Error` when:
+    /// 1. The v0.2 DFS-over-cross-product falls back to v0.1 BFS (depth-bound
+    ///    or cross-product-cap guard fires).
+    /// 2. BFS returns a COMPLETE assignment (`substitution.len() == params.len()`).
+    /// 3. The joint recheck (`check_constraints_leaf` with a full ValueMap seeded
+    ///    from all candidates' literal defaults via `seed_candidate_value_map`)
+    ///    finds at least one `Violated` constraint.
+    ///
+    /// On this path **no substitution is produced** for the declaration — the
+    /// BFS assignment is discarded entirely because it is jointly infeasible.
+    /// The caller returns a `MultiParamResolutionOutcome` with an empty
+    /// `substitution`.  The Error is emitted INSTEAD of (not in addition to)
+    /// the depth-bound/cap `Warning`.
+    ///
+    /// Severity is `Error` (not `Warning`) because the BFS assignment is
+    /// unsound: accepting it would substitute a cross-product-infeasible
+    /// combination into the parameterized template.  A Warning would
+    /// mis-signal that compilation succeeded.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §6.2).
+    AutoTypeParamBoundedInfeasible,
+    /// Origin: `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`
+    /// (monomorph-build pass, per-cell synthesis guard — task 4435 δ).
+    ///
+    /// Canonical message form:
+    /// `"auto type parameter resolved candidate '<Candidate>' is not constructible: \
+    ///   required parameter '<param>' has no default; cannot synthesize a zero-arg \
+    ///   instance for 'param <member> : <T>'"`.
+    ///
+    /// Emitted as `Severity::Error` when the monomorph-build pass finds that a
+    /// resolved candidate has ≥1 required (non-defaulted) `Param` cell.
+    /// A zero-arg StructureInstanceCtor synthesized over such a candidate would
+    /// produce a `Value::StructureInstance` silently missing the required field —
+    /// a fake-completion trap.  The Error names the first missing param so the
+    /// user can provide an explicit default or a zero-arg-constructible candidate.
+    ///
+    /// The cell's `default_expr` is left `None` (no synthesized ctor), preserving
+    /// the existing `Value::Undef` fallthrough at `unfold.rs` for that cell.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §δ).
+    AutoTypeParamCandidateNotConstructible,
     /// Origin: `crates/reify-compiler/src/traits.rs::compile_purpose` (Let arm).
     ///
     /// Canonical message form:
@@ -1153,6 +1333,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_UNKNOWN_TYPE_PARAM`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnUnknownTypeParam,
+    /// A non-dimension-kinded type parameter is used in a dimension slot
+    /// (`Scalar<T>`, `Vector3<T>`, or `Point3<T>` where `T` is not declared
+    /// with a `Dimension` bound), OR a dimension-kinded type parameter is
+    /// used as an ordinary type (bare `Q` in a non-dimension position).
+    ///
+    /// Both misuse cases produce a single root-cause DimParamKind Error and
+    /// return `Some(Type::Error)` so no competing `FnUnknownTypeParam` or
+    /// `UnresolvedType` Error is emitted (anti-cascade pattern).
+    ///
+    /// Origin site: `crates/reify-compiler/src/type_resolution.rs` —
+    /// `resolve_parameterized_builtin_type` (Scalar/Vector3/Point3 arms via the
+    /// `try_dim_param_slot_or_kind_error` classifier) and
+    /// `resolve_type_expr_with_aliases_kinded` (bare-name path).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DIM_PARAM_KIND`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    DimParamKind,
     /// A generic function call binds the same type parameter to two different
     /// concrete types across its arguments (call-site type-argument inference
     /// conflict).
@@ -1304,22 +1501,15 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_SHELL_TOO_THICK` /
     /// `W_SHELL_TOO_THICK` depending on severity.
     ShellTooThick,
-    /// Origin: reserved for a future emission site in
-    /// `crates/reify-eval/src/shell_extract_compute.rs` (ε trampoline).
+    /// Origin: `crates/reify-eval/src/shell_extract_compute.rs`
+    /// (`shell_extract_compute_fn`, medial-mask phase, empty-mask guard).
     ///
-    /// **Not yet emitted** — no clean synthetic trigger exists for the
-    /// "empty medial mask" state in the current pipeline.  This variant is
-    /// added for PRD §7 vocabulary completeness and to reserve the wire string
-    /// `"ShellNoMedial"` in the serde encoding, consistent with the
-    /// codebase's reserved-code convention (see also `MissingRequiredMember`,
-    /// `KinematicClosedChain`).
+    /// Emitted as `Severity::Error` when `compute_medial_mask` succeeds but
+    /// returns a mask with zero medial voxels (geometry fully solid or voxel
+    /// resolution too coarse), short-circuiting before mid-surface extraction.
     ///
-    /// When emitted in a future task: `Severity::Error` when the medial-axis
-    /// computation produces an empty mask (no interior voxels), preventing any
-    /// mid-surface extraction.
-    ///
-    /// Canonical message form (reserved):
-    /// `"shell-extract::extract: medial-mask phase: no medial axis found — body may be too degenerate for shell extraction"`.
+    /// Canonical message form:
+    /// `"shell-extract::extract: medial-mask phase: no medial axis found — body '<name>' may be too degenerate for shell extraction (geometry fully solid or voxel resolution too coarse)"`.
     ///
     /// The PRD-prose mnemonic for this code is `E_SHELL_NO_MEDIAL`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
@@ -1572,6 +1762,43 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassPropsArity`
     /// (severity convention: `E_*` → Error). Registered in task 3829 (RBD-β).
     DynamicsBodyMassPropsArity,
+    /// Origin: `crates/reify-stdlib/src/dynamics/eval.rs` (`diagnose` hook,
+    /// wired into `reify-expr::emit_undef_builtin_diagnostics`).
+    ///
+    /// Emitted as a `Severity::Error` when an `inverse_dynamics` call returns
+    /// `Value::Undef` because at least one body in the spanning tree has no
+    /// resolvable mass — i.e. `body.solid` is neither a `MassProperties`
+    /// `Value::StructureInstance` nor a real-geometry solid with density (the
+    /// derived rung is a stub until task 3620). The diagnostic names the
+    /// first unresolvable body.
+    ///
+    /// Canonical message form:
+    /// `"inverse_dynamics: body '<id>' has no resolvable mass (no MassProperties on body.solid)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DynamicsBodyMassUnresolved`.
+    /// Registered in task 4278 (v0.3 flexures uniform-mass substrate).
+    DynamicsBodyMassUnresolved,
+    /// Origin: `crates/reify-stdlib/src/snapshot.rs` `diagnose` hook, wired
+    /// into `reify-expr` as `emit_snapshot_diagnostics` (task 4471).
+    ///
+    /// Emitted as a `Severity::Warning` when a `center_of_mass` call falls
+    /// back to the legacy density-weighted centroid because at least one
+    /// snapshot body has no resolvable mass (neither an explicit
+    /// `MassProperties` solid nor a build-baked `derived_mass_props` field)
+    /// while at least one other body **does** carry resolvable mass (the
+    /// mixed case). Pure-legacy snapshots (no body resolves) and
+    /// all-resolved snapshots are silent.
+    ///
+    /// The diagnostic names the **first** unresolved body by its integer id.
+    ///
+    /// Canonical message form:
+    /// `"center_of_mass: body '<id>' has no resolvable mass; falling back to
+    ///   legacy density-weighted centroid (explicit point_mass/mass_properties
+    ///   on other bodies ignored)"`.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_SnapshotCenterOfMassDensityFallback`.
+    /// Registered in task 4471 (v0.3 flexures snapshot center_of_mass rung).
+    SnapshotCenterOfMassDensityFallback,
     /// Origin: `crates/reify-compiler/src/conformance` (assoc-fn satisfaction
     /// phase) and `crates/reify-compiler/src/trait_requirements.rs`.
     ///
@@ -1902,6 +2129,200 @@ pub enum DiagnosticCode {
     /// the out-of-scope variant fired when the intrinsic is used outside a purpose
     /// constraint position entirely.
     DeterminacyIntrinsicArg,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; unified build-DAG Stage B Tarjan-SCC discriminator).
+    ///
+    /// Canonical message form (one diagnostic per strongly-connected component):
+    /// `"evaluation cycle detected: [<member>, <member>, …]"`, where each
+    /// member is rendered via [`crate::NodeId::describe`] along a deterministic
+    /// ordered path (mirroring the legacy `detect_let_cycle` `[a, b, c]` shape).
+    ///
+    /// Emitted as a `Severity::Error` when the online Kahn worklist leaves a
+    /// residue whose induced subgraph contains a true cycle (`|SCC| > 1`, or a
+    /// singleton carrying a self-edge). Singleton-no-self-edge residue members
+    /// are stranded-downstream and do NOT emit this code. Kind-agnostic: detects
+    /// value↔value, geom↔constraint, realization↔realization (GeomRef::Sub) and
+    /// any other cross-kind cycle over the edges α's trace map encodes.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_CYCLE`.
+    EvalCycle,
+    /// Origin: `crates/reify-eval/src/engine_fixpoint.rs::run_unified_pass`
+    /// (task 4357 δ; geometry-backed-constraint-on-auto guard).
+    ///
+    /// Canonical message form:
+    /// `"unresolved constraint: <constraint-describe> transitively depends on
+    /// auto parameter(s) through geometry-backed inputs"`.
+    ///
+    /// Emitted as a `Severity::Error` when a constraint's transitive auto-read
+    /// closure (its `realization_reads`, then each backing realization's
+    /// `reads` + `realization_reads`, recursively) reaches an `auto` value cell
+    /// (`ValueCellKind::is_auto`). The unified pass declines to solve that
+    /// class. Independent of the cycle residue (a pure structural classifier
+    /// over existing edges).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_EVAL_UNRESOLVED`.
+    EvalUnresolved,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"GD&T material modifier (MMC/LMC) is illegal for '<type_name>': this characteristic is RFS-only"`.
+    ///
+    /// Emitted as a `Severity::Error` when a callout instance (a `Value::StructureInstance`
+    /// conforming to `GeometricTolerance`) carries `material_condition ∈ {MMC, LMC}` for a
+    /// characteristic family that is RFS-only per ASME Y14.5-2018 — namely Form
+    /// (`Flatness`, `Straightness`, `Circularity`, `Cylindricity`), Runout
+    /// (`CircularRunout`, `TotalRunout`), and Profile (`ProfileOfSurface`,
+    /// `ProfileOfLine`, `ProfileOfSurfaceRelated`, `ProfileOfLineRelated`).
+    /// Orientation (`Parallelism`, `Perpendicularity`, `Angularity`) are FOS-eligible
+    /// only when `zone_shape == Cylindrical`; when `zone_shape == Width` (the default)
+    /// a modifier is also illegal and this code is emitted.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`),
+    /// which is the B7 "at the instantiation span" oracle.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_GdtIllegalModifier`
+    /// (severity convention: `E_*` → Error; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtIllegalModifier,
+    /// Origin: `crates/reify-eval/src/engine_constraints.rs::check_gdt_legality`
+    /// (task 4475 β — GD&T zones β check-time legality diagnostics).
+    ///
+    /// Canonical message form:
+    /// `"'<type_name>' was removed in ASME Y14.5-2018; use Position, ProfileOfSurface, or CircularRunout/TotalRunout instead"`.
+    ///
+    /// Emitted as a `Severity::Warning` (non-fatal) when a callout instance is of type
+    /// `Concentricity` or `Symmetry`, both of which were removed from the standard in
+    /// ASME Y14.5-2018. The warning fires unconditionally (independent of
+    /// `material_condition`). `GdtIllegalModifier` is NOT additionally emitted for these
+    /// types — the removal supersedes the modifier-legality question.
+    ///
+    /// The label is anchored at the ctor-let instantiation span (`ValueCellDecl.span`).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_GdtRemoved2018`
+    /// (severity convention: `W_*` → Warning; see `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` task β §11 Q3).
+    GdtRemoved2018,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `MemberAccess`
+    /// datum-projection branch, geometric-relations β).
+    ///
+    /// Canonical message form:
+    /// `"<type> has no projection '.<member>'"`, optionally followed by a
+    /// `"; use .<member>"` redirect when an obvious alternative exists — e.g.
+    /// `"Point3<Length> has no projection '.dir'"` (no redirect), but
+    /// `"Plane has no projection '.dir'; use .normal"` (a plane's unique
+    /// direction is its normal). The redirect hint is supplied by
+    /// `datum_projection::datum_projection_unavailable_hint`.
+    ///
+    /// Emitted as a `Severity::Error` when a datum-projection member access
+    /// (`.dir`/`.normal`/`.origin`/`.x`/`.y`/`.z`/`.xy_plane`) targets a receiver
+    /// that has no such projection — e.g. `point.dir` (a `Point3` has no
+    /// direction), or `plane.dir` (a `Plane` exposes `.normal`, not `.dir`). The
+    /// access lowers to a poison literal (anti-cascade), so no further diagnostics
+    /// fan out from the rejected member.
+    ///
+    /// Distinct from [`DatumProjectionAmbiguous`]: *unavailable* means the member
+    /// does not exist on the receiver at all, whereas *ambiguous* means it could
+    /// name several members and the author must pick one.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DATUM_PROJECTION_UNAVAILABLE`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 β).
+    DatumProjectionUnavailable,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `MemberAccess`
+    /// datum-projection branch, geometric-relations β).
+    ///
+    /// Canonical message form:
+    /// `"ambiguous datum projection '.<member>' on <type>: it could be any of
+    /// <members> — write one of those instead (e.g. write .<member>)"` (e.g.
+    /// `"ambiguous datum projection '.dir' on Frame(3): it could be any of .x,
+    /// .y, .z — write one of those instead (e.g. write .z)"`).
+    ///
+    /// Emitted as a `Severity::Error` when a *bare* datum projection could resolve
+    /// to more than one member of the receiver — e.g. `frame.dir`/`frame.normal`
+    /// on a `Frame(3)`, whose three basis directions `.x`/`.y`/`.z` are all
+    /// candidates. The diagnostic names the disambiguating members; the access
+    /// lowers to a poison literal (anti-cascade).
+    ///
+    /// Distinct from [`DatumProjectionUnavailable`]: *ambiguous* means the
+    /// projection exists but is non-unique, whereas *unavailable* means it does
+    /// not exist on the receiver at all.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DATUM_PROJECTION_AMBIGUOUS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 β).
+    DatumProjectionAmbiguous,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (the `MemberDecl::Relate`
+    /// arm and the inline `SubDecl.relate_relations` check, geometric-relations δ).
+    ///
+    /// Canonical message form:
+    /// `"relate member has type <T>, expected Relation"` — e.g. a Bool member
+    /// (`relate { true }`) or a metric query (`relate { distance(p1, p2) }`,
+    /// `Scalar<Length>`). A `relate { }` block — and its inline
+    /// `sub … at … where { }` twin — accepts ONLY `Type::Relation` members
+    /// (design §4/§7.3): a `drive` relation (`concentric`/`flush`/`offset`/…).
+    ///
+    /// Emitted as `Severity::Error` when a relate-block member's `result_type`
+    /// is neither `Type::Relation` nor `Type::Error` (a `Type::Error` member is
+    /// skipped — anti-cascade, so no second diagnostic piles onto an already-
+    /// errored member). The 3-verb routing falls out of this single check with
+    /// no name re-classification: a `check` verb types to `Bool` and a
+    /// `derive`/`query` verb types to a metric, both failing the Relation check.
+    ///
+    /// The symmetric mirror is the constraint side rejecting `Type::Relation`
+    /// (a Relation belongs in `relate {}`, not `constraint`; see the
+    /// `MemberDecl::Constraint` arm).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_RELATE_EXPECTS_RELATION`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
+    RelateExpectsRelation,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
+    /// arg/default mismatch — task 4584).
+    ///
+    /// Emitted as `Severity::Error` in three sub-cases, differentiated by message text:
+    /// 1. A constructor arg passed to a `Type::StructureRef` param has the wrong nominal
+    ///    type (e.g. `ForcingTimeHistory(part: "beam", ...)` where `part : Part`).
+    /// 2. A structure `param`'s default expression has the wrong nominal type for a
+    ///    `Type::StructureRef`-typed cell (e.g. `param part : Part = "x"`).
+    /// 3. A structure `param`'s default expression is not a geometry-producing expression
+    ///    for a `Type::Geometry`-typed cell (e.g. `param g : Solid = 42`).
+    ///
+    /// Canonical message forms:
+    /// - `"argument '<arg>' has type '<T>' but param '<p>' requires structure type '<S>'"` (sub-case 1/2)
+    /// - `"param '<p>' has type 'Geometry' but its default expression has non-geometry type '<T>'"` (sub-case 3)
+    ///
+    /// One `DiagnosticCode` spans all three sub-cases per the established
+    /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
+    TypeNotConformingToStructureRef,
+    /// Origin: `crates/reify-eval/src/feature_datum.rs`
+    /// (`feature_datum_projection`, geometric-relations ε).
+    ///
+    /// Emitted as `Severity::Error` at *resolve time* when a feature → datum
+    /// projection (`feature.axis` / `.plane` / `.point` / `.dir`) cannot refine
+    /// to a single datum: the realized feature's deduplicated
+    /// `FeatureDatumBundle` carries either zero or several non-equivalent
+    /// candidates for the requested projection target (e.g. `box.axis` →
+    /// several non-coaxial edge axes). The projection evaluates to `Value::Undef`
+    /// (the runtime analogue of β's poison literal) and the author must select a
+    /// sub-feature to disambiguate.
+    ///
+    /// Canonical message form:
+    /// `"ambiguous feature datum projection '.<member>': the feature carries <n>
+    /// candidate <member> datums — select a sub-feature to disambiguate"`
+    /// (`<n>` is the candidate count; the zero case reads "carries no <member>
+    /// datum").
+    ///
+    /// This is the *resolve-time* (realized-geometry-dependent) sibling of the
+    /// *compile-time* [`DatumProjectionAmbiguous`]: β's ambiguity is a static
+    /// type-level non-uniqueness (`frame.dir`), whereas ε's depends on the dedup
+    /// result of the realized geometry and so cannot be known at type-check time
+    /// (design §7.2 — the ambiguous arm of the `Axis | Axis?` refinement). It is
+    /// surfaced as a select-a-subfeature diagnostic rather than a static error or
+    /// a new optional/union type.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEATURE_DATUM_AMBIGUOUS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 ε).
+    FeatureDatumAmbiguous,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2077,6 +2498,44 @@ pub struct DiagnosticRef {
 #[cfg(test)]
 mod tests {
     use super::{Diagnostic, DiagnosticCode, SourceSpan};
+
+    /// Task 4357 δ (step-3): the two additive diagnostic codes emitted by
+    /// `engine_fixpoint::run_unified_pass` — `EvalCycle` (E_EVAL_CYCLE) and
+    /// `EvalUnresolved` (E_EVAL_UNRESOLVED) — must exist, be distinct, and be
+    /// attachable via `Diagnostic::error(..).with_code(..)` with the code
+    /// reading back.
+    ///
+    /// RED until step-4 adds the variants.
+    #[test]
+    fn eval_cycle_and_unresolved_codes_exist_and_attach() {
+        // Exist + distinct.
+        assert_ne!(DiagnosticCode::EvalCycle, DiagnosticCode::EvalUnresolved);
+
+        // Attachable via the builder; code reads back.
+        let cyc = Diagnostic::error("cycle").with_code(DiagnosticCode::EvalCycle);
+        assert_eq!(cyc.code, Some(DiagnosticCode::EvalCycle));
+        let unr = Diagnostic::error("unresolved").with_code(DiagnosticCode::EvalUnresolved);
+        assert_eq!(unr.code, Some(DiagnosticCode::EvalUnresolved));
+    }
+
+    /// Task 4357 δ (step-3): the additive codes serialize to their PascalCase
+    /// wire identifiers under the `serde` feature (matching the enum's
+    /// `rename_all = "PascalCase"`), so downstream tooling matches stable
+    /// strings rather than message substrings.
+    ///
+    /// RED until step-4 adds the variants.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn eval_codes_serialize_to_pascalcase_wire_strings() {
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalCycle).unwrap(),
+            serde_json::Value::String("EvalCycle".to_owned())
+        );
+        assert_eq!(
+            serde_json::to_value(DiagnosticCode::EvalUnresolved).unwrap(),
+            serde_json::Value::String("EvalUnresolved".to_owned())
+        );
+    }
 
     #[test]
     fn prelude_sentinel_is_prelude() {
@@ -2255,6 +2714,20 @@ mod tests {
     fn diagnostic_code_geometry_profile_required_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::GeometryProfileRequired).unwrap();
         assert_eq!(s, "\"GeometryProfileRequired\"");
+    }
+
+    // --- EmptyEdgeSelection tests (geom-modify curated-fillet task 3205) ---
+    // Pairs with the anti-zero-edges guard in the eval ModifyKind::Fillet 3-arg
+    // arm: a present (3-arg) edge selector that resolves to an empty vector emits
+    // a blocking diagnostic with this code instead of silently filleting all edges.
+
+    /// `DiagnosticCode::EmptyEdgeSelection` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` (mirrors the GeometryUnbounded
+    /// shape so a future enum reorganisation that drops it is caught here).
+    #[test]
+    fn diagnostic_code_empty_edge_selection_with_code_round_trips() {
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::EmptyEdgeSelection);
+        assert_eq!(d.code, Some(DiagnosticCode::EmptyEdgeSelection));
     }
 
     // --- Shadowing tests (task 2310 — spec §8.5) ---
@@ -2458,6 +2931,93 @@ mod tests {
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
     }
 
+    // --- FieldSamplesNotGrid tests (task 4221 — E_FIELD_SAMPLES_NOT_GRID) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSamplesNotGrid` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::FieldSamplesNotGrid)`.
+    /// Pins the error-severity contract for E_FIELD_SAMPLES_NOT_GRID.
+    #[test]
+    fn field_samples_not_grid_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("not a 1-D regular grid").with_code(DiagnosticCode::FieldSamplesNotGrid);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSamplesNotGrid));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSamplesNotGrid`
+    /// serializes as `"FieldSamplesNotGrid"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_samples_not_grid_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSamplesNotGrid).unwrap();
+        assert_eq!(s, "\"FieldSamplesNotGrid\"");
+    }
+
+    // --- InterpMethodUnsupported tests (task 4221 — E_INTERP_METHOD_UNSUPPORTED) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::InterpMethodUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::InterpMethodUnsupported)`.
+    /// Pins the error-severity contract for E_INTERP_METHOD_UNSUPPORTED.
+    #[test]
+    fn interp_method_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("interpolation method 'RBF' is not supported by from_samples")
+            .with_code(DiagnosticCode::InterpMethodUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::InterpMethodUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::InterpMethodUnsupported`
+    /// serializes as `"InterpMethodUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_interp_method_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::InterpMethodUnsupported).unwrap();
+        assert_eq!(s, "\"InterpMethodUnsupported\"");
+    }
+
+    // --- RelateExpectsRelation tests (task 4384 δ — E_RELATE_EXPECTS_RELATION) ---
+    // Pairs with the `MemberDecl::Relate` arm + `SubDecl.relate_relations` check
+    // in `crates/reify-compiler/src/entity.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::RelateExpectsRelation` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::RelateExpectsRelation)`.
+    /// Pins the error-severity contract for E_RELATE_EXPECTS_RELATION.
+    #[test]
+    fn relate_expects_relation_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("relate member has type Bool, expected Relation")
+            .with_code(DiagnosticCode::RelateExpectsRelation);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateExpectsRelation));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::RelateExpectsRelation`
+    /// serializes as `"RelateExpectsRelation"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
+        assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
     // Pairs with `emit_split_children_diagnostic` in
     // `crates/reify-eval/src/topology_attribute_resolver.rs`.
@@ -2658,6 +3218,82 @@ mod tests {
             back,
             DiagnosticCode::AutoTypeParamDepthBoundExceeded,
             "deserialize must round-trip back to AutoTypeParamDepthBoundExceeded"
+        );
+    }
+
+    // --- AutoTypeParamBoundedInfeasible tests (task 4434 — E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) ---
+    // Pairs with the joint-recheck emitter in
+    // `crates/reify-compiler/src/auto_type_param.rs::emit_fallback_warning_and_delegate_to_bfs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs` (not
+    // reify-ir) alongside the other AutoTypeParam* siblings, per the design decision
+    // recorded in task 4434's plan (reify-ir/src/diagnostics.rs does not exist).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // serde wire-form round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamBoundedInfeasible` round-trips through
+    /// serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamBoundedInfeasible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the γ BFS-fallback joint-recheck hard error.
+    ///
+    /// Emitted (as `Severity::Error`) by
+    /// `emit_fallback_warning_and_delegate_to_bfs` when BFS returns a complete
+    /// assignment that the joint-recheck finds infeasible (any Violated
+    /// constraint after seeding the full joint ValueMap).  Produces NO
+    /// substitution (PRD §6.2 step 4 / mnemonic E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_bounded_infeasible_round_trips_via_serde() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::AutoTypeParamBoundedInfeasible).unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamBoundedInfeasible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamBoundedInfeasible,
+            "deserialize must round-trip back to AutoTypeParamBoundedInfeasible"
+        );
+    }
+
+    // --- AutoTypeParamCandidateNotConstructible tests (task 4435 — E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE) ---
+    // Pairs with the synthesis guard in
+    // `crates/reify-compiler/src/compile_builder/auto_type_param_phase.rs`.
+    // The variant is registered in `crates/reify-core/src/diagnostics.rs`
+    // alongside the other AutoTypeParam* siblings per the task 4435 DIAGNOSTIC
+    // HOME CORRECTION.  Variant-agnostic derives are covered by
+    // `diagnostic_code_derives`; only the variant-specific serde wire-form
+    // round-trip is added here to lock the LSP/MCP contract.
+
+    /// `DiagnosticCode::AutoTypeParamCandidateNotConstructible` round-trips
+    /// through serde under `feature = "serde"`: the wire form is the PascalCase
+    /// string `"AutoTypeParamCandidateNotConstructible"`, and deserializing that
+    /// string back yields the original variant.  Pins both directions of the
+    /// LSP/MCP wire contract for the δ constructibility guard.
+    ///
+    /// Emitted (as `Severity::Error`) by the monomorph-build pass when a
+    /// resolved candidate has ≥1 required (non-defaulted) Param cell, making
+    /// it impossible to synthesize a zero-arg StructureInstanceCtor default
+    /// (mnemonic E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn auto_type_param_candidate_not_constructible_round_trips_via_serde() {
+        let s = serde_json::to_string(
+            &DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+        )
+        .unwrap();
+        assert_eq!(
+            s, "\"AutoTypeParamCandidateNotConstructible\"",
+            "serde wire form must equal PascalCase identifier"
+        );
+        let back: DiagnosticCode = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            back,
+            DiagnosticCode::AutoTypeParamCandidateNotConstructible,
+            "deserialize must round-trip back to AutoTypeParamCandidateNotConstructible"
         );
     }
 
@@ -3120,6 +3756,57 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::MechanismNonDrivingJoint).unwrap();
         assert_eq!(s, "\"MechanismNonDrivingJoint\"");
     }
+
+    /// `DiagnosticInfo.has_location` round-trips through serde:
+    /// (a) `has_location: false` serializes to JSON key `"has_location"` with value `false`
+    /// — the field is never skipped, always present on the wire; (b) deserializing a JSON
+    /// object that omits `has_location` yields `has_location == true` — pinning the
+    /// backward-compat `#[serde(default = "default_has_location")]` contract so older
+    /// payloads and un-updated consumers are treated as line-tied.
+    ///
+    /// RED until step-5 adds the field and `default_has_location` helper to `DiagnosticInfo`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_info_has_location_serde_wire_and_default() {
+        use super::DiagnosticInfo;
+
+        // (a) Serialize: has_location: false must produce JSON key "has_location" = false.
+        let info = DiagnosticInfo {
+            file_path: "test.ri".to_owned(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "Error".to_owned(),
+            message: "test".to_owned(),
+            code: None,
+            has_location: false,
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(
+            v["has_location"],
+            serde_json::Value::Bool(false),
+            "has_location: false must serialize to JSON false under key 'has_location'"
+        );
+
+        // (b) Deserialize: omitting has_location from JSON must yield has_location == true
+        //     (backward-compat: older payloads without the field are treated as line-tied).
+        let json = serde_json::json!({
+            "file_path": "test.ri",
+            "line": 1,
+            "column": 1,
+            "end_line": 1,
+            "end_column": 1,
+            "severity": "Error",
+            "message": "test",
+            "code": null
+        });
+        let deserialized: DiagnosticInfo = serde_json::from_value(json).unwrap();
+        assert!(
+            deserialized.has_location,
+            "missing `has_location` in JSON must deserialize as true (backward-compat default)"
+        );
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
@@ -3139,4 +3826,29 @@ pub struct DiagnosticInfo {
     pub severity: String,
     pub message: String,
     pub code: Option<String>,
+    /// Whether this diagnostic carries a real, line-tied source span.
+    ///
+    /// `true` means the `line`/`column`/`end_line`/`end_column` fields reflect an
+    /// actual span from the compiled source (non-empty `Diagnostic::labels`).
+    /// `false` means the positions are synthetic (hardcoded 1/1/1/1) and do NOT
+    /// point at a meaningful source location — e.g. module-level hot-reload staleness
+    /// errors where no span is available.
+    ///
+    /// Consumers (β span-less render, γ span-less refusal) use this flag to avoid
+    /// navigating the editor to a fake line 1 for span-less diagnostics.
+    ///
+    /// **Wire default:** a JSON payload that omits `has_location` deserializes as
+    /// `true` (line-tied) to preserve backward compatibility with older serializers
+    /// and un-updated consumers.
+    #[cfg_attr(feature = "serde", serde(default = "default_has_location"))]
+    pub has_location: bool,
+}
+
+/// Serde default for [`DiagnosticInfo::has_location`]: `true` (line-tied).
+///
+/// Returning `true` makes a JSON payload that omits `has_location` deserialize as
+/// line-tied, preserving backward-compat for older serializers and un-updated consumers.
+#[cfg(feature = "serde")]
+fn default_has_location() -> bool {
+    true
 }

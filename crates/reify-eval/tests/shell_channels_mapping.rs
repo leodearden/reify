@@ -30,7 +30,7 @@ fn flatten_3x3(t: [[f64; 3]; 3]) -> Vec<f64> {
 }
 
 /// Build a minimal 1D Sampled Value::Field whose SampledField carries `data`.
-/// Grid: evenly-spaced nodes over [0, n-1]; domain/codomain = Type::Real.
+/// Grid: evenly-spaced nodes over [0, n-1]; domain/codomain = Type::dimensionless_scalar().
 /// The helper clones this structure when building top/bottom, swapping only data.
 fn make_sampled_field(name: &str, data: Vec<f64>) -> Value {
     let n = data.len();
@@ -47,8 +47,8 @@ fn make_sampled_field(name: &str, data: Vec<f64>) -> Value {
         oob_emitted: AtomicBool::new(false),
     };
     Value::Field {
-        domain_type: Type::Real,
-        codomain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
     }

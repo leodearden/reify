@@ -11,7 +11,7 @@ use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 
 /// Build a rank-2 Tensor (matrix) from nested `Vec<Vec<Value>>`.
 ///
-/// The `Type::Real` annotation is a dummy — during evaluation, actual
+/// The `Type::dimensionless_scalar()` annotation is a dummy — during evaluation, actual
 /// type/dimension information is carried by `Value` variants
 /// (`Value::Scalar{dimension}`, `Value::Int`, `Value::Real`), not the
 /// `Type` field on `CompiledExpr`.
@@ -21,14 +21,14 @@ fn mat(rows: Vec<Vec<Value>>) -> Value {
 
 /// Build a rank-1 Tensor (vector) from `Vec<Value>`.
 ///
-/// As with `mat()`, the `Type::Real` annotation on any wrapping
+/// As with `mat()`, the `Type::dimensionless_scalar()` annotation on any wrapping
 /// `CompiledExpr` is a dummy — actual dimensions live in the `Value`
 /// variants themselves.
 fn vec_lit(elems: Vec<Value>) -> Value {
     Value::Tensor(elems)
 }
 
-/// Wrap a `Value` into a `CompiledExpr::literal` with `Type::Real` as a
+/// Wrap a `Value` into a `CompiledExpr::literal` with `Type::dimensionless_scalar()` as a
 /// dummy type annotation. The evaluator does not consult the `Type` field
 /// at runtime — it dispatches on the `Value` variant instead.
 fn lit(v: Value, ty: Type) -> CompiledExpr {
@@ -61,9 +61,9 @@ fn vector_times_matrix_returns_undef() {
 
     let expr = CompiledExpr::binop(
         BinOp::Mul,
-        lit(v, Type::Real),
-        lit(m, Type::Real),
-        Type::Real,
+        lit(v, Type::dimensionless_scalar()),
+        lit(m, Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     assert_eq!(eval(&expr), Value::Undef);
 }
@@ -91,9 +91,9 @@ fn multi_row_undef_propagation() {
 
     let expr = CompiledExpr::binop(
         BinOp::Add,
-        lit(a, Type::Real),
-        lit(b, Type::Real),
-        Type::Real,
+        lit(a, Type::dimensionless_scalar()),
+        lit(b, Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     assert_eq!(eval(&expr), Value::Undef);
 }

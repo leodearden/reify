@@ -15,8 +15,125 @@
  *    or opens the inline field via injected UI callbacks.
  */
 import type { EditorView } from '@codemirror/view';
-import type { PrepareRenameResult, Range, WorkspaceEdit } from './lspClient';
+import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
+
+/**
+ * Apply an array of LSP TextEdits to a plain string, returning the result.
+ *
+ * This is the pure core for closed/inactive-file edits: it does NOT need
+ * CodeMirror or Tauri — just a source string and LSP TextEdit objects.
+ *
+ * Algorithm:
+ * 1. Build a line-start offset table for the source string.
+ * 2. Sort edits by start offset DESCENDING so earlier edits don't shift the
+ *    byte positions of later (higher-indexed) edits.
+ * 3. Splice each edit (start offset → end offset replaced with newText).
+ *
+ * Character offsets beyond the line end are clamped to the line end (same
+ * semantics as lspPositionToOffset / applyWorkspaceEdit) so malformed server
+ * responses don't throw.
+ *
+ * @param source  The current file content as a string.
+ * @param edits   LSP TextEdits with 0-based line/character positions.
+ * @returns       The updated string.
+ */
+export function applyTextEditsToString(
+  source: string,
+  edits: Array<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): string {
+  if (edits.length === 0) return source;
+
+  // Build line-start offset table.
+  // lineStarts[i] = offset in `source` where line i (0-based) begins.
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === '\n') {
+      lineStarts.push(i + 1);
+    }
+  }
+
+  /** Map (0-based line, 0-based character) → clamped string offset. */
+  function posToOffset(line: number, character: number): number {
+    const lineStart = lineStarts[line] ?? source.length;
+    // Clamp character to the end of the line (next lineStart - 1, or source.length).
+    const lineEnd =
+      line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : source.length;
+    return Math.min(lineStart + character, lineEnd);
+  }
+
+  // Sort descending by start offset so each splice doesn't invalidate later offsets.
+  const sorted = [...edits].sort((a, b) => {
+    const aOff = posToOffset(a.range.start.line, a.range.start.character);
+    const bOff = posToOffset(b.range.start.line, b.range.start.character);
+    return bOff - aOff; // descending
+  });
+
+  let result = source;
+  for (const edit of sorted) {
+    const from = posToOffset(edit.range.start.line, edit.range.start.character);
+    const to = posToOffset(edit.range.end.line, edit.range.end.character);
+    result = result.slice(0, from) + edit.newText + result.slice(to);
+  }
+
+  return result;
+}
+
+/**
+ * Dependency-injected sinks for routing a multi-file WorkspaceEdit.
+ *
+ * Keeping the sinks as a plain object makes the orchestrator unit-testable
+ * without CodeMirror or Tauri — exactly like the existing RenameClient/RenameUi
+ * injection pattern.
+ */
+export interface WorkspaceEditDeps {
+  /** Returns true when `uri` is currently open in an editor buffer. */
+  isOpen(uri: string): boolean;
+  /** Apply edits to the currently active CM view (the single reused EditorView). */
+  applyActive(uri: string, edits: TextEdit[]): void;
+  /** Apply edits to an open-but-inactive buffer (not the current CM view). */
+  applyOpenInactive(uri: string, edits: TextEdit[]): void;
+  /** Write edits for a completely closed file directly to disk. */
+  applyClosed(uri: string, edits: TextEdit[]): void;
+}
+
+/**
+ * Route a WorkspaceEdit's per-URI edits to the appropriate sink.
+ *
+ * Routing logic per URI:
+ *  - uri === activeUri         → deps.applyActive (uses the live CM view)
+ *  - deps.isOpen(uri) === true → deps.applyOpenInactive (buffer update + persist)
+ *  - else                      → deps.applyClosed (direct disk write)
+ *
+ * URIs with an absent or empty edit list are silently skipped.
+ * Pure routing — no I/O of its own.
+ */
+export function applyWorkspaceEditAcrossFiles(
+  edit: WorkspaceEdit,
+  activeUri: string,
+  deps: WorkspaceEditDeps,
+): void {
+  const changes = edit.changes;
+  if (!changes) return;
+
+  for (const [uri, edits] of Object.entries(changes)) {
+    if (!edits || edits.length === 0) continue;
+
+    if (uri === activeUri) {
+      deps.applyActive(uri, edits);
+    } else if (deps.isOpen(uri)) {
+      deps.applyOpenInactive(uri, edits);
+    } else {
+      deps.applyClosed(uri, edits);
+    }
+  }
+}
 
 /**
  * Apply an LSP WorkspaceEdit's edits for `uri` to the editor as one transaction.
@@ -100,6 +217,21 @@ export interface RenameUi {
 }
 
 /**
+ * Callback type for the injected multi-file edit applicator.
+ *
+ * `view`      — the live CodeMirror EditorView (for the active file).
+ * `edit`      — the FULL WorkspaceEdit, potentially spanning multiple URIs.
+ * `activeUri` — the URI that was active when the rename was initiated.
+ *
+ * The callback is responsible for routing each URI's edits to the appropriate
+ * sink (active CM view, inactive open buffer, or disk write).  If omitted,
+ * renameCommand falls back to the single-uri `applyWorkspaceEdit` (original
+ * behaviour, preserves backward-compat for callers that don't need cross-file
+ * routing).
+ */
+export type ApplyEditFn = (view: EditorView, edit: WorkspaceEdit, activeUri: string) => void;
+
+/**
  * Create a CodeMirror Command for F2 rename.
  *
  * Returns a `(view) => boolean` suitable for keymap.of in Editor.tsx. It reads
@@ -110,21 +242,19 @@ export interface RenameUi {
  *    non-renameable position (keyword/literal/builtin/type/decl/cross-module)
  *    performs ZERO edits — only a transient message.
  *  - non-null target → ui.promptNewName(...). On submit, rename() is requested
- *    and its WorkspaceEdit applied via applyWorkspaceEdit (one CM dispatch that
- *    flows through Editor.tsx's updateListener → backend sync + didChange).
+ *    and its WorkspaceEdit applied via the injected `applyEdit` callback (which
+ *    routes the edit across ALL changed files). When `applyEdit` is omitted the
+ *    original single-uri `applyWorkspaceEdit` is used as the fallback.
  *
- * Always returns true so the F2 key is consumed. The async request can outlive
- * the editor or a file switch (the EditorView is reused across files — its doc is
- * swapped in place), so both the prompt-open and apply steps re-check that the URI
- * is still current (and the apply step also checks view.dom.isConnected) before
- * touching the buffer; a stale apply would corrupt the newly-active file. A
- * server-rejected name (rename → null) closes the field and surfaces a transient
- * ui.showRenameFailed message rather than dropping the rename silently.
+ * Always returns true so the F2 key is consumed. Both the prompt-open and
+ * apply steps re-check that the URI is still current (and the apply step also
+ * checks view.dom.isConnected) so stale applies never corrupt the active buffer.
  */
 export function renameCommand(
   uriGetter: () => string,
   client: RenameClient,
   ui: RenameUi,
+  applyEdit?: ApplyEditFn,
 ): (view: EditorView) => boolean {
   return (view: EditorView): boolean => {
     const head = view.state.selection.main.head;
@@ -164,7 +294,15 @@ export function renameCommand(
                   ui.showRenameFailed(view);
                   return;
                 }
-                applyWorkspaceEdit(view, edit, uri);
+                if (applyEdit) {
+                  // Injected multi-file applicator: routes each URI's edits to
+                  // the right sink (active CM view / open buffer / disk).
+                  applyEdit(view, edit, uri);
+                } else {
+                  // Fallback: single-uri apply (backward-compat for tests/callers
+                  // that don't supply the cross-file routing callback).
+                  applyWorkspaceEdit(view, edit, uri);
+                }
               })
               .catch((err) => console.warn('rename: failed to apply edit', err));
           },

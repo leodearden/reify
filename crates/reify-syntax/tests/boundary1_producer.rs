@@ -45,9 +45,9 @@ fn bracket_structure() {
 #[test]
 fn error_recovery_partial_parse() {
     let source = r#"structure Broken {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     param !!!invalid!!!
-    param height: Scalar = 100mm
+    param height: Length = 100mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("broken"));
     // Should have parse errors but also recovered declarations
@@ -160,17 +160,17 @@ fn operator_precedence_in_ast() {
 fn bracket_source_round_trip() {
     let source = bracket_source();
     assert!(source.contains("structure Bracket"));
-    assert!(source.contains("param width: Scalar = 80mm"));
+    assert!(source.contains("param width: Length = 80mm"));
     assert!(source.contains("constraint thickness > 2mm"));
     assert!(source.contains("let volume = width * height * thickness"));
     assert!(source.contains("let body = box(width, height, thickness)"));
 }
 
-/// Parse `param thickness: Scalar = auto` → ExprKind::Auto default.
+/// Parse `param thickness: Length = auto` → ExprKind::Auto default.
 #[test]
 fn parse_auto_param() {
     let source = r#"structure T {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -195,7 +195,7 @@ fn parse_auto_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto { free: false }),
+                matches!(expr.kind, ExprKind::Auto { free: false, .. }),
                 "expected ExprKind::Auto {{ free: false }}, got {:?}",
                 expr.kind
             );
@@ -204,11 +204,11 @@ fn parse_auto_param() {
     }
 }
 
-/// Parse `param x: Scalar = auto(free)` → ExprKind::Auto { free: true } default.
+/// Parse `param x: Length = auto(free)` → ExprKind::Auto { free: true } default.
 #[test]
 fn parse_auto_free_param() {
     let source = r#"structure T {
-    param x: Scalar = auto(free)
+    param x: Length = auto(free)
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -233,7 +233,7 @@ fn parse_auto_free_param() {
     match &param.default {
         Some(expr) => {
             assert!(
-                matches!(expr.kind, ExprKind::Auto { free: true }),
+                matches!(expr.kind, ExprKind::Auto { free: true, .. }),
                 "expected ExprKind::Auto {{ free: true }}, got {:?}",
                 expr.kind
             );
@@ -246,9 +246,9 @@ fn parse_auto_free_param() {
 #[test]
 fn parse_mixed_auto_and_normal_params() {
     let source = r#"structure S {
-    param x: Scalar = 5mm
-    param y: Scalar = auto
-    param z: Scalar
+    param x: Length = 5mm
+    param y: Length = auto
+    param z: Length
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -282,7 +282,7 @@ fn parse_mixed_auto_and_normal_params() {
     assert_eq!(y.name, "y");
     assert!(matches!(
         y.default.as_ref().unwrap().kind,
-        ExprKind::Auto { free: false }
+        ExprKind::Auto { free: false, .. }
     ));
 
     // z has no default
@@ -298,9 +298,9 @@ fn parse_mixed_auto_and_normal_params() {
 #[test]
 fn parse_mixed_auto_and_auto_free() {
     let source = r#"structure S {
-    param a: Scalar = auto
-    param b: Scalar = auto(free)
-    param c: Scalar = 5mm
+    param a: Length = auto
+    param b: Length = auto(free)
+    param c: Length = 5mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -324,7 +324,7 @@ fn parse_mixed_auto_and_auto_free() {
     assert!(
         matches!(
             a.default.as_ref().unwrap().kind,
-            ExprKind::Auto { free: false }
+            ExprKind::Auto { free: false, .. }
         ),
         "expected Auto {{ free: false }}, got {:?}",
         a.default.as_ref().unwrap().kind
@@ -339,7 +339,7 @@ fn parse_mixed_auto_and_auto_free() {
     assert!(
         matches!(
             b.default.as_ref().unwrap().kind,
-            ExprKind::Auto { free: true }
+            ExprKind::Auto { free: true, .. }
         ),
         "expected Auto {{ free: true }}, got {:?}",
         b.default.as_ref().unwrap().kind
@@ -371,7 +371,7 @@ fn parse_mixed_auto_and_auto_free() {
 #[test]
 fn parse_auto_unrecognized_modifier_is_error() {
     let source = r#"structure T {
-    param x: Scalar = auto(constrained)
+    param x: Length = auto(constrained)
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -403,7 +403,7 @@ fn parse_auto_unrecognized_modifier_is_error() {
 fn parse_line_comment_double_slash() {
     let source = r#"structure S {
     // this is a comment
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -417,7 +417,7 @@ fn parse_line_comment_double_slash() {
 #[test]
 fn parse_line_comment_after_member() {
     let source = r#"structure S {
-    param x: Scalar = 1mm // inline comment
+    param x: Length = 1mm // inline comment
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -432,7 +432,7 @@ fn parse_line_comment_after_member() {
 fn parse_block_comment_simple() {
     let source = r#"structure S {
     /* a comment */
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -450,7 +450,7 @@ fn parse_block_comment_multiline() {
      * This is a multi-line
      * block comment
      */
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -465,7 +465,7 @@ fn parse_block_comment_multiline() {
 fn parse_hash_comment_is_error() {
     let source = r#"structure S {
     # old style comment
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -480,7 +480,7 @@ fn parse_doc_comment_triple_slash() {
     let source = r#"/// doc comment for the structure
 structure S {
     /// doc comment for a param
-    param x: Scalar = 1mm
+    param x: Length = 1mm
 }"#;
     let module = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
     assert!(
@@ -499,8 +499,8 @@ fn parse_comments_preserve_ast() {
     // Inject comments into bracket source
     let commented_source = bracket_source()
         .replace(
-            "param width: Scalar = 80mm",
-            "// width parameter\nparam width: Scalar = 80mm",
+            "param width: Length = 80mm",
+            "// width parameter\nparam width: Length = 80mm",
         )
         .replace("let volume", "/* volume computation */ let volume");
     let commented = reify_syntax::parse(&commented_source, reify_core::ModulePath::single("test"));
@@ -552,6 +552,7 @@ fn all_spans_valid() {
             MemberDecl::ForallConstraint(d) => d.span,
             // Not produced by the tree-sitter parser yet (task 2372).
             MemberDecl::MatchArmDeclGroup(g) => g.span,
+            MemberDecl::Relate(r) => r.span,
             // Produced by lower_function (task 3937).
             MemberDecl::Fn(f) => f.span,
         };

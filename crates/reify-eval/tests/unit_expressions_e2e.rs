@@ -164,17 +164,17 @@ fn conductivity_resolves_to_thermal_conductivity_si_value() {
 
 // ── Cycle 2: value-level ^ binding (exercises δ end-to-end) ─────────────────
 
-/// `stress_sq = (5mm ^ 2) / (1mm ^ 2)` → `Value::Scalar { si_value ≈ 25.0, dimension: DIMENSIONLESS }`
+/// `stress_sq = (5mm ^ 2) / (1mm ^ 2)` → `Value::Real(25.0)`
 ///
 /// (5mm)² / (1mm)² = 25mm² / 1mm² = 25 (clean dimension cancellation).
 ///
-/// The eval engine's arithmetic path produces `Value::Scalar` with a zero-vector
-/// dimension for dimensionless results — it does NOT collapse to `Value::Real`.
-/// (`from_real_scalar` in `reify-ir/value.rs` would fold a DIMENSIONLESS scalar
-/// to `Value::Real`, but it is a construction helper; the eval arithmetic path
-/// directly emits `Value::Scalar` and leaves the folding to callers that opt in.)
-/// Asserting `Value::Scalar` with `dimension.is_dimensionless()` pins this
-/// representation against a silent flip to `Value::Real`.
+/// Per Invariant V (real-dimensionless unification, task β/4374), no arithmetic
+/// op constructs `Value::Scalar { dimension.is_dimensionless() }`. `eval_div`'s
+/// Scalar arms now route through `Value::from_real_scalar` (`reify-ir/value.rs`),
+/// which folds a DIMENSIONLESS result to `Value::Real`. A dimension-cancelling
+/// quotient therefore collapses to `Value::Real`, NOT an un-collapsed
+/// dimensionless `Value::Scalar`. Asserting `Value::Real(25.0)` pins this
+/// collapse against a regression back to the leaky Scalar{DIMENSIONLESS} form.
 #[test]
 fn stress_sq_evaluates_to_dimensionless_25() {
     let id = ValueCellId::new("UnitExpressions", "stress_sq");
@@ -183,23 +183,15 @@ fn stress_sq_evaluates_to_dimensionless_25() {
         .get(&id)
         .unwrap_or_else(|| panic!("'stress_sq' not found in eval result"));
     match val {
-        Value::Scalar {
-            si_value,
-            dimension,
-        } => {
+        Value::Real(r) => {
             assert!(
-                dimension.is_dimensionless(),
-                "expected dimensionless dimension for stress_sq, got {:?}",
-                dimension
-            );
-            assert!(
-                (*si_value - 25.0).abs() < EPSILON,
-                "expected si_value ≈ 25.0 for (5mm^2)/(1mm^2), got {}",
-                si_value
+                (*r - 25.0).abs() < EPSILON,
+                "expected Value::Real ≈ 25.0 for (5mm^2)/(1mm^2), got {}",
+                r
             );
         }
         other => panic!(
-            "expected Value::Scalar {{ si_value ≈ 25.0, dimension: DIMENSIONLESS }} for stress_sq, got {:?}",
+            "expected Value::Real(25.0) for stress_sq (dimensionless quotient collapses per Invariant V), got {:?}",
             other
         ),
     }

@@ -1,0 +1,24 @@
+// fn_field worked example — exercises the `fn_field` built-in that wraps a
+// user lambda as an Analytical Field (task β, PRD docs/prds/v0_6/std-fields-api.md §5.2).
+//
+// Boundary tests covered:
+//   B1  — sample(fn_field(|p| 2.0 * p), 3.0) == 6.0
+//   B10 — the sampled value types as Real (codomain), enabling numeric range constraints
+//
+// Design: the intermediate Field is consumed inline by `sample` (never bound
+// to a `let` cell), so the let-cells hold Real and field-as-let-cell
+// representability is not required. See PRD task β design decision #3.
+
+structure def FnFieldDemo {
+    // sample(fn_field(|p| 2.0 * p), 3.0)  →  2.0 * 3.0 = 6.0
+    let doubled_at_3 = sample(fn_field(|p| 2.0 * p), 3.0)
+
+    // sample(fn_field(|p| p + 1.0), 4.0)  →  4.0 + 1.0 = 5.0
+    let plus1_at_4 = sample(fn_field(|p| p + 1.0), 4.0)
+
+    // Constraints — four range bounds, all Satisfied once the fn_field eval arm lands
+    constraint doubled_at_3 > 5.999
+    constraint doubled_at_3 < 6.001
+    constraint plus1_at_4 > 4.999
+    constraint plus1_at_4 < 5.001
+}

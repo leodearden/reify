@@ -257,5 +257,76 @@ set -e
 assert "wrapper propagates child exit code 0 (no High findings)" \
     bash -c 'test "$1" -eq 0' -- "$actual_rc_6c"
 
+# ==============================================================================
+# Check 7: freshness guard integration (RED until step-6 wires the guard)
+# ==============================================================================
+echo ""
+echo "--- Check 7: freshness guard (stale binary refuses with exit 125) ---"
+
+# 7a: Static wiring — the wrapper must have an actual `source` line for the
+# freshness guard library (not just a mention in a comment). A commented-out
+# reference passes a bare substring grep but does not wire the guard.
+# Pattern: `^[[:space:]]*(source|.)` at line start, then whitespace, then the
+# filename — matches the real source line and rejects `# source ...` comments.
+assert "wrapper has an actual 'source' line for reify-audit-freshness.sh" \
+    bash -c 'grep -qE '"'"'^[[:space:]]*(source|\.)[[:space:]]+.*reify-audit-freshness\.sh'"'"' "$1"' \
+    -- "$REPO_ROOT/scripts/reify-audit-predone-wrapper.sh"
+
+# 7b: Behavioral — stale binary should refuse (exit 125) BEFORE MCP is called.
+# Reuse the existing BEHAVIORAL_TMPDIR shim harness (fake curl + REIFY_AUDIT_BIN
+# override). The fake reify-audit shim in BEHAVIORAL_TMPDIR was just created
+# (see Check 6 setup). We need it to have a STALE mtime so the guard fires.
+# Touch the shim to year 2000 (definitely before any crate commit).
+touch -t 200001010000 "$BEHAVIORAL_TMPDIR/reify-audit"
+
+set +e
+STALE_STDERR_7B=$(PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done 2>&1 >/dev/null)
+actual_rc_7b=$?
+set -e
+
+assert "wrapper exits 125 when REIFY_AUDIT_BIN is stale" \
+    bash -c 'test "$1" -eq 125' -- "$actual_rc_7b"
+
+assert "wrapper stderr mentions 'stale' when REIFY_AUDIT_BIN is stale" \
+    bash -c 'echo "$1" | grep -qi "stale"' -- "$STALE_STDERR_7B"
+
+# Also confirm the guard fires BEFORE the MCP path: the fake reify-audit shim
+# would print nothing meaningful, but fake curl would have been called if the
+# MCP path ran. We can't directly detect curl was NOT called, but we can
+# confirm the stale exit code (125) is distinct from the child binary exit codes
+# (7 and 0 tested in 6b/6c) — the guard path is the only source of exit 125
+# before the child binary is reached.
+assert "stale guard exit (125) is distinct from child propagation codes 7 and 0" \
+    bash -c 'test "$1" -eq 125 && test "$1" -ne 7 && test "$1" -ne 0' -- "$actual_rc_7b"
+
+# 7c: Regression — re-verify 6b/6c still pass now that the shim is touched
+# to a FRESH mtime (so the guard passes and child exit codes propagate normally).
+# Freshen the shim (touch to now).
+touch "$BEHAVIORAL_TMPDIR/reify-audit"
+
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=7 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_7c_7=$?
+set -e
+
+assert "7c regression: wrapper propagates child exit code 7 with fresh binary" \
+    bash -c 'test "$1" -eq 7' -- "$actual_rc_7c_7"
+
+set +e
+PATH="$BEHAVIORAL_TMPDIR:$PATH" \
+    FAKE_RC=0 \
+    REIFY_AUDIT_BIN="$BEHAVIORAL_TMPDIR/reify-audit" \
+    bash "$WRAPPER" --task abc --pre-done >/dev/null 2>&1
+actual_rc_7c_0=$?
+set -e
+
+assert "7c regression: wrapper propagates child exit code 0 with fresh binary" \
+    bash -c 'test "$1" -eq 0' -- "$actual_rc_7c_0"
+
 # -- Summary ------------------------------------------------------------------
 test_summary

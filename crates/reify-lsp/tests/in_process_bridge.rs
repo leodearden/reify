@@ -152,10 +152,16 @@ fn completion_items(response: &serde_json::Value) -> &[serde_json::Value] {
 
 /// Default hang-guard timeout in seconds, applied to all async bridge tests via the `hang_guard!` macro.
 ///
-/// Five seconds is long enough to be unreachable for any fast local I/O and short
-/// enough that a genuine hang surfaces quickly.  All call sites reference this
-/// constant so that a single change here adjusts the timeout project-wide.
-const HANG_GUARD_SECS: u64 = 5;
+/// Fifteen seconds is long enough to absorb CPU contention when the full workspace
+/// test suite (~13.6k tests) runs concurrently — several bridge tests drive the
+/// synchronous reify compiler (`did_open → compute_diagnostics_with_state`) plus
+/// `parse_with_stdlib` (via `spawn_blocking`), which together can exceed a tighter
+/// budget under load even though each completes correctly in isolation — and short
+/// enough that a genuine infinite hang still surfaces quickly.  All call sites
+/// reference this constant so that a single change here adjusts the timeout
+/// project-wide.  (Raised from 5s after `goto_definition_returns_location` flaked
+/// at 5.683s under full-suite load — see esc-4406-54.)
+const HANG_GUARD_SECS: u64 = 15;
 
 /// Ergonomic wrapper around [`with_hang_guard`] that supplies the default timeout.
 ///
@@ -347,7 +353,7 @@ async fn hover_on_documented_structure_shows_doc_via_bridge() {
     hang_guard!(async {
         let lsp = initialized_lsp().await;
 
-        let source = "/// A bracket.\nstructure Bracket {\n    param width: Scalar = 80mm\n}";
+        let source = "/// A bracket.\nstructure Bracket {\n    param width: Length = 80mm\n}";
         lsp.handle_request(
             "textDocument/didOpen",
             did_open_params("file:///test.ri", source),

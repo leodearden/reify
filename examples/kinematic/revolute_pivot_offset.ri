@@ -1,0 +1,33 @@
+// Revolute joint with a 40 mm translation-pivot offset (KIN-OFFSET α, task 4331).
+//
+// Demonstrates the α authoring surface: a revolute joint is mounted at a 40 mm
+// pivot offset from the parent frame origin by passing a point3 as the optional
+// positional 3rd argument.  The `transform_at` translation reflects the pivot
+// (0.04 m along X) while the rotation carries the joint motion — both properties
+// are invariant across all joint angles.
+//
+// PRD refs:
+//   - docs/prds/KIN-OFFSET-1.md §7.1 (positional 3rd pivot arg authoring)
+//   - docs/prds/KIN-OFFSET-1.md §7.2 (origin ∘ motion pre-compose in transform_at)
+//   - docs/prds/KIN-OFFSET-1.md §7.4 (absent-origin byte-identical back-compat)
+//
+// Acceptance criterion mirror:
+//   crates/reify-eval/tests/joint_origin_offset_e2e.rs::revolute_pivot_offset_e2e
+//   asserts that t0 and t1 translations both equal (0.04, 0, 0) m (pivot offset,
+//   invariant under joint angle) and that t1 rotation == R_z(π/3).
+structure def RevolutePivotOffset {
+    // A revolute joint about +Z with a 40 mm X-axis pivot offset.
+    // revolute(axis, range, pivot):
+    //   axis  = unit +Z (rotation about Z)
+    //   range = 0 rad .. π rad
+    //   pivot = point3(40mm, 0mm, 0mm)  →  "origin" frame offset
+    let j = revolute(vec3(0, 0, 1), 0rad .. 3.141592653589793rad, point3(40mm, 0mm, 0mm))
+
+    // transform_at at θ = 0 rad: translation reflects the pivot (0.04, 0, 0) m,
+    // rotation is identity.
+    let t0 = transform_at(j, 0rad)
+
+    // transform_at at θ = π/3 rad: translation still reflects the pivot (0.04, 0, 0) m
+    // (invariant under joint angle), rotation = R_z(π/3).
+    let t1 = transform_at(j, 1.0471975511965976rad)
+}

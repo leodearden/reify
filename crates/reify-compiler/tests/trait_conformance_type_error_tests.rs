@@ -186,7 +186,7 @@ fn assert_unresolved_annotation_suppresses_cascade(source: &str) {
 /// Pins the `Type::Error` fallback for the `Named`-path branch of
 /// `resolve_member_annotation_type` when the member is a `param`.
 ///
-/// **Before the fix** the closure returned `Type::Real`; because the trait
+/// **Before the fix** the closure returned `Type::dimensionless_scalar()`; because the trait
 /// requires `Length ≠ Real`, a second misleading
 /// `"type mismatch for trait member 'x': expected Length, got Real"` cascade
 /// diagnostic appeared on top of the root-cause error.  **After the fix** the
@@ -213,7 +213,7 @@ structure def S : T {
 /// The closure is shared between the `Param` arm (Scenario C) and the `Let`
 /// arm, so both paths exercise the same `Type::Error` return.  This test
 /// guards against a future refactor that splits the two call-sites and
-/// accidentally re-introduces `Type::Real` on only one of them.
+/// accidentally re-introduces `Type::dimensionless_scalar()` on only one of them.
 #[test]
 fn let_unresolved_annotation_suppresses_conformance_cascade() {
     assert_unresolved_annotation_suppresses_cascade(

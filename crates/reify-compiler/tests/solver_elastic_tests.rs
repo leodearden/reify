@@ -212,16 +212,16 @@ fn elastic_options_struct_has_correct_param_shape() {
             })),
         ),
         ("max_iter", Type::Int),
-        ("cg_tolerance", Type::Real),
+        ("cg_tolerance", Type::dimensionless_scalar()),
         ("threads", Type::Option(Box::new(Type::Int))),
-        ("shell_threshold", Type::Real),
+        ("shell_threshold", Type::dimensionless_scalar()),
         (
             "shell_voxel_size",
             Type::Option(Box::new(Type::Scalar {
                 dimension: DimensionVector::LENGTH,
             })),
         ),
-        ("shell_branch_prune_ratio", Type::Real),
+        ("shell_branch_prune_ratio", Type::dimensionless_scalar()),
         ("shell_force", Type::Enum("ShellForce".to_string())),
         ("force_tet", Type::Bool),
         ("require_hex_wedge", Type::Bool),
@@ -802,8 +802,10 @@ fn elastic_options_force_tet_and_require_hex_wedge_mutually_exclusive_constraint
 ///
 /// The assertion shape mirrors `elastic_options_constrains_max_iter_and_cg_tolerance_positive`
 /// (above), substituting `BinOp::Ge` (`>=`) for `BinOp::Gt` (`>`).
-/// RHS literals `Int(0)` and `Real(0.0)` are both accepted for stability
-/// across future numeric-promotion changes.
+/// RHS literals `Int(0)`, `Real(0.0)`, and `Scalar{si_value:0.0, ..}` are all
+/// accepted: `iterations : Int` stays `Int(0)`; `max_von_mises : Pressure` has its
+/// bare `0` coerced to `Scalar<Pressure>(0.0)` at compile time by the task-4485/β
+/// polymorphic-zero rewrite (esc-3115-112 resolved).
 #[test]
 fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
     let template = find_structure("ElasticResult");
@@ -818,9 +820,12 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
     for required in &["iterations", "max_von_mises"] {
         let matched = template.constraints.iter().any(|c| {
             // The constraint must be a `>=` BinOp with a ValueRef to the
-            // required member on the left and the literal `0` on the right.
+            // required member on the left and a zero literal on the right.
             // Pinning the RHS prevents a silent weakening where the bound is
             // changed to a negative value but the name + op check still passes.
+            // Accept Int(0), Real(0.0), or Scalar{0.0, D} — the last form arises
+            // when task-4485/β coerces `max_von_mises >= 0` (Pressure LHS) at
+            // compile time (esc-3115-112 resolved).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
                     if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
@@ -829,6 +834,7 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
                     match &right.kind {
                         CompiledExprKind::Literal(Value::Int(0)) => true,
                         CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) if *si_value == 0.0 => true,
                         _ => false,
                     }
                 }
@@ -851,23 +857,33 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
 // ─── step-11: ElasticResult param shape ──────────────────────────────────────
 
 /// `ElasticResult` is the FEA solver-output container. It must declare
-/// exactly six params with the canonical names and types:
+/// exactly ten params with the canonical names and types:
 ///
 ///   - `displacement  : Field<Point3<Length>, Vector3<Length>>`
 ///     (tightened from Real placeholder in task 3117; resolver arm at
 ///     `type_resolution.rs:1313` confirmed to work in `param` positions)
 ///   - `stress        : Field<Point3<Length>, Tensor<2,3,Pressure>>`
 ///     (tightened from Real placeholder in task 3117; same resolver confirmation)
+///   - `divergence    : Field<Point3<Length>, Real>`
+///     (task #4564 α: volumetric strain tr(ε); tet=Sampled, shell=Undef)
+///   - `gradient      : Field<Point3<Length>, Tensor<2,3,Real>>`
+///     (task #4565 β: nodal displacement-gradient ∇u; dimensionless)
+///   - `curl          : Field<Point3<Length>, Vector3<Real>>`
+///     (task #4565 β: antisymmetric part of ∇u; dimensionless)
 ///   - `frame         : Field<Point3<Length>, Matrix<3,3,Real>>`
 ///     (per-element local-to-global rotation; tightened in task #3641 using
 ///     the resolver capability confirmed by task 3117)
+///   - `shell_channels : ShellStress`
+///     (task #4067: through-thickness stress container; tet=Undef, shell=Sampled)
 ///   - `max_von_mises : Pressure`
 ///   - `converged     : Bool`
 ///   - `iterations    : Int`
 ///
-/// All three Field-typed slots have been tightened from `Real` placeholders:
+/// The Field-typed slots have been tightened from `Real` placeholders:
 /// `displacement` and `stress` by task #3117, `frame` by task #3641 — both
-/// using the resolver arm at `type_resolution.rs:1313`.
+/// using the resolver arm at `type_resolution.rs:1313`; `divergence` added
+/// in task #4564; `gradient` and `curl` added in task #4565 with
+/// dimensionless_scalar() codomains (∇u = Length/Length).
 ///
 /// `frame` is the per-element local-to-global rotation:
 ///   - For tet results the engine sets `frame = Value::Undef` (tet stress is
@@ -885,9 +901,9 @@ fn elastic_result_struct_has_correct_param_shape() {
 
     assert_eq!(
         params.len(),
-        7,
-        "ElasticResult should have exactly 7 param cells \
-         (displacement, stress, frame, shell_channels, max_von_mises, converged, iterations), \
+        10,
+        "ElasticResult should have exactly 10 param cells \
+         (displacement, stress, divergence, gradient, curl, frame, shell_channels, max_von_mises, converged, iterations), \
          got: {:?}",
         names
     );
@@ -919,6 +935,39 @@ fn elastic_result_struct_has_correct_param_shape() {
                 )),
             },
         ),
+        // task #4564 α: `param divergence : Field<Point3<Length>, Real>` added here.
+        // Codomain is dimensionless_scalar() (Real = tr(ε) = volumetric strain).
+        (
+            "divergence",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::dimensionless_scalar()),
+            },
+        ),
+        // task #4565 β: `param gradient : Field<Point3<Length>, Tensor<2,3,Real>>` added here.
+        // Codomain is Tensor<2,3,dimensionless_scalar()> (∇u = Length/Length).
+        (
+            "gradient",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::tensor(2, 3, Type::dimensionless_scalar())),
+            },
+        ),
+        // task #4565 β: `param curl : Field<Point3<Length>, Vector3<Real>>` added here.
+        // Codomain is vec3(dimensionless_scalar()) (antisymmetric part of ∇u; dimensionless).
+        (
+            "curl",
+            Type::Field {
+                domain: Box::new(Type::point3(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                })),
+                codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
+            },
+        ),
         (
             "frame",
             Type::Field {
@@ -931,7 +980,7 @@ fn elastic_result_struct_has_correct_param_shape() {
                 codomain: Box::new(Type::Matrix {
                     m: 3,
                     n: 3,
-                    quantity: Box::new(Type::Real),
+                    quantity: Box::new(Type::dimensionless_scalar()),
                 }),
             },
         ),

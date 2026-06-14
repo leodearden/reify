@@ -1,0 +1,31 @@
+# verify-pipeline-infra-tests.txt — artifact -> infra test glob map
+#
+# Purpose:
+#   Declarative map from a verify-pipeline artifact (exact repo-relative path)
+#   to the repo-relative glob of infra tests that guard it.
+#
+#   When a task-level verify (--scope branch or --scope staged, no --include-infra)
+#   detects that an artifact in this map was changed, verify.sh's select_infra_tests()
+#   adds that artifact's test glob to SELECTED_INFRA_GLOBS, and build_plan() emits
+#   a guarded for-loop that runs each matching test via `timeout ... bash` BEFORE
+#   the expensive cargo test poles (fail-fast).
+#
+# Format:
+#   Each active row has two whitespace-separated fields:
+#     <artifact-path>  <infra-test-glob>
+#   where artifact-path is an exact repo-relative path and infra-test-glob is a
+#   repo-relative glob (expanded at execution under CWD=REPO_ROOT).
+#   Comment lines (^\s*#) and blank lines are ignored.
+#
+# Consuming code:
+#   scripts/verify.sh: select_infra_tests() (inline, reads _VP_INFRA_MAP)
+#
+# When to update:
+#   Add a row when a new verify-pipeline artifact gains infra drift-guards.
+#   The infra-test-glob is self-maintaining for additions: a future test_verify_*.sh
+#   is auto-covered without needing a map edit.
+#
+# Example (add future rows below):
+# scripts/land.sh    tests/infra/test_land_*.sh
+
+scripts/verify.sh    tests/infra/test_verify_*.sh

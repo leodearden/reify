@@ -23,18 +23,26 @@
 //!    `faces_by_normal` and `edges_parallel_to` on every CI runner.
 //!
 //! 2. **OCCT-BACKED RUNTIME** (gated on `reify_kernel_occt::OCCT_AVAILABLE`) —
-//!    - `DirectionalSelectors.top` is `Value::List` of exactly **1**
-//!      `Value::GeometryHandle` (the +z top face; sign-sensitive).
-//!    - `DirectionalSelectors.vert` is `Value::List` of exactly **4**
-//!      `Value::GeometryHandle` (the 4 z-parallel vertical edges; sign-tolerant),
-//!      with pairwise-distinct `upstream_values_hash` (PRD §4 iii).
+//!    Task 4118 (γ) re-typed the predicate selector constructors: these cells now
+//!    hold a kernel-FREE `Value::Selector(kind)` (the typed leaf), NOT an eager
+//!    `Value::List<GeometryHandle>`.
+//!    - `DirectionalSelectors.top` is `Value::Selector(Face)` with a
+//!      `ByNormal { dir: +z, tol_rad: 1° }` leaf.
+//!    - `DirectionalSelectors.vert` is `Value::Selector(Edge)` with a
+//!      `ByParallel { axis: +z, tol_rad: 1° }` leaf.
+//!
+//!    The handle COUNTS (1 top face / 4 z-parallel edges) are verified through
+//!    `topology_selectors::resolve` by the resolve() unit tests and the
+//!    `single(faces_by_normal(...))` golden (`selector_coercion_golden.rs`).
 //!
 //! Modelled on `topology_selectors_tests.rs::box_faces_integration_test` and
 //! `kernel_queries_normal_smoke.rs`.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
+use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
@@ -43,9 +51,10 @@ const FIXTURE_PATH: &str = concat!(
     "/../../examples/kernel_queries/directional_selectors.ri"
 );
 
-/// End-to-end pin for KGQ-ι: `faces_by_normal` (1 top face) and
-/// `edges_parallel_to` (4 vertical edges) on a box, both returning
-/// `Value::List([Value::GeometryHandle])` with distinct hashes.
+/// End-to-end pin for KGQ-ι re-typed by task 4118 (γ): `faces_by_normal` and
+/// `edges_parallel_to` on a box both build a kernel-free `Value::Selector(kind)`
+/// (typed leaf), the `Selector → List<Geometry>` resolution being deferred to
+/// `topology_selectors::resolve`.
 #[test]
 fn directional_selectors_compile_and_return_geometry_handles() {
     // ── assertion 1: fixture exists and compiles cleanly (unconditional) ──────
@@ -72,79 +81,76 @@ fn directional_selectors_compile_and_return_geometry_handles() {
     let mut engine = Engine::new(Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // ── faces_by_normal: exactly 1 face (+z top face) ────────────────────────
+    // ── faces_by_normal: kernel-free Value::Selector(Face), ByNormal{+z,1°} ───
+    //
+    // Task 4118 (γ): the 7 predicate/all selector constructors now evaluate to a
+    // typed `Value::Selector(kind)` instead of an eager `Value::List<Geometry>`.
+    // Construction is KERNEL-FREE (BT7): the cell holds the typed selector leaf
+    // (parent solid handle + `ByNormal` predicate), and the `Selector →
+    // List<Geometry>` resolution is deferred to `topology_selectors::resolve`
+    // (exercised — with the +z single-face count — by the resolve() unit tests in
+    // topology_selectors.rs and the `single(faces_by_normal(...))` golden in
+    // selector_coercion_golden.rs).
 
     let top_cell = ValueCellId::new("DirectionalSelectors", "top");
-    let top_list = match result.values.get(&top_cell) {
-        Some(Value::List(elems)) => elems.clone(),
-        other => panic!(
-            "DirectionalSelectors.top must be Value::List of Value::GeometryHandle \
-             (PRD §4 KGQ-ι), got: {other:?}"
-        ),
-    };
-    assert_eq!(
-        top_list.len(),
-        1,
-        "faces_by_normal(box(10,10,10), +z, 1°) must return exactly 1 face \
-         (sign-sensitive: only the top face); got {} elements",
-        top_list.len()
+    assert_selector_leaf(
+        result.values.get(&top_cell),
+        "DirectionalSelectors.top",
+        SelectorKind::Face,
+        |query| match query {
+            LeafQuery::ByNormal { dir, tol_rad } => {
+                assert_eq!(*dir, [0.0, 0.0, 1.0], "top leaf ByNormal dir must be +z");
+                assert!(
+                    *tol_rad > 0.0,
+                    "top leaf ByNormal tol_rad must be positive (1°), got {tol_rad}"
+                );
+            }
+            other => panic!("top must be a ByNormal leaf, got: {other:?}"),
+        },
     );
-    match &top_list[0] {
-        Value::GeometryHandle {
-            upstream_values_hash,
-            ..
-        } => {
-            assert_ne!(
-                upstream_values_hash, &[0u8; 32],
-                "top[0] upstream_values_hash must be non-zero (PRD §4 i)"
-            );
-        }
-        other => panic!("top[0] must be Value::GeometryHandle, got: {other:?}"),
-    }
 
-    // ── edges_parallel_to: exactly 4 edges (z-parallel verticals) ────────────
+    // ── edges_parallel_to: kernel-free Value::Selector(Edge), ByParallel{+z,1°} ─
 
     let vert_cell = ValueCellId::new("DirectionalSelectors", "vert");
-    let vert_list = match result.values.get(&vert_cell) {
-        Some(Value::List(elems)) => elems.clone(),
+    assert_selector_leaf(
+        result.values.get(&vert_cell),
+        "DirectionalSelectors.vert",
+        SelectorKind::Edge,
+        |query| match query {
+            LeafQuery::ByParallel { axis, tol_rad } => {
+                assert_eq!(
+                    *axis, [0.0, 0.0, 1.0],
+                    "vert leaf ByParallel axis must be +z"
+                );
+                assert!(
+                    *tol_rad > 0.0,
+                    "vert leaf ByParallel tol_rad must be positive (1°), got {tol_rad}"
+                );
+            }
+            other => panic!("vert must be a ByParallel leaf, got: {other:?}"),
+        },
+    );
+}
+
+/// Assert a cell holds a kernel-free `Value::Selector` whose node is a single
+/// `Leaf` of the expected `kind`, then run `check_query` against the leaf's
+/// `LeafQuery` (task 4118 γ). Mirrors the helper in
+/// `topology_selector_runtime.rs`.
+fn assert_selector_leaf(
+    cell_value: Option<&Value>,
+    label: &str,
+    kind: SelectorKind,
+    check_query: impl FnOnce(&LeafQuery),
+) {
+    let sv = match cell_value {
+        Some(Value::Selector(sv)) => sv,
         other => panic!(
-            "DirectionalSelectors.vert must be Value::List of Value::GeometryHandle \
-             (PRD §4 KGQ-ι), got: {other:?}"
+            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
         ),
     };
-    assert_eq!(
-        vert_list.len(),
-        4,
-        "edges_parallel_to(box(10,20,30), +z, 1°) must return exactly 4 edges \
-         (sign-tolerant: 4 z-parallel verticals); got {} elements",
-        vert_list.len()
-    );
-
-    // Collect upstream_values_hashes and verify pairwise distinctness (PRD §4 iii).
-    let mut hashes: Vec<[u8; 32]> = Vec::new();
-    for (i, elem) in vert_list.iter().enumerate() {
-        match elem {
-            Value::GeometryHandle {
-                upstream_values_hash,
-                ..
-            } => {
-                assert_ne!(
-                    upstream_values_hash, &[0u8; 32],
-                    "vert[{i}] upstream_values_hash must be non-zero (PRD §4 i)"
-                );
-                hashes.push(*upstream_values_hash);
-            }
-            other => {
-                panic!("vert[{i}] must be Value::GeometryHandle (PRD §4 KGQ-ι), got: {other:?}")
-            }
-        }
-    }
-    for i in 0..hashes.len() {
-        for j in (i + 1)..hashes.len() {
-            assert_ne!(
-                hashes[i], hashes[j],
-                "vert[{i}] and vert[{j}] must have distinct upstream_values_hashes (PRD §4 iii)"
-            );
-        }
+    assert_eq!(sv.kind, kind, "{label}: selector kind");
+    match &sv.node {
+        SelectorNode::Leaf { query, .. } => check_query(query),
+        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
 }

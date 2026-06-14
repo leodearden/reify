@@ -118,7 +118,7 @@ pub(crate) fn is_joint_typed_fn(name: &str) -> bool {
 ///
 /// Only reached for names in [`JOINT_TYPED_FN_NAMES`] (the caller gates on
 /// [`is_joint_typed_fn`]); the `_` arm is therefore unreachable in practice
-/// and returns a harmless `Type::Real`.
+/// and returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type {
     match name {
         // ── Driving joint kind constructors (5) ──────────────────────────────
@@ -165,7 +165,7 @@ pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type
         "joint_jacobian" => Type::StructureRef("Twist".to_string()),
 
         // Unreachable in practice — the caller gates on is_joint_typed_fn.
-        _ => Type::Real,
+        _ => Type::dimensionless_scalar(),
     }
 }
 
@@ -379,7 +379,7 @@ mod tests {
         use reify_ir::Value;
         // A dummy non-empty arg slice.
         let dummy_arg =
-            CompiledExpr::literal(Value::Real(1.0), Type::Real);
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let args_slice = &[dummy_arg];
 
         assert_eq!(

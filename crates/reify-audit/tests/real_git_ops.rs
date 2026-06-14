@@ -180,6 +180,127 @@ fn file_lines_on_real_commit() {
 }
 
 // -----------------------------------------------------------------------
+// ls_files: tracked-path enumeration (PTODO structural-lane git seam)
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::ls_files` returns exactly the set of tracked,
+/// root-relative paths — including nested paths — and excludes an
+/// untracked/uncommitted file.
+///
+/// Setup: commit `a.rs`, `dir/b.sh`, `crates/x/c.rs`; then write (but do NOT
+/// `git add`/commit) `untracked.rs`.
+///
+/// Assertion: the returned set equals the three committed paths, and the
+/// untracked file is absent. Order is not asserted (git's ls-files order is
+/// not part of the contract); the detector sorts before use.
+#[test]
+fn ls_files_lists_tracked_paths_only() {
+    use std::collections::BTreeSet;
+
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    write_file(root, "a.rs", "fn a() {}\n");
+    write_file(root, "dir/b.sh", "echo hi\n");
+    write_file(root, "crates/x/c.rs", "fn c() {}\n");
+    git_commit(root, "commit three tracked files");
+
+    // An untracked file that must NOT appear in ls_files output.
+    write_file(root, "untracked.rs", "fn untracked() {}\n");
+
+    let git = RealGitOps::new(root);
+    let listed: BTreeSet<String> = git.ls_files().into_iter().collect();
+
+    let expected: BTreeSet<String> = ["a.rs", "dir/b.sh", "crates/x/c.rs"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    assert_eq!(
+        listed, expected,
+        "ls_files must return exactly the tracked root-relative paths; got: {:?}",
+        listed,
+    );
+    assert!(
+        !listed.contains("untracked.rs"),
+        "ls_files must not list an untracked/uncommitted file; got: {:?}",
+        listed,
+    );
+}
+
+// -----------------------------------------------------------------------
+// last_commit_for_path: git history check for ζ inverse lane (task 4558)
+// -----------------------------------------------------------------------
+
+/// Pin that `RealGitOps::last_commit_for_path` returns `Some(GitCommit)` whose
+/// `sha` equals the most-recent commit touching the path (including the deletion
+/// commit), and `None` for a path that was never committed.
+///
+/// This is a real-git-repo test because a wrong argument form (e.g. omitting
+/// `--`) would shell out correctly but `MockGitOps` cannot catch it.
+///
+/// Setup:
+///   - commit 1: add `deleted.rs`
+///   - commit 2: `git rm deleted.rs` + commit (the deletion commit)
+///
+/// Assertions:
+///   - `last_commit_for_path("deleted.rs")` → `Some(c)` with `c.sha == HEAD sha`
+///   - `last_commit_for_path("never.rs")`   → `None`
+#[test]
+fn last_commit_for_path_real_repo() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    git_init(root);
+
+    // Commit 1: add deleted.rs
+    write_file(root, "deleted.rs", "fn deleted() {}\n");
+    git_commit(root, "add deleted.rs");
+
+    // Commit 2: remove deleted.rs
+    let rm_status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rm", "deleted.rs"])
+        .status()
+        .expect("git rm spawn");
+    assert!(rm_status.success(), "git rm failed");
+    git_commit(root, "delete deleted.rs");
+
+    let deletion_sha = rev_parse_head(root);
+
+    let git = RealGitOps::new(root);
+
+    // deleted.rs has history — should return Some with sha == deletion commit
+    let result = git.last_commit_for_path("deleted.rs");
+    assert!(
+        result.is_some(),
+        "last_commit_for_path(\"deleted.rs\") must return Some; got None"
+    );
+    let commit = result.unwrap();
+    assert_eq!(
+        commit.sha, deletion_sha,
+        "sha must equal the deletion commit HEAD; got {} expected {}",
+        commit.sha, deletion_sha,
+    );
+    assert!(
+        !commit.subject.is_empty(),
+        "subject must be non-empty; got {:?}",
+        commit.subject,
+    );
+
+    // never.rs was never committed — should return None
+    let none = git.last_commit_for_path("never.rs");
+    assert!(
+        none.is_none(),
+        "last_commit_for_path(\"never.rs\") must return None; got {:?}",
+        none,
+    );
+}
+
+// -----------------------------------------------------------------------
 // Trailing-newline invariant: both forms yield the same logical line count
 // -----------------------------------------------------------------------
 

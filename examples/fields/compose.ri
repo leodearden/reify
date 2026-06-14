@@ -1,0 +1,38 @@
+// Field composition worked example — exercises `compose(f, g)` from std.fields
+// (task ζ 4224, PRD docs/prds/v0_6/std-fields-api.md §1 + §9 ζ).
+//
+// B9 signal: sample(compose(f, g), p)  ==  sample(f, sample(g, p))
+//
+// compose(f_double, g_plus1)(3.0)
+//   = f_double(g_plus1(3.0))
+//   = f_double(3.0 + 1.0)
+//   = f_double(4.0)
+//   = 2.0 * 4.0
+//   = 8.0  (exact)
+//
+// This file is also auto-covered by examples_smoke.rs (compile-clean check)
+// and directly targeted by compose_example_smoke.rs (eval + all-Satisfied check).
+
+// ── Input fields ──────────────────────────────────────────────────────────────
+
+// f_double(x) = 2.0 * x  (Real → Real)
+field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
+
+// g_plus1(x) = x + 1.0  (Real → Real)
+field def g_plus1 : Real -> Real { source = analytical { |x| x + 1.0 } }
+
+// ── Structure exercising compose ──────────────────────────────────────────────
+
+structure def ComposeDemo {
+    // compose(f_double, g_plus1)(3.0) = f_double(g_plus1(3.0)) = 2*(3+1) = 8.0
+    let via_compose = sample(compose(f_double, g_plus1), 3.0)
+
+    // Equivalent manual nesting for cross-check: f_double(g_plus1(3.0)) = 8.0
+    let via_manual = sample(f_double, sample(g_plus1, 3.0))
+
+    // B9 range constraints — both sides must equal exactly 8.0
+    constraint via_compose > 7.999
+    constraint via_compose < 8.001
+    constraint via_manual > 7.999
+    constraint via_manual < 8.001
+}

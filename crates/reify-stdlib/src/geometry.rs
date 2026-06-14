@@ -167,6 +167,65 @@ fn make_dimensioned_component(dim: DimensionVector, value: f64) -> Value {
     }
 }
 
+/// Compute the SE(3) composition `a ∘ b` (Hamilton product for rotation, R_a·t_b + t_a for translation).
+///
+/// This is the typed, allocation-light extract of the `"transform_compose"` match arm.
+/// The FK/Jacobian path calls this directly to avoid a stringly-typed `eval_geometry`
+/// dispatch in the hot loop (PRD §7.2 rationale).
+///
+/// Returns `Value::Undef` for any of the conditions that the named builtin returns Undef:
+/// - Either argument is not a `Value::Transform` with a finite `Orientation` and a LENGTH `Vector3`.
+/// - The translation dimensions of `a` and `b` differ.
+/// - Either quaternion has squared norm below the 1e-24 gate (see `normalize_quat_input`).
+pub(crate) fn compose_transforms(a: &Value, b: &Value) -> Value {
+    let (r1_q, t1, t1_dim) = match decompose_transform(a) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    let (r2_q, t2, t2_dim) = match decompose_transform(b) {
+        Some(v) => v,
+        None => return Value::Undef,
+    };
+    if t1_dim != t2_dim {
+        return Value::Undef;
+    }
+    // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr;
+    // 1e-24 gate — see normalize_quat_input).
+    let r1_n = match normalize_quat_input(r1_q) {
+        Some(q) => q,
+        None => return Value::Undef,
+    };
+    let r2_n = match normalize_quat_input(r2_q) {
+        Some(q) => q,
+        None => return Value::Undef,
+    };
+    // R = R1 * R2 (Hamilton product). r1_n and r2_n are unit by construction;
+    // quat_mul of unit quaternions is unit (modulo FP rounding).
+    let composed_r = quat_mul(r1_n, r2_n);
+    debug_assert!(quaternion_is_finite(
+        composed_r.0,
+        composed_r.1,
+        composed_r.2,
+        composed_r.3
+    ));
+    let r_val = Value::Orientation {
+        w: composed_r.0,
+        x: composed_r.1,
+        y: composed_r.2,
+        z: composed_r.3,
+    };
+    // t = R1 * t2 + t1.
+    let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
+    Value::Transform {
+        rotation: Box::new(r_val),
+        translation: Box::new(Value::Vector(vec![
+            make_dimensioned_component(t1_dim, rt2x + t1[0]),
+            make_dimensioned_component(t1_dim, rt2y + t1[1]),
+            make_dimensioned_component(t1_dim, rt2z + t1[2]),
+        ])),
+    }
+}
+
 // --- 3×3 linear algebra helpers for affine algebra (task γ) ---
 
 /// Multiply two 3×3 row-major matrices.
@@ -752,52 +811,7 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
-            let (r1_q, t1, t1_dim) = match decompose_transform(&args[0]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            let (r2_q, t2, t2_dim) = match decompose_transform(&args[1]) {
-                Some(v) => v,
-                None => return Some(Value::Undef),
-            };
-            if t1_dim != t2_dim {
-                return Some(Value::Undef);
-            }
-            // Normalize R1 and R2 symmetrically (matches operator-level semantics in reify-expr;
-            // 1e-24 gate — see normalize_quat_input).
-            let r1_n = match normalize_quat_input(r1_q) {
-                Some(q) => q,
-                None => return Some(Value::Undef),
-            };
-            let r2_n = match normalize_quat_input(r2_q) {
-                Some(q) => q,
-                None => return Some(Value::Undef),
-            };
-            // R = R1 * R2 (Hamilton product). r1_n and r2_n are unit by construction;
-            // quat_mul of unit quaternions is unit (modulo FP rounding).
-            let composed_r = quat_mul(r1_n, r2_n);
-            debug_assert!(quaternion_is_finite(
-                composed_r.0,
-                composed_r.1,
-                composed_r.2,
-                composed_r.3
-            ));
-            let r_val = Value::Orientation {
-                w: composed_r.0,
-                x: composed_r.1,
-                y: composed_r.2,
-                z: composed_r.3,
-            };
-            // t = R1 * t2 + t1.
-            let (rt2x, rt2y, rt2z) = quat_rotate(r1_n, t2[0], t2[1], t2[2]);
-            Value::Transform {
-                rotation: Box::new(r_val),
-                translation: Box::new(Value::Vector(vec![
-                    make_dimensioned_component(t1_dim, rt2x + t1[0]),
-                    make_dimensioned_component(t1_dim, rt2y + t1[1]),
-                    make_dimensioned_component(t1_dim, rt2z + t1[2]),
-                ])),
-            }
+            compose_transforms(&args[0], &args[1])
         }
 
         // --- Plane constructors ---

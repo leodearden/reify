@@ -37,7 +37,7 @@ mod reexport_contract_tests {
         // Compilation-only: if this compiles, the re-export contract holds.
         let _ = literal(Value::Int(1));
         let _ = value_ref("E", "m");
-        let _ = value_ref_typed("E", "m", Type::Real);
+        let _ = value_ref_typed("E", "m", Type::dimensionless_scalar());
         let a = literal(Value::Int(1));
         let b = literal(Value::Int(2));
         let _ = binop(BinOp::Add, a.clone(), b.clone());
@@ -60,15 +60,15 @@ mod reexport_contract_tests {
             literal(Value::Int(1)),
             literal(Value::Int(2)),
         );
-        let _ = fn_call("f", "q::f", vec![], Type::Real);
-        let _ = user_fn_call("f", vec![], Type::Real);
+        let _ = fn_call("f", "q::f", vec![], Type::dimensionless_scalar());
+        let _ = user_fn_call("f", vec![], Type::dimensionless_scalar());
         let _ = method_call_expr(literal(Value::Int(1)), "m", vec![], Type::Int);
         let _ = sample_call(
             literal(Value::Real(0.0)),
             literal(Value::Real(1.0)),
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
-        let _ = lambda_expr(vec![("x", Type::Real)], literal(Value::Real(1.0)));
+        let _ = lambda_expr(vec![("x", Type::dimensionless_scalar())], literal(Value::Real(1.0)));
     }
 
     #[test]
@@ -76,7 +76,7 @@ mod reexport_contract_tests {
         let exprs = range_constraint(
             "E",
             "m",
-            Type::Real,
+            Type::dimensionless_scalar(),
             literal(Value::Real(0.0)),
             literal(Value::Real(1.0)),
         );
@@ -84,7 +84,7 @@ mod reexport_contract_tests {
         assert_eq!(exprs[0].result_type, Type::Bool);
         assert_eq!(exprs[1].result_type, Type::Bool);
 
-        let eq_exprs = equality_constraint("E", "m", Type::Real, literal(Value::Real(1.0)));
+        let eq_exprs = equality_constraint("E", "m", Type::dimensionless_scalar(), literal(Value::Real(1.0)));
         assert_eq!(eq_exprs.len(), 1);
         assert_eq!(eq_exprs[0].result_type, Type::Bool);
     }
@@ -95,7 +95,7 @@ mod reexport_contract_tests {
         let _ = TopologyTemplateBuilder::new("T").build();
         let _ = TraitDefBuilder::new("T").build();
         let _ = CompiledTraitBuilder::new("T").build();
-        let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::Real)
+        let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .build();
         let _ = CompiledPurposeBuilder::new("p").build();
@@ -138,7 +138,7 @@ mod reexport_contract_tests {
         let _ = CompiledTraitBuilder::new("T")
             .annotation(ann.clone())
             .build();
-        let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::Real)
+        let _ = CompiledFieldBuilder::new("f", Type::Geometry, Type::dimensionless_scalar())
             .imported()
             .annotation(ann.clone())
             .build();
@@ -149,10 +149,10 @@ mod reexport_contract_tests {
         // Field expr helpers
         let field_expr = field_literal_expr(
             Type::Geometry,
-            Type::Real,
+            Type::dimensionless_scalar(),
             reify_ir::FieldSourceKind::Analytical,
             Value::Bool(false),
         );
-        let _ = laplacian_call(field_expr, Type::Real);
+        let _ = laplacian_call(field_expr, Type::dimensionless_scalar());
     }
 }
