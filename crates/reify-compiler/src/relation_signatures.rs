@@ -169,6 +169,65 @@ pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u3
     }
 }
 
+/// The rotational/translational split of the ΔDOF a relation removes — the
+/// companion to [`relation_delta_dof`] that publishes WHICH KIND of freedom each
+/// removed codimension is (design §3.4; PRD §7.1.3). Returns `(rot, trans)`, or
+/// `None` for names/operand shapes outside the curated vocabulary — and for
+/// `tangent`, whose split is surface-conditional and nominally undecidable, so
+/// the joint self-check skips it under gradualism rather than guessing.
+///
+/// The split is a property of each relation's null-space structure:
+/// - `coincident(D, D)` splits `codim(D)` by datum kind: a `Direction` pins 2
+///   rotational; a `Point` 3 translational; a `Plane` 2 tilt + 1 normal-offset;
+///   an `Axis` 2 tilt + 2 translation; a `Frame` all 3 rot + 3 trans.
+/// - `on(Point, host)` removes only translational sliding freedoms:
+///   `Plane`→(0,1), `Axis`→(0,2), `Point`→(0,3).
+/// - Orientation primitives are purely rotational: `parallel`/`antiparallel`
+///   →(2,0), `perpendicular`→(1,0). The arity-3 metric DRIVE forms split by
+///   dimension: `angle`→(1,0) rotational, `distance`→(0,1) translational.
+/// - Named compounds: `concentric` = a coincident axis = (2,2); `flush` = a
+///   coincident plane = (2,1); `offset` = parallel (2,0) + on (0,1) = (2,1).
+///
+/// INVARIANT: for every curated shape except `tangent`,
+/// `rot + trans == relation_delta_dof(name, args)` — pinned by the
+/// `relation_delta_dof_kinds_sum_equals_delta_dof` unit test so the count table
+/// and the kind table cannot drift apart.
+pub(crate) fn relation_delta_dof_kinds(name: &str, args: &[CompiledExpr]) -> Option<(u32, u32)> {
+    let arg_ty = |i: usize| args.get(i).map(|a: &CompiledExpr| &a.result_type);
+    match name {
+        // coincident(D, D): (rot, trans) split of codim(D) by datum kind.
+        "coincident" => match arg_ty(0)? {
+            Type::Direction => Some((2, 0)),
+            Type::Point { .. } => Some((0, 3)),
+            Type::Plane => Some((2, 1)),
+            Type::Axis => Some((2, 2)),
+            Type::Frame(_) => Some((3, 3)),
+            _ => None,
+        },
+        // on(Point, host): entirely translational (the sliding freedoms removed).
+        "on" => match arg_ty(1)? {
+            Type::Plane => Some((0, 1)),
+            Type::Axis => Some((0, 2)),
+            Type::Point { .. } => Some((0, 3)),
+            _ => None,
+        },
+        // Metric DRIVE primitives — only the arity-3 form removes a DOF; the
+        // angle pins a rotational freedom, the distance a translational one.
+        "angle" => (args.len() == 3).then_some((1, 0)),
+        "distance" => (args.len() == 3).then_some((0, 1)),
+        // Orientation primitives — purely rotational.
+        "parallel" | "antiparallel" => Some((2, 0)),
+        "perpendicular" => Some((1, 0)),
+        // Named compounds (summed-body kind split).
+        "concentric" => Some((2, 2)),
+        "flush" => Some((2, 1)),
+        "offset" => Some((2, 1)),
+        // `tangent` (surface-conditional → undecidable nominal split) and every
+        // uncurated name/operand shape fall through to `None` (gradualism).
+        _ => None,
+    }
+}
+
 /// The ΔDOF contract string surfaced by `reify-lsp` hover:
 /// `name(ArgTys) -> Relation removes N`. The metric operand is rendered by its
 /// dimension name (`Length`/`Angle`), not `Scalar[m]`, to match the §4 signature
