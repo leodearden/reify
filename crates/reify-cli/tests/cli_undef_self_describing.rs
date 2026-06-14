@@ -71,3 +71,65 @@ fn eval_determined_emits_no_undef_notes() {
         "stderr must contain NO `note: ... is undef` lines for a fully-determined design\nstderr:\n{stderr}"
     );
 }
+
+/// Test C (Q2 / §8.4 widening): `--explain-undef` surfaces ALL undef cells,
+/// including unbound input params absent from the default printed values.
+///
+/// Runs `reify eval --explain-undef examples/undef_self_describing.ri` and
+/// asserts:
+/// - exit code 0
+/// - stderr contains `note: Tube.outer_diameter is undef` (unbound param —
+///   absent from default printed values, only surfaced by --explain-undef)
+/// - stderr contains `note: Tube.wall_ratio is undef` (same — second unbound
+///   param)
+#[test]
+fn eval_explain_undef_surfaces_all_undef_cells() {
+    let path = common::example_path("undef_self_describing.ri");
+    let (status, _stdout, stderr) =
+        common::run_with_args(&["eval", "--explain-undef", &path]);
+
+    assert!(
+        status.success(),
+        "reify eval --explain-undef must exit 0 on a partial design\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        stderr.contains("note: Tube.outer_diameter is undef"),
+        "stderr must contain `note: Tube.outer_diameter is undef` under --explain-undef\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        stderr.contains("note: Tube.wall_ratio is undef"),
+        "stderr must contain `note: Tube.wall_ratio is undef` under --explain-undef\nstderr:\n{stderr}"
+    );
+}
+
+/// Test D (Q2 / §8.4 contrast): default eval DOES NOT surface unbound input
+/// params as subject-note lines (noise gate is active without --explain-undef).
+///
+/// Runs `reify eval examples/undef_self_describing.ri` (no flag) and asserts:
+/// - exit code 0
+/// - stderr does NOT contain `note: Tube.outer_diameter is undef` as a subject
+///   phrase (unbound params are gated out of the default surface — they ONLY
+///   appear as because-causes inside the wall_thickness note, not as their own
+///   subject lines)
+///
+/// NOTE: the string `Tube.outer_diameter` DOES appear in the because-clause of
+/// the `wall_thickness` note under default mode, so this test asserts on the
+/// FULL subject phrase `note: Tube.outer_diameter is undef`, not a bare
+/// substring.
+#[test]
+fn eval_default_gates_out_unbound_param_subject_lines() {
+    let path = common::example_path("undef_self_describing.ri");
+    let (status, _stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "reify eval must exit 0 on a partial design\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        !stderr.contains("note: Tube.outer_diameter is undef"),
+        "stderr must NOT contain `note: Tube.outer_diameter is undef` in default mode\nstderr:\n{stderr}"
+    );
+}
