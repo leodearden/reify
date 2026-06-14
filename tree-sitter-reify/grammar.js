@@ -609,10 +609,22 @@ module.exports = grammar({
     ),
 
     // ── Auto keyword (for solver-determined params) ───────
-    // Accepts bare `auto` or `auto(free)`.  The presence of the `modifier`
-    // field child indicates the free modifier is present.  The longer
-    // `auto(free)` form is given higher precedence to resolve the shift-reduce
-    // conflict that arises when `(` immediately follows `auto`.
+    // Accepts bare `auto`, `auto(free)`, or the parameterized
+    // `auto(name = value, …)` form (geometric-relations δ, task 4384).
+    // The presence of the `modifier` field child indicates the `free` modifier;
+    // an `auto_param_list` child carries the `seed`/component-fix params.
+    //
+    // Precedence ordering (highest first) resolves the shift-reduce conflict
+    // that arises when `(` immediately follows `auto`:
+    //   - `auto(free)` (prec 2): `free` is an anonymous string token, so by
+    //     tree-sitter's string-vs-regex tie-break it wins over `identifier` on
+    //     the text "free"; the higher prec keeps this arm preferred.
+    //   - `auto(name = value, …)` (prec 1): any other `(`-arm; `name` lexes as
+    //     `identifier` and the required `=` distinguishes it from `auto(free)`.
+    //   - bare `auto` (prec 0).
+    //
+    // δ only PRESERVES the seed/component-fix params in the CST; consuming them
+    // (root selection, partial-fix) is ζ's relate-solve.
     //
     // Uses $._auto_token (external scanner token) instead of the string
     // literal 'auto' so that the lexer-level reservation via the external
@@ -620,8 +632,26 @@ module.exports = grammar({
     // CST shape remains (auto_keyword) / (auto_keyword (modifier)) — no
     // (auto_keyword (auto_token)) wrapper node.
     auto_keyword: $ => choice(
-      prec(1, seq($._auto_token, '(', field('modifier', 'free'), ')')),
+      prec(2, seq($._auto_token, '(', field('modifier', 'free'), ')')),
+      prec(1, seq($._auto_token, '(', $.auto_param_list, ')')),
       $._auto_token,
+    ),
+
+    // Parameterized-auto argument list: `name = value, …` (trailing comma OK).
+    // Mirrors named_argument_list's comma-separated shape.
+    auto_param_list: $ => seq(
+      $.auto_param,
+      repeat(seq(',', $.auto_param)),
+      optional(','),
+    ),
+
+    // A single `name = value` parameterized-auto entry (`seed = …`, `x = …`,
+    // `orientation = …`).  `value` is a full `_expression` (e.g. `5mm`,
+    // `self.frame`, `orient_identity()`).
+    auto_param: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', $._expression),
     ),
 
     // ── Let ─────────────────────────────────────────────────

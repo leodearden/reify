@@ -94,6 +94,8 @@ fn collect_nodes_by_kind<'a>(
 }
 
 /// Check if a node has an anonymous child whose source text equals `text`.
+/// Used by the relate-block / where-block steps (5/7) to assert keyword tokens.
+#[allow(dead_code)]
 fn has_anonymous_child_text(node: tree_sitter::Node, source: &[u8], text: &str) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
