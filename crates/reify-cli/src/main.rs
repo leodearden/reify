@@ -3043,3 +3043,73 @@ mod build_is_success_tests {
         assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
     }
 }
+
+// ── format_undef_cause unit tests (task 4327 / undef-self-describing δ) ──────
+//
+// Tests Q5: terse text rendering of every UndefCause variant.
+// The function under test (`format_undef_cause`) does not yet exist —
+// this module is RED until step-2 (GREEN) implements it.
+#[cfg(test)]
+mod format_undef_cause_tests {
+    use super::format_undef_cause;
+    use reify_core::{DiagnosticCode, SourceSpan, ValueCellId};
+    use reify_ir::UndefCause;
+
+    fn cell(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn span(start: u32, end: u32) -> SourceSpan {
+        SourceSpan::new(start, end)
+    }
+
+    /// Unbound param: renders as "<entity>.<member> unbound".
+    #[test]
+    fn unbound_renders_cell_name_and_unbound() {
+        let cause = UndefCause::Unbound {
+            param: cell("S", "outer_diameter"),
+            span: span(0, 14),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.outer_diameter unbound");
+    }
+
+    /// AwaitingSolve: renders as "<entity>.<member> awaiting solve".
+    #[test]
+    fn awaiting_solve_renders_cell_name_and_awaiting_solve() {
+        let cause = UndefCause::AwaitingSolve {
+            param: cell("S", "k"),
+        };
+        assert_eq!(format_undef_cause(&cause), "S.k awaiting solve");
+    }
+
+    /// SolveFailed: renders as "solve failed: <detail>".
+    #[test]
+    fn solve_failed_renders_detail() {
+        let cause = UndefCause::SolveFailed {
+            detail: "infeasible".to_string(),
+        };
+        assert_eq!(format_undef_cause(&cause), "solve failed: infeasible");
+    }
+
+    /// UserUndef: renders as "explicit undef".
+    #[test]
+    fn user_undef_renders_explicit_undef() {
+        let cause = UndefCause::UserUndef { span: span(5, 5) };
+        assert_eq!(format_undef_cause(&cause), "explicit undef");
+    }
+
+    /// OpContractFailed (γ forward-compat): non-empty and contains "contract".
+    #[test]
+    fn op_contract_failed_is_nonempty_and_contains_contract() {
+        let cause = UndefCause::OpContractFailed {
+            code: DiagnosticCode::ConstraintViolated,
+            span: span(0, 5),
+        };
+        let rendered = format_undef_cause(&cause);
+        assert!(!rendered.is_empty(), "rendered string must not be empty");
+        assert!(
+            rendered.contains("contract"),
+            "rendered string must contain \"contract\", got: {rendered:?}"
+        );
+    }
+}
