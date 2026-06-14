@@ -3718,4 +3718,434 @@ mod tests {
             assert_eq!(attr.local_index, i);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // propagate_attributes_via_local_feature_history unit tests (step-1, RED)
+    //
+    // Exercises the four per-stream cross-kind propagation paths that fillet
+    // and chamfer history require:
+    //   face_modified  <- parent FACE
+    //   face_generated <- parent EDGE  (cross-kind)
+    //   edge_modified  <- parent EDGE
+    //   edge_generated <- parent VERTEX (cross-kind)
+    //
+    // All assertions are pure data-structure logic — no kernel required.
+    // The function and its type argument do not yet exist; this is the RED state.
+    // -----------------------------------------------------------------------
+
+    mod local_feature_propagation {
+        use reify_ir::{
+            FeatureId, GeometryHandleId, HistoryRecord, LocalFeatureOpHistoryRecords, ModEntry,
+            QueryError, Role, TopologyAttribute, TopologyAttributeTable,
+        };
+
+        use super::super::propagate_attributes_via_local_feature_history;
+
+        /// Canonical fillet FeatureId reused by every test as splitting_feature_id.
+        fn fillet_feature_id() -> FeatureId {
+            FeatureId::new("Fillet#realization[0]")
+        }
+
+        /// Build a `TopologyAttribute` with the given role/feature_id and empty
+        /// mod_history.
+        fn make_attr(fid: &FeatureId, role: Role, local_index: u32) -> TopologyAttribute {
+            TopologyAttribute {
+                feature_id: fid.clone(),
+                role,
+                local_index,
+                user_label: None,
+                mod_history: vec![],
+            }
+        }
+
+        /// Build a `HistoryRecord` with parent_index=0 (always 0 for local features).
+        fn rec(parent_subshape_index: u32, result_subshape_index: u32) -> HistoryRecord {
+            HistoryRecord {
+                parent_index: 0,
+                parent_subshape_index,
+                result_subshape_index,
+            }
+        }
+
+        // ------------------------------------------------------------------ (a)
+        // face_modified 1→1: copies parent FACE attr verbatim; no ModEntry added.
+        // ------------------------------------------------------------------ (a)
+        #[test]
+        fn face_modified_one_to_one_copies_parent_face_attr_with_empty_mod_history() {
+            let fid = FeatureId::new("Box#realization[0]");
+            let parent_face = GeometryHandleId(1);
+            let result_face = GeometryHandleId(11);
+
+            let mut table = TopologyAttributeTable::default();
+            table.record(parent_face, make_attr(&fid, Role::Side, 0));
+
+            let history = LocalFeatureOpHistoryRecords {
+                face_modified: vec![rec(0, 0)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[parent_face],       // parent_face_handles
+                &[],                  // parent_edge_handles
+                &[],                  // parent_vertex_handles
+                &[result_face],       // result_face_handles
+                &[],                  // result_edge_handles
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect("well-formed 1→1 face_modified should succeed");
+
+            let attr = table
+                .lookup(result_face)
+                .expect("result face must have an attribute");
+            assert_eq!(attr.feature_id, fid, "feature_id must be inherited from parent");
+            assert_eq!(attr.role, Role::Side, "role must be inherited from parent");
+            assert_eq!(attr.local_index, 0, "local_index must be inherited from parent");
+            assert!(
+                attr.mod_history.is_empty(),
+                "single-result pass-through must not add a ModEntry; got {:?}",
+                attr.mod_history
+            );
+        }
+
+        // ------------------------------------------------------------------ (b)
+        // face_generated: one parent EDGE maps to 2 result faces (cross-kind split).
+        // Both result faces inherit the EDGE attr; each gets a ModEntry with
+        // split_index 0 then 1.
+        // ------------------------------------------------------------------ (b)
+        #[test]
+        fn face_generated_cross_kind_edge_to_two_faces_appends_split_mod_entries() {
+            let fid = FeatureId::new("Box#realization[0]");
+            let parent_edge = GeometryHandleId(3);
+            let result_face_a = GeometryHandleId(11);
+            let result_face_b = GeometryHandleId(12);
+            let splitting_fid = fillet_feature_id();
+
+            let mut table = TopologyAttributeTable::default();
+            table.record(parent_edge, make_attr(&fid, Role::NewEdge, 5));
+
+            // One parent edge → two result faces = a split.
+            let history = LocalFeatureOpHistoryRecords {
+                face_generated: vec![rec(0, 0), rec(0, 1)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[],                              // parent_face_handles (unused here)
+                &[parent_edge],                   // parent_edge_handles
+                &[],                              // parent_vertex_handles
+                &[result_face_a, result_face_b],  // result_face_handles
+                &[],                              // result_edge_handles
+                &history,
+                &splitting_fid,
+            )
+            .expect("well-formed face_generated cross-kind split should succeed");
+
+            // Both result faces inherit the parent EDGE's attribute.
+            for (handle, expected_split_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
+                let attr = table
+                    .lookup(handle)
+                    .unwrap_or_else(|| panic!("result face {:?} must have an attribute", handle));
+                assert_eq!(attr.feature_id, fid, "feature_id inherited from parent edge");
+                assert_eq!(attr.role, Role::NewEdge, "role inherited from parent edge");
+                assert_eq!(attr.local_index, 5, "local_index inherited from parent edge");
+                assert_eq!(
+                    attr.mod_history.len(),
+                    1,
+                    "split must add exactly one ModEntry; got {:?}",
+                    attr.mod_history
+                );
+                assert_eq!(
+                    attr.mod_history[0],
+                    ModEntry {
+                        splitting_feature_id: splitting_fid.clone(),
+                        split_index: expected_split_index,
+                    },
+                    "ModEntry must carry the fillet feature_id and split_index {}",
+                    expected_split_index
+                );
+            }
+        }
+
+        // ------------------------------------------------------------------ (c)
+        // edge_modified 1→1: copies parent EDGE attr verbatim; no ModEntry.
+        // ------------------------------------------------------------------ (c)
+        #[test]
+        fn edge_modified_one_to_one_copies_parent_edge_attr_with_empty_mod_history() {
+            let fid = FeatureId::new("Box#realization[0]");
+            let parent_edge = GeometryHandleId(3);
+            let result_edge = GeometryHandleId(21);
+
+            let mut table = TopologyAttributeTable::default();
+            table.record(parent_edge, make_attr(&fid, Role::NewEdge, 2));
+
+            let history = LocalFeatureOpHistoryRecords {
+                edge_modified: vec![rec(0, 0)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[],              // parent_face_handles
+                &[parent_edge],   // parent_edge_handles
+                &[],              // parent_vertex_handles
+                &[],              // result_face_handles
+                &[result_edge],   // result_edge_handles
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect("well-formed 1→1 edge_modified should succeed");
+
+            let attr = table
+                .lookup(result_edge)
+                .expect("result edge must have an attribute");
+            assert_eq!(attr.feature_id, fid);
+            assert_eq!(attr.role, Role::NewEdge);
+            assert_eq!(attr.local_index, 2);
+            assert!(
+                attr.mod_history.is_empty(),
+                "single-result pass-through must not add a ModEntry; got {:?}",
+                attr.mod_history
+            );
+        }
+
+        // ------------------------------------------------------------------ (d)
+        // edge_generated: one parent VERTEX maps to 2 result edges (cross-kind split).
+        // Both result edges inherit the VERTEX attr; each gets a ModEntry with
+        // split_index 0 then 1.
+        // ------------------------------------------------------------------ (d)
+        #[test]
+        fn edge_generated_cross_kind_vertex_to_two_edges_appends_split_mod_entries() {
+            let fid = FeatureId::new("Box#realization[0]");
+            let parent_vertex = GeometryHandleId(5);
+            let result_edge_a = GeometryHandleId(21);
+            let result_edge_b = GeometryHandleId(22);
+            let splitting_fid = fillet_feature_id();
+
+            let mut table = TopologyAttributeTable::default();
+            table.record(parent_vertex, make_attr(&fid, Role::CornerVertex, 3));
+
+            let history = LocalFeatureOpHistoryRecords {
+                edge_generated: vec![rec(0, 0), rec(0, 1)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[],                                // parent_face_handles
+                &[],                                // parent_edge_handles
+                &[parent_vertex],                   // parent_vertex_handles
+                &[],                                // result_face_handles
+                &[result_edge_a, result_edge_b],    // result_edge_handles
+                &history,
+                &splitting_fid,
+            )
+            .expect("well-formed edge_generated cross-kind split should succeed");
+
+            for (handle, expected_split_index) in [(result_edge_a, 0u32), (result_edge_b, 1u32)] {
+                let attr = table
+                    .lookup(handle)
+                    .unwrap_or_else(|| panic!("result edge {:?} must have an attribute", handle));
+                assert_eq!(attr.feature_id, fid, "feature_id inherited from parent vertex");
+                assert_eq!(attr.role, Role::CornerVertex, "role inherited from parent vertex");
+                assert_eq!(attr.local_index, 3, "local_index inherited from parent vertex");
+                assert_eq!(
+                    attr.mod_history.len(),
+                    1,
+                    "split must add exactly one ModEntry; got {:?}",
+                    attr.mod_history
+                );
+                assert_eq!(
+                    attr.mod_history[0],
+                    ModEntry {
+                        splitting_feature_id: splitting_fid.clone(),
+                        split_index: expected_split_index,
+                    }
+                );
+            }
+        }
+
+        // ------------------------------------------------------------------ (e)
+        // A parent that already carries a non-empty mod_history is preserved on
+        // single-child pass-through and only appended-to on a split.
+        // ------------------------------------------------------------------ (e)
+        #[test]
+        fn prior_mod_history_preserved_on_passthrough_and_appended_on_split() {
+            let fid = FeatureId::new("Box#realization[0]");
+            let prior_fid = FeatureId::new("PriorOp#realization[0]");
+            let prior_entry = ModEntry {
+                splitting_feature_id: prior_fid.clone(),
+                split_index: 7,
+            };
+
+            // Case 1: single-child pass-through — prior mod_history must survive unchanged.
+            {
+                let parent_face = GeometryHandleId(1);
+                let result_face = GeometryHandleId(11);
+
+                let mut table = TopologyAttributeTable::default();
+                let mut attr = make_attr(&fid, Role::Side, 0);
+                attr.mod_history.push(prior_entry.clone());
+                table.record(parent_face, attr);
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
+                    &mut table,
+                    &[parent_face],
+                    &[],
+                    &[],
+                    &[result_face],
+                    &[],
+                    &history,
+                    &fillet_feature_id(),
+                )
+                .expect("single-child pass-through should succeed");
+
+                let result_attr = table.lookup(result_face).expect("result must have attr");
+                assert_eq!(
+                    result_attr.mod_history,
+                    vec![prior_entry.clone()],
+                    "prior mod_history must be preserved on 1→1 pass-through"
+                );
+            }
+
+            // Case 2: split (1 parent edge → 2 result faces) — prior mod_history
+            // must be preserved on both children, with the new ModEntry appended.
+            {
+                let parent_edge = GeometryHandleId(3);
+                let result_face_a = GeometryHandleId(11);
+                let result_face_b = GeometryHandleId(12);
+                let splitting_fid = fillet_feature_id();
+
+                let mut table = TopologyAttributeTable::default();
+                let mut attr = make_attr(&fid, Role::NewEdge, 0);
+                attr.mod_history.push(prior_entry.clone());
+                table.record(parent_edge, attr);
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_generated: vec![rec(0, 0), rec(0, 1)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
+                    &mut table,
+                    &[],
+                    &[parent_edge],
+                    &[],
+                    &[result_face_a, result_face_b],
+                    &[],
+                    &history,
+                    &splitting_fid,
+                )
+                .expect("split should succeed");
+
+                for (handle, expected_split_index) in
+                    [(result_face_a, 0u32), (result_face_b, 1u32)]
+                {
+                    let result_attr = table
+                        .lookup(handle)
+                        .unwrap_or_else(|| panic!("{:?} must have attr", handle));
+                    assert_eq!(
+                        result_attr.mod_history.len(),
+                        2,
+                        "prior entry + new ModEntry = 2 entries; got {:?}",
+                        result_attr.mod_history
+                    );
+                    assert_eq!(
+                        result_attr.mod_history[0],
+                        prior_entry,
+                        "prior entry must be at index 0"
+                    );
+                    assert_eq!(
+                        result_attr.mod_history[1],
+                        ModEntry {
+                            splitting_feature_id: splitting_fid.clone(),
+                            split_index: expected_split_index,
+                        },
+                        "new ModEntry must be at index 1 with split_index {}",
+                        expected_split_index
+                    );
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------ (f)
+        // An out-of-range parent subshape index returns Err(QueryError::QueryFailed).
+        // ------------------------------------------------------------------ (f)
+        #[test]
+        fn out_of_range_face_modified_parent_subshape_index_returns_error() {
+            let mut table = TopologyAttributeTable::default();
+
+            let history = LocalFeatureOpHistoryRecords {
+                // parent_subshape_index=99 but parent_face_handles has only 1 entry.
+                face_modified: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 99,
+                    result_subshape_index: 0,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[GeometryHandleId(1)],  // only 1 parent face (index 0 valid, 99 is OOB)
+                &[],
+                &[],
+                &[GeometryHandleId(11)],
+                &[],
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect_err("out-of-range parent_subshape_index should return QueryFailed");
+
+            match err {
+                QueryError::QueryFailed(msg) => {
+                    assert!(
+                        msg.contains("parent_subshape_index 99") || msg.contains("99"),
+                        "error message should mention the offending index, got {msg:?}"
+                    );
+                }
+                other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn out_of_range_result_subshape_index_returns_error() {
+            let mut table = TopologyAttributeTable::default();
+            let parent_edge = GeometryHandleId(3);
+
+            let history = LocalFeatureOpHistoryRecords {
+                // result_subshape_index=7 but result_face_handles has only 1 entry.
+                face_generated: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
+                &mut table,
+                &[],
+                &[parent_edge],
+                &[],
+                &[GeometryHandleId(11)],  // only 1 result face (index 0 valid, 7 is OOB)
+                &[],
+                &history,
+                &fillet_feature_id(),
+            )
+            .expect_err("out-of-range result_subshape_index should return QueryFailed");
+
+            match err {
+                QueryError::QueryFailed(_) => {}
+                other => panic!("expected QueryError::QueryFailed, got {other:?}"),
+            }
+        }
+    }
 }
