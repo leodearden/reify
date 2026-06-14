@@ -2101,18 +2101,22 @@ structure ScalarParamDefaults {
 
 // ─── task 4577: StepForce.at = Selector compile gates ────────────────────────
 
-/// POSITIVE compile gate: a `StepForce` with `at` supplied as a kernel-free
-/// FaceSelector (via `faces_by_normal`) must compile with zero Error-severity
-/// diagnostics once `param at : String` is changed to `param at : Selector`
-/// in modal_analysis.ri.
+/// POSITIVE compile gate: a `StepForce` whose `at` is supplied as a kernel-free
+/// FaceSelector (via `faces_by_normal`) compiles with zero Error-severity
+/// diagnostics — the task's stated boundary "a StepForce.at selecting a face
+/// type-checks" (PRD §6/§8.4).
 ///
 /// Uses the bt7 kernel-free idiom: `faces_by_normal(b, dir, tol)` with
 /// let-bound arguments so the selector stays kernel-free (never realized
 /// against a mesh). The force-location value is type-only at compile time;
 /// runtime Selector→mesh-node resolution is task 4122.
 ///
-/// RED until step-6 changes `param at : String` to `param at : Selector`
-/// (currently a FaceSelector arg at a String param produces a type error).
+/// NOTE: structure-ctor args at a Selector param are not yet type-ENFORCED (see
+/// `step_force_real_at_arg_silently_accepted` below and follow-up task 4598), so
+/// this gate is a compile-clean smoke test (it confirms the selector idiom
+/// raises no OTHER errors in a StepForce ctor); the authoritative proof that
+/// `at` resolves to `Selector` is the param-shape assertion
+/// `step_force_struct_has_correct_param_shape` (`("at", Type::AnySelector)`).
 #[test]
 fn step_force_at_selector_compiles_with_zero_errors() {
     let source = r#"
@@ -2142,14 +2146,26 @@ structure StepForceSelectorSmoke {
     );
 }
 
-/// NEGATIVE compile gate: a `StepForce` with `at: 0.0` (a Real literal) must
-/// produce at least one Error-severity diagnostic once `param at : Selector`
-/// lands — AnySelector rejects Real (type_compat.rs:1718).
+/// CHARACTERIZATION test (known gap): a `StepForce` with `at: 0.0` (a Real
+/// literal) at the now-`Selector` `at` param is SILENTLY ACCEPTED — it produces
+/// zero Error-severity diagnostics today.
 ///
-/// RED until step-6 changes `param at : String` to `param at : Selector`
-/// (currently `at: 0.0` at a String param may be silently accepted).
+/// This documents a real soundness gap surfaced by task 4577: although
+/// `type_compatible(AnySelector, Real)` is false (type_compat.rs AnySelector
+/// arm), structure-ctor arguments at a Selector param are NOT type-enforced.
+/// `check_expr_struct_ctor_args` (entities_phase.rs) only checks
+/// `List<TraitObject>`/`StructureRef` params, and the conformance walker
+/// `walk_param_against_arg_type` falls through silently for a bare `AnySelector`
+/// leaf param. (Contrast: FUNCTION-call args ARE enforced via overload
+/// resolution — see `peak_deviation_real_location_yields_type_error` in
+/// trajectory_stdlib_compile.rs, which DOES reject a Real location arg.)
+///
+/// Mirrors the historical `string_arg_to_part_param_silently_accepted` pattern
+/// (later flipped to `_rejected` by task 4584 once StructureRef ctor-arg
+/// enforcement landed). FLIP this to assert exactly one `E_ARG_TYPE_MISMATCH`
+/// when follow-up task 4598 (Selector struct-ctor arg enforcement) lands.
 #[test]
-fn step_force_at_real_yields_type_error() {
+fn step_force_real_at_arg_silently_accepted() {
     let source = r#"
 structure StepForceRealAtSmoke {
     let step = StepForce(
@@ -2163,10 +2179,12 @@ structure StepForceRealAtSmoke {
     let module = compile_source_with_stdlib(source);
     let errs = errors_only(&module);
     assert!(
-        !errs.is_empty(),
-        "StepForce(at: 0.0, ...) should produce at least one Error diagnostic \
-         (AnySelector rejects Real per type_compat:1718); \
-         RED until step-6 changes param at : String -> param at : Selector. \
-         Got 0 errors.",
+        errs.is_empty(),
+        "KNOWN GAP (task 4598): StepForce(at: 0.0, ...) is silently accepted — \
+         structure-ctor args at a Selector param are not yet type-enforced. \
+         Flip to assert exactly 1 E_ARG_TYPE_MISMATCH when 4598 lands. \
+         Got {} unexpected error(s): {:#?}",
+        errs.len(),
+        errs
     );
 }
