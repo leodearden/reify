@@ -139,3 +139,42 @@ fn b3_kind_mismatch_travel_vs_rotational_residual() {
         errs[0].message
     );
 }
+
+// ── CI example: examples/joint_dof_self_check.ri ─────────────────────────────
+
+/// The committed CI example must compile CLEAN — zero Error-severity diagnostics,
+/// and in particular zero `JointDofMismatch`. The example carries only PASSING
+/// joints (a revolute single form + a cylindrical record form); the fail modes
+/// (B2/B3 above) live in this test module, since one must-pass `.ri` cannot also
+/// fail.
+///
+/// This is also covered by `examples_smoke::all_examples_parse_and_compile_with_stdlib`,
+/// which walks every `examples/*.ri`; this dedicated test pins the joint example
+/// by name with a sharper assertion that explicitly names the `JointDofMismatch`
+/// code.
+///
+/// RED: `examples/joint_dof_self_check.ri` does not exist yet, so the read fails.
+#[test]
+fn ci_example_compiles_clean() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/joint_dof_self_check.ri"
+    );
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read CI example `{path}`: {e}"));
+    let module = compile_source_with_stdlib(&source);
+
+    let errors: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "examples/joint_dof_self_check.ri must compile with zero Error diagnostics, got: {errors:#?}",
+    );
+    assert!(
+        joint_dof_errors(&module).is_empty(),
+        "examples/joint_dof_self_check.ri must emit zero E_JOINT_DOF_MISMATCH",
+    );
+}
