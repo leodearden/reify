@@ -281,6 +281,8 @@ pub enum Operation {
     PrimitiveCone,
     /// Wedge (trapezoidal prism) primitive with bbox corner at origin.
     PrimitiveWedge,
+    /// Torus primitive (ring about the Z axis; non-convex).
+    PrimitiveTorus,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -573,6 +575,15 @@ pub enum GeometryOp {
         depth: Value,
         height: Value,
         top_width: Value,
+    },
+    /// Create a torus primitive centered at origin about the Z axis.
+    ///
+    /// Built at the kernel layer via `BRepPrimAPI_MakeTorus(major_radius,
+    /// minor_radius)`. Requires `minor_radius < major_radius` (a
+    /// self-intersecting torus is rejected at the kernel boundary).
+    Torus {
+        major_radius: Value,
+        minor_radius: Value,
     },
     /// Boolean union.
     Union {
@@ -901,6 +912,7 @@ impl GeometryOp {
             GeometryOp::Tube { .. } => "Tube",
             GeometryOp::Cone { .. } => "Cone",
             GeometryOp::Wedge { .. } => "Wedge",
+            GeometryOp::Torus { .. } => "Torus",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -5930,13 +5942,14 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (6)
+            // Primitives (7)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
+            Operation::PrimitiveTorus,
             // Modify (7)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
@@ -6041,6 +6054,7 @@ mod tests {
             Operation::PrimitiveTube => {}
             Operation::PrimitiveCone => {}
             Operation::PrimitiveWedge => {}
+            Operation::PrimitiveTorus => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
@@ -6530,6 +6544,13 @@ mod tests {
                 },
             ),
             (
+                "Torus",
+                GeometryOp::Torus {
+                    major_radius: Value::Real(0.02),
+                    minor_radius: Value::Real(0.005),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6838,7 +6859,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 45;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,

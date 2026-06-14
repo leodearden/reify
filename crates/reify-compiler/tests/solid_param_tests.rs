@@ -824,3 +824,81 @@ pub structure Outer {
         default_expr.kind
     );
 }
+
+// ─── task-4157 step-7: torus compiler lowering ───────────────────────────────
+
+/// `torus(20mm, 5mm)` must lower to EXACTLY ONE op:
+/// `Primitive{kind:Torus, args:[("major_radius",...),("minor_radius",...)]}` —
+/// mirroring the cylinder(radius, height) 2-arg lowering.
+///
+/// RED: no "torus" arm in `compile_geometry_call` yet → the call falls through
+/// to the wildcard arm and emits an "unsupported geometry function" error, so
+/// `compile_no_errors` fails (no Torus primitive is produced).
+/// GREEN: after step-8 the realization carries one Primitive(Torus) with the
+/// major_radius/minor_radius arg keys.
+#[test]
+fn torus_lowers_to_primitive_torus() {
+    let source = r#"structure def S {
+    let ring = torus(20mm, 5mm)
+}"#;
+    let compiled = compile_no_errors(source);
+    let template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template not found");
+
+    assert_eq!(
+        template.realizations.len(),
+        1,
+        "torus: expected 1 realization, got {}",
+        template.realizations.len()
+    );
+
+    let ops = &template.realizations[0].operations;
+    assert_eq!(
+        ops.len(),
+        1,
+        "torus must lower to exactly 1 op (Primitive(Torus)), got: {:#?}",
+        ops
+    );
+
+    match &ops[0] {
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Torus,
+            args,
+        } => {
+            let keys: Vec<&str> = args.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                keys,
+                &["major_radius", "minor_radius"],
+                "torus arg keys must be [major_radius, minor_radius], got {keys:?}"
+            );
+        }
+        other => panic!("expected Primitive(Torus), got: {other:?}"),
+    }
+}
+
+/// Wrong arg count (1 arg to torus) must produce at least one error diagnostic
+/// (torus takes exactly 2: major_radius, minor_radius).
+///
+/// RED (pre-step-8): emits "unsupported geometry function" — an error.
+/// GREEN (post-step-8): the torus arm fires check_arg_count_exact → arity error
+/// "expected 2, got 1". Either way an error is emitted; this pins the
+/// post-implementation arity behaviour.
+#[test]
+fn torus_wrong_arg_count_emits_error() {
+    let source = r#"structure def S {
+    let r = torus(20mm)
+}"#;
+    let compiled = parse_and_compile(source);
+    let has_error = compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error);
+    assert!(
+        has_error,
+        "expected at least one error for torus with 1 arg, got: {:#?}",
+        compiled.diagnostics
+    );
+}

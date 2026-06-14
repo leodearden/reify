@@ -76,7 +76,16 @@ pub enum ExprKind {
     },
     /// Auto keyword: solver-determined parameter value.
     /// `free: false` = bare `auto` (strict), `free: true` = `auto(free)`.
-    Auto { free: bool },
+    ///
+    /// `params` carries the ordered `name = value` arguments of a parameterized
+    /// `auto(seed = …)` / component-fix `auto(x = …, orientation = …)` form
+    /// (geometric-relations δ, task 4384). Empty for bare `auto` and
+    /// `auto(free)`. δ only PRESERVES these faithfully in the AST; consuming
+    /// them (root selection, partial-fix) is ζ's relate-solve.
+    Auto {
+        free: bool,
+        params: Vec<(String, Expr)>,
+    },
     /// Undef literal: explicit undefined value (task γ, spec §5.12).
     /// Lowers to `Value::Undef`; absorbs type cascade via `Type::Error`.
     Undef,

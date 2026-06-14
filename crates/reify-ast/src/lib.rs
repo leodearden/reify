@@ -44,7 +44,7 @@ pub use decl::{
     LetDecl, MAX_MEMBER_NESTING_DEPTH, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MaximizeDecl,
     MemberDecl, MemberSpanInfo, MetaBlockDecl, MinimizeDecl, ModuleDecl, NumberClass,
     OccurrenceDef, ParamDecl, ParseError, ParsedModule, PortDecl, PortRef, Pragma, PragmaArg,
-    PragmaValue, KeyedSubMemberEntry, PurposeDef, PurposeParam, StructureDef, SubDecl,
+    PragmaValue, KeyedSubMemberEntry, PurposeDef, PurposeParam, RelateDecl, StructureDef, SubDecl,
     TraitBoundRef, TraitDecl, TypeAliasDecl, TypeParamDecl, UnitDecl, VariantPayload, WhereClause,
     classify_number_literal, find_named_member_span, has_test_annotation,
     walk_specialization_scope_members,

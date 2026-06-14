@@ -1252,6 +1252,20 @@ pub(crate) fn compile_geometry_call(
                 ],
             }])
         }
+        // torus(major_radius, minor_radius) — mirrors cylinder's 2-arg lowering.
+        "torus" => {
+            if !check_arg_count_exact("torus", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Torus,
+                args: vec![
+                    ("major_radius".to_string(), it.next().unwrap()),
+                    ("minor_radius".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
 
         // --- Patterns ---
         // linear_pattern(target, dx, dy, dz, count, spacing)
@@ -1901,6 +1915,7 @@ mod tests {
         "tube",
         "cone",
         "wedge",
+        "torus",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -1936,11 +1951,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    22  (zone_slab was the last addition)
-    /// NO_GEOM_ARG_FUNCTIONS 20  (polygon, ellipse added by task-4161)
+    /// GEOM_ARG_FUNCTIONS    22  (offset_solid, fillet_all, zone_slab)
+    /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 49
+    /// Total                 50
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1952,7 +1967,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 49;
+    const EXPECTED_DISPATCH_COUNT: usize = 50;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {

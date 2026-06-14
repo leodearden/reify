@@ -94,7 +94,16 @@ pub(crate) fn substitute_expr(
         },
         ExprKind::StringLiteral(s) => ExprKind::StringLiteral(s.clone()),
         ExprKind::BoolLiteral(b) => ExprKind::BoolLiteral(*b),
-        ExprKind::Auto { free } => ExprKind::Auto { free: *free },
+        ExprKind::Auto { free, params } => ExprKind::Auto {
+            free: *free,
+            // `params` hold full value expressions (`seed = self.frame`,
+            // `x = 5mm`, …) that may reference bindings, so substitute into
+            // each — mirroring the MapLiteral / FunctionCall recursion above.
+            params: params
+                .iter()
+                .map(|(n, v)| (n.clone(), substitute_expr(v, bindings)))
+                .collect(),
+        },
         ExprKind::Undef => ExprKind::Undef,
         ExprKind::EnumAccess { type_name, variant } => ExprKind::EnumAccess {
             type_name: type_name.clone(),
@@ -1352,6 +1361,20 @@ pub(crate) fn compile_entity(
     let mut pending_forall_connect: Vec<&reify_ast::ForallConnectDecl> = Vec::new();
     for member in structure.members {
         match member {
+            // Member-level `relate {}` enforcement (E_RELATE_EXPECTS_RELATION,
+            // task δ 4384): every member must type to `Type::Relation`. δ only
+            // type-checks the relations here; the relate-solve / ApplyTransform
+            // placement is ζ's. The inline `sub … at … where {}` twin runs the
+            // SAME check in the `MemberDecl::Sub` arm below.
+            reify_ast::MemberDecl::Relate(relate) => {
+                check_relate_relations(
+                    &relate.relations,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
@@ -1515,8 +1538,27 @@ pub(crate) fn compile_entity(
                     let compiled_expr =
                         compile_expr(&constraint.expr, &scope, enum_defs, functions, diagnostics);
 
-                    // Check that the constraint expression produces Bool
-                    if compiled_expr.result_type != Type::Bool {
+                    // Check that the constraint expression produces Bool. A
+                    // `Type::Relation` is a SPECIFIC misuse — it belongs in a
+                    // `relate {}` block, not a `constraint` — so reject it loudly
+                    // (Error) with a dedicated redirect: the mirror of
+                    // E_RELATE_EXPECTS_RELATION that completes the relate-vs-
+                    // constraint dispatch (geometric-relations δ §4/§7.3). Other
+                    // non-Bool types keep the existing generic warning (gradualism).
+                    if compiled_expr.result_type == Type::Relation {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "constraint accepts only Bool, but this expression has type \
+                                 Relation; a relation belongs in a `relate { }` block, not a \
+                                 `constraint`"
+                                    .to_string(),
+                            )
+                            .with_label(DiagnosticLabel::new(
+                                constraint.expr.span,
+                                "Relation not allowed in `constraint`; use a `relate { }` block",
+                            )),
+                        );
+                    } else if compiled_expr.result_type != Type::Bool {
                         diagnostics.push(
                             Diagnostic::warning(format!(
                                 "constraint expression has type {}, expected Bool",
@@ -1724,6 +1766,18 @@ pub(crate) fn compile_entity(
                         .as_ref()
                         .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
                 };
+
+                // Inline `sub … at … where {}` relate-block enforcement (task δ
+                // 4384): the OTHER relate home. Type-check each inline relation to
+                // `Type::Relation` with the SAME check as the member-level
+                // `relate {}` arm above, so both spellings enforce identically.
+                check_relate_relations(
+                    &sub.relate_relations,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
 
                 // Keep-first dedupe of the keyed-member keys. A duplicate key is
                 // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
@@ -3308,6 +3362,41 @@ fn compile_match_arm_decl_group(
     }
 }
 
+/// Type-check the members of a `relate {}` block (member-level
+/// `MemberDecl::Relate`) or its inline `sub … at … where {}` twin
+/// (`SubDecl.relate_relations`): every member must type to `Type::Relation`
+/// (geometric-relations δ §4/§7.3). A member whose compiled `result_type` is
+/// neither `Type::Relation` nor `Type::Error` draws `E_RELATE_EXPECTS_RELATION`
+/// at its span. `Type::Error` is skipped (anti-cascade — no second diagnostic
+/// piles onto an already-errored member, mirroring the relation arg-check
+/// gradualism in `relation_signatures::check_relation_arg_types`).
+///
+/// Both relate homes call this single check, so the two spellings enforce
+/// identically and the 3-verb routing falls out of γ's typing with no name
+/// re-classification: a `check` verb types to `Bool` and a `derive`/`query`
+/// verb types to a metric, both failing the `Type::Relation` test.
+fn check_relate_relations(
+    relations: &[reify_ast::Expr],
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for relation in relations {
+        let compiled = compile_expr(relation, scope, enum_defs, functions, diagnostics);
+        if compiled.result_type != Type::Relation && compiled.result_type != Type::Error {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "relate member has type {}, expected Relation",
+                    compiled.result_type
+                ))
+                .with_code(DiagnosticCode::RelateExpectsRelation)
+                .with_label(DiagnosticLabel::new(relation.span, "expected Relation")),
+            );
+        }
+    }
+}
+
 /// Extract the shared logical name from an arm's `MemberDecl`.
 fn arm_member_name(member: &reify_ast::MemberDecl) -> Option<&str> {
     match member {
@@ -4685,5 +4774,75 @@ structure def Manifold {
             ],
             "vents keyed_members must carry the author-assigned keys in declaration order",
         );
+    }
+
+    /// `substitute_expr` must recurse into `ExprKind::Auto`'s `params` value
+    /// expressions. A component-fix / seed param (`auto(seed = T.field)`) holds
+    /// a full value expression that references real bindings, so instantiating a
+    /// structure that binds those names must rewrite them *inside* the auto
+    /// param — otherwise monomorphization would carry a stale reference. This is
+    /// the one walker that is correctness-relevant for monomorphization (the
+    /// LSP/lint walker recursion added alongside it is checked elsewhere).
+    /// Mirrors the MapLiteral / FunctionCall substitution recursion arms.
+    /// Regression guard for geometric-relations δ (task 4384).
+    #[test]
+    fn substitute_expr_recurses_into_auto_params() {
+        let span = SourceSpan::new(0, 0);
+
+        // `auto(seed = T.field)` — the param value is a member-access whose base
+        // `T` references the binding to be substituted; `free` is preserved.
+        let auto = reify_ast::Expr {
+            kind: reify_ast::ExprKind::Auto {
+                free: false,
+                params: vec![(
+                    "seed".to_string(),
+                    reify_ast::Expr {
+                        kind: reify_ast::ExprKind::MemberAccess {
+                            object: Box::new(reify_ast::Expr {
+                                kind: reify_ast::ExprKind::Ident("T".to_string()),
+                                span,
+                            }),
+                            member: "field".to_string(),
+                        },
+                        span,
+                    },
+                )],
+            },
+            span,
+        };
+
+        // Bind `T` → `S`.
+        let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
+        bindings.insert(
+            "T".to_string(),
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("S".to_string()),
+                span,
+            },
+        );
+
+        let result = substitute_expr(&auto, &bindings);
+
+        match result.kind {
+            reify_ast::ExprKind::Auto { free, params } => {
+                assert!(!free, "free flag must be preserved through substitution");
+                assert_eq!(params.len(), 1, "param count must be preserved");
+                assert_eq!(params[0].0, "seed", "param name must be preserved");
+                match &params[0].1.kind {
+                    reify_ast::ExprKind::MemberAccess { object, member } => {
+                        assert_eq!(member, "field", "member segment must be preserved");
+                        match &object.kind {
+                            reify_ast::ExprKind::Ident(n) => assert_eq!(
+                                n, "S",
+                                "auto param value base must be substituted T → S"
+                            ),
+                            other => panic!("expected substituted Ident(S), got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected MemberAccess param value, got {other:?}"),
+                }
+            }
+            other => panic!("expected ExprKind::Auto, got {other:?}"),
+        }
     }
 }

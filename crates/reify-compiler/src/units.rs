@@ -58,6 +58,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "bezier",
     "nurbs",
     "tube",
+    "torus",
     "pipe",
     "box_centered",
     "cylinder_centered",
@@ -1581,6 +1582,13 @@ mod tests {
     #[test]
     fn is_geometry_function_pipe_recognized() {
         assert!(is_geometry_function("pipe"));
+    }
+
+    // --- Torus primitive (task-4157 step-5) ---
+
+    #[test]
+    fn is_geometry_function_torus_recognized() {
+        assert!(is_geometry_function("torus"));
     }
 
     // --- Centred primitives (task-4159) ---

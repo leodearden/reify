@@ -78,6 +78,7 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         keyed_members: vec![],
         is_aux: false,
         pose_expr: None,
+        relate_relations: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -753,6 +754,7 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         keyed_members: vec![],
         is_aux: false,
         pose_expr: None,
+        relate_relations: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
