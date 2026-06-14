@@ -86,3 +86,44 @@ structure def DraftError : DFMRule {
     param applies_to : Process     = InjectionMolding()
     param subject    : Solid       = box(50mm, 40mm, 30mm)
 }
+
+// ── Undercut rule (Info severity) ────────────────────────────────────────────
+// Subject: a sphere. Lower-hemisphere faces have outward normals with n·ẑ < 0
+// (re-entrant faces in the wall window) → undercut.
+//
+// dfm.rs co-emit rule: a re-entrant wall has signed_min_draft < 0, which is
+// < any non-negative draft_angle threshold, so the draft arm fires too.
+// With severity=Info → I_DFM_DRAFT is emitted (leaves W/E_DFM_DRAFT counts
+// at exactly 1 each). E_DFM_UNDERCUT is always Error regardless of severity.
+
+structure def UndercutInfo : DFMRule {
+    param rule_name  : String      = "undercut-info"
+    param severity   : DFMSeverity = DFMSeverity.Info
+    param applies_to : Process     = InjectionMolding()
+    param subject    : Solid       = sphere(30mm)
+}
+
+// ── Adding process conformer B: 90° max overhang (permissive) ─────────────────
+// With max_overhang_angle=90°, the threshold sin(90°)=1, so the check
+// n·ẑ < -1 is never true (n·ẑ ≥ -1 always) → no overhang violation.
+
+structure def FDMPrinterConformer : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 90deg
+}
+
+// ── Conforming rule (emits nothing) ──────────────────────────────────────────
+// A box under a 90° max_overhang_angle Adding process. The bottom face has
+// exactly 90° dip but the threshold n·ẑ < -1 (strict) is never satisfied
+// → no DFM_OVERHANG diagnostic. Proved by γ's conforming-overhang test.
+
+structure def ConformingOverhang : DFMRule {
+    param rule_name  : String      = "conforming-overhang"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDMPrinterConformer()
+    param subject    : Solid       = box(80mm, 80mm, 80mm)
+}
