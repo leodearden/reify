@@ -274,6 +274,129 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Result — evaluation output with mandatory captured evidence
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Result:
+    """Output of evaluating a single probe, with mandatory captured evidence.
+
+    Fields:
+        probe       — the original Probe object
+        command     — exact command argv that was run (list of strings)
+        exit_code   — process exit code
+        stdout      — captured stdout text
+        stderr      — captured stderr text
+        observation — PRESENT / ABSENT / INDETERMINATE / _HARNESS_ERROR
+        verdict     — PASS / FAIL / UNPROVABLE  (or _HARNESS_ERROR for tool errors)
+    """
+    probe: Probe
+    command: List[str]
+    exit_code: int
+    stdout: str
+    stderr: str
+    observation: str
+    verdict: str
+
+
+# ---------------------------------------------------------------------------
+# build_command() — construct probe argv from probe kind and fixture
+# ---------------------------------------------------------------------------
+
+def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
+    """Construct the exact command argv for a probe.
+
+    Binary resolution (used by run_probe; also injectable via env overrides):
+        grammar  → TREE_SITTER_BIN (default "tree-sitter")
+        check/ir → REIFY_BIN (default "reify")
+
+    Command shapes:
+        grammar  → [tree-sitter, parse, --quiet, <fixture>]
+        check    → [reify, check, <fixture>]
+        ir       → [reify, eval, <fixture>]
+
+    The fixture path in the command is as-given in the probe record
+    (repo-relative).  run_probe() resolves it to an absolute path and
+    sets CWD for grammar probes; build_command() returns the logical argv
+    for display and testing purposes.
+
+    Args:
+        probe:     The probe to build a command for.
+        repo_root: Optional repo root for resolving fixture paths.  Unused
+                   by this function directly; provided for forward-compat
+                   with step-10's full resolution logic.
+
+    Returns:
+        A list of strings — the exact argv to be passed to subprocess.run().
+    """
+    fixture = probe.fixture
+
+    if probe.probe_kind == "grammar":
+        ts_bin = os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+        return [ts_bin, "parse", "--quiet", fixture]
+
+    reify_bin = os.environ.get("REIFY_BIN", "reify")
+
+    if probe.probe_kind == "check":
+        return [reify_bin, "check", fixture]
+
+    if probe.probe_kind == "ir":
+        return [reify_bin, "eval", fixture]
+
+    # Should not reach here after load_probe_set validation, but be defensive.
+    raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# evaluate() — wire run → observe → verdict → Result
+# ---------------------------------------------------------------------------
+
+def evaluate(probe: Probe, runner: Any = None) -> Result:
+    """Evaluate a single probe and return a Result with mandatory evidence.
+
+    Args:
+        probe:  The probe to evaluate.
+        runner: A callable (probe) -> ProbeRun.  Defaults to the real
+                subprocess runner (run_probe), which is injected in step-10.
+                Tests pass synthetic runners for hermeticity.
+
+    Returns:
+        A Result carrying the exact command, captured exit/stdout/stderr,
+        observation, and verdict.
+    """
+    if runner is None:
+        # Default: the real subprocess runner (implemented in step-10).
+        runner = run_probe  # type: ignore[name-defined]  # noqa: F821
+
+    # Build the command argv for this probe (used for display/evidence).
+    cmd = build_command(probe)
+
+    # Run the probe and capture output.
+    run = runner(probe)
+
+    # Determine observation.
+    match = probe.expected.get("match", {})
+    obs = observe(probe.probe_kind, run, match)
+
+    # Determine verdict.
+    if obs == _HARNESS_ERROR:
+        verd = _HARNESS_ERROR
+    else:
+        expected_obs = probe.expected["observation"]
+        verd = verdict(obs, expected_obs)
+
+    return Result(
+        probe=probe,
+        command=cmd,
+        exit_code=run.exit_code,
+        stdout=run.stdout,
+        stderr=run.stderr,
+        observation=obs,
+        verdict=verd,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Verdict logic
 # ---------------------------------------------------------------------------
 
