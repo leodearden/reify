@@ -2902,6 +2902,35 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            GeometryOp::PolygonProfile { points } => {
+                if points.len() < 3 {
+                    return Err(GeometryError::OperationFailed(
+                        "polygon_profile requires at least 3 vertices".into(),
+                    ));
+                }
+                // Flatten Vec<[f64; 2]> → Vec<f64> for the FFI (mirrors InterpCurve at lib.rs:2742).
+                let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_polygon_face(&coords, points.len(), 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            GeometryOp::EllipseProfile { semi_major, semi_minor } => {
+                let a = extract_f64(semi_major)?;
+                let b = extract_f64(semi_minor)?;
+                if !(a.is_finite() && a > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_major must be a finite positive value".into(),
+                    ));
+                }
+                if !(b.is_finite() && b > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_minor must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
             GeometryOp::Split { .. } => {

@@ -361,6 +361,10 @@ pub enum Operation {
     ProfileRectangle,
     /// Circular face (disk) centred at origin in the XY plane.
     ProfileCircle,
+    /// Closed planar polygon face in the XY plane (variadic vertex list).
+    ProfilePolygon,
+    /// Ellipse face (filled ellipse disk) centred at origin in the XY plane.
+    ProfileEllipse,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -863,6 +867,21 @@ pub enum GeometryOp {
     /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
     /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
     CircleProfile { radius: Value },
+    /// Closed planar polygon face in the XY plane at z=0, centred as given by
+    /// the caller-supplied vertices.  `points` is a list of 2-D (x, y) vertices
+    /// in order; at least 3 non-collinear points are required.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    PolygonProfile { points: Vec<[f64; 2]> },
+    /// Ellipse face (filled ellipse disk) centred at origin in the XY plane at z=0.
+    ///
+    /// `semi_major` and `semi_minor` are the half-axis lengths; both must be
+    /// finite and positive.  The kernel normalises `major = max(a, b)` internally.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    EllipseProfile { semi_major: Value, semi_minor: Value },
 }
 
 impl GeometryOp {
@@ -919,6 +938,8 @@ impl GeometryOp {
             GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
             GeometryOp::CircleProfile { .. } => "CircleProfile",
+            GeometryOp::PolygonProfile { .. } => "PolygonProfile",
+            GeometryOp::EllipseProfile { .. } => "EllipseProfile",
         }
     }
 }
@@ -6053,6 +6074,8 @@ mod tests {
             Operation::CurveNurbsCurve => {}
             Operation::ProfileRectangle => {}
             Operation::ProfileCircle => {}
+            Operation::ProfilePolygon => {}
+            Operation::ProfileEllipse => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -6790,6 +6813,19 @@ mod tests {
                 },
             ),
             (
+                "PolygonProfile",
+                GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]],
+                },
+            ),
+            (
+                "EllipseProfile",
+                GeometryOp::EllipseProfile {
+                    semi_major: Value::Real(0.010),
+                    semi_minor: Value::Real(0.005),
+                },
+            ),
+            (
                 "Split",
                 GeometryOp::Split {
                     target: GeometryHandleId(1),
@@ -6802,7 +6838,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 43;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 45;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,

@@ -135,9 +135,11 @@ pub fn occt_capability_descriptor() -> CapabilityDescriptor {
         (CurveInterpCurve, ReprKind::BRep),
         (CurveBezierCurve, ReprKind::BRep),
         (CurveNurbsCurve, ReprKind::BRep),
-        // Profile ×2 — 2-D face producers (task-4160)
+        // Profile ×4 — 2-D face producers (task-4160, task-4161)
         (ProfileRectangle, ReprKind::BRep),
         (ProfileCircle, ReprKind::BRep),
+        (ProfilePolygon, ReprKind::BRep),
+        (ProfileEllipse, ReprKind::BRep),
         // Convert ×1 — BRep→Mesh tessellation (PRD §8 task δ, task 3435)
         (Convert { from: ReprKind::BRep }, ReprKind::Mesh),
     ];
