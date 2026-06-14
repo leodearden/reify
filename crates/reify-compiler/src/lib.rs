@@ -33,6 +33,7 @@ mod list_helpers;
 mod joint_signatures;
 mod builtin_signatures;
 mod math_signatures;
+mod relation_signatures;
 mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
