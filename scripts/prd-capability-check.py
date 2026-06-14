@@ -176,6 +176,104 @@ def dump_probe_set(probes: List[Probe]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# ProbeRun — captured subprocess output
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ProbeRun:
+    """Captured output from running a probe command."""
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+# ---------------------------------------------------------------------------
+# Observation logic: match_predicate + observe()
+# ---------------------------------------------------------------------------
+
+# Harness-error sentinel — an internal signal meaning "the observation cannot
+# be trusted because the probe tool itself failed" (e.g. grammar load-failure).
+# Never returned as a public PRESENT/ABSENT observation.
+_HARNESS_ERROR = "_harness_error"
+
+
+def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
+    """Return True iff all fields in the match dict are satisfied by `run`.
+
+    All set fields must hold simultaneously (AND semantics).
+    An empty match dict {} is always satisfied (no criterion).
+
+    Supported fields:
+        exit_code (int)     — run.exit_code must equal this value
+        stderr_contains (str) — this string must appear in run.stderr
+        stdout_contains (str) — this string must appear in run.stdout
+    """
+    if "exit_code" in match:
+        if run.exit_code != match["exit_code"]:
+            return False
+    if "stderr_contains" in match:
+        if match["stderr_contains"] not in run.stderr:
+            return False
+    if "stdout_contains" in match:
+        if match["stdout_contains"] not in run.stdout:
+            return False
+    return True
+
+
+def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
+    """Determine observation (PRESENT/ABSENT/INDETERMINATE or _HARNESS_ERROR).
+
+    grammar:
+        exit 0 → PRESENT (no parse errors)
+        exit 1 + "(ERROR" in combined output → ABSENT
+        exit 1 + "Failed to load language" in stderr → _HARNESS_ERROR
+        any other exit → _HARNESS_ERROR
+
+    check:
+        match predicate satisfied → PRESENT
+        match predicate not satisfied → ABSENT
+
+    ir (eval-error proxy, asymmetric):
+        exit 0 → ABSENT  (sound by determinism; §6 G6(b))
+        exit ≠ 0, asserted signature (stderr_contains in match) in stderr → PRESENT
+        exit ≠ 0, signature absent → INDETERMINATE
+
+    Args:
+        probe_kind: "grammar", "check", or "ir".
+        run: Captured subprocess output (exit_code, stdout, stderr).
+        match: Match predicate dict from the probe's expected.match field.
+
+    Returns:
+        PRESENT, ABSENT, INDETERMINATE, or _HARNESS_ERROR.
+    """
+    if probe_kind == "grammar":
+        combined = run.stdout + run.stderr
+        if run.exit_code == 0:
+            return PRESENT
+        if "Failed to load language" in run.stderr:
+            return _HARNESS_ERROR
+        if "(ERROR" in combined:
+            return ABSENT
+        # exit ≠ {0, 1} or unexpected content — treat as harness error
+        return _HARNESS_ERROR
+
+    if probe_kind == "check":
+        return PRESENT if match_predicate(run, match) else ABSENT
+
+    if probe_kind == "ir":
+        if run.exit_code == 0:
+            return ABSENT
+        # exit ≠ 0: check for the asserted signature in stderr
+        sig = match.get("stderr_contains")
+        if sig and sig in run.stderr:
+            return PRESENT
+        return INDETERMINATE
+
+    # Unknown kind — this shouldn't happen after validation, but be safe
+    return _HARNESS_ERROR
+
+
+# ---------------------------------------------------------------------------
 # Verdict logic
 # ---------------------------------------------------------------------------
 
