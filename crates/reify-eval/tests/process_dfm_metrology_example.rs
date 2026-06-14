@@ -92,3 +92,35 @@ fn example_emits_one_dfm_overhang_per_severity() {
     assert_dfm_diagnostic_count(&result, "W_DFM_OVERHANG", 1);
     assert_dfm_diagnostic_count(&result, "E_DFM_OVERHANG", 1);
 }
+
+// ── step-3 / step-4: OCCT-gated draft slice ──────────────────────────────────
+
+/// Loads the shipped example, builds with OCCT, checks, and asserts that
+/// exactly one `W_DFM_DRAFT` (Warning) and one `E_DFM_DRAFT` (Error) are
+/// emitted — one per Forming-process DFMRule with insufficient draft.
+///
+/// Box vertical walls have 0° draft < the Forming process `draft_angle=3°`
+/// → draft violation at each rule's declared severity.
+///
+/// Counts are STABLE after step-6 adds the Info-severity undercut rule: that
+/// rule's co-emitted draft lands on `I_DFM_DRAFT` (dfm.rs:350-360), never on
+/// W or E, so `W_DFM_DRAFT` and `E_DFM_DRAFT` remain exactly 1 each.
+///
+/// RED (step-3): the example has no Forming process / draft rules yet →
+///   assert fails (0 ≠ 1).
+/// GREEN (step-4): two draft DFMRules (Warning + Error) are added.
+#[test]
+fn example_emits_one_dfm_draft_per_severity() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping example_emits_one_dfm_draft_per_severity: OCCT not available");
+        return;
+    }
+
+    let compiled = load_and_compile_example();
+    let mut engine = make_occt_engine();
+    engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let result = engine.check(&compiled);
+
+    assert_dfm_diagnostic_count(&result, "W_DFM_DRAFT", 1);
+    assert_dfm_diagnostic_count(&result, "E_DFM_DRAFT", 1);
+}
