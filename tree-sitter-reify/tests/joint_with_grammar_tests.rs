@@ -344,3 +344,75 @@ fn joint_record_form_parses() {
 fn gate_gr05b_fixture_parses_clean() {
     assert_fixture_parses_clean("gr-05b-joint-with-rec.ri");
 }
+
+// ── Amendment tests (amend pass — suggestion 3) ──────────────────────────────
+
+/// `with { angle: Angle, }` — trailing comma in the record DOF form must parse
+/// cleanly and produce exactly 1 `joint_dof_field` child (the trailing comma is
+/// consumed by `optional(',')` in the grammar and is not a named node).
+///
+/// Locks in the `repeat(seq(',', joint_dof_field)), optional(',')` grammar shape
+/// against regressions (e.g. an incorrectly placed `,` check that makes trailing
+/// commas an ERROR node).
+#[test]
+fn joint_record_trailing_comma_parses() {
+    let source = b"joint prismatic(a: Axis, b: Axis) with { angle: Angle, } = coaxial(a, b)";
+    let tree = parse_clean(source);
+    let root = tree.root_node();
+
+    let jdef = find_node_by_kind(root, "joint_definition")
+        .expect("joint_definition not found");
+
+    let dof_node = jdef.child_by_field_name("dof").expect("dof field missing");
+    assert!(
+        has_anonymous_child_text(dof_node, source, "{"),
+        "trailing-comma record-form must still have anonymous '{{' child"
+    );
+    let dof_fields = find_all_nodes_by_kind(dof_node, "joint_dof_field");
+    assert_eq!(
+        dof_fields.len(),
+        1,
+        "trailing-comma record with 1 field must produce exactly 1 joint_dof_field, got {}",
+        dof_fields.len()
+    );
+    assert_eq!(
+        text(dof_fields[0].child_by_field_name("name").expect("name missing"), source),
+        "angle"
+    );
+}
+
+/// `with { x: Angle, y: Angle, z: Angle }` — three-field record DOF form must
+/// parse cleanly and produce 3 `joint_dof_field` children in source order.
+///
+/// Covers the `repeat(seq(',', joint_dof_field))` iteration beyond 1 extra field
+/// (the 2-field test covers the first repeat iteration; this covers a second one).
+#[test]
+fn joint_record_three_fields_parses() {
+    let source = b"joint spherical(a: Point, b: Point, c: Point) with { x: Angle, y: Angle, z: Angle } = coincident(a, b)";
+    let tree = parse_clean(source);
+    let root = tree.root_node();
+
+    let jdef = find_node_by_kind(root, "joint_definition")
+        .expect("joint_definition not found");
+
+    let dof_node = jdef.child_by_field_name("dof").expect("dof field missing");
+    let dof_fields = find_all_nodes_by_kind(dof_node, "joint_dof_field");
+    assert_eq!(
+        dof_fields.len(),
+        3,
+        "three-field record DOF must have exactly 3 joint_dof_field children, got {}",
+        dof_fields.len()
+    );
+    assert_eq!(
+        text(dof_fields[0].child_by_field_name("name").expect("name missing on dof[0]"), source),
+        "x"
+    );
+    assert_eq!(
+        text(dof_fields[1].child_by_field_name("name").expect("name missing on dof[1]"), source),
+        "y"
+    );
+    assert_eq!(
+        text(dof_fields[2].child_by_field_name("name").expect("name missing on dof[2]"), source),
+        "z"
+    );
+}

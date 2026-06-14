@@ -194,3 +194,88 @@ fn joint_block_body_lowers_conjunction_in_order() {
         other => panic!("body[1] must be ExprKind::FunctionCall, got {:?}", other),
     }
 }
+
+// ── Amendment tests (amend pass) ─────────────────────────────────────────────
+
+/// `/// A revolute joint.\npub joint revolve<T>(a: Axis) with x: Angle = coaxial(a, a)`
+/// lowers with:
+///   - is_pub == true
+///   - type_params.len() == 1 (the `T` parameter)
+///   - doc == Some("A revolute joint.")   (extracted from the preceding `///` line)
+///
+/// Covers the three non-default paths in lower_joint that were exercised by
+/// lower_function's analogous paths but had no joint-specific test (suggestion 1).
+#[test]
+fn joint_pub_type_param_and_doc_lower_correctly() {
+    let source = "/// A revolute joint.\npub joint revolve<T>(a: Axis) with x: Angle = coaxial(a, a)";
+    let j = first_joint(source);
+
+    assert!(j.is_pub, "pub joint must have is_pub == true");
+    assert_eq!(
+        j.type_params.len(),
+        1,
+        "joint<T> must have exactly 1 type param, got {}",
+        j.type_params.len()
+    );
+    assert_eq!(
+        j.type_params[0].name, "T",
+        "type_params[0].name must be 'T', got '{}'",
+        j.type_params[0].name
+    );
+    assert_eq!(
+        j.doc,
+        Some("A revolute joint.".to_string()),
+        "doc comment must be extracted from the preceding `///` line"
+    );
+}
+
+/// `@kinematic\njoint foo(a: Axis) with x: Angle = coaxial(a, a)` — an `@kinematic`
+/// annotation preceding the joint definition must land in `j.annotations`.
+///
+/// The annotation is drained from `pending_annotations` in `lower_source_file` and
+/// set on the JointDef before pushing — same as every other Declaration type.
+/// A regression in that wiring would pass undetected without this test (suggestion 1).
+#[test]
+fn joint_annotation_propagates_to_jointdef() {
+    let source = "@kinematic\njoint foo(a: Axis) with x: Angle = coaxial(a, a)";
+    let j = first_joint(source);
+
+    assert_eq!(
+        j.annotations.len(),
+        1,
+        "expected 1 annotation on joint, got {:?}",
+        j.annotations
+    );
+    assert_eq!(
+        j.annotations[0].name, "kinematic",
+        "annotation name must be 'kinematic', got '{}'",
+        j.annotations[0].name
+    );
+    assert!(
+        j.annotations[0].args.is_empty(),
+        "bare @kinematic must have no args, got {:?}",
+        j.annotations[0].args
+    );
+}
+
+/// `joint x(a: Axis) with t: Angle = { }` — an EMPTY block body lowers to
+/// `body.len() == 0` silently (no diagnostic in α).
+///
+/// This pins the α lowering contract so β knows what it must validate: an
+/// empty joint body is structurally valid at the CST/AST level and must be
+/// caught by β's DOF-body self-check (E_JOINT_DOF_MISMATCH or similar) rather
+/// than by the lowerer (suggestion 2 — document rather than enforce in α).
+#[test]
+fn joint_empty_block_body_lowers_to_empty_vec() {
+    let source = "joint x(a: Axis) with t: Angle = { }";
+    let j = first_joint(source);
+
+    // α: no errors — the empty body passes through the lowerer silently.
+    // β TODO: emit a diagnostic here (empty joint body is semantically invalid).
+    assert_eq!(
+        j.body.len(),
+        0,
+        "empty block body `= {{ }}` must lower to body.len()==0 in α; \
+         β must emit a diagnostic for this case"
+    );
+}

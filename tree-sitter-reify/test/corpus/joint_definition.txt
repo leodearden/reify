@@ -114,3 +114,79 @@ joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = coax
         (argument_list
           (identifier)
           (identifier))))))
+
+================================================================================
+joint_definition: record DOF form with trailing comma
+================================================================================
+
+joint prismatic(a: Axis, b: Axis) with { angle: Angle, } = coaxial(a, b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))
+
+================================================================================
+joint_definition: record DOF form with three fields
+================================================================================
+
+joint spherical(a: Point, b: Point, c: Point) with { x: Angle, y: Angle, z: Angle } = coincident(a, b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))
