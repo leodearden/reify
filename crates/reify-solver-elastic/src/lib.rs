@@ -436,6 +436,8 @@
 
 pub mod assembly;
 pub mod boundary;
+// Task 2929: FEA diagnostic mapping — neutral FeaFailure enum + classifiers.
+pub mod diagnostics;
 pub mod buckling_kernel;
 pub mod constitutive;
 pub mod eigensolve;
