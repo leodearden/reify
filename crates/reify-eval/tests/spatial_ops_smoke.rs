@@ -138,3 +138,32 @@ structure def RemapFieldDemo {
 "#;
     assert_all_satisfied(&compile_inline(source), 2);
 }
+
+// ── B8: threshold ─────────────────────────────────────────────────────────────
+
+/// B8/D7: `threshold(f, value)` produces a `Field<D, Bool>`.
+///
+/// Above-threshold sample (250MPa > 200MPa) → true → `constraint above` Satisfied.
+/// Below-threshold sample (150MPa < 200MPa) → false → `constraint !below` Satisfied.
+/// Exercises Q=Pressure binding (generic-over-Q value; reason task blocks on G).
+///
+/// RED until step-6 adds `pub fn threshold<D, Q: Dimension>` to fields.ri:
+/// without the fn body the call falls through → Value::Undef → constraints Indeterminate.
+#[test]
+fn threshold_returns_bool_field_sampling_true_and_false() {
+    let source = r#"
+structure def ThresholdDemo {
+    let above = sample(threshold(constant_field(250MPa), 200MPa), 0.0)
+    let below = sample(threshold(constant_field(150MPa), 200MPa), 0.0)
+    constraint above
+    constraint !below
+}
+"#;
+    // Note: in the RED state (no threshold fn body), the compile may emit a
+    // type-mismatch Warning ("constraint expression has type Scalar, expected Bool")
+    // because the compiler sees the threshold call returning a Scalar codomain
+    // inferred from the arguments.  This is Severity::Warning, not Error, so
+    // compile_inline's errors_only check passes.  The constraints are
+    // Indeterminate (undef inputs) → assert_all_satisfied fails → RED.
+    assert_all_satisfied(&compile_inline(source), 2);
+}
