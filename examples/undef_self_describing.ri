@@ -1,0 +1,18 @@
+// examples/undef_self_describing.ri
+//
+// Demonstrates undef-self-describing output (PRD §4.4 / invariant S1).
+//
+// When evaluated with `reify eval`, wall_thickness is undef because BOTH
+// input params are unbound.  Expected CLI output (to stderr):
+//
+//   note: Tube.wall_thickness is undef (because: Tube.outer_diameter unbound, Tube.wall_ratio unbound)
+//
+// This is a legitimate partial design (PRD §9.2): the structure is
+// geometrically consistent — it just requires caller-supplied values for its
+// two required params before the let-cell can be resolved.
+
+structure Tube {
+    param outer_diameter: Length   // unbound — no default, no caller value
+    param wall_ratio: Real         // unbound — no default
+    let wall_thickness = outer_diameter * wall_ratio
+}
