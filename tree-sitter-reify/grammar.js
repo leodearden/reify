@@ -716,9 +716,25 @@ module.exports = grammar({
     ),
 
     // A single relation entry inside a `relate { }` block or an inline
-    // `at … where { }` block (step-8).  Named node so the lowering code can
-    // identify it by kind; `expr` is the full relation expression.
+    // `at … where { }` block (sub_relate_block).  Named node so the lowering
+    // code can identify it by kind; `expr` is the full relation expression.
     relation_member: $ => field('expr', $._expression),
+
+    // ── Inline sub relate-block (`at … where { }`) ──────────
+    // The trailing inline form on a sub placement: `sub … at <pose> where {
+    // concentric(…)  flush(…) }` (geometric-relations v0_6, design §4/§5; task
+    // δ 4384).  Distinct from the sub's `where <expr>` guard (a where_clause,
+    // positionally BEFORE `at`) and from a member-level `where <expr> { }`
+    // guarded_block: a sub_relate_block has NO condition expression between
+    // `where` and `{`.  Because guarded_block REQUIRES a condition, a
+    // conditionless `where {` after a pose can ONLY be a sub_relate_block — the
+    // GLR keeps the error-free parse.  Body reuses relation_member (step-6).
+    sub_relate_block: $ => seq(
+      'where',
+      '{',
+      repeat($.relation_member),
+      '}',
+    ),
 
     // ── Sub ─────────────────────────────────────────────────
     sub_declaration: $ => choice(
@@ -735,7 +751,7 @@ module.exports = grammar({
         optional($.named_argument_list),
         ')',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
       // Collection form: sub name : List<StructName>
       // The bare `'List'` token is reached only on exact-length matches —
@@ -759,7 +775,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         '>',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
       //
@@ -807,7 +823,7 @@ module.exports = grammar({
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
-        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
     ),
 

@@ -147,3 +147,37 @@ structure S { relate { } }
   (structure_definition
     name: (identifier)
     (relate_block)))
+
+================================================================================
+sub_relate_block: inline at … where { } — sub … at auto where { concentric(…)  flush(…) }
+================================================================================
+
+structure S {
+  sub bolt : Bolt at auto where {
+    concentric(a, b)
+    flush(c, d)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (identifier)
+      pose: (auto_keyword)
+      relations: (sub_relate_block
+        (relation_member
+          expr: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier)
+              (identifier))))
+        (relation_member
+          expr: (function_call
+            name: (identifier)
+            (argument_list
+              (identifier)
+              (identifier))))))))
