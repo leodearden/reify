@@ -421,8 +421,9 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — carries no *type* param
-        // (dimension binding is ζ / D8, not type-param substitution).
+        // Dimension-param scalar: carries no *type* param; dimension binding is
+        // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
+        // `type_carries_dim_param` — not by type-param substitution.
         | Type::ScalarParam(_)
         | Type::Error => false,
     }
@@ -593,6 +594,23 @@ pub(crate) fn unify(
         | (Type::Matrix { .. }, _)
         | (Type::Union(_), _) => Ok(()),
 
+        // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
+        // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing
+        // re-bind = Err(TypeArgConflict)). For non-Scalar args the arm falls
+        // through to the leaves block and binds nothing (conservative per D8).
+        (Type::ScalarParam(p), Type::Scalar { .. }) => match subst.get(p) {
+            None => {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            Some(existing) if existing == arg => Ok(()),
+            Some(existing) => Err(TypeArgConflict {
+                param: p.clone(),
+                existing: existing.clone(),
+                incoming: arg.clone(),
+            }),
+        },
+
         // True leaves (no inner `Type` to bind):
         (Type::Bool, _)
         | (Type::Int, _)
@@ -612,8 +630,9 @@ pub(crate) fn unify(
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)
-        // Dimension-param scalar: opaque leaf — binds nothing (dimension binding
-        // is ζ / D8; type-param substitution does not apply here).
+        // Dimension-param scalar against a non-Scalar arg: binds nothing (the
+        // ScalarParam vs Scalar{..} case is handled by the arm above; reaching
+        // this leaf means arg is not a concrete Scalar).
         | (Type::ScalarParam(_), _)
         | (Type::Error, _) => Ok(()),
     }
