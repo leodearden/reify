@@ -1361,9 +1361,20 @@ pub(crate) fn compile_entity(
     let mut pending_forall_connect: Vec<&reify_ast::ForallConnectDecl> = Vec::new();
     for member in structure.members {
         match member {
-            // Relate-block enforcement (E_RELATE_EXPECTS_RELATION) is added here
-            // in step-14; no-op for now so the member compiles (task δ 4384).
-            reify_ast::MemberDecl::Relate(_relate) => {}
+            // Member-level `relate {}` enforcement (E_RELATE_EXPECTS_RELATION,
+            // task δ 4384): every member must type to `Type::Relation`. δ only
+            // type-checks the relations here; the relate-solve / ApplyTransform
+            // placement is ζ's. The inline `sub … at … where {}` twin runs the
+            // SAME check in the `MemberDecl::Sub` arm below.
+            reify_ast::MemberDecl::Relate(relate) => {
+                check_relate_relations(
+                    &relate.relations,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
@@ -1736,6 +1747,18 @@ pub(crate) fn compile_entity(
                         .as_ref()
                         .map(|e| compile_expr(e, &scope, enum_defs, functions, diagnostics))
                 };
+
+                // Inline `sub … at … where {}` relate-block enforcement (task δ
+                // 4384): the OTHER relate home. Type-check each inline relation to
+                // `Type::Relation` with the SAME check as the member-level
+                // `relate {}` arm above, so both spellings enforce identically.
+                check_relate_relations(
+                    &sub.relate_relations,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    diagnostics,
+                );
 
                 // Keep-first dedupe of the keyed-member keys. A duplicate key is
                 // always accompanied by a blocking `E_DUP_MEMBER_KEY` error (emitted
@@ -3317,6 +3340,41 @@ fn compile_match_arm_decl_group(
         scope
             .match_arm_group_arm_member_types
             .insert(logical_name.clone(), per_arm_member_maps);
+    }
+}
+
+/// Type-check the members of a `relate {}` block (member-level
+/// `MemberDecl::Relate`) or its inline `sub … at … where {}` twin
+/// (`SubDecl.relate_relations`): every member must type to `Type::Relation`
+/// (geometric-relations δ §4/§7.3). A member whose compiled `result_type` is
+/// neither `Type::Relation` nor `Type::Error` draws `E_RELATE_EXPECTS_RELATION`
+/// at its span. `Type::Error` is skipped (anti-cascade — no second diagnostic
+/// piles onto an already-errored member, mirroring the relation arg-check
+/// gradualism in `relation_signatures::check_relation_arg_types`).
+///
+/// Both relate homes call this single check, so the two spellings enforce
+/// identically and the 3-verb routing falls out of γ's typing with no name
+/// re-classification: a `check` verb types to `Bool` and a `derive`/`query`
+/// verb types to a metric, both failing the `Type::Relation` test.
+fn check_relate_relations(
+    relations: &[reify_ast::Expr],
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for relation in relations {
+        let compiled = compile_expr(relation, scope, enum_defs, functions, diagnostics);
+        if compiled.result_type != Type::Relation && compiled.result_type != Type::Error {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "relate member has type {}, expected Relation",
+                    compiled.result_type
+                ))
+                .with_code(DiagnosticCode::RelateExpectsRelation)
+                .with_label(DiagnosticLabel::new(relation.span, "expected Relation")),
+            );
+        }
     }
 }
 
