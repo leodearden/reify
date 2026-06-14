@@ -98,7 +98,7 @@ impl ConstraintChecker for StatefulMockConstraintChecker {
 /// substring so that any future weakening or removal of the assert fails loudly.
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "filter_feasible_candidates: candidates slice must be non-empty")]
+#[should_panic(expected = "candidates slice must be non-empty")]
 fn filter_panics_on_empty_candidates_input() {
     let template = TopologyTemplateBuilder::new("Bearing").build();
     let checker = MockConstraintChecker::new().with_default(Satisfaction::Violated);

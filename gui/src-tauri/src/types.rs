@@ -126,6 +126,37 @@ pub struct TensegrityWireData {
     pub z2: f64,
 }
 
+/// IPC wire-format descriptor for a single tensegrity surface facet (membrane triangle).
+///
+/// Produced by `build_tensegrity_surfaces` in `engine.rs` by scanning the value
+/// cells of the loaded module for `TensegritySurface` instances emitted by the
+/// `tensegrity_surfaces()` builtin (α/task 4412).  Serialized over the Tauri IPC
+/// channel as part of `GuiState`.
+///
+/// # Field semantics
+/// - `entity_path`: owning entity name (e.g. `"TPatch"`), from `cell.id.entity`.
+/// - `kind`: `"membrane"` — the member-type tag α emits for each facet.
+/// - `i0/i1/i2`: integer node indices (corner indices into the node table).
+/// - `x0/y0/z0`, `x1/y1/z1`, `x2/y2/z2`: inline corner coordinates in SI metres
+///   (direct passthrough from the three corner fields; no unit conversion).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensegritySurfaceData {
+    pub entity_path: String,
+    pub kind: String,
+    pub i0: i64,
+    pub i1: i64,
+    pub i2: i64,
+    pub x0: f64,
+    pub y0: f64,
+    pub z0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub z1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub z2: f64,
+}
+
 /// Full GUI state snapshot sent to the frontend after each operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiState {
@@ -170,6 +201,17 @@ pub struct GuiState {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_wires: Vec<TensegrityWireData>,
+    /// Tensegrity surface facet descriptors extracted from the current module's value cells.
+    ///
+    /// Populated by `build_tensegrity_surfaces` from cells that evaluate to a
+    /// `List<TensegritySurface>` or a standalone `TensegritySurface` (as emitted by
+    /// the `tensegrity_surfaces()` builtin, α/task 4412).  Empty on preview snapshots,
+    /// early-return (no compile), and modules without any tensegrity surfaces.
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field deserialize
+    /// as an empty vec (forward-compat for older backend → newer frontend).
+    #[serde(default)]
+    pub tensegrity_surfaces: Vec<TensegritySurfaceData>,
 }
 
 // ---------------------------------------------------------------------------

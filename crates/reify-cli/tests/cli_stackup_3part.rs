@@ -92,17 +92,47 @@ fn eval_tolerance_stackup_3part() {
     );
 
     // --- Exact-math oracle assertions at 1e-12 relative ---
-    assert_rel_close(extract_scalar(&stdout, "nominal_gap"),     3.0e-3,                  1e-12, "nominal_gap");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_band"), 2.0e-4,                  1e-12, "worst_case_band");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_max"),  3.2e-3,                  1e-12, "worst_case_max");
-    assert_rel_close(extract_scalar(&stdout, "worst_case_min"),  2.8e-3,                  1e-12, "worst_case_min");
-    assert_rel_close(extract_scalar(&stdout, "rss_band"),        rss_band_oracle(),        1e-12, "rss_band");
-    assert_rel_close(extract_scalar(&stdout, "rss_sigma"),       rss_band_oracle() / 3.0, 1e-12, "rss_sigma");
+    assert_rel_close(
+        extract_scalar(&stdout, "nominal_gap"),
+        3.0e-3,
+        1e-12,
+        "nominal_gap",
+    );
+    assert_rel_close(
+        extract_scalar(&stdout, "worst_case_band"),
+        2.0e-4,
+        1e-12,
+        "worst_case_band",
+    );
+    assert_rel_close(
+        extract_scalar(&stdout, "worst_case_max"),
+        3.2e-3,
+        1e-12,
+        "worst_case_max",
+    );
+    assert_rel_close(
+        extract_scalar(&stdout, "worst_case_min"),
+        2.8e-3,
+        1e-12,
+        "worst_case_min",
+    );
+    assert_rel_close(
+        extract_scalar(&stdout, "rss_band"),
+        rss_band_oracle(),
+        1e-12,
+        "rss_band",
+    );
+    assert_rel_close(
+        extract_scalar(&stdout, "rss_sigma"),
+        rss_band_oracle() / 3.0,
+        1e-12,
+        "rss_sigma",
+    );
 
     // --- Monte-Carlo gate ---
     let rss_sigma = extract_scalar(&stdout, "rss_sigma");
-    let mc_sigma  = extract_scalar(&stdout, "mc_sigma");
-    let rel_err   = (mc_sigma - rss_sigma).abs() / rss_sigma;
+    let mc_sigma = extract_scalar(&stdout, "mc_sigma");
+    let rel_err = (mc_sigma - rss_sigma).abs() / rss_sigma;
     assert!(
         rel_err <= 0.02,
         "mc_sigma not within 2% of rss_sigma: mc_sigma={mc_sigma:.6e}, rss_sigma={rss_sigma:.6e}, rel_err={rel_err:.4}"
@@ -124,5 +154,8 @@ fn eval_tolerance_stackup_3part() {
 
     // INV-3: two runs must produce byte-identical stdout.
     let (_, stdout2, _) = common::run_subcommand("eval", &path);
-    assert_eq!(stdout, stdout2, "two reify eval runs must be byte-identical (INV-3)");
+    assert_eq!(
+        stdout, stdout2,
+        "two reify eval runs must be byte-identical (INV-3)"
+    );
 }

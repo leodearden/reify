@@ -478,7 +478,7 @@ fn mass_and_centroid_survive_realization_cache_hit() {
     );
 }
 
-// ── cross-cell factoring: a dependent cell does NOT fold (known limitation) ───
+// ── cross-cell factoring: a dependent cell folds via fixpoint re-eval ────────
 
 const CROSS_CELL_SOURCE: &str = r#"
 structure def CrossCellFactored {
@@ -488,19 +488,18 @@ structure def CrossCellFactored {
 }
 "#;
 
-/// Regression pin for the documented CROSS-CELL limitation (see the module note
-/// above `try_eval_geometry_query` in `geometry_ops.rs`): the nested fold fires
-/// only when the geometry-query call is lexically inside the cell's OWN
-/// `default_expr`. Here `v = volume(body)` is a direct query cell that folds to
-/// `Scalar<Volume>`, but `m = v * 2` is a `BinOp` over `ValueRef(v)` containing
-/// no geometry-query leaf — so `try_eval_geometry_query` returns `None` for `m`,
-/// and because the pure eval pass already evaluated `m` while `v` was `Undef`
-/// (and the post-process never re-evaluates dependents), `m` silently stays
-/// `Undef`. This is a plausible idiomatic factoring, so it is locked here to
-/// keep the limitation regression-visible: if a future fixpoint re-eval resolves
-/// it, this test breaks and must be updated to assert the folded value.
+/// Regression pin for cross-cell geometry-query dependent folding.
+///
+/// `v = volume(body)` is a direct geometry-query cell that folds to
+/// `Scalar<Volume>`. `m = v * 2` is a `BinOp` over `ValueRef(v)` — it contains
+/// no geometry-query leaf so `try_eval_geometry_query` returns `None` for it.
+/// Previously (pre-fixpoint re-eval) `m` would stay `Undef` because the pure
+/// eval pass evaluated it while `v` was still `Undef` and dependents were never
+/// re-evaluated. The fixpoint re-evaluation pass introduced in task 4229 resolves
+/// this: after geometry-query cells fold, a second eval pass re-evaluates cells
+/// whose inputs changed, so `m` now correctly folds to `v * 2 = 1.2e-5 m³`.
 #[test]
-fn cross_cell_factored_dependent_stays_undef() {
+fn cross_cell_factored_dependent_folds_via_fixpoint() {
     let Some(result) = compile_and_build_occt(CROSS_CELL_SOURCE) else {
         return;
     };
@@ -515,15 +514,15 @@ fn cross_cell_factored_dependent_stays_undef() {
         "v = volume(box) (direct cell folds)",
     );
 
-    // `m = v * 2` references `v` by ValueRef — no query leaf in its own expr —
-    // so the dependent cell is NOT folded and stays Undef (documented limitation,
-    // NOT the real Scalar<Volume> that a fixpoint re-eval would produce).
-    let m = result
-        .values
-        .get(&ValueCellId::new("CrossCellFactored", "m"));
-    assert!(
-        matches!(m, None | Some(Value::Undef)),
-        "cross-cell dependent `m` should stay Undef (known limitation: this pass \
-         does not re-evaluate geometry-query dependents); got {m:?}"
+    // `m = v * 2` — cross-cell dependent now folds correctly via fixpoint re-eval
+    // (task 4229: after geometry-query cells fold, a second pass re-evaluates
+    // dependents whose inputs changed).
+    assert_scalar_rel(
+        result
+            .values
+            .get(&ValueCellId::new("CrossCellFactored", "m")),
+        DimensionVector::VOLUME,
+        0.010 * 0.020 * 0.030 * 2.0,
+        "m = v * 2 (cross-cell dependent folds via fixpoint re-eval)",
     );
 }

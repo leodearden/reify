@@ -1,0 +1,9 @@
+# Pin the verify/build toolchain for env fidelity across verify hosts (Lever C).
+# The workstation's de-facto toolchain was floating `stable`; multi-host
+# post-merge verify requires every host to compile with the SAME rustc, so the
+# pin makes fidelity enforced-by-rustup rather than hoped. Bump deliberately
+# (and pre-install on all verify hosts: rustup toolchain install <ver>
+# -c rustfmt -c clippy) when moving to a newer stable.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

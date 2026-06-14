@@ -3,7 +3,9 @@
 //! Tests for evaluating collection sub-components (`sub bolts : List<Bolt>`),
 //! count-based elaboration, and count re-elaboration.
 
-use reify_compiler::TopologyTemplate;
+use std::collections::HashMap;
+
+use reify_compiler::{CompiledForallBody, CompiledForallTemplate, TopologyTemplate};
 use reify_core::*;
 use reify_eval::cache::NodeId;
 use reify_eval::graph::EvaluationGraph;
@@ -11,7 +13,7 @@ use reify_eval::{Engine, EvalResult};
 use reify_ir::*;
 use reify_test_support::builders::value_ref_typed;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::{CompiledModuleBuilder, MultiCallSpyConstraintSolver, TopologyTemplateBuilder, lt};
 
 /// Build the canonical Bolt + Parent (collection sub) templates and return
 /// `(TopologyTemplate, TopologyTemplate)` in `(parent, bolt)` order.
@@ -297,8 +299,8 @@ fn eval_collection_list_aggregation() {
         .param(
             "Bolt",
             "grade",
-            Type::Real,
-            Some(CompiledExpr::literal(Value::Real(8.8), Type::Real)),
+            Type::dimensionless_scalar(),
+            Some(CompiledExpr::literal(Value::Real(8.8), Type::dimensionless_scalar())),
         )
         .build();
 
@@ -318,10 +320,10 @@ fn eval_collection_list_aggregation() {
         .let_binding(
             "Parent",
             "grades",
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             CompiledExpr::value_ref(
                 ValueCellId::new("Parent", "__list_bolts__grade"),
-                Type::List(Box::new(Type::Real)),
+                Type::List(Box::new(Type::dimensionless_scalar())),
             ),
         )
         .build();
@@ -836,5 +838,232 @@ fn edit_param_phase4_invalidates_cache_for_shrunk_and_regrown_collection_instanc
         count_bolt_diameter_instances(&result.values),
         4,
         "exactly 4 bolt instances should exist after regrow to 4"
+    );
+}
+
+// ─── Task 4530 step-1: grown instances track upstream param edits ───────────
+
+/// Task 4530 (step-1): Pins that collection instances grown by an `edit_param`
+/// count increase propagate later upstream param edits through their
+/// `default_expr`.
+///
+/// Root cause: `edit_param`'s collection-count re-elaboration phase never
+/// rebuilds `reverse_index` / `demand` after growing the collection, so the
+/// next param edit's dirty_cone is computed from a stale index that does not
+/// include the grown instances.
+///
+/// Sequence:
+/// 1. Fixture: `Bolt.diameter` has `default = value_ref_typed("Parent","bolt_d",Length)`.
+///    `Parent` has `bolt_d` (default `0.01m`), `n` (default `Int(2)`), and count plumbing.
+/// 2. `engine.eval()` — creates `bolts[0]`,`bolts[1]` with `diameter = 0.01m`.
+/// 3. `edit_param(n, Int(4))` — grows to `bolts[0..3]`.
+/// 4. `edit_param(bolt_d, 0.02m)` — must update ALL 4 instances' `diameter`.
+///
+/// RED today: `bolts[2]` and `bolts[3]` stay at `0.01m` (stale) because
+/// `reverse_index` / `demand` were never rebuilt after the grow.
+#[test]
+fn grown_collection_instances_track_upstream_param_edits() {
+    // Bolt template: diameter with default = Parent.bolt_d
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(value_ref_typed("Parent", "bolt_d", Type::length())),
+        )
+        .build();
+
+    // Parent template: bolt_d + n + count plumbing
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "bolt_d",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(2), Type::Int)),
+        )
+        .let_binding(
+            "Parent",
+            "__count_bolts",
+            Type::Int,
+            value_ref_typed("Parent", "n", Type::Int),
+        )
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let n_id = ValueCellId::new("Parent", "n");
+    let bolt_d_id = ValueCellId::new("Parent", "bolt_d");
+
+    // Step 2: initial eval (n=2 → bolts[0],[1] with diameter=0.01m)
+    engine.eval(&module);
+
+    // Step 3: grow n from 2 to 4
+    engine
+        .edit_param(n_id, Value::Int(4))
+        .expect("edit_param(n, Int(4)) should succeed");
+
+    // Step 4: edit bolt_d — ALL 4 instances must track the upstream change
+    let r = engine
+        .edit_param(bolt_d_id, Value::length(0.02))
+        .expect("edit_param(bolt_d, 0.02) should succeed");
+
+    for i in 0..4 {
+        let scoped_id = ValueCellId::new(format!("Parent.bolts[{}]", i), "diameter");
+        assert_eq!(
+            r.values.get(&scoped_id),
+            Some(&Value::length(0.02)),
+            "bolts[{}].diameter should be 0.02m after bolt_d edit, got {:?}",
+            i,
+            r.values.get(&scoped_id),
+        );
+    }
+}
+
+// ─── Task 4530 step-2: grown forall constraints trigger solver on upstream edit
+
+/// Task 4530 (step-2): Pins the solver-gate manifestation of the same
+/// stale-reverse_index bug: grown forall-emitted constraints are absent from
+/// the stale index, so the `constraints_dirty` gate
+/// (`engine_edit.rs:1337-1339`) misses them and the solver is never called for
+/// grown instances' auto params.
+///
+/// Observable: `solver.call_count() == 4` after the `bolt_d` edit (one call
+/// per instance whose forall constraint reaches the dirty cone).
+///
+/// RED today: `0` — the stale reverse_index carries no forall constraint
+/// edges at all (forall constraints are emitted during `edit_param`'s
+/// collection-count re-elaboration, which runs AFTER the resolution phase),
+/// so the dirty_cone for the bolt_d edit contains no `Constraint` nodes and
+/// the solver is never invoked.
+#[test]
+fn grown_forall_constraints_trigger_solver_on_later_upstream_edit() {
+    // Body constraint: bolts[0].mass < bolts[0].diameter.
+    // The runtime rewriter maps bolts[0] → bolts[i] for each instance.
+    let body_expr = lt(
+        value_ref_typed("Parent.bolts[0]", "mass", Type::length()),
+        value_ref_typed("Parent.bolts[0]", "diameter", Type::length()),
+    );
+
+    let forall_tmpl = CompiledForallTemplate {
+        variable: "b".to_string(),
+        parent_entity: "Parent".to_string(),
+        collection_sub_name: "bolts".to_string(),
+        count_cell: ValueCellId::new("Parent", "__count_bolts"),
+        span: SourceSpan::new(0, 0),
+        body: CompiledForallBody::Constraint { body_expr },
+    };
+
+    // Bolt: diameter (default=Parent.bolt_d) + mass (auto, for solver)
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(value_ref_typed("Parent", "bolt_d", Type::length())),
+        )
+        .auto_param("Bolt", "mass", Type::length())
+        .build();
+
+    // Parent: bolt_d + n + count plumbing + forall template
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "bolt_d",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            // Start at n=0 so the initial eval creates NO bolt instances and
+            // avoids the collect_member_list debug_assert for auto cells (Auto
+            // cells are not added to `values` by elaborate_child_params_only —
+            // they're only added during edit_param's re-elaboration).  Growing
+            // 0→4 via edit_param tests the same invariant as 2→4.
+            Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
+        )
+        .let_binding(
+            "Parent",
+            "__count_bolts",
+            Type::Int,
+            value_ref_typed("Parent", "n", Type::Int),
+        )
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .forall_template(forall_tmpl)
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+
+    // MultiCallSpyConstraintSolver: always returns Solved with empty values
+    // (mass stays Undef — we only care about call_count, not resolved values).
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: HashMap::new(),
+        unique: true,
+    }]);
+    // Clone the capture Arc BEFORE boxing — the only way to read call_count
+    // after the spy is moved into the engine.
+    let captured = spy.captured_problems();
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(spy));
+
+    let n_id = ValueCellId::new("Parent", "n");
+    let bolt_d_id = ValueCellId::new("Parent", "bolt_d");
+
+    // Step 1: initial eval (n=0 → no bolt instances; no forall constraints yet —
+    //         forall emission only happens in edit_param's re-elaboration phase).
+    // NOTE: eval() also calls the solver once for the Bolt template entity (which
+    // has an auto param `mass` but no constraints).  Record the baseline count
+    // here so the assertion below measures only the edit_param-driven calls.
+    engine.eval(&module);
+    let calls_before_edits = captured.lock().unwrap().len();
+
+    // Step 2: grow n 0→4 (collection re-elaboration emits forall@b[0..3]).
+    // With the fix: reverse_index is rebuilt here so forall@b[0..3] are visible
+    // to the next edit_param's dirty_cone traversal.
+    engine
+        .edit_param(n_id, Value::Int(4))
+        .expect("edit_param(n, Int(4)) should succeed");
+
+    // Step 3: edit bolt_d → bolt_i.diameter dirty → forall@b[i] dirty (if in index)
+    engine
+        .edit_param(bolt_d_id, Value::length(0.02))
+        .expect("edit_param(bolt_d, 0.02) should succeed");
+
+    // With the fix: reverse_index rebuilt after the n→4 grow → forall@b[0..3]
+    // edges exist → dirty_cone for bolt_d includes all 4 constraint nodes →
+    // solver called once per entity group (bolts[0..3]).
+    //
+    // Without the fix: stale reverse_index has no forall edges → dirty_cone
+    // contains only Value nodes → constraints_dirty=false for every group →
+    // solver never invoked → edit_param call_count == 0.
+    let problems = captured.lock().unwrap();
+    // Count only the calls driven by the edit_param sequence (excludes the
+    // one eval()-phase call for the Bolt template's empty-constraints problem).
+    let call_count = problems.len() - calls_before_edits;
+    drop(problems);
+    assert_eq!(
+        call_count,
+        4,
+        "expected solver called 4 times (one per grown instance with dirty forall constraint), \
+         got {} — stale reverse_index likely caused the regression",
+        call_count
     );
 }

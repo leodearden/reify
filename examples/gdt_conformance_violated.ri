@@ -1,0 +1,72 @@
+// Example: GD&T geometric conformance — Conforms VIOLATED (task 4480 η)
+//
+// Demonstrates the η geometric-conformance measurement pass (PRD v0_6 C3/C5).
+// A `Conforms` constraint with an EXPLICIT `actual` binding is no longer a pure
+// scalar predicate: `Engine::measure_gdt_conformance` measures the real
+// max-deviation of the realized `actual` geometry from the tolerance callout's
+// nominal `feature` and overrides the scalar verdict with a geometric one.
+//
+// Setup:
+//   `part`     — a 10 mm cube (the nominal feature).
+//   `measured` — the same cube translated +0.5 mm in X (the as-built / inspected
+//                geometry). Its maximum deviation from `part` is EXACTLY 0.5 mm
+//                by construction (axis-aligned planar faces shift 0.5 mm); see
+//                crates/reify-kernel-occt/tests/max_deviation_query.rs S1.
+//
+//   The `Conforms` callout declares a 0.1 mm flatness tolerance zone. Because the
+//   measured 0.5 mm deviation EXCEEDS the 0.1 mm zone, the constraint is VIOLATED.
+//
+// The tolerance type is re-declared locally WITH the `: GeometricTolerance`
+// trait bound: `compile_with_stdlib` provides stdlib defs as a compilation
+// context, but the η pass resolves the callout's type against module.templates,
+// where a locally-redeclared type without the bound would fail the
+// `satisfies_trait_bound` GeometricTolerance check. The `: GeometricTolerance`
+// bound makes that check pass directly.
+//
+// The `tolerance:` arg MUST be an INLINE constructor (not a `let`-cached
+// instance): a cached callout would freeze `feature` at its kernel-less eval
+// value (Undef), whereas an inline ctor is re-evaluated by the η pass against the
+// post-build value map, resolving `feature: part` to the live realization handle.
+//
+// Usage:
+//   reify check examples/gdt_conformance_violated.ri
+//     → exit non-zero, "VIOLATED"
+//            (under OCCT — the 0.5 mm deviation exceeds the 0.1 mm zone)
+//     → exit 0, Indeterminate
+//            (without OCCT — no kernel → deviation cannot be measured → C1
+//             graceful degradation, never a false Violated)
+
+// Local enum re-declaration (eval-time availability; mirrors m8_tolerancing.ri).
+enum MaterialCondition { MMC, LMC, RFS }
+
+// Local GeometricTolerance callout type. The `: GeometricTolerance` bound is what
+// the η pass's `satisfies_trait_bound` check keys on (PRD C5). `feature` carries a
+// neutral default so the type is also self-contained when realized standalone;
+// the `Conforms` call site overrides it with the real nominal feature.
+structure def FlatnessCallout : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// The part under inspection and its as-built (deviated) twin.
+structure GdtConformanceViolated {
+    // Nominal feature: a 10 mm cube.
+    let part = box(10mm, 10mm, 10mm)
+
+    // As-built geometry: the same cube shifted +0.5 mm in X. Max deviation from
+    // `part` is exactly 0.5 mm — four orders above the f32-quantization floor and
+    // five times the 0.1 mm tolerance zone below.
+    let measured = translate(part, 0.5mm, 0mm, 0mm)
+
+    // Geometric conformance: measure `measured` against the nominal `part` with a
+    // 0.1 mm flatness zone. INLINE tolerance ctor + explicit `actual` binding are
+    // the η detection signal. measured_deviation/feature_departure are pinned to
+    // 0 mm explicitly (the scalar-path defaults do not apply at this call site).
+    constraint Conforms(
+        tolerance: FlatnessCallout(feature: part, tolerance_value: 0.1mm),
+        actual: measured,
+        measured_deviation: 0mm,
+        feature_departure: 0mm
+    )
+}

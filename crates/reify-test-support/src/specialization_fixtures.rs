@@ -119,6 +119,7 @@ pub fn make_sub_bare(name: &str, span: SourceSpan) -> MemberDecl {
         is_aux: false,
         is_priv: false,
         pose_expr: None,
+        relate_relations: Vec::new(),
         span,
         content_hash: dummy_hash(),
     })
@@ -142,6 +143,7 @@ pub fn make_sub_with_body(name: &str, span: SourceSpan, body: Vec<MemberDecl>) -
         is_aux: false,
         is_priv: false,
         pose_expr: None,
+        relate_relations: Vec::new(),
         span,
         content_hash: dummy_hash(),
     })

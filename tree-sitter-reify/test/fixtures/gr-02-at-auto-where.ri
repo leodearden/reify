@@ -1,0 +1,14 @@
+/// Fixture gr-02: inline `sub … at auto where { }` relate-block
+/// (geometric-relations v0_6, PRD §1/§3 G3/§9 task δ; design §1/§4/§5).
+///
+/// Signal: `tree-sitter parse --quiet gr-02-at-auto-where.ri` exits 0 once the
+/// δ grammar steps land. Needs `at auto` (step-4) + the inline trailing
+/// `where { }` relate-block (step-8). ERRORs on the base grammar (the trailing
+/// `at … where { }` block is not yet accepted).
+structure Assembly {
+    sub plate : Plate
+    sub bolt : Bolt at auto where {
+        concentric(bolt.shank.axis, plate.hole.axis)
+        flush(bolt.head.seat, plate.top.plane)
+    }
+}

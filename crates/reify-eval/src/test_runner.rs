@@ -79,6 +79,40 @@ pub struct TestResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
 }
 
+/// Build a per-test [`Engine`] with all compute trampolines registered.
+///
+/// # What this fixes
+///
+/// Without compute-trampoline registration, any `@test {}` constraint that
+/// references an `@optimized(…)` call (e.g. `solver::elastic_static`,
+/// `solver::buckling`, `modal::free_vibration`, `shell-extract::extract`) would
+/// find no registered trampoline, fall back to body-inlining, produce
+/// `Value::Undef`, evaluate the constraint as `Indeterminate`, and silently
+/// never fire — the *meaningless-pass* bug.
+///
+/// # Registration pair
+///
+/// Mirrors [`reify-cli::configured_eval_engine`]'s registration pair exactly:
+/// - [`crate::compute_targets::register_compute_fns`] — FEA/buckling/modal/
+///   form-find/multi-case/dynamics/trajectory trampolines.
+/// - [`crate::register_shell_extract_compute_fns`] — shell mid-surface
+///   extraction trampoline.
+///
+/// # No `SolverRegistry`
+///
+/// Unlike `configured_eval_engine`, this helper deliberately omits
+/// `.with_solver(Box::new(reify_constraints::SolverRegistry::production()))`.
+/// `reify-constraints` is a **dev-only** dependency of `reify-eval`; promoting
+/// it to a runtime dep would (a) break the crate's dependency boundary and
+/// (b) violate the `run_tests_with_auto_param_returns_indeterminate` contract —
+/// auto-params must remain `Indeterminate` when no solver is wired.
+fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
+    let mut engine = Engine::new(checker, None);
+    crate::compute_targets::register_compute_fns(&mut engine);
+    crate::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+
 /// Run all `@test`-annotated structure/occurrence templates in `module`,
 /// returning one `TestResult` per test.
 ///
@@ -134,7 +168,7 @@ where
     let mut results = Vec::new();
     for test_template in module.test_templates() {
         let isolated = build_isolated_module(module, test_template);
-        let mut engine = Engine::new(make_checker(), None);
+        let mut engine = build_test_engine(make_checker());
         let check_result = engine.check(&isolated);
         results.push(TestResult {
             name: test_template.name.clone(),
@@ -477,5 +511,35 @@ constraint def Positive {
         assert_eq!(tr.status, TestStatus::Pass);
         assert!(tr.diagnostics.is_empty());
         assert!(tr.constraint_results.is_empty());
+    }
+
+    #[test]
+    fn build_test_engine_registers_compute_trampolines() {
+        use super::build_test_engine;
+        use reify_constraints::SimpleConstraintChecker;
+        let engine = build_test_engine(Box::new(SimpleConstraintChecker));
+        // Positive: compute_targets::register_compute_fns trampolines are registered
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "solver::elastic_static trampoline not registered"
+        );
+        assert!(
+            engine.compute_dispatch("solver::buckling").is_some(),
+            "solver::buckling trampoline not registered"
+        );
+        assert!(
+            engine.compute_dispatch("modal::free_vibration").is_some(),
+            "modal::free_vibration trampoline not registered"
+        );
+        // Positive: register_shell_extract_compute_fns trampoline is registered
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "shell-extract::extract trampoline not registered"
+        );
+        // Negative control: cannot pass trivially
+        assert!(
+            engine.compute_dispatch("reify::unregistered::sentinel").is_none(),
+            "sentinel target must not be registered"
+        );
     }
 }

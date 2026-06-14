@@ -11,14 +11,16 @@ mod field_reductions;
 pub mod interp;
 pub mod kleene;
 pub mod sampled;
+mod sampled_fd;
 mod sanitize;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, PersistentMap, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -209,152 +211,7 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // so they're handled here rather than in stdlib.
             match function.name.as_str() {
                 "sample" if evaluated_args.len() == 2 => {
-                    if let Value::Field {
-                        lambda,
-                        source,
-                        domain_type,
-                        codomain_type,
-                    } = &evaluated_args[0]
-                    {
-                        match (lambda.as_ref(), source) {
-                            (Value::Lambda { .. }, _) => {
-                                apply_lambda_with_point_unpacking(lambda, &evaluated_args[1], ctx)
-                            }
-                            // Sampled-field dispatch (task 2341): runtime
-                            // helper extracts query coords, detects OOB,
-                            // and dispatches to interp::interpolate_Nd.
-                            (Value::SampledField(sf), FieldSourceKind::Sampled) => {
-                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
-                            }
-                            // Imported-field dispatch (task 3576 PRD §80): imported fields
-                            // lower to a SampledField via read_vdb_file in elaborate_field
-                            // and are sampled identically to Sampled fields — "indistinguishable
-                            // from sampled at the field-machinery level".
-                            (Value::SampledField(sf), FieldSourceKind::Imported) => {
-                                sampled::sample_at_point(sf, &evaluated_args[1], codomain_type, ctx)
-                            }
-                            // Derived-field case: lambda slot contains the original field.
-                            // Pass codomain_type (the derived field's already-divided codomain,
-                            // stamped by compute_gradient / compute_divergence / etc.) instead
-                            // of the inner field's codomain — eliminates redundant division
-                            // inside the numerical compute functions.
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Gradient,
-                            ) => calculus::compute_numerical_gradient_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Divergence,
-                            ) => calculus::compute_numerical_divergence_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Curl,
-                            ) => calculus::compute_numerical_curl_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::Laplacian,
-                            ) => calculus::compute_numerical_laplacian_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                domain_type,
-                                codomain_type,
-                                ctx,
-                            ),
-                            // Analysis field wrappers: sample the inner field, then
-                            // apply the analysis builtin pointwise.
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::VonMises,
-                            ) => analysis::sample_von_mises_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::PrincipalStresses,
-                            ) => analysis::sample_principal_stresses_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            (
-                                Value::Field {
-                                    lambda: inner_lambda,
-                                    ..
-                                },
-                                FieldSourceKind::MaxShear,
-                            ) => analysis::sample_max_shear_at_point(
-                                inner_lambda,
-                                &evaluated_args[1],
-                                codomain_type,
-                                ctx,
-                            ),
-                            // SafetyFactor: lambda slot is List[field, yield_val],
-                            // not a nested Field — match on the source kind directly.
-                            (_, FieldSourceKind::SafetyFactor) => {
-                                analysis::sample_safety_factor_at_point(
-                                    lambda,
-                                    &evaluated_args[1],
-                                    codomain_type,
-                                    ctx,
-                                )
-                            }
-                            _ => {
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
-                                    lambda
-                                );
-                                Value::Undef
-                            }
-                        }
-                    } else {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "[reify-expr] sample: first argument is not a Field: {:?}",
-                            evaluated_args[0]
-                        );
-                        Value::Undef
-                    }
+                    sample_field_at(&evaluated_args[0], &evaluated_args[1], ctx)
                 }
                 "gradient" if evaluated_args.len() == 1 => {
                     calculus::compute_gradient(&evaluated_args[0])
@@ -366,6 +223,50 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 "laplacian" if evaluated_args.len() == 1 => {
                     calculus::compute_laplacian(&evaluated_args[0])
                 }
+                // fn_field(lambda): wrap a user lambda as FieldSourceKind::Analytical.
+                //
+                // This is the β-phase intercepting builtin (task 4220,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.2). It constructs a
+                // `Value::Field { source: Analytical, lambda: Arc(lambda) }` from
+                // the evaluated first argument (which must be a `Value::Lambda`).
+                //
+                // Extracted into `eval_fn_field` (`#[inline(never)]`) to keep this
+                // recursive frame small in debug builds — the two `Type` locals
+                // (`domain_type`, `codomain_type`) would otherwise sit on every
+                // `eval_expr` frame and risk overflowing the 2 MiB test-thread
+                // stack at `MAX_RECURSION_DEPTH` levels of recursive user-fn
+                // evaluation (same rationale as `eval_structure_instance_ctor`,
+                // `eval_quantifier`, etc.; pinned by
+                // `eval_user_fn_recursion_depth_exceeded`).
+                "fn_field"
+                    if evaluated_args.len() == 1
+                        && matches!(&evaluated_args[0], Value::Lambda { .. }) =>
+                {
+                    eval_fn_field(&evaluated_args[0], &expr.result_type)
+                }
+                // from_samples(points, values, method): construct a Regular1D
+                // gridded SampledField from explicit sample points.
+                //
+                // This is the γ-phase intercepting builtin (task 4221,
+                // PRD docs/prds/v0_6/std-fields-api.md §D3/D5). It builds a
+                // `Value::Field { source: Sampled, lambda: Arc(Value::SampledField(sf)) }`
+                // from a uniform 1-D grid of points + values and an
+                // InterpolationMethod variant.
+                //
+                // Gate: exactly 3 args (two Lists + one Enum). Mis-shaped args
+                // fall through to eval_builtin → Undef (graceful degradation).
+                // The strict-Undef short-circuit above already handles any
+                // Undef arg before we get here.
+                //
+                // Extracted into `eval_from_samples` (`#[inline(never)]`) for
+                // the same stack-frame-shrinking rationale as `eval_fn_field`.
+                "from_samples" if evaluated_args.len() == 3 => eval_from_samples(
+                    &evaluated_args[0],
+                    &evaluated_args[1],
+                    &evaluated_args[2],
+                    &expr.result_type,
+                    ctx,
+                ),
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
                 "von_mises"
@@ -439,6 +340,55 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                         && matches!(&evaluated_args[0], Value::Field { .. }) =>
                 {
                     field_reductions::compute_argmin(&evaluated_args[0])
+                }
+                // Bounded reductions: max/min/argmax/argmin(field, bounds: BoundingBox).
+                // Placed after the 1-arg arms; disjoint arg-count means no shadowing
+                // of the 1-arg form or the binary numeric max/min(a, b).
+                // A non-BoundingBox 2nd arg does NOT match this guard and falls
+                // through to eval_builtin (→ Undef for Field operands).
+                "max"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_max_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "min"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_min_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "argmax"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_argmax_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
+                }
+                "argmin"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. })
+                        && matches!(&evaluated_args[1], Value::BoundingBox { .. }) =>
+                {
+                    field_reductions::compute_argmin_bounded(
+                        &evaluated_args[0],
+                        &evaluated_args[1],
+                        ctx,
+                    )
                 }
                 // flat_map(list, lambda): apply `lambda` to each element of
                 // `list`, expect each call to return a list, and concatenate
@@ -516,11 +466,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     }
                     let result = reify_stdlib::eval_builtin(&function.name, &evaluated_args);
                     // Post-Undef builtin diagnostics: when a stackup / multi-load-
-                    // case (`linear_combine`) / AffineMap-constructor builtin returns
-                    // `Value::Undef`, classify and emit its specific diagnostic into
-                    // the ctx sink. The three name families are disjoint, so at most
-                    // one diagnose helper fires for a single Undef. Consolidated into
-                    // one `#[inline(never)]` helper so the owned `Diagnostic` locals
+                    // case (`linear_combine`) / AffineMap-constructor / inverse-
+                    // dynamics / iso_it_tolerance builtin returns `Value::Undef`,
+                    // classify and emit its specific diagnostic into the ctx sink.
+                    // The five name families are disjoint, so at most one diagnose
+                    // helper fires for a single Undef. Consolidated into one
+                    // `#[inline(never)]` helper so the owned `Diagnostic` locals
                     // live in that helper's frame, NOT on every recursive `eval_expr`
                     // frame — keeping the 2 MiB test-thread stack under
                     // `MAX_RECURSION_DEPTH` (pinned by
@@ -545,6 +496,12 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // usage error. Extracted into `emit_dfm_diagnostics` for the same
                     // stack-shrinking rationale as `emit_flexure_diagnostics`.
                     emit_dfm_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // Snapshot center_of_mass fallback Warning (task 4471): fires on
+                    // BOTH paths like the flexure/DFM hooks — the fallback Warning is
+                    // emitted even when center_of_mass returns a valid Point (success
+                    // path), so the Undef-only `emit_undef_builtin_diagnostics` gate
+                    // cannot surface it. A no-op for every non-snapshot name.
+                    emit_snapshot_diagnostics(&function.name, &evaluated_args, &result, ctx);
                     result
                 }
             }
@@ -880,6 +837,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             lets,
             ctx,
         ),
+
+        // task 4118 (γ): Selector→List<Geometry> coercion node. In the
+        // registry-free evaluator this is a PASSTHROUGH — evaluate the inner
+        // selector (yielding a `Value::Selector`) and return it unchanged.
+        // Resolving the selector into a concrete `Value::List` of geometry
+        // handles requires a `GeometryKernel`, so the real coercion happens in
+        // the kernel-bearing post-process (reify-eval), not here.
+        CompiledExprKind::ResolveSelector { selector } => eval_expr(selector, ctx),
     }
 }
 
@@ -1207,7 +1172,6 @@ fn type_carries_type_param(t: &Type) -> bool {
         // All remaining leaves carry no inner `Type`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -1220,6 +1184,95 @@ fn type_carries_type_param(t: &Type) -> bool {
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Dimension-param scalar: opaque leaf — carries no *type* param.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (drift reproduces esc-4231-120/126).
+        // `type_carries_dim_param` (below) handles the ScalarParam wildcard case.
+        | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Returns `true` when `t` is, or recursively wraps, a [`Type::ScalarParam`].
+///
+/// Local mirror of `reify_compiler::type_compat::type_carries_dim_param`,
+/// kept VERBATIM with it. reify-expr's library deps are only reify-core +
+/// reify-ir (reify-compiler is a dev-dep), so the compiler helper cannot be
+/// imported here — the two MUST be kept in sync. If they drift, a generic call
+/// whose param is a dimension-kinded `Scalar<Q>` resolves at compile time but
+/// the eval-side resolver rejects it → the call evals to `Value::Undef`
+/// (the ζ/D8 divergence class — the same failure mode as esc-4231-120/126 for
+/// type-params).
+///
+/// Recurses through the same inner-`Type`-bearing constructor set as
+/// [`type_carries_type_param`]. Returns `true` at the `ScalarParam(_)` leaf,
+/// `false` at all other leaves. Used by [`find_matching_compiled_function`] to
+/// make a *generic* candidate's dimension-param-carrying params act as
+/// eval-time resolution wildcards, gated on `!f.type_params.is_empty()` (task ζ
+/// / D8).
+///
+/// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
+/// variant forces a compile-time decision here, in lock-step with the canonical
+/// compiler-side copy.
+fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // All remaining leaves carry no inner ScalarParam.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::TypeParam(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
@@ -1277,6 +1330,8 @@ pub fn find_matching_compiled_function<'a>(
     //   * a *generic* candidate's type-param-carrying params (gated on
     //     `!type_params.is_empty()` so this pass can never relax a non-generic
     //     fn via type-params), and
+    //   * a *generic* candidate's dimension-param-carrying params (ScalarParam,
+    //     task ζ / D8 — gated on genericity, same as type-param wildcards), and
     //   * ANY candidate's trait-object-carrying params (NOT gated on genericity),
     //     mirroring compile-side `resolve_function_overload` which treats
     //     trait-carrying params as wildcards for every candidate. Without this,
@@ -1287,7 +1342,7 @@ pub fn find_matching_compiled_function<'a>(
     fns.iter().filter(arity_match).find(|f| {
         let is_generic = !f.type_params.is_empty();
         f.params.iter().zip(args.iter()).all(|((_, param_ty), arg)| {
-            (is_generic && type_carries_type_param(param_ty))
+            (is_generic && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
                 || type_carries_trait_object(param_ty)
                 || *param_ty == arg.result_type
         })
@@ -1540,8 +1595,9 @@ fn interp_render(value: &Value) -> String {
 }
 
 /// Emit the post-`Undef` builtin diagnostics — stackup (§4.4), multi-load-case
-/// FEA (`linear_combine`, task #10), and AffineMap constructors (PRD §4.2,
-/// task β) — for a builtin call whose `result` is `Value::Undef`.
+/// FEA (`linear_combine`, task #10), AffineMap constructors (PRD §4.2, task β),
+/// inverse-dynamics body mass, and ISO tolerancing — for a builtin call whose
+/// `result` is `Value::Undef`.
 ///
 /// Extracted from `eval_expr`'s `FunctionCall` arm — and marked
 /// `#[inline(never)]` — for the same stack-frame-shrinking reason as
@@ -1552,10 +1608,11 @@ fn interp_render(value: &Value) -> String {
 /// levels of recursive user-fn evaluation (pinned by
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
-/// The three name families (stackup math builtins / `"linear_combine"` /
-/// `affine_*` constructors) are disjoint, so at most one of the three classifiers
-/// returns `Some` for any single `Undef`; each returns `None` for every other
-/// name or for valid input, making this a cheap no-op for ordinary builtins.
+/// The five name families (stackup math builtins / `"linear_combine"` /
+/// `affine_*` constructors / inverse-dynamics / `"iso_it_tolerance"`) are
+/// disjoint, so at most one of the five classifiers returns `Some` for any
+/// single `Undef`; each returns `None` for every other name or for valid input,
+/// making this a cheap no-op for ordinary builtins.
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
     if !matches!(result, Value::Undef) {
@@ -1579,6 +1636,13 @@ fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ct
     }
     // Inverse-dynamics Undef: body has no resolvable mass.
     if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
+        sink.borrow_mut().push(diag);
+    }
+    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+    // Severity::Error instead of a silent Undef. Post-Undef-only, same
+    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
+    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -1652,6 +1716,29 @@ fn emit_dfm_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalCo
         return;
     };
     for diag in reify_stdlib::dfm_diagnose(name, args, result) {
+        sink.borrow_mut().push(diag);
+    }
+}
+
+/// Emit snapshot `center_of_mass` fallback diagnostics for a builtin call into
+/// the runtime sink (task 4471).
+///
+/// Mirrors [`emit_dfm_diagnostics`]: a no-op when no sink is attached, else it
+/// pushes every `Diagnostic` returned by [`reify_stdlib::snapshot_diagnose`]
+/// into the sink. Like the flexure/DFM hooks — and unlike the post-`Undef`-only
+/// stackup/fea/geometry hooks consolidated in `emit_undef_builtin_diagnostics`
+/// — `snapshot_diagnose` fires on BOTH paths: the `center_of_mass` fallback
+/// Warning is emitted when the result is a valid `Point` (success path, the
+/// legacy density-weighted centroid). `snapshot_diagnose` returns an empty
+/// `Vec` for every non-`center_of_mass` name, so this is a cheap no-op for
+/// other builtins. Extracted `#[inline(never)]` for the same stack-shrinking
+/// reason as `emit_flexure_diagnostics` and `emit_dfm_diagnostics`.
+#[inline(never)]
+fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
+    let Some(sink) = ctx.diagnostics else {
+        return;
+    };
+    for diag in reify_stdlib::snapshot_diagnose(name, args, result) {
         sink.borrow_mut().push(diag);
     }
 }
@@ -2025,6 +2112,255 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     result
 }
 
+/// Wrap a user lambda as a `Value::Field { source: Analytical, .. }`.
+///
+/// Implements the `fn_field` intercepting builtin (task 4220 β,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.2).
+///
+/// Marked `#[inline(never)]` to keep `eval_expr`'s stack frame small in
+/// debug builds — the `domain_type` and `codomain_type` locals (each a
+/// `Type`) would otherwise sit on every recursive `eval_expr` frame and
+/// overflow the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256)
+/// levels of user-fn recursion (same rationale as
+/// `eval_structure_instance_ctor`; pinned by
+/// `eval_user_fn_recursion_depth_exceeded`).
+#[inline(never)]
+fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "fn_field result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4219 α); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Analytical,
+        lambda: Arc::new(lambda.clone()),
+    }
+}
+
+/// Construct a Regular1D gridded `SampledField` from explicit sample points.
+///
+/// Implements the `from_samples` intercepting builtin (task 4221 γ,
+/// PRD docs/prds/v0_6/std-fields-api.md §D3/D5).
+///
+/// # Contract (full — diagnostics added in steps 6 and 8)
+///
+/// - `points` and `values` must be `Value::List` of scalar elements
+///   (Real/Int/Scalar) of equal length >= 2. Scalar (dimensioned) values are
+///   accepted via `Value::as_f64()` (SI-unwrapped), consistent with how
+///   `sampled::sample_at_point` accepts Scalar coordinates.
+/// - Points must be finite (no NaN/Inf) and form a uniformly-spaced 1-D grid.
+///   Non-finite or non-uniform spacing pushes
+///   `DiagnosticCode::FieldSamplesNotGrid` (step-6) and returns Undef.
+/// - `method` must be a `Value::Enum { type_name: "InterpolationMethod", .. }`.
+///   Linear/NearestNeighbor/Cubic → `InterpolationKind`;
+///   RBF/Kriging → `DiagnosticCode::InterpMethodUnsupported` (step-8), returns Undef.
+///   An enum with the wrong `type_name` returns Undef silently (guarded upstream).
+/// - Returns `Value::Field { source: Sampled, lambda: Arc(Value::SampledField(sf)) }`.
+///
+/// Marked `#[inline(never)]` for the same stack-frame rationale as `eval_fn_field`.
+#[inline(never)]
+fn eval_from_samples(
+    points: &Value,
+    values: &Value,
+    method: &Value,
+    result_type: &Type,
+    ctx: &EvalContext,
+) -> Value {
+    // ── 1. Extract lists ─────────────────────────────────────────────────────
+    let pts = match points {
+        Value::List(v) => v,
+        _ => {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (points argument is not a List)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
+    };
+    let vals = match values {
+        Value::List(v) => v,
+        _ => {
+            push_eval_error(
+                ctx,
+                "from_samples: values argument is invalid (not a List)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
+    };
+
+    // ── 2. Length checks ─────────────────────────────────────────────────────
+    if pts.len() != vals.len() {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (points and values have different lengths)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
+    if pts.len() < 2 {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (at least 2 sample points are required)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
+
+    // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
+    // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
+    // and handles Value::Scalar { si_value, .. } consistently with how
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
+        Some(v) => v,
+        None => {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (only scalar (Real/Int/Scalar) point elements are supported; \
+                  N-D point types are deferred to a follow-up)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
+    };
+    let val_f64: Vec<f64> = match vals.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
+        Some(v) => v,
+        None => {
+            push_eval_error(
+                ctx,
+                "from_samples: values argument is invalid \
+                 (non-scalar value elements are not supported)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
+    };
+
+    // ── 4. Uniform spacing check ─────────────────────────────────────────────
+    // Guard against NaN/Inf point values first: if any point is non-finite,
+    // the spacing arithmetic below silently produces NaN (which passes both
+    // `step <= 0.0` and `rel_err > 1e-6` comparisons due to NaN semantics),
+    // causing a SampledField with NaN bounds/spacing rather than a clean error.
+    if pt_f64.iter().any(|x| !x.is_finite()) {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (non-finite point values (NaN/Inf) are not supported)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
+    let step = pt_f64[1] - pt_f64[0];
+    if step <= 0.0 {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (points must be strictly increasing)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
+    for i in 1..pt_f64.len() {
+        let delta = pt_f64[i] - pt_f64[i - 1];
+        let rel_err = (delta - step).abs() / step;
+        if rel_err > 1e-6 {
+            push_eval_error(
+                ctx,
+                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                 (spacing between consecutive points is not uniform)",
+                DiagnosticCode::FieldSamplesNotGrid,
+            );
+            return Value::Undef;
+        }
+    }
+
+    // ── 5. Map InterpolationMethod variant → InterpolationKind ──────────────
+    // The type_name guard enforces the stated contract: only
+    // `Value::Enum { type_name: "InterpolationMethod", .. }` is accepted.
+    // An enum with a different type_name (wrong-type argument) falls through to
+    // the wildcard and returns Undef silently — upstream type-checking has
+    // already been violated, so a silent Undef is appropriate (no misleading
+    // InterpMethodUnsupported message for a mistyped argument).
+    let interp = match method {
+        Value::Enum { type_name, variant } if type_name == "InterpolationMethod" => {
+            match variant.as_str() {
+                "Linear" => InterpolationKind::Linear,
+                "NearestNeighbor" => InterpolationKind::NearestNeighbor,
+                "Cubic" => InterpolationKind::Cubic,
+                other => {
+                    // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED.
+                    // This is a HARD error in from_samples — unlike interp::resolve_method
+                    // which falls back to Linear + W_INTERPOLATION_DEFERRED for sampled{}
+                    // fields. from_samples is a new surface with no back-compat obligation.
+                    push_eval_error(
+                        ctx,
+                        &format!(
+                            "from_samples: interpolation method '{}' is not supported by \
+                             from_samples (supported: Linear, NearestNeighbor, Cubic)",
+                            other
+                        ),
+                        DiagnosticCode::InterpMethodUnsupported,
+                    );
+                    return Value::Undef;
+                }
+            }
+        }
+        _ => return Value::Undef,
+    };
+
+    // ── 6. Build Regular1D SampledField ──────────────────────────────────────
+    let p0 = pt_f64[0];
+    let pn = *pt_f64.last().unwrap();
+    let sf = SampledField {
+        name: "from_samples".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![p0],
+        bounds_max: vec![pn],
+        spacing: vec![step],
+        axis_grids: vec![pt_f64],
+        interpolation: interp,
+        data: val_f64,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    // ── 7. Read domain/codomain from result_type (Field<D,C> stamped by α) ──
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(sf)),
+    }
+}
+
+/// Push a `Severity::Error` diagnostic into the eval context's diagnostics sink
+/// (if a sink is attached). Used by `eval_from_samples` for B3/B4 error codes.
+#[inline]
+fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
+    if let Some(sink) = ctx.diagnostics {
+        sink.borrow_mut()
+            .push(Diagnostic::error(msg).with_code(code));
+    }
+}
+
 /// Apply a lambda closure to a list of argument values.
 ///
 /// Returns Undef if:
@@ -2072,6 +2408,172 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// unpacking), preserving the single-param binding contract.
 ///
 /// See also: `calculus.rs::extract_point_coords`.
+/// Sample `field` at `at`, dispatching over the stored lambda form.
+///
+/// This is the shared core of the `"sample"` builtin arm extracted from the
+/// inline match (std.fields α, task 4219).  Calling it recursively enables
+/// the Composed-list-form dispatch (`sample_field_at(f, sample_field_at(g, p))`).
+///
+/// | `source` + lambda                          | behaviour                                           |
+/// |--------------------------------------------|-----------------------------------------------------|
+/// | any + `Value::Lambda`                      | apply lambda directly (point unpacking if needed)   |
+/// | `Sampled`/`Imported` + `Value::SampledField` | grid interpolation via `sampled::sample_at_point`  |
+/// | `Gradient`/`Divergence`/`Curl`/`Laplacian` + inner `Value::Field` | numerical calculus helpers |
+/// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
+/// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
+/// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
+/// | `Restricted` + `Value::List[inner, region]`| stub → `Value::Undef` (task δ: OCCT containment)   |
+fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
+    if let Value::Field {
+        lambda,
+        source,
+        domain_type,
+        codomain_type,
+    } = field
+    {
+        match (lambda.as_ref(), source) {
+            (Value::Lambda { .. }, _) => {
+                apply_lambda_with_point_unpacking(lambda, at, ctx)
+            }
+            // Sampled-field dispatch (task 2341): runtime helper extracts query
+            // coords, detects OOB, and dispatches to interp::interpolate_Nd.
+            (Value::SampledField(sf), FieldSourceKind::Sampled) => {
+                sampled::sample_at_point(sf, at, codomain_type, ctx)
+            }
+            // Imported-field dispatch (task 3576 PRD §80): imported fields
+            // lower to a SampledField via read_vdb_file in elaborate_field
+            // and are sampled identically to Sampled fields — "indistinguishable
+            // from sampled at the field-machinery level".
+            (Value::SampledField(sf), FieldSourceKind::Imported) => {
+                sampled::sample_at_point(sf, at, codomain_type, ctx)
+            }
+            // Derived-field case: lambda slot contains the original field.
+            // Pass codomain_type (the derived field's already-divided codomain,
+            // stamped by compute_gradient / compute_divergence / etc.) instead
+            // of the inner field's codomain — eliminates redundant division
+            // inside the numerical compute functions.
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Gradient,
+            ) => calculus::compute_numerical_gradient_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Divergence,
+            ) => calculus::compute_numerical_divergence_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Curl,
+            ) => calculus::compute_numerical_curl_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::Laplacian,
+            ) => calculus::compute_numerical_laplacian_at_point(
+                inner_lambda,
+                at,
+                domain_type,
+                codomain_type,
+                ctx,
+            ),
+            // Analysis field wrappers: sample the inner field, then apply the
+            // analysis builtin pointwise.
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::VonMises,
+            ) => analysis::sample_von_mises_at_point(inner_lambda, at, codomain_type, ctx),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::PrincipalStresses,
+            ) => analysis::sample_principal_stresses_at_point(
+                inner_lambda,
+                at,
+                codomain_type,
+                ctx,
+            ),
+            (
+                Value::Field {
+                    lambda: inner_lambda,
+                    ..
+                },
+                FieldSourceKind::MaxShear,
+            ) => analysis::sample_max_shear_at_point(inner_lambda, at, codomain_type, ctx),
+            // SafetyFactor: lambda slot is List[field, yield_val],
+            // not a nested Field — match on the source kind directly.
+            (_, FieldSourceKind::SafetyFactor) => {
+                analysis::sample_safety_factor_at_point(lambda, at, codomain_type, ctx)
+            }
+            // Composed list-form (std.fields α, task 4219, PRD §5.2):
+            // lambda slot is Value::List[f, g] where f is the outer field and
+            // g is the inner field.  sample(composed, p) == f(g(p)).
+            // Convention: items[0] = f (outer), items[1] = g (inner).
+            (Value::List(items), FieldSourceKind::Composed) if items.len() == 2 => {
+                let intermediate = sample_field_at(&items[1], at, ctx);
+                sample_field_at(&items[0], &intermediate, ctx)
+            }
+            // Restricted scaffold (std.fields α, task 4219, PRD §5.3 option (b)):
+            // lambda slot is Value::List[inner_field, region].  Returns Undef
+            // unconditionally pending the OCCT point-in-region containment hook.
+            // Task δ implements contains(region, point) and changes this to:
+            //   inside  → sample_field_at(inner_field, at)
+            //   outside → Value::Undef
+            (Value::List(items), FieldSourceKind::Restricted) if items.len() == 2 => {
+                let _ = (&items[0], &items[1]); // inner_field, region — reserved for task δ
+                Value::Undef
+            }
+            _ => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[reify-expr] sample: Field lambda is not a Lambda: {:?}",
+                    lambda
+                );
+                Value::Undef
+            }
+        }
+    } else {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[reify-expr] sample: first argument is not a Field: {:?}",
+            field
+        );
+        Value::Undef
+    }
+}
+
 pub(crate) fn apply_lambda_with_point_unpacking(
     lambda: &Value,
     point: &Value,
@@ -2090,7 +2592,152 @@ pub(crate) fn apply_lambda_with_point_unpacking(
     }
 }
 
-/// Evaluate a method call on a collection value.
+/// Extract three finite numeric components from a 3-component `Point` or
+/// `Vector` value. Returns `None` for any other shape or a non-finite
+/// component. Mirrors `reify_eval::geometry_ops::point3_components` (which is
+/// `pub(crate)` to reify-eval and so unreachable across the crate boundary).
+fn datum_vec3(v: &Value) -> Option<[f64; 3]> {
+    let comps = match v {
+        Value::Point(c) | Value::Vector(c) if c.len() == 3 => c,
+        _ => return None,
+    };
+    let a = comps[0].as_f64().filter(|f| f.is_finite())?;
+    let b = comps[1].as_f64().filter(|f| f.is_finite())?;
+    let c = comps[2].as_f64().filter(|f| f.is_finite())?;
+    Some([a, b, c])
+}
+
+/// Normalize a 3-vector to unit length. `None` if the magnitude is non-finite
+/// or below the degeneracy floor (a zero/near-zero direction is not a valid
+/// unit `Direction`).
+fn unit3(v: [f64; 3]) -> Option<[f64; 3]> {
+    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if mag.is_finite() && mag > 1e-12 {
+        Some([v[0] / mag, v[1] / mag, v[2] / mag])
+    } else {
+        None
+    }
+}
+
+/// Project a stored direction/normal `Point`/`Vector` to a unit `Direction`,
+/// or `Undef` if the vector is degenerate or malformed.
+fn vec3_to_direction(v: &Value) -> Value {
+    match datum_vec3(v).and_then(unit3) {
+        Some([x, y, z]) => Value::Direction { x, y, z },
+        None => Value::Undef,
+    }
+}
+
+/// Column `axis` (0=x, 1=y, 2=z) of the rotation matrix for the unit quaternion
+/// `(w, x, y, z)` — i.e. the rotated world basis vector, a unit `Direction`.
+/// The quaternion is normalized first; `None` for a non-finite or zero
+/// quaternion. The column formulas match `reify_stdlib::orientation`'s
+/// row-major `R` (and `quat_rotate`'s active `q·v·q*` convention).
+fn quat_basis_axis(w: f64, x: f64, y: f64, z: f64, axis: usize) -> Option<[f64; 3]> {
+    let n = (w * w + x * x + y * y + z * z).sqrt();
+    if !n.is_finite() || n < 1e-12 {
+        return None;
+    }
+    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
+    let col = match axis {
+        0 => [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y + w * z),
+            2.0 * (x * z - w * y),
+        ],
+        1 => [
+            2.0 * (x * y - w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + w * x),
+        ],
+        2 => [
+            2.0 * (x * z + w * y),
+            2.0 * (y * z - w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+        _ => return None,
+    };
+    Some(col)
+}
+
+/// Project a `Frame` basis axis (`.x`/`.y`/`.z`) to a unit `Direction`.
+fn frame_axis_direction(basis: &Value, axis: usize) -> Value {
+    match basis {
+        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, axis) {
+            Some([dx, dy, dz]) => Value::Direction {
+                x: dx,
+                y: dy,
+                z: dz,
+            },
+            None => Value::Undef,
+        },
+        _ => Value::Undef,
+    }
+}
+
+/// Project a `Frame` to its `.xy_plane`: a `Plane` at the frame origin whose
+/// normal is the frame's z-axis.
+fn frame_xy_plane(origin: &Value, basis: &Value) -> Value {
+    match basis {
+        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, 2) {
+            Some([nx, ny, nz]) => Value::Plane {
+                origin: Box::new(origin.clone()),
+                normal: Box::new(Value::Vector(vec![
+                    Value::Real(nx),
+                    Value::Real(ny),
+                    Value::Real(nz),
+                ])),
+            },
+            None => Value::Undef,
+        },
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate a datum-projection member access (task 4382 β) on a datum receiver
+/// (`Axis`/`Plane`/`Frame`/`Direction`). Returns `Some(value)` when `obj` is a
+/// datum and `method` is one of that datum's projection members (the projection
+/// is `Undef` if the datum's internals are degenerate/malformed); returns
+/// `None` for any non-datum receiver or unrecognized member, so the regular
+/// collection/tensor method dispatch proceeds unchanged.
+///
+/// The compiler (expr.rs `MemberAccess` datum-projection branch) only lowers
+/// *valid* projections to a `MethodCall`, so the disallowed cases (e.g. the
+/// ambiguous `frame.dir`, or `axis.x`) never reach eval; the `_ => None` arms
+/// are defensive.
+fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
+    match obj {
+        Value::Axis { origin, direction } => match method {
+            "dir" => Some(vec3_to_direction(direction)),
+            "origin" => Some((**origin).clone()),
+            _ => None,
+        },
+        Value::Plane { origin, normal } => match method {
+            "normal" => Some(vec3_to_direction(normal)),
+            "origin" => Some((**origin).clone()),
+            _ => None,
+        },
+        Value::Frame { origin, basis } => match method {
+            "x" => Some(frame_axis_direction(basis, 0)),
+            "y" => Some(frame_axis_direction(basis, 1)),
+            "z" => Some(frame_axis_direction(basis, 2)),
+            "origin" => Some((**origin).clone()),
+            "xy_plane" => Some(frame_xy_plane(origin, basis)),
+            _ => None,
+        },
+        Value::Direction { x, y, z } => match method {
+            "x" => Some(Value::Real(*x)),
+            "y" => Some(Value::Real(*y)),
+            "z" => Some(Value::Real(*z)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Evaluate a method call on a collection value, or a datum-projection member
+/// access on a datum receiver (Axis/Plane/Frame/Direction → see
+/// [`eval_datum_projection`]).
 fn eval_method_call(
     obj: &Value,
     method: &str,
@@ -2098,6 +2745,14 @@ fn eval_method_call(
     result_type: &Type,
     ctx: &EvalContext,
 ) -> Value {
+    // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
+    // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
+    // Dispatched ONLY for datum receivers, so the collection/tensor arms below
+    // (including the `"x"|"y"|"z"` Tensor arm) are unaffected for everything
+    // else: a non-datum receiver yields `None` here and falls through.
+    if let Some(projected) = eval_datum_projection(obj, method) {
+        return projected;
+    }
     match method {
         "count" => match obj {
             Value::List(items) => {
@@ -2251,7 +2906,7 @@ fn eval_method_call(
                 if items.is_empty() {
                     return match result_type {
                         Type::Int => Value::Int(0),
-                        Type::Real => Value::Real(0.0),
+                        Type::Scalar { dimension } if dimension.is_dimensionless() => Value::Real(0.0),
                         Type::Scalar { dimension } => Value::Scalar {
                             si_value: 0.0,
                             dimension: *dimension,
@@ -2794,13 +3449,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // Scalar+Real/Int below returns Real for the mixed case — the asymmetry is
-                // accepted: eval_eq/eval_cmp normalize both forms via as_f64().
-                Value::Scalar {
-                    si_value: a + b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless sum
+                // (DL + DL) collapses to Value::Real (Invariant V, task 4374/β).
+                // Dimensioned sums stay Value::Scalar, byte-identical to before.
+                Value::from_real_scalar(a + b, *ad)
             }
         }
         // Complex + Complex: dimension must match
@@ -2845,6 +3497,10 @@ fn eval_add(lv: &Value, rv: &Value) -> Value {
         // because the operand is already a bare number.
         // Note: eval_mul/eval_div have no such guard — scaling a dimensioned quantity
         // by a pure number is always legal and preserves the dimension.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS} (the value layer collapses those to Value::Real
+        // via from_real_scalar), so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
         | (Value::Real(r), Value::Scalar { si_value, dimension })
             if dimension.is_dimensionless() =>
@@ -2896,13 +3552,10 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
             if ad != bd {
                 Value::Undef // dimension mismatch
             } else {
-                // Intentionally returns Scalar{dimension} even when dimension is DIMENSIONLESS.
-                // See the corresponding eval_add note for why this asymmetry with Scalar-Real
-                // is accepted.
-                Value::Scalar {
-                    si_value: a - b,
-                    dimension: *ad,
-                }
+                // Route through the value-layer chokepoint: a dimensionless
+                // difference (DL - DL) collapses to Value::Real (Invariant V,
+                // task 4374/β). Dimensioned differences stay Value::Scalar.
+                Value::from_real_scalar(a - b, *ad)
             }
         }
         // Complex - Complex: dimension must match
@@ -2954,6 +3607,9 @@ fn eval_sub(lv: &Value, rv: &Value) -> Value {
         // a separate arm. Note: eval_mul/eval_div scale any-dimension scalars
         // without this guard — scaling preserves dimension; addition/subtraction
         // do not.
+        // Defensive post-β (task 4374): arithmetic ops no longer PRODUCE a
+        // Scalar{DIMENSIONLESS}, so these mixed arms now fire only for
+        // hand-constructed dimensionless Scalars (e.g. in tests).
         (Value::Scalar { si_value, dimension }, Value::Real(r))
             if dimension.is_dimensionless() =>
         {
@@ -3093,10 +3749,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value: b,
                 dimension: bd,
             },
-        ) => Value::Scalar {
-            si_value: a * b,
-            dimension: ad.mul(bd),
-        },
+        ) => Value::from_real_scalar(a * b, ad.mul(bd)),
         // Scalar * dimensionless numeric
         (
             Value::Scalar {
@@ -3111,10 +3764,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
@@ -3128,10 +3778,7 @@ fn eval_mul(lv: &Value, rv: &Value) -> Value {
                 si_value,
                 dimension,
             },
-        ) => Value::Scalar {
-            si_value: si_value * r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value * r, *dimension),
         // Complex * Scalar | Scalar * Complex: scale re/im, combine dimensions
         (
             Value::Complex {
@@ -3378,10 +4025,9 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
             },
         ) => {
             let result_dim = ad.div(bd);
-            Value::Scalar {
-                si_value: a / b,
-                dimension: result_dim,
-            }
+            // Route through the value-layer chokepoint: a dimension-cancelling
+            // quotient (e.g. L/L) collapses to Value::Real (Invariant V).
+            Value::from_real_scalar(a / b, result_dim)
         }
         // Scalar / dimensionless
         (
@@ -3390,20 +4036,30 @@ fn eval_div(lv: &Value, rv: &Value) -> Value {
                 dimension,
             },
             Value::Int(n),
-        ) => Value::Scalar {
-            si_value: si_value / *n as f64,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / *n as f64, *dimension),
         (
             Value::Scalar {
                 si_value,
                 dimension,
             },
             Value::Real(r),
-        ) => Value::Scalar {
-            si_value: si_value / r,
-            dimension: *dimension,
-        },
+        ) => Value::from_real_scalar(si_value / r, *dimension),
+        // Bare number / Scalar: a dimensionless numerator ÷ a dimensioned scalar
+        // yields the reciprocal dimension (e.g. `1.0 / 5s → Frequency`). Division
+        // is non-commutative, so these reciprocal arms are distinct from the
+        // (Scalar, Real/Int) scaling arms above. Post-β (task 4374) a
+        // dimension-cancelling product/quotient collapses to Value::Real, so a
+        // chain like AVOGADRO_CONSTANT's `6.022e23 * 1mol / 1mol / 1mol` now
+        // reaches this arm at the final `/ 1mol` — its intermediate, formerly a
+        // Scalar{DIMENSIONLESS}, is now Real. Routed through the chokepoint so a
+        // fully-cancelling reciprocal still collapses to Real (Invariant V).
+        (Value::Real(a), Value::Scalar { si_value, dimension }) => {
+            Value::from_real_scalar(a / si_value, DimensionVector::DIMENSIONLESS.div(dimension))
+        }
+        (Value::Int(a), Value::Scalar { si_value, dimension }) => {
+            let recip_dim = DimensionVector::DIMENSIONLESS.div(dimension);
+            Value::from_real_scalar(*a as f64 / si_value, recip_dim)
+        }
         // Complex / Complex: (a+bi)/(c+di) = ((ac+bd)+(bc-ad)i)/(c²+d²)
         // NOTE: No sanitize_value here — by design, matching eval_mul Complex*Complex (lib.rs:2185).
         // Overflow (e.g. MAX/0.5 → Inf) propagates as an Inf-bearing Complex in the operator path;
@@ -3547,10 +4203,10 @@ fn eval_pow(lv: &Value, rv: &Value) -> Value {
             },
             Value::Int(n),
         ) => match i8::try_from(*n) {
-            Ok(n_i8) => Value::Scalar {
-                si_value: si_value.powi(n_i8 as i32),
-                dimension: dimension.pow(n_i8),
-            },
+            // Route through the value-layer chokepoint: a zero exponent cancels
+            // the dimension (dimension.pow(0) = DIMENSIONLESS) and collapses to
+            // Value::Real (Invariant V). The outer sanitize_value wrap stays.
+            Ok(n_i8) => Value::from_real_scalar(si_value.powi(n_i8 as i32), dimension.pow(n_i8)),
             Err(_) => Value::Undef,
         },
         _ => Value::Undef,
@@ -3599,14 +4255,23 @@ fn eval_eq(lv: &Value, rv: &Value) -> Value {
         }
         // Enum vs non-Enum: always false
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Bool(false),
-        // Dimensioned Scalar vs non-Scalar: not equal
+        // Scalar vs non-Scalar. A *dimensioned* Scalar (e.g. a Length) is never
+        // equal to a bare number, so this is `false`. A *dimensionless* Scalar
+        // is just a plain quantity, though: post-Invariant V (task 4374/β) no
+        // arithmetic op produces one (producers route through from_real_scalar),
+        // but eq operands also come from literals, struct/field defaults, map
+        // values, and deserialized state — non-arithmetic sources that can still
+        // carry a Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below rather than silently flipping it to `false`.
+        // (Scalar-vs-Scalar is handled by the earlier arm.)
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
         {
             Value::Bool(false)
         }
         _ => {
-            // For numeric comparisons (Int/Real/dimensionless Scalar), compare as f64
+            // Int / Real / dimensionless Scalar numeric comparison via as_f64.
             match (lv.as_f64(), rv.as_f64()) {
                 (Some(a), Some(b)) => Value::Bool(a == b),
                 _ => Value::Undef,
@@ -3643,13 +4308,20 @@ fn eval_cmp(lv: &Value, rv: &Value, cmp: fn(f64, f64) -> bool) -> Value {
         }
         // Enum comparison: no ordering on enums
         (Value::Enum { .. }, _) | (_, Value::Enum { .. }) => Value::Undef,
-        // Dimensioned Scalar vs non-Scalar: incomparable
+        // Scalar vs non-Scalar. A *dimensioned* Scalar is incomparable to a bare
+        // number → Undef. A *dimensionless* Scalar is a plain quantity, though:
+        // post-Invariant V (task 4374/β) no arithmetic op produces one, but cmp
+        // operands also come from literals, struct/field defaults, map values,
+        // and deserialized state — non-arithmetic sources that can still carry a
+        // Scalar{DIMENSIONLESS}. So keep the `!dimension.is_dimensionless()`
+        // guard and let such a value fall through to the as_f64 numeric
+        // comparison below. (Scalar-vs-Scalar is handled by the earlier arm.)
         (Value::Scalar { dimension, .. }, _) | (_, Value::Scalar { dimension, .. })
             if !dimension.is_dimensionless() =>
         {
             Value::Undef
         }
-        // Fallback: Int/Real/dimensionless Scalar via as_f64
+        // Fallback: Int / Real / dimensionless Scalar numeric comparison via as_f64.
         _ => match (lv.as_f64(), rv.as_f64()) {
             (Some(a), Some(b)) => Value::Bool(cmp(a, b)),
             _ => Value::Undef,
@@ -3991,10 +4663,10 @@ mod tests {
     #[test]
     fn function_call_abs_dispatches_to_stdlib() {
         // FunctionCall('abs', [Literal(Real(-3.0))]) should return Real(3.0), not Undef
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[42]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4045,7 +4717,7 @@ mod tests {
         };
 
         // The literal args' static Type is not consulted at runtime (eval_expr's
-        // Literal arm clones the value), so Type::Real is a neutral placeholder.
+        // Literal arm clones the value), so Type::dimensionless_scalar() is a neutral placeholder.
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[0x4f, 0x44, 0x46, 0x4d]),
             result_type: Type::Bool,
@@ -4055,9 +4727,9 @@ mod tests {
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
                 args: vec![
-                    lit(part, Type::Real),
-                    lit(env, Type::Real),
-                    lit(sev, Type::Real),
+                    lit(part, Type::dimensionless_scalar()),
+                    lit(env, Type::dimensionless_scalar()),
+                    lit(sev, Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -4121,9 +4793,9 @@ mod tests {
                     name: "fits_build_volume".to_string(),
                     qualified_name: "std::fits_build_volume".to_string(),
                 },
-                // Literal args' static Type is not consulted at runtime; Type::Real
+                // Literal args' static Type is not consulted at runtime; Type::dimensionless_scalar()
                 // is a neutral placeholder (matches the step-11 test).
-                args: args.into_iter().map(|v| lit(v, Type::Real)).collect(),
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
             },
         }
     }
@@ -4189,7 +4861,7 @@ mod tests {
         );
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[43]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "sin".to_string(),
@@ -4208,10 +4880,10 @@ mod tests {
 
     #[test]
     fn function_call_unknown_returns_undef() {
-        let arg = lit(Value::Real(1.0), Type::Real);
+        let arg = lit(Value::Real(1.0), Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[44]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "nonexistent".to_string(),
@@ -4227,10 +4899,10 @@ mod tests {
     #[test]
     fn function_call_undef_propagation() {
         // abs(Undef) should return Undef (strict propagation)
-        let arg = lit(Value::Undef, Type::Real);
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[45]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4284,7 +4956,7 @@ mod tests {
         // abs() with no args should return Undef
         let expr = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[47]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -4920,21 +5592,19 @@ mod tests {
 
     #[test]
     fn div_same_dimension_yields_dimensionless() {
-        // 80mm / 20mm = 4.0 (dimensionless Scalar, consistent with eval_mul)
+        // 80mm / 20mm = 4.0. LENGTH/LENGTH cancels to DIMENSIONLESS, so per
+        // Invariant V (task 4374/β) eval_div routes through the value-layer
+        // chokepoint and the result is the canonical Value::Real(4.0), NOT
+        // Value::Scalar{DIMENSIONLESS}. (Was pinned to Scalar{dimensionless}
+        // before β closed the leak.)
         let left = lit(mm_val(80.0), Type::length());
         let right = lit(mm_val(20.0), Type::length());
         let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match &result {
-            Value::Scalar {
-                si_value,
-                dimension,
-            } => {
-                assert!((si_value - 4.0).abs() < 1e-12);
-                assert!(dimension.is_dimensionless());
-            }
-            other => panic!("expected Scalar{{dimensionless}}, got {:?}", other),
+            Value::Real(v) => assert!((v - 4.0).abs() < 1e-12, "expected ~4.0, got {v}"),
+            other => panic!("expected Value::Real(4.0), got {:?}", other),
         }
     }
 
@@ -4995,7 +5665,7 @@ mod tests {
             1,
             vec![
                 ("youngs_modulus", lit(Value::Int(200), Type::Int)),
-                ("poisson", lit(Value::Real(0.3), Type::Real)),
+                ("poisson", lit(Value::Real(0.3), Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5087,7 +5757,7 @@ mod tests {
             1,
             vec![
                 ("length", lit(Value::Int(5), Type::Int)),
-                ("mystery", vref("Nowhere", "missing", Type::Real)),
+                ("mystery", vref("Nowhere", "missing", Type::dimensionless_scalar())),
             ],
             vec![],
         );
@@ -5121,16 +5791,16 @@ mod tests {
         // let sum = a + b
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", lit(Value::Real(3.0), Type::Real)),
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", lit(Value::Real(3.0), Type::dimensionless_scalar())),
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5168,20 +5838,20 @@ mod tests {
         // let quad   = double + double → 8.0
         let double_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "a", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "a", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let quad_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "double", Type::Real),
-            vref("S", "double", Type::Real),
-            Type::Real,
+            vref("S", "double", Type::dimensionless_scalar()),
+            vref("S", "double", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
-            vec![("a", lit(Value::Real(2.0), Type::Real))],
+            vec![("a", lit(Value::Real(2.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("double", double_let), ("quad", quad_let)],
         );
@@ -5215,14 +5885,14 @@ mod tests {
         // inner struct
         let inner_derived_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S_inner", "x", Type::Real),
-            vref("S_inner", "x", Type::Real),
-            Type::Real,
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            vref("S_inner", "x", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let inner_ctor = sct_with_lets(
             "S_inner",
             1,
-            vec![("x", lit(Value::Real(3.0), Type::Real))],
+            vec![("x", lit(Value::Real(3.0), Type::dimensionless_scalar()))],
             vec![],
             vec![("derived", inner_derived_let)],
         );
@@ -5233,7 +5903,7 @@ mod tests {
             Value::String("derived".to_string()),
             Type::String,
         );
-        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::Real);
+        let outer_let = CompiledExpr::index_access(inner_s_ref, derived_key, Type::dimensionless_scalar());
         let expr = sct_with_lets(
             "S_outer",
             1,
@@ -5266,16 +5936,16 @@ mod tests {
         // let sum = a + b → Undef (Undef propagation)
         let sum_let = CompiledExpr::binop(
             BinOp::Add,
-            vref("S", "a", Type::Real),
-            vref("S", "b", Type::Real),
-            Type::Real,
+            vref("S", "a", Type::dimensionless_scalar()),
+            vref("S", "b", Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
         let expr = sct_with_lets(
             "S",
             1,
             vec![
-                ("a", vref("nowhere", "missing", Type::Real)), // unbound → Undef
-                ("b", lit(Value::Real(5.0), Type::Real)),
+                ("a", vref("nowhere", "missing", Type::dimensionless_scalar())), // unbound → Undef
+                ("b", lit(Value::Real(5.0), Type::dimensionless_scalar())),
             ],
             vec![],
             vec![("sum", sum_let)],
@@ -5305,21 +5975,21 @@ mod tests {
 
     fn make_double_fn() -> CompiledFunction {
         // fn double(x: Real) -> Real { x + x }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "double".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("double", "x", Type::Real),
-                    vref("double", "x", Type::Real),
-                    Type::Real,
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    vref("double", "x", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"double"),
@@ -5331,29 +6001,29 @@ mod tests {
 
     fn make_fn_with_let() -> CompiledFunction {
         // fn f(x: Real) -> Real { let y = x + 1; y * 2 }
-        let params = vec![("x".to_string(), Type::Real)];
+        let params = vec![("x".to_string(), Type::dimensionless_scalar())];
         CompiledFunction {
             name: "f".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![(
                     "y".to_string(),
                     CompiledExpr::binop(
                         BinOp::Add,
-                        vref("f", "x", Type::Real),
+                        vref("f", "x", Type::dimensionless_scalar()),
                         lit(Value::Int(1), Type::Int),
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                     ),
                 )],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("f", "y", Type::Real),
+                    vref("f", "y", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"f_with_let"),
@@ -5368,10 +6038,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Real(5.0), Type::Real)],
+                args: vec![lit(Value::Real(5.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5399,7 +6069,7 @@ mod tests {
             "x".to_string(),
             Type::Field {
                 domain: Box::new(Type::TypeParam("T".to_string())),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             },
         )];
         let generic_fn = CompiledFunction {
@@ -5408,10 +6078,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"generic_field_f"),
             annotations: vec![],
@@ -5425,8 +6095,8 @@ mod tests {
         // Arg's result_type is the concrete Field<Real, Real>; the Value payload
         // is irrelevant to overload resolution (which keys on result_type).
         let concrete_field = Type::Field {
-            domain: Box::new(Type::Real),
-            codomain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         let args = vec![lit(Value::Undef, concrete_field)];
         let fns = [generic_fn];
@@ -5459,10 +6129,10 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
-                result_expr: lit(Value::Real(1.0), Type::Real),
+                result_expr: lit(Value::Real(1.0), Type::dimensionless_scalar()),
             },
             content_hash: ContentHash::of(b"non_generic_trait_obj_solve"),
             annotations: vec![],
@@ -5570,10 +6240,10 @@ mod tests {
         let f = make_fn_with_let();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_f"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "f".to_string(),
-                args: vec![lit(Value::Real(4.0), Type::Real)],
+                args: vec![lit(Value::Real(4.0), Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5637,10 +6307,10 @@ mod tests {
         let double_fn = make_double_fn();
         let call_expr = CompiledExpr {
             content_hash: ContentHash::of(b"call_double_undef"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "double".to_string(),
-                args: vec![lit(Value::Undef, Type::Real)],
+                args: vec![lit(Value::Undef, Type::dimensionless_scalar())],
             },
         };
         let values = ValueMap::new();
@@ -5734,21 +6404,21 @@ mod tests {
     #[test]
     fn eval_user_fn_overload_by_arity() {
         // fn process(x: Real) -> Real { x * 2 }
-        let params1 = vec![("x".to_string(), Type::Real)];
+        let params1 = vec![("x".to_string(), Type::dimensionless_scalar())];
         let process1 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params1),
             params: params1,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Mul,
-                    vref("process", "x", Type::Real),
+                    vref("process", "x", Type::dimensionless_scalar()),
                     lit(Value::Int(2), Type::Int),
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process1"),
@@ -5757,21 +6427,21 @@ mod tests {
             type_params: vec![],
         };
         // fn process(x: Real, y: Real) -> Real { x + y }
-        let params2 = vec![("x".to_string(), Type::Real), ("y".to_string(), Type::Real)];
+        let params2 = vec![("x".to_string(), Type::dimensionless_scalar()), ("y".to_string(), Type::dimensionless_scalar())];
         let process2 = CompiledFunction {
             name: "process".to_string(),
             doc: None,
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params2),
             params: params2,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr::binop(
                     BinOp::Add,
-                    vref("process", "x", Type::Real),
-                    vref("process", "y", Type::Real),
-                    Type::Real,
+                    vref("process", "x", Type::dimensionless_scalar()),
+                    vref("process", "y", Type::dimensionless_scalar()),
+                    Type::dimensionless_scalar(),
                 ),
             },
             content_hash: ContentHash::of(b"process2"),
@@ -5786,10 +6456,10 @@ mod tests {
         // Call with 1 arg: process(3.0) → 6.0
         let call1 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process1"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
         let ctx = EvalContext::new(&values, &functions);
@@ -5801,12 +6471,12 @@ mod tests {
         // Call with 2 args: process(3.0, 4.0) → 7.0
         let call2 = CompiledExpr {
             content_hash: ContentHash::of(b"call_process2"),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::UserFunctionCall {
                 function_name: "process".to_string(),
                 args: vec![
-                    lit(Value::Real(3.0), Type::Real),
-                    lit(Value::Real(4.0), Type::Real),
+                    lit(Value::Real(3.0), Type::dimensionless_scalar()),
+                    lit(Value::Real(4.0), Type::dimensionless_scalar()),
                 ],
             },
         };
@@ -5869,8 +6539,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5886,8 +6556,8 @@ mod tests {
             im: f64::NAN,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5903,8 +6573,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5920,8 +6590,8 @@ mod tests {
             im: 1.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5937,8 +6607,8 @@ mod tests {
             im: f64::INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5954,8 +6624,8 @@ mod tests {
             im: f64::NEG_INFINITY,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -5988,8 +6658,8 @@ mod tests {
             im: -3.0,
             dimension: DimensionVector::DIMENSIONLESS,
         };
-        let operand = lit(complex_val, Type::complex(Type::Real));
-        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::Real));
+        let operand = lit(complex_val, Type::complex(Type::dimensionless_scalar()));
+        let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::complex(Type::dimensionless_scalar()));
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
             Value::Complex { re, im, dimension } => {
@@ -6376,12 +7046,12 @@ mod tests {
 
         // Lambda body: ValueRef of param `p`.
         let p_id = ValueCellId::new("__field.base", "p");
-        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::Real);
+        let p_ref = CompiledExpr::value_ref(p_id.clone(), Type::dimensionless_scalar());
         let body = CompiledExpr::binop(
             BinOp::Mul,
             p_ref,
-            lit(Value::Real(2.0), Type::Real),
-            Type::Real,
+            lit(Value::Real(2.0), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         );
 
         // The lambda value (as it would appear inside Value::Field.lambda).
@@ -6393,8 +7063,8 @@ mod tests {
 
         // Build the field cell and seed the values map under __field.base.
         let field_value = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Composed,
             lambda: Arc::new(lambda_value),
         };
@@ -6405,13 +7075,13 @@ mod tests {
         // Synthesize a FunctionCall: `base(3.0)`.
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[100]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "base".to_string(),
                     qualified_name: "field::base".to_string(),
                 },
-                args: vec![lit(Value::Real(3.0), Type::Real)],
+                args: vec![lit(Value::Real(3.0), Type::dimensionless_scalar())],
             },
         };
 
@@ -6435,10 +7105,10 @@ mod tests {
         // No `__field.abs` cell present → dispatch fall-through →
         // `reify_stdlib::eval_builtin("abs", &[Real(-3.0)])` runs and
         // returns Real(3.0).
-        let arg = lit(Value::Real(-3.0), Type::Real);
+        let arg = lit(Value::Real(-3.0), Type::dimensionless_scalar());
         let call = CompiledExpr {
             content_hash: reify_core::ContentHash::of(&[101]),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             kind: CompiledExprKind::FunctionCall {
                 function: reify_ir::ResolvedFunction {
                     name: "abs".to_string(),
@@ -6998,9 +7668,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7011,9 +7681,9 @@ mod tests {
 
     #[test]
     fn real_add_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7024,9 +7694,9 @@ mod tests {
 
     #[test]
     fn dscalar_add_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7038,8 +7708,8 @@ mod tests {
     #[test]
     fn int_add_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7052,8 +7722,8 @@ mod tests {
     fn dimensioned_scalar_add_real_is_undef() {
         // Scalar{LENGTH} + Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
@@ -7065,9 +7735,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_real_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7078,9 +7748,9 @@ mod tests {
 
     #[test]
     fn real_sub_dscalar_is_real() {
-        let left = lit(Value::Real(4.0), Type::Real);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let left = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7091,9 +7761,9 @@ mod tests {
 
     #[test]
     fn dscalar_sub_int_is_real() {
-        let left = lit(dimensionless_val(25.0), Type::Real);
+        let left = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
         let right = lit(Value::Int(4), Type::Int);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7105,8 +7775,8 @@ mod tests {
     #[test]
     fn int_sub_dscalar_is_real() {
         let left = lit(Value::Int(4), Type::Int);
-        let right = lit(dimensionless_val(25.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(dimensionless_val(25.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         let result = eval_expr(&expr, &EvalContext::simple(&values));
         match result {
@@ -7119,12 +7789,598 @@ mod tests {
     fn dimensioned_scalar_sub_real_is_undef() {
         // Scalar{LENGTH} - Real must NOT match the new dimensionless arm → Undef
         let left = lit(mm_val(80.0), Type::length());
-        let right = lit(Value::Real(4.0), Type::Real);
-        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::Real);
+        let right = lit(Value::Real(4.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Sub, left, right, Type::dimensionless_scalar());
         let values = ValueMap::new();
         assert!(
             eval_expr(&expr, &EvalContext::simple(&values)).is_undef(),
             "expected Undef for dimensioned Scalar - Real"
+        );
+    }
+
+    // ─── β (task 4374): arithmetic producers route through the value-layer ───
+    // chokepoint `Value::from_real_scalar`, collapsing dimension-cancelling
+    // results to Value::Real (Invariant V): no arithmetic op may construct a
+    // `Value::Scalar { dimension }` with `dimension.is_dimensionless()`.
+
+    #[test]
+    fn eval_div_cancelling_dims_collapse_to_real() {
+        // 30mm / 10mm: LENGTH/LENGTH = DIMENSIONLESS → must be Value::Real, not
+        // Value::Scalar{DIMENSIONLESS}. The VARIANT check is load-bearing; value
+        // tolerance is required because 0.03/0.01 is not exactly 3.0 in f64.
+        match eval_div(&mm_val(30.0), &mm_val(10.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+
+        // Headline regression via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        match eval_expr(&expr, &EvalContext::simple(&values)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0) from 30mm/10mm, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_div_noncancelling_dims_stay_scalar() {
+        // AREA / LENGTH = LENGTH: a dimensioned quotient must stay Value::Scalar
+        // (byte-identical to the pre-β behaviour). Guards against over-collapse.
+        let area = Value::Scalar {
+            si_value: 6.0,
+            dimension: DimensionVector::AREA,
+        };
+        match eval_div(&area, &mm_val(2.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(
+                    dimension,
+                    DimensionVector::LENGTH,
+                    "AREA/LENGTH should be LENGTH"
+                );
+                // 6.0 / 0.002 = 3000.0 (mm_val(2.0) is 0.002 m).
+                assert!(
+                    (si_value - 3000.0).abs() < 1e-9,
+                    "expected ~3000.0, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_mul_cancelling_dims_collapse_to_real() {
+        // (1/L) · L = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+        // 4.0 · 0.25 m = 1.0 (dimension cancels). VARIANT check is load-bearing.
+        match eval_mul(&inv_len, &mm_val(250.0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_mul_noncancelling_dims_stay_scalar() {
+        // L · L = AREA: a dimensioned product must stay Value::Scalar.
+        match eval_mul(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L·L should be AREA");
+                // 0.002 · 0.003 = 6e-6.
+                assert!(
+                    (si_value - 6e-6).abs() < 1e-12,
+                    "expected ~6e-6, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_pow_zero_exponent_collapses_to_real() {
+        // L^0 = DIMENSIONLESS → must be Value::Real, not Scalar{DL}.
+        // (0.005^0 = 1.0 exactly; the VARIANT check is the load-bearing point.)
+        match eval_pow(&mm_val(5.0), &Value::Int(0)) {
+            Value::Real(v) => assert!((v - 1.0).abs() < 1e-12, "expected ~1.0, got {v}"),
+            other => panic!("expected Value::Real(~1.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_pow_nonzero_exponent_stays_scalar() {
+        // L^2 = AREA: a dimensioned power must stay Value::Scalar.
+        match eval_pow(&mm_val(5.0), &Value::Int(2)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::AREA, "L^2 should be AREA");
+                // 0.005^2 = 2.5e-5.
+                assert!(
+                    (si_value - 2.5e-5).abs() < 1e-12,
+                    "expected ~2.5e-5, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{AREA}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_dimensionless_scalars_collapse_to_real() {
+        // DL + DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_add(&dimensionless_val(2.0), &dimensionless_val(3.0)) {
+            Value::Real(v) => assert!((v - 5.0).abs() < 1e-12, "expected ~5.0, got {v}"),
+            other => panic!("expected Value::Real(~5.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_sub_dimensionless_scalars_collapse_to_real() {
+        // DL - DL = DL → must be Value::Real, not Scalar{DL} (Invariant V).
+        match eval_sub(&dimensionless_val(5.0), &dimensionless_val(2.0)) {
+            Value::Real(v) => assert!((v - 3.0).abs() < 1e-12, "expected ~3.0, got {v}"),
+            other => panic!("expected Value::Real(~3.0), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_same_dimension_scalars_stay_scalar() {
+        // L + L = L: a dimensioned sum must stay Value::Scalar.
+        match eval_add(&mm_val(2.0), &mm_val(3.0)) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert_eq!(dimension, DimensionVector::LENGTH, "L+L should be LENGTH");
+                assert!(
+                    (si_value - 0.005).abs() < 1e-12,
+                    "expected ~0.005, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{LENGTH}}, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn eval_add_length_plus_bare_real_is_undef() {
+        // Additive dimension-safety: cannot add a bare number to a Length.
+        assert!(
+            eval_add(&mm_val(2.0), &Value::Real(3.0)).is_undef(),
+            "Length + Real must be Undef"
+        );
+    }
+
+    /// Invariant V (task 4374/β): no ARITHMETIC op may construct a
+    /// `Value::Scalar { dimension }` with `dimension.is_dimensionless()`. This
+    /// is the consolidated regression lock for the per-op routing (steps
+    /// 2/4/6/8). It asserts only runtime VARIANTS — never docstrings or symbol
+    /// names. Scoped to arithmetic eval_* ops; the geometry_ops producer has
+    /// its own guard in reify-eval.
+    #[test]
+    fn arithmetic_never_produces_dimensionless_scalar() {
+        fn assert_no_dimensionless_scalar(v: &Value) {
+            if let Value::Scalar { dimension, .. } = v {
+                assert!(
+                    !dimension.is_dimensionless(),
+                    "Invariant V violated: arithmetic produced a dimensionless Scalar: {:?}",
+                    v
+                );
+            }
+        }
+
+        // 1/L operand for the dimension-cancelling product case.
+        let inv_len = Value::Scalar {
+            si_value: 4.0,
+            dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH),
+        };
+
+        // Direct private-fn calls across the dimension-cancelling matrix.
+        assert_no_dimensionless_scalar(&eval_div(&mm_val(30.0), &mm_val(10.0))); // L / L
+        assert_no_dimensionless_scalar(&eval_mul(&inv_len, &mm_val(250.0))); // (1/L) · L
+        assert_no_dimensionless_scalar(&eval_pow(&mm_val(5.0), &Value::Int(0))); // L ^ 0
+        assert_no_dimensionless_scalar(&eval_add(
+            &dimensionless_val(2.0),
+            &dimensionless_val(3.0),
+        )); // DL + DL
+        assert_no_dimensionless_scalar(&eval_sub(
+            &dimensionless_val(5.0),
+            &dimensionless_val(2.0),
+        )); // DL - DL
+
+        // Headline via compiled-expr eval of `30mm / 10mm`.
+        let expr = CompiledExpr::binop(
+            BinOp::Div,
+            lit(mm_val(30.0), Type::length()),
+            lit(mm_val(10.0), Type::length()),
+            Type::dimensionless_scalar(),
+        );
+        let values = ValueMap::new();
+        assert_no_dimensionless_scalar(&eval_expr(&expr, &EvalContext::simple(&values)));
+    }
+
+    /// Characterization (task 4374/β step-10): locks comparison behaviour of
+    /// dimensionless arithmetic RESULTS before the eval_eq/eval_cmp dead-guard
+    /// removal (step-11). `30mm/10mm` now evaluates to Value::Real(3.0)
+    /// (0.03/0.01 == 3.0 exactly in f64); the as_f64 fallback must compare it
+    /// numerically. This stays GREEN across step-11 — it is the regression
+    /// guard for that refactor.
+    #[test]
+    fn dimensionless_division_result_compares_numerically() {
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+
+        // `30mm / 10mm` (yields Real(3.0)) compared against an Int rhs.
+        let make_cmp = |op: BinOp, rhs: i64| {
+            let div = CompiledExpr::binop(
+                BinOp::Div,
+                lit(mm_val(30.0), Type::length()),
+                lit(mm_val(10.0), Type::length()),
+                Type::dimensionless_scalar(),
+            );
+            CompiledExpr::binop(op, div, lit(Value::Int(rhs), Type::Int), Type::Bool)
+        };
+
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Eq, 3), &ctx),
+            Value::Bool(true),
+            "30mm/10mm == 3"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Lt, 4), &ctx),
+            Value::Bool(true),
+            "30mm/10mm < 4"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Gt, 2), &ctx),
+            Value::Bool(true),
+            "30mm/10mm > 2"
+        );
+        assert_eq!(
+            eval_expr(&make_cmp(BinOp::Ne, 5), &ctx),
+            Value::Bool(true),
+            "30mm/10mm != 5"
+        );
+
+        // Dimensioned-incompatibility guards — must remain stable across the
+        // step-11 dead-guard removal: a Length is neither equal to nor
+        // comparable with a bare Real.
+        assert_eq!(
+            eval_eq(&mm_val(3.0), &Value::Real(3.0)),
+            Value::Bool(false),
+            "Length == Real must be false"
+        );
+        assert_eq!(
+            eval_cmp(&mm_val(3.0), &Value::Real(3.0), |a, b| a < b),
+            Value::Undef,
+            "Length < Real must be Undef"
+        );
+    }
+
+    /// Amendment (task 4374/β, reviewer suggestion 1): a *dimensionless* Scalar
+    /// reaching eval_eq/eval_cmp must still compare numerically via the as_f64
+    /// fallback — NOT silently become `false`/`Undef`. Invariant V keeps
+    /// arithmetic producers from emitting Scalar{DIMENSIONLESS}, but
+    /// non-arithmetic sources (literals, struct/field defaults, deserialized
+    /// state) can, so the `!dimension.is_dimensionless()` guard on the
+    /// Scalar-vs-non-Scalar arm is retained defensively. This locks that
+    /// behaviour against a future re-removal of the guard.
+    #[test]
+    fn dimensionless_scalar_compares_numerically_in_eq_cmp() {
+        // eq: a hand-built Scalar{DIMENSIONLESS} compares numerically with a
+        // bare Real/Int of the same magnitude.
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(3.0)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Real of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Int(3)),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} == Int of equal magnitude must be true"
+        );
+        assert_eq!(
+            eval_eq(&dimensionless_val(3.0), &Value::Real(4.0)),
+            Value::Bool(false),
+            "Scalar{{DIMENSIONLESS}} == Real of differing magnitude must be false"
+        );
+
+        // cmp: ordering against a bare Real/Int flows through as_f64.
+        assert_eq!(
+            eval_cmp(&dimensionless_val(3.0), &Value::Real(4.0), |a, b| a < b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} < Real must compare numerically"
+        );
+        assert_eq!(
+            eval_cmp(&dimensionless_val(5.0), &Value::Int(2), |a, b| a > b),
+            Value::Bool(true),
+            "Scalar{{DIMENSIONLESS}} > Int must compare numerically"
+        );
+    }
+
+    // ─── tolerancing Undef-diagnosis sink tests (task 4461, step-1) ──────────
+
+    /// Build an `iso_it_tolerance(...)` FunctionCall expr over the given args.
+    fn iso_it_tolerance_call_expr(args: Vec<Value>) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x49, 0x49, 0x54, 0x31]),
+            result_type: Type::length(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "iso_it_tolerance".to_string(),
+                    qualified_name: "std::iso_it_tolerance".to_string(),
+                },
+                // Literal args' static Type is not consulted at runtime.
+                args: args.into_iter().map(|v| lit(v, Type::dimensionless_scalar())).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn iso_it_tolerance_in_envelope_emits_no_diagnostic_into_sink() {
+        // Grade 6 with 30–50mm nominal is in-envelope → iso_it_tolerance returns
+        // a finite LENGTH scalar; the sink must stay empty (pins the None-path and
+        // the matches!(result, Value::Undef) gate — an unconditional emit or
+        // mis-gated success path would be caught here).
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(30.0),
+            mm_val(50.0),
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        match &result {
+            Value::Scalar { dimension, si_value } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::LENGTH,
+                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                );
+                assert!(
+                    *si_value > 0.0,
+                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                );
+            }
+            other => panic!(
+                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            sink.borrow().is_empty(),
+            "in-envelope iso_it_tolerance must emit no diagnostic, got {:?}",
+            sink.borrow()
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink() {
+        // Grade 25 is outside IT5–IT18 → iso_it_tolerance returns Value::Undef.
+        // tolerancing_diagnose is wired into emit_undef_builtin_diagnostics as
+        // the fifth classifier arm (after dynamics_diagnose), so the sink now
+        // receives exactly one Severity::Error whose message contains
+        // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(25),
+            mm_val(30.0),  // 30mm nominal_min
+            mm_val(50.0),  // 50mm nominal_max
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(result, Value::Undef, "grade 25 is out of envelope → Undef");
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic, got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "out-of-envelope iso_it_tolerance must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn iso_it_tolerance_oversize_nominal_emits_tolerancing_error_into_sink() {
+        // Grade 6 is within IT5–IT18 (valid), but nmax = 700mm > 500mm is outside
+        // the ISO 286-1 size envelope → iso_it_tolerance returns Value::Undef and
+        // tolerancing_diagnose fires the iso_size_in_envelope branch (not the
+        // grade branch).  This pins the other half of the envelope predicate at
+        // the wiring layer, independently of the grade-out-of-range path exercised
+        // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
+        let expr = iso_it_tolerance_call_expr(vec![
+            Value::Int(6),
+            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+        ]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+
+        let result = eval_expr(&expr, &ctx);
+        assert_eq!(
+            result,
+            Value::Undef,
+            "oversize nominal (700mm > 500mm) with valid grade 6 should yield Undef"
+        );
+
+        let diags = sink.borrow();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one E_TolerancingOutOfEnvelope diagnostic for oversize nominal, \
+             got {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            reify_core::Severity::Error,
+            "oversize nominal must emit Severity::Error"
+        );
+        assert!(
+            diags[0].message.contains("E_TolerancingOutOfEnvelope"),
+            "message must contain E_TolerancingOutOfEnvelope prefix: {}",
+            diags[0].message
+        );
+    }
+
+    // ── center_of_mass emit_snapshot_diagnostics wiring (task 4471 step-7) ──
+    //
+    // End-to-end tests that emit_snapshot_diagnostics pushes a
+    // SnapshotCenterOfMassDensityFallback Warning into the runtime sink when
+    // center_of_mass falls back to the legacy density path on a mixed snapshot.
+    // RED until step-8 wires emit_snapshot_diagnostics immediately after
+    // emit_dfm_diagnostics in the FunctionCall post-process.
+
+    /// Build an axis_x unit vector (1,0,0) for test snapshots.
+    fn snap_axis_x() -> Value {
+        Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)])
+    }
+
+    /// Build a two-body snapshot where body 0 has `solid0` placed at world
+    /// x=`x0` (metres) and body 1 has `solid1` at world x=`x1`, via
+    /// prismatic-X joints.  Mirrors `make_two_body_explicit_mass_snapshot`
+    /// in reify-stdlib's snapshot.rs tests but is self-contained here to
+    /// avoid a test-only cross-crate dependency on private helpers.
+    fn snap_two_body(solid0: Value, x0: f64, solid1: Value, x1: f64) -> Value {
+        let j0 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x0 - 1.0))),
+                    upper: Some(Box::new(Value::length(x0 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let j1 = reify_stdlib::eval_builtin(
+            "prismatic",
+            &[
+                snap_axis_x(),
+                Value::Range {
+                    lower: Some(Box::new(Value::length(x1 - 1.0))),
+                    upper: Some(Box::new(Value::length(x1 + 1.0))),
+                    lower_inclusive: true,
+                    upper_inclusive: true,
+                },
+            ],
+        );
+        let m0 = reify_stdlib::eval_builtin("mechanism", &[]);
+        let m1 = reify_stdlib::eval_builtin("body", &[m0, solid0, j0.clone()]);
+        let m2 = reify_stdlib::eval_builtin("body", &[m1, solid1, j1.clone()]);
+        let bind0 = reify_stdlib::eval_builtin("bind", &[j0, Value::length(x0)]);
+        let bind1 = reify_stdlib::eval_builtin("bind", &[j1, Value::length(x1)]);
+        reify_stdlib::eval_builtin("snapshot", &[m2, Value::List(vec![bind0, bind1])])
+    }
+
+    /// Build a `center_of_mass(snapshot)` FunctionCall CompiledExpr.
+    fn com_call_expr(snapshot: Value, hash_bytes: [u8; 4]) -> CompiledExpr {
+        CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&hash_bytes),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "center_of_mass".to_string(),
+                    qualified_name: "std::center_of_mass".to_string(),
+                },
+                args: vec![lit(snapshot, Type::dimensionless_scalar())],
+            },
+        }
+    }
+
+    /// `center_of_mass` on a mixed snapshot (one explicit-mass body, one plain
+    /// body) evaluated through `eval_expr` must push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning into the runtime sink.
+    ///
+    /// RED until step-8 wires `emit_snapshot_diagnostics` after
+    /// `emit_dfm_diagnostics` — without that call the sink stays empty even
+    /// though `reify_stdlib::snapshot_diagnose` returns the Warning.
+    #[test]
+    fn center_of_mass_mixed_snapshot_emits_density_fallback_warning_into_sink() {
+        let pm_1 = reify_stdlib::eval_builtin(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 1.0,
+                dimension: DimensionVector::MASS,
+            }],
+        );
+        let plain = Value::String("plain".to_string());
+        let snapshot = snap_two_body(pm_1, 0.0, plain, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x10]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(
+            !result.is_undef(),
+            "mixed snapshot center_of_mass must return a valid Point (legacy fallback), got {:?}",
+            result
+        );
+
+        let diags = sink.borrow();
+        assert!(
+            diags.iter().any(|d| {
+                d.severity == reify_core::Severity::Warning
+                    && d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)
+            }),
+            "expected a SnapshotCenterOfMassDensityFallback Warning in the runtime sink, \
+             got {diags:?}"
+        );
+    }
+
+    /// `center_of_mass` on a pure-legacy snapshot (no explicit-mass bodies)
+    /// evaluated through `eval_expr` must NOT push a
+    /// `SnapshotCenterOfMassDensityFallback` Warning — pure-legacy mechanisms
+    /// stay silent (the mixed-case Warning fires only when >= 1 body resolves
+    /// AND >= 1 body does not).
+    #[test]
+    fn center_of_mass_pure_legacy_snapshot_emits_no_density_fallback_warning() {
+        let solid_a = Value::String("a".to_string());
+        let solid_b = Value::String("b".to_string());
+        let snapshot = snap_two_body(solid_a, 0.0, solid_b, 4.0);
+        let expr = com_call_expr(snapshot, [0xC0, 0x4A, 0x71, 0x11]);
+
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_runtime_diagnostics(&sink);
+        eval_expr(&expr, &ctx);
+
+        let diags = sink.borrow();
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::SnapshotCenterOfMassDensityFallback)),
+            "pure-legacy snapshot must NOT emit SnapshotCenterOfMassDensityFallback, \
+             got {diags:?}"
         );
     }
 }

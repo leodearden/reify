@@ -68,5 +68,5 @@ fn flexure_compliance_get(args: &[Value]) -> Value {
     };
     // Sentinel-zero default: effective_stiffness 0, stresses 0, no yield datum
     // (⇒ margin sentinel, not-at-yield), zero validity range, no parasitic.
-    cached.unwrap_or_else(|| common::make_compliance_record(0.0, 0.0, 0.0, None, None, 0.0))
+    cached.unwrap_or_else(|| common::make_compliance_record(0.0, 0.0, 0.0, None, None, common::symmetric_angle_range(0.0)))
 }

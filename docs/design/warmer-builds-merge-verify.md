@@ -135,6 +135,8 @@ Each phase is independently shippable and measurable. Land in order; re-measure 
 
 **Phase 5 — measure `CARGO_INCREMENTAL=1` on the persistent lane only.** A/B against Phase 1 alone. Adopt only if it wins on the dedicated lane; never globally.
 
+**Phase 6 (design sketch, NOT yet PRD-ready) — extend warmth to the 24 task lanes via CoW-seeded warm-lane pool.** Phases 1–5 warm only the *serial merge* lane; Phase 6 asks whether the durable warm `target/` can also seed the *concurrent task* lanes cheaply (copy-on-write, deltas-only on disk). It is materially less mature than 0–5 — it carries unresolved empirical forks (filesystem substrate, does-a-seeded-lane-actually-skip-the-rebuild, provisioning) and a value question. **See §10 for the full sketch.** Gated behind Phase 1 (κ) landing *and* a de-risking spike; do not queue from this doc.
+
 **Land alongside (not part of this design):** #4448 fail-fast ordering (bounds the *failing* path), and **retire #4447's 60→90 timeout bump** once Phase 1 lands (warm verifies finish well inside 60 min, so the band-aid is no longer needed).
 
 ---
@@ -187,4 +189,63 @@ The throughput win compounds: a 3–5× shorter serial lane *and* a large CPU-se
 
 ## 9. PRD-readiness
 
-This design is **PRD-ready**. It has a measured baseline, a ranked option table with effort/risk/expected savings, a phased plan where each phase is independently shippable + measurable, and an explicit cross-repo seam (Phase 1 ↔ dark-factory `git_ops.py`/`merge_queue.py`). Natural decomposition: **Phase 1** (dark-factory, the keystone) and **Phases 2–4** (reify-local) are separable PRDs/tasks; Phase 0 is a one-shot measurement spike that should precede Phase 1. Hand off via `/prd`. Do **not** implement from this doc directly, and do **not** author the PRD as part of this session.
+This design is **PRD-ready for Phases 0–5** (queued 2026-06-09 as κ/α/β/γ/δ + companion ε). It has a measured baseline, a ranked option table with effort/risk/expected savings, a phased plan where each phase is independently shippable + measurable, and an explicit cross-repo seam (Phase 1 ↔ dark-factory `git_ops.py`/`merge_queue.py`). Natural decomposition: **Phase 1** (dark-factory, the keystone) and **Phases 2–5** (reify-local) are separable PRDs/tasks; Phase 0 is a one-shot measurement spike that should precede Phase 1. **Phase 6 (§10) is explicitly excluded** — it is a design sketch with open empirical forks and a value question, and must go through a de-risking spike before it could be `/prd`'d. Hand off Phases 0–5 via `/prd`; do **not** implement from this doc directly.
+
+---
+
+## 10. Phase 6 (design sketch) — warm-lane pool + CoW seeding to the task lanes
+
+**Status:** design sketch, **NOT PRD-ready**. Gated behind Phase 1 (κ) landing *and* a de-risking spike (§10.7). Captured here so the reasoning (and the dead ends already ruled out) is on record; do not queue from this section.
+
+### 10.1 Goal and shape
+
+Phases 1–5 warm the *serial merge* lane. Phase 6 asks: can the durable warm `target/` (Phase 1's keystone) also **seed the 24 concurrent task lanes**, so each task worktree starts from a warm `target/` instead of building cold — at **deltas-only disk cost** via copy-on-write?
+
+The robust shape is **not** "CoW-seed today's fresh-per-task worktrees." It is a **fixed-path pool of reused warm lanes** (`_lane-0 … _lane-N`), each **reset-in-place** per task (so mtimes move only on changed files and the path is stable), **CoW-seeded once** from the warm merge `target/`. Fixed paths are load-bearing — they make the path-sensitivity problems below evaporate; CoW is what makes N warm lanes affordable on disk.
+
+### 10.2 Why the naive versions fail — empirical findings (this session)
+
+Three results from direct measurement, each of which steers toward the fixed-path-pool shape:
+
+1. **Symlink-to-a-pool is DEAD.** rustc canonicalizes its cwd (`getcwd()` resolves symlinks): a binary built via `/tmp/cowtest/link → …/real` embedded **`…/real`**. So a stable symlink over varying real worktrees still bakes the *varying* real path into debuginfo. Verified.
+2. **Embedded paths are absolute + fully resolved, but contamination is concentrated and remappable.** A live task binary embeds ~9,340 `~/.rustup` + ~1,150 `~/.cargo/registry` hits (already path-stable across worktrees) vs only **22** worktree-path hits. `--remap-path-prefix=<wt>=<const>` drives the worktree-path hits to **0** (verified). So there are **three path-sensitivity vectors**: (a) embedded debuginfo/panic paths in *output* artifacts → fixed by `--remap-path-prefix`; (b) cargo's *internal* `target/.fingerprint/**/dep-*.d` bookkeeping → **fixed by a stable path, NOT confirmed fixable by remap alone** (this is the strongest argument for fixed-path lanes over remap-over-varying-paths); (c) mtime freshness → §10.2.3.
+3. **mtime normalization is needed and feasible.** `-Z checksum-freshness` (content-hash freshness, which would dissolve the problem) is **nightly-only**; this is stable cargo 1.96, so freshness is **mtime-based**. A fresh checkout stamps sources at wall-clock *now* (newer than seeded artifacts) → cargo rebuilds. Fix: after checkout, make sources **older** than the seed (`find <src> -exec touch -d <old>` — O(source files), negligible vs the 177 GB `target/`), *or* use `git-restore-mtime` (commit-time mtimes; installable, not currently on the box). Works only if the seed's fingerprint *flag-hashes* match — they do, since every lane builds under the same `verify.sh` env. Reset-in-place lanes mostly sidestep this (git only re-touches changed files).
+
+### 10.3 CoW substrate — overlayfs vs native-CoW FS (agent-verified, 2026-06-10)
+
+The current worktree FS is **ext4**, which has **no reflink/CoW** (`cp --reflink=always` → `Operation not supported`, verified). So Phase 6 needs a substrate change. Two routes, agent-verified against kernel docs:
+
+- **overlayfs — viable in theory, disqualified on this box.** The cross-session claim "overlayfs requires a read-only lower layer" is **misleading**: the read-only lower is exactly the design (shared immutable base + per-worktree writable upper), and *"lower layers may be shared among several overlay mounts … a very common practice."* But two agent-confirmed facts rule it out **here**: (1) **mount privilege** — unprivileged overlay rides the user-namespace machinery (Linux 5.11+ `FS_USERNS_MOUNT`), and **userns is broken on this box** (the same root cause as the bwrap→landlock switch), so it would need real root / a privileged mount helper; (2) **whole-file copy-up** — *"the file is first copied from the lower filesystem to the upper"* on first write, so every relinked test binary / regenerated `.rmeta` duplicates in full, gutting the disk savings. (Separately, pointing the lower at the *live, evolving* merge `target/` would hit the kernel's "don't mutate a mounted lower" rule — cited, not independently re-verified, and moot given the above.)
+- **native-CoW FS — the recommended route.** Both deliver **block-level, both-sides-independently-writable** CoW (agent-verified verbatim):
+  - **XFS-reflink (recommended default).** `reflink=1` is the `mkfs.xfs` default on modern xfsprogs; `cp -a --reflink=always` clones a directory tree, shared extents, deltas-only, both sides writable. **The boring, robust choice** — fewest fragmentation footguns on a rewrite-heavy build workload. Cost: per-file `cp` walk (tens of thousands of files, ~seconds/clone); no subvolume snapshot.
+  - **btrfs subvolume snapshot (alternative).** *Writable by default*, **O(1) instantaneous** (metadata-only) — the cheapest clone primitive *if* `target/` is its own subvolume. But our workload (shared base + heavy artifact rewrites) is close to btrfs's **worst case** for CoW write-amplification/fragmentation; `chattr +C` only partially mitigates (a snapshotted file still takes one CoW on first write to a shared block, and loses checksums/compression).
+  - **Verdict:** lean **XFS-reflink**; keep btrfs-snapshot as the alternative if O(1) clone latency turns out to dominate. **Decide via a small bake-off** (clone N, run real verifies, measure fragmentation + compile perf on each) — do not pick from theory.
+
+### 10.4 Merge-worker-write safety (the seed keeps evolving)
+
+The seed is not static — the merge worker rewrites the merge `target/` on every land. Native-CoW handles this **by construction**: a reflink/snapshot clone is **point-in-time and independent**, so the merge worker's later writes allocate new blocks and never touch existing clones. The only effects are **divergence** (disk) and **staleness** (an older clone is warm-but-staler → re-seed periodically) — never corruption. This is the decisive correctness advantage over overlay's frozen-lower model. **Seed at a quiescent moment** (between merges, when the serial lane is idle and `target/` is consistent — never mid-build); a `cp --reflink` in that window is near-instant.
+
+### 10.5 Interaction with the orchestrator isolation model
+
+A pool of reused fixed-path lanes replaces the *fresh-per-task* worktree model, which touches:
+- **per-worktree `.mcp.json` debug-port** wiring (`setup-worktree-debug-port.sh`, the esc-4202-61 hygiene) — a reused lane must re-provision or retain its port deterministically;
+- **`lock_depth` / `max_per_module`** scheduler assumptions tied to worktree identity;
+- **landlock** workspace scoping (the sandbox bounds writes to the worktree path — a stable pooled path is actually *simpler* here, but must be re-confirmed).
+None are blockers, but they make Phase 6 an **orchestrator-model change**, not a drop-in — bigger than Phase 1, same shape.
+
+### 10.6 Provisioning reality
+
+- ext4 **cannot be converted in place** to a reflink FS. Need a fresh FS on the build volume: carve a new LV from the LVM VG, `mkfs.xfs` (or `mkfs.btrfs`), mount, repopulate the warm seed, clone per lane.
+- **Open: VG free extents.** The 4.5 TB "free" is *inside* the existing ext4 LV — **not** the same as unallocated VG space. Provisioning a new LV needs free PEs in `vgroup0` (check `vgs`/`pvs`); may require shrinking the data LV. Confirm before committing.
+- No kernel work: btrfs and XFS are standard in 6.x; the running kernel already supports both.
+
+### 10.7 Value gating + de-risking spike (what must be true before this is worth queuing)
+
+CoW is **necessary but not sufficient** for a task-lane *speed* win — it solves the *disk* cost of N warm lanes, but converting that to *time* still needs §10.2's fixed-path-pool + remap + mtime work. And the task-lane payoff is **murkier than the merge lane's**: sccache already serves the path-insensitive dependency layer, so the unique win is the link outputs + workspace artifacts — exactly the path-sensitive part. Before any PRD, a spike must answer:
+
+1. **Does a seeded + (fixed-path or remapped) + mtime-normalized worktree *actually skip the rebuild*?** Measure cold vs seeded `verify.sh` wall-clock on a representative delta — especially clearing path-vector (b) (cargo's internal dep-info). This is the make-or-break G6 question.
+2. **XFS-reflink vs btrfs-snapshot bake-off** (§10.3) — fragmentation + compile perf on a real `target/` over many reset-in-place cycles.
+3. **VG free-extent availability** (§10.6) — can we even carve the LV without disruption?
+4. **Is the speedup worth the orchestrator-model change** (§10.5)?
+
+Only if (1) shows a real, large saving should this proceed to `/prd`.

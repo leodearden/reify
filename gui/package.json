@@ -17,7 +17,8 @@
     "test:watch": "vitest",
     "test:visual": "tsx test/visual/run.ts",
     "test:e2e": "tsx test/visual/run.ts value",
-    "test:smoke:find-uses": "bash test/visual/run_find_uses_smoke.sh"
+    "test:smoke:find-uses": "bash test/visual/run_find_uses_smoke.sh",
+    "test:smoke:diagnostics": "bash test/visual/run_diagnostics_e2e_smoke.sh"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",

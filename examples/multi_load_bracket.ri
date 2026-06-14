@@ -59,19 +59,19 @@ structure MultiLoadBracket {
 
     let operating = LoadCase(
         name:     "operating",
-        loads:    [point_load("load_face", vec3(0N,  -5000N, 0N))],
+        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: [0.0, -1.0, 0.0])],
         supports: [mount],
     )
 
     let overload = LoadCase(
         name:     "overload",
-        loads:    [point_load("load_face", vec3(0N, -10000N, 0N))],
+        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: [0.0, -1.0, 0.0])],
         supports: [mount],
     )
 
     let transport = LoadCase(
         name:     "transport",
-        loads:    [gravity(5 * STANDARD_GRAVITY())],   // 5 g downward; see STANDARD_GRAVITY() in std.units
+        loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: [0.0, -1.0, 0.0])],   // 5 g downward (-Y); see STANDARD_GRAVITY() in std.units
         supports: [mount],
     )
 

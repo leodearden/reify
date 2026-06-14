@@ -376,30 +376,30 @@ fn let_binding_evaluation_produces_same_results_with_helper() {
         .param(
             "S",
             "p",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(CompiledExpr::literal(
                 reify_ir::Value::Real(3.0),
-                Type::Real,
+                Type::dimensionless_scalar(),
             )),
         )
         .let_binding(
             "S",
             "a",
-            Type::Real,
+            Type::dimensionless_scalar(),
             binop(
                 BinOp::Add,
                 value_ref("S", "b"),
-                CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::dimensionless_scalar()),
             ),
         )
         .let_binding(
             "S",
             "b",
-            Type::Real,
+            Type::dimensionless_scalar(),
             binop(
                 BinOp::Mul,
                 value_ref("S", "p"),
-                CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::Real),
+                CompiledExpr::literal(reify_ir::Value::Real(2.0), Type::dimensionless_scalar()),
             ),
         )
         .build();

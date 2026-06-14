@@ -114,7 +114,7 @@ mod tests {
     fn flat_map_lambda_returning_non_list_returns_none() {
         let lambda_ty = Type::Function {
             params: vec![Type::Int],
-            return_type: Box::new(Type::Real),
+            return_type: Box::new(Type::dimensionless_scalar()),
         };
         let args = vec![arg(Type::List(Box::new(Type::Int))), arg(lambda_ty)];
         assert_eq!(infer_list_helper_return_type("flat_map", &args), None);

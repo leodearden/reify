@@ -238,6 +238,11 @@ impl Engine {
             structure_registry,
             param_overrides: std::collections::HashMap::new(),
             eval_state: None,
+            // Task 4357 δ: scheduler selection read ONCE from the environment.
+            // `from_env` honours the `unified-dag` feature + REIFY_BUILD_SCHEDULER
+            // gate and defaults to LegacyMultiPass (byte-preserving). Tests
+            // override post-construction via `set_build_scheduler`.
+            build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
             next_snapshot_id: 0,
             next_version_id: 0,
@@ -256,6 +261,11 @@ impl Engine {
             test_registry_override: None,
             // GHR-δ §5: empty until the first build() populates it.
             realization_handles: HashMap::new(),
+            // β (task 4508): empty projection store; populated by
+            // project_realization_read_handle when γ/δ add per-repr kernel
+            // resolution.  Modelled on realization_cache (next to it below).
+            realization_projection_store:
+                crate::realization_content::RealizationProjectionStore::new(),
             geometry_revalidation_slow_path: std::sync::atomic::AtomicUsize::new(0),
             journal: EventJournal::new(),
             functions: Vec::<CompiledFunction>::new().into(),
@@ -1407,6 +1417,21 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// **Test-instrumentation only — not a stable public surface.**
+    ///
+    /// Force the build-time [`crate::BuildScheduler`] selection, bypassing BOTH
+    /// [`crate::BuildScheduler::from_env`] AND the `unified-dag` Cargo feature
+    /// gate (which gates only the env/production activation path in `from_env`).
+    ///
+    /// Task 4357 δ: lets the `unified_dag_cycle_contract` integration test drive
+    /// the `UnifiedDag` `build()` path deterministically WITHOUT mutating process
+    /// env (which would race other parallel tests). Mirrors the `set_capture_*`
+    /// test-seam convention.
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn set_build_scheduler(&mut self, scheduler: crate::engine_fixpoint::BuildScheduler) {
+        self.build_scheduler = scheduler;
+    }
+
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
     /// Called at the start of every `build()` / `build_snapshot()` (alongside
@@ -1634,7 +1659,7 @@ impl Engine {
         self.panic_on_eval_cells.clear();
     }
 
-    // ── Task 3541: warm-pool event drain + journal recording ─────────────────
+    // ── Task 3582: warm-pool event drain + journal recording ─────────────────
 
     /// Drain the warm pool's buffered telemetry events, record each as an
     /// [`crate::journal::EvalEvent`] on the diagnostic journal, and return the
@@ -1656,7 +1681,7 @@ impl Engine {
     /// (check, edit_check, build, tessellate_snapshot, etc.).  This is the
     /// eval-boundary call site that wires the existing warm_pool event buffer
     /// to the diagnostic journal, subsuming M-010.
-    // G-allow: task #3541 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands in subsequent #3541 steps
+    // G-allow: task #3582 eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (engine.rs) wiring lands with #3582 (drain-wiring tracker, pending)
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
         let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
@@ -2362,7 +2387,7 @@ mod tests {
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         reify_test_support::builders::literal(Value::Real(1.0)),
                     )
                     .build(),
@@ -2420,17 +2445,17 @@ mod tests {
         let module = CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(
                 TopologyTemplateBuilder::new("T")
-                    .let_binding("T", "a", Type::Real, literal(Value::Real(1.0)))
+                    .let_binding("T", "a", Type::dimensionless_scalar(), literal(Value::Real(1.0)))
                     .let_binding(
                         "T",
                         "b",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "a"), literal(Value::Real(1.0))),
                     )
                     .let_binding(
                         "T",
                         "c",
-                        Type::Real,
+                        Type::dimensionless_scalar(),
                         binop(BinOp::Add, value_ref("T", "b"), literal(Value::Real(1.0))),
                     )
                     .build(),

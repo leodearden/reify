@@ -16,8 +16,11 @@
 
 #![allow(clippy::mutable_key_type)]
 
-use reify_core::{DiagnosticCode, ValueCellId};
-use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
+use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_test_support::{
     collect_errors, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
 };
@@ -26,6 +29,36 @@ use reify_test_support::{
 /// scenarios index `StructureInstance.fields` with a string literal.
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(&k.to_string())
+}
+
+/// Scenario-9 call counter: incremented by `identity_fn` each time it runs.
+///
+/// Provides a direct execution proof for the ComputeNode-trampoline test:
+/// because the inline-fallback body is also `{ x }` (identity), the result
+/// cell value alone cannot distinguish trampoline-accept from inline-fallback.
+/// The ComputeNode-presence check (assertion b) is an indirect inference; this
+/// counter makes assertion (d) a first-class execution witness — if lowering
+/// ever changed to insert a ComputeNode on inline-fallback, (b) would silently
+/// lose discriminating power while (d) would still fail correctly.
+static SCENARIO_9_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Synthetic identity trampoline used by scenario 9.
+/// Mirrors compute_dispatch_registry.rs identity_fn (task γ / 3422 pattern).
+/// Increments `SCENARIO_9_CALL_COUNT` so the test can assert direct execution.
+fn identity_fn(
+    value_inputs: &[Value],
+    _realization_inputs: &[RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&OpaqueState>,
+    _cancellation: &CancellationHandle,
+) -> ComputeOutcome {
+    SCENARIO_9_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+    ComputeOutcome::Completed {
+        result: value_inputs.first().cloned().unwrap_or(Value::Undef),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+    }
 }
 
 /// No-op constructor: proves `Value::StructureInstance` is reachable from a
@@ -396,19 +429,111 @@ structure def RestartFixture {
     );
 }
 
-/// Scenario 9: the ComputeNode trampoline must accept a
-/// `Value::StructureInstance` argument.
+/// Scenario 9: the ComputeNode trampoline accepts a `Value::StructureInstance`
+/// argument (PRD `docs/prds/v0_3/compute-node-contract.md` §7.2 / scenario 9).
 ///
-/// Ignored until the ComputeNode contract work lands. See
-/// `docs/prds/v0_3/compute-node-contract.md` §8 task γ — the synthetic
-/// `ComputeFn` registration seam this scenario needs is built there, not in
-/// SIR-α. This is defence-in-depth, not the SIR-α user-observable signal.
+/// The seam required by this scenario — task γ / 3422: synthetic `test::identity`
+/// trampoline pattern, per-Engine `register_compute_fn` registry, and
+/// `@optimized(...)`→ComputeNode lowering wire — landed on main and is live.
+/// This test pins that the trampoline path (not the inline-fallback body) accepts
+/// and round-trips a `Value::StructureInstance` end-to-end through a compiled
+/// `.ri` source. Defence-in-depth for compute-node-contract.md §7.2; not the
+/// SIR-α user-observable signal.
 #[test]
-#[ignore = "depends on compute-node-contract.md §8 task γ (ComputeFn registration seam)"]
 fn compute_node_trampoline_arm_accepts_structure_instance() {
-    unimplemented!(
-        "blocked on compute-node-contract.md §8 task γ — synthetic ComputeFn \
-         registration seam not yet available in SIR-α scope"
+    // The `@optimized` fn receives a trait-typed param reference so the call
+    // site is an exact ElasticMaterial-to-ElasticMaterial match (no concrete
+    // StructureRef at the call site — avoids the trait-conformance-at-call-site
+    // wrinkle documented in solver_elastic.ri:410-426).
+    const SOURCE: &str = r#"
+@optimized("test::identity")
+fn identity_compute_test(x: ElasticMaterial) -> ElasticMaterial { x }
+
+structure def StructInstanceTrampolineFixture {
+    param mat : ElasticMaterial = Steel_AISI_1045()
+    let result = identity_compute_test(mat)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    engine.register_compute_fn("test::identity", identity_fn as ComputeFn);
+    // Reset before eval so any prior (re-)run of this test in the same process
+    // doesn't bleed a stale count into assertion (d).
+    SCENARIO_9_CALL_COUNT.store(0, Ordering::Relaxed);
+    let eval_result = engine.eval(&compiled);
+
+    // (a) The result cell must be a Steel_AISI_1045 StructureInstance,
+    //     proving the StructureInstance round-tripped through the trampoline.
+    let result_id = ValueCellId::new("StructInstanceTrampolineFixture", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_id)
+        .unwrap_or_else(|| panic!("StructInstanceTrampolineFixture.result cell missing"));
+    match result_val {
+        Value::StructureInstance(data) => {
+            assert_eq!(
+                data.type_name, "Steel_AISI_1045",
+                "expected result to be a Steel_AISI_1045 StructureInstance \
+                 (round-tripped via trampoline), got type_name: {:?}",
+                data.type_name
+            );
+        }
+        other => panic!(
+            "expected Value::StructureInstance for StructInstanceTrampolineFixture.result, \
+             got {other:?}"
+        ),
+    }
+
+    // (b) A ComputeNode with target "test::identity" must exist in the graph,
+    //     proving the value came from the TRAMPOLINE (not the inline-fallback
+    //     body). CRITICAL: the body is `{ x }` (also identity), so without (b)
+    //     we cannot distinguish trampoline-accept from inline-fallback.
+    let snapshot = engine
+        .eval_state()
+        .expect("eval_state must be Some after eval()")
+        .snapshot
+        .clone();
+    let compute_node = snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .find(|(_, data)| data.target == "test::identity");
+    assert!(
+        compute_node.is_some(),
+        "expected a ComputeNode with target==\"test::identity\" in the graph \
+         (proves trampoline path, not inline-fallback); found compute nodes: {:?}",
+        snapshot
+            .graph
+            .compute_nodes
+            .iter()
+            .map(|(_, d)| &d.target)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) No Error diagnostics — secondary guard confirming the trampoline
+    //     registration gotcha was honored (unregistered targets emit Error + inline).
+    let error_diags: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        error_diags.is_empty(),
+        "expected no Error diagnostics (trampoline was registered), \
+         got: {:?}",
+        error_diags
+    );
+
+    // (d) Direct execution proof: identity_fn's call counter was incremented.
+    //     Unlike (b), this asserts the fn body actually ran — if lowering
+    //     behaviour ever changed to insert a ComputeNode even on inline-fallback,
+    //     (b) alone would silently lose its discriminating power; (d) would not.
+    assert_eq!(
+        SCENARIO_9_CALL_COUNT.load(Ordering::Relaxed),
+        1,
+        "identity_fn must have been called exactly once by the trampoline dispatch \
+         (direct execution proof, not inferred from graph structure)"
     );
 }
 
@@ -419,8 +544,19 @@ fn compute_node_trampoline_arm_accepts_structure_instance() {
 /// committed golden. Regenerate with `REIFY_REGENERATE_GOLDEN=1`.
 ///
 /// `CARGO_BIN_EXE_reify` is only injected for `reify-cli`'s own integration
-/// tests, so this cross-crate test drives the binary through `cargo run`
-/// (the design-decision-4 fallback) rather than a direct exe path.
+/// tests, so this cross-crate test execs the pre-built `reify` binary
+/// directly. It deliberately does NOT use `cargo run`: even when the binary
+/// is already compiled, `cargo run` re-fingerprints the entire workspace and
+/// blocks on the global cargo build-lock before exec, and under concurrent
+/// multi-worktree verify load that overhead can push the test past its time
+/// budget (esc-4340-32, exit 124). The merge gate's debug `--workspace` pass
+/// builds all `[[bin]]` targets (including `reify`) at `target/debug/reify`;
+/// its release pass is scoped to release-sensitive crates and does NOT rebuild
+/// `reify-cli`, so the resolution below prefers the profile-local bin and falls
+/// back to the debug-profile one when it is absent. The cargo runner
+/// (`.cargo/run-with-occt.sh`) exports `LD_LIBRARY_PATH` into this test
+/// process's environment, which the spawned child inherits, so OCCT shared
+/// libraries resolve without going through cargo.
 #[test]
 fn cli_reify_eval_prints_inspectable_structure_values() {
     let manifest = env!("CARGO_MANIFEST_DIR"); // .../crates/reify-eval
@@ -432,21 +568,57 @@ fn cli_reify_eval_prints_inspectable_structure_values() {
     let example = workspace_root.join("examples/structure-instance.ri");
     let golden = std::path::Path::new(manifest).join("tests/golden/structure_instance.txt");
 
-    let output = std::process::Command::new(env!("CARGO"))
+    // Resolve the prebuilt `reify` binary from this test binary's own location.
+    // The integration-test binary lives at `…/target/<profile>/deps/<testbin>`,
+    // so its grandparent is `…/target/<profile>` and the `reify` bin sits beside
+    // it at `…/target/<profile>/reify`.
+    //
+    // Cross-task seam (task/4390 HAS LANDED): the merge gate's RELEASE pass
+    // (verify.sh, DF_VERIFY_ROLE=merge --profile both) is scoped to
+    // release-sensitive crates and deliberately does NOT build `reify-cli`, so
+    // `target/release/reify` is absent during the release test pass. The
+    // preceding DEBUG pass runs the full `--workspace` (building
+    // `target/debug/reify`), and the reify CLI's golden output is
+    // profile-independent (the release pass exists to re-check reify-eval's own
+    // overflow/debug-assert behaviour, not the spawned CLI). So prefer the
+    // profile-local bin but fall back to the debug-profile sibling when it is
+    // absent. (Per-task verifies are unaffected: a reify-eval change pulls
+    // `reify-cli` into the affected set as a reverse-dep, so the debug bin is
+    // built.)
+    let test_bin = std::env::current_exe().expect("current_exe");
+    let profile_dir = test_bin
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("test binary lives in target/<profile>/deps");
+    let profile_local = profile_dir.join("reify");
+    let reify_bin = if profile_local.exists() {
+        profile_local
+    } else {
+        // Release pass: target/release/reify is absent (reify-cli not built);
+        // fall back to the debug-profile bin the debug pass built.
+        profile_dir
+            .parent()
+            .map(|target_dir| target_dir.join("debug").join("reify"))
+            .filter(|p| p.exists())
+            .unwrap_or(profile_local)
+    };
+
+    let output = std::process::Command::new(&reify_bin)
         .current_dir(&workspace_root)
-        .args([
-            "run",
-            "-q",
-            "-p",
-            "reify-cli",
-            "--bin",
-            "reify",
-            "--",
-            "eval",
-        ])
+        .arg("eval")
         .arg(&example)
         .output()
-        .expect("failed to spawn `cargo run -p reify-cli -- eval`");
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn pre-built reify binary at {}: {e}; is it built? \
+                 The gated verify pass builds it when it compiles `reify-cli` \
+                 (`cargo test -p reify-cli`, or the merge gate's debug \
+                 `--workspace` pass that builds all `[[bin]]` targets). Note: an \
+                 ad-hoc `cargo test -p reify-eval` alone does NOT build the \
+                 `reify` bin.",
+                reify_bin.display()
+            )
+        });
 
     assert!(
         output.status.success(),

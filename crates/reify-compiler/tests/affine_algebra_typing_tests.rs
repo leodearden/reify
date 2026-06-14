@@ -75,7 +75,7 @@ fn determinant_of_affine_map_types_as_real() {
     let ty = find_cell_type(source, "AlgebraHost", "d");
     assert_eq!(
         ty,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "determinant(AffineMap) must type as Real, got {:?}",
         ty
     );

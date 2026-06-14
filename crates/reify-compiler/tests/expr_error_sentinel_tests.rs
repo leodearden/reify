@@ -17,7 +17,7 @@
 //! branch, which already returns `Type::Error`.
 //!
 //! This file (task-1921, review follow-up S5 from task-1912) covers the **producer side**:
-//! ≥ 30 branches that today return `Type::Real` when they emit an error diagnostic, thereby
+//! ≥ 30 branches that today return `Type::dimensionless_scalar()` when they emit an error diagnostic, thereby
 //! bypassing the consumer guards and causing cascade diagnostics.  Each test here compiles
 //! a minimal fixture, pairs a specific error producer with an enclosing `+ 5.0` (BinOp
 //! consumer), and asserts:
@@ -27,7 +27,7 @@
 //!
 //! **Exception — `COLLECTION_AGGREGATION_MEMBERS` carve-out (task-3657 section):** the
 //! `count`/`sum`/`keys`/`values` aggregation members on collection subs intentionally pin a
-//! *concrete* fallback type (`Type::Int` for `count`; `Type::Real` for `sum`/`keys`/`values`)
+//! *concrete* fallback type (`Type::Int` for `count`; `Type::dimensionless_scalar()` for `sum`/`keys`/`values`)
 //! rather than `Type::Error`.  The two tests in the task-3657 section therefore assert a
 //! concrete type instead of `Type::Error` — per task-3639 design decision #2
 //! ("user-knows-the-type cascade-suppression": the return type is known, so downstream
@@ -82,7 +82,7 @@ structure S {
 ///
 /// The `+ 5.0` consumer BinOp must short-circuit to `Type::Error` once the
 /// operand is `Type::Error`. On current code, `nonexistent_name` returns
-/// `Type::Real`, so `Real + Real = Real` → `result_type = Real ≠ Error` → RED.
+/// `Type::dimensionless_scalar()`, so `Real + Real = Real` → `result_type = Real ≠ Error` → RED.
 #[test]
 fn unresolved_identifier_no_cascade() {
     let source = r#"
@@ -105,7 +105,7 @@ structure S {
 
 /// `port has no member` producer anti-cascade contract (Category A, line ~860).
 ///
-/// On current code, `p.nonexistent` returns `Type::Real`, so `Real + Real = Real`
+/// On current code, `p.nonexistent` returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn port_unknown_member_no_cascade() {
@@ -140,7 +140,7 @@ structure S {
 /// `unknown member on sub` producer anti-cascade contract (Category A, line ~837).
 ///
 /// `self.s.nonexistent` accesses a non-collection sub member that does not exist.
-/// On current code, the error branch returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the error branch returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn sub_unknown_member_no_cascade() {
@@ -172,7 +172,7 @@ structure Outer {
 /// `ambiguous function call` producer anti-cascade contract (Category A, line ~556).
 ///
 /// Two overloads with identical param types but different return types cause ambiguity.
-/// On current code, the `Ambiguous` arm returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the `Ambiguous` arm returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn ambiguous_overload_no_cascade() {
@@ -201,7 +201,7 @@ structure S { let broken = f(3) + 5.0 }
 ///
 /// Calling a Real-param function with an Int arg causes "no matching overload"
 /// (Int→Real widening is not used during resolution).
-/// On current code, the `NoMatch` arm returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the `NoMatch` arm returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn no_match_overload_no_cascade() {
@@ -225,7 +225,7 @@ structure S { let broken = f(3) + 5.0 }
 /// `some() wrong arity` producer anti-cascade contract (Category A, line ~473).
 ///
 /// Calling `some()` with 0 arguments triggers the arity guard.
-/// On current code, the wrong-arity path returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the wrong-arity path returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn some_wrong_arity_no_cascade() {
@@ -264,7 +264,7 @@ structure S { let broken = some() + 5.0 }
 /// architecturally unreachable from user source.  That branch exists as a safety
 /// net and is exercised by the `debug_assert!` in `make_poison_literal`.
 ///
-/// On pre-step-8 code, `QualifiedAccess` returned `Type::Real`, so
+/// On pre-step-8 code, `QualifiedAccess` returned `Type::dimensionless_scalar()`, so
 /// `Real + Real = Real` → `result_type = Real ≠ Error` → RED.
 #[test]
 fn enum_colon_colon_syntax_routes_to_qualified_access_no_cascade() {
@@ -287,7 +287,7 @@ structure S { let broken = UnknownEnum::Variant + 5.0 }
 
 /// `unknown selector kind` producer anti-cascade contract (Category A, line ~1521).
 ///
-/// On current code, the unknown-selector arm returns `Type::Real`.
+/// On current code, the unknown-selector arm returns `Type::dimensionless_scalar()`.
 /// The test asserts `result_type == Type::Error` on the selector let-binding.
 /// (No `+ 5.0` wrapper: selector expressions are geometric references and adding
 /// 5.0 after `@` syntax is ambiguous to the parser; the result_type check alone
@@ -316,7 +316,7 @@ structure S {
 
 /// `trait not found` producer anti-cascade contract (Category A QualifiedAccess, line ~1671).
 ///
-/// On current code, the unknown-trait arm returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the unknown-trait arm returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn qualified_unknown_trait_no_cascade() {
@@ -338,7 +338,7 @@ structure S { let broken = UnknownTrait::member + 5.0 }
 
 /// `unknown sub-component` producer anti-cascade contract (InstanceQualifiedAccess, line ~1773).
 ///
-/// On current code, the unknown-sub arm returns `Type::Real`, so `Real + Real = Real`
+/// On current code, the unknown-sub arm returns `Type::dimensionless_scalar()`, so `Real + Real = Real`
 /// → `result_type = Real ≠ Error` → RED.
 #[test]
 fn instance_qualified_unknown_sub_no_cascade() {
@@ -362,9 +362,9 @@ structure S { let broken = nonexistent_sub.(SomeTrait::x) + 5.0 }
 
 /// `unresolved type in lambda param` anti-cascade contract (Category A, lines ~1376/1384).
 ///
-/// On current code (pre-step-10), the two `Type::Real` fallbacks in the lambda-param
+/// On current code (pre-step-10), the two `Type::dimensionless_scalar()` fallbacks in the lambda-param
 /// type-resolution path mean:
-/// - `param_types[0] == Type::Real` (not `Type::Error`)
+/// - `param_types[0] == Type::dimensionless_scalar()` (not `Type::Error`)
 /// - `result_type == Type::Function { params: [Real], return_type: Real }`
 ///   → The lambda's param type is Real, not Error → RED.
 ///
@@ -382,7 +382,7 @@ structure S { let f = |x: UnknownType| x + 1.0 }
     assert_no_type_cascade(&module.diagnostics, &["unresolved type in lambda param"]);
 
     // The lambda's result_type is Type::Function { params: [...], return_type: ... }.
-    // After step-10, params[0] must be Type::Error (not Type::Real).
+    // After step-10, params[0] must be Type::Error (not Type::dimensionless_scalar()).
     let expr = get_let_expr(&module, "f");
     match &expr.result_type {
         Type::Function { params, .. } => {
@@ -403,7 +403,7 @@ structure S { let f = |x: UnknownType| x + 1.0 }
 /// `unknown member on collection sub` (indexed access) anti-cascade contract
 /// (Category A, line ~888).
 ///
-/// On current code (pre-step-10), the path continues with `member_type = Type::Real`
+/// On current code (pre-step-10), the path continues with `member_type = Type::dimensionless_scalar()`
 /// and builds a ValueRef, so `broken = Real + Real = Real` → `result_type = Real ≠ Error` → RED.
 ///
 /// After step-10 returns `make_poison_literal` early, `broken = Type::Error` → GREEN.
@@ -473,8 +473,8 @@ structure S {
 /// `MemberAccess { object: MemberAccess { Ident("self"), sub_name }, member }` path.
 ///
 /// Before step-2 fixes the `_` arm of the `fallback_type` match (in `compile_expr`'s
-/// `self.<collection-sub>.<member>` branch), `unwrap_or(Type::Real)` causes the literal to
-/// carry `Type::Real` → BinOp sees `Real + Real = Real` → `result_type = Real ≠ Error`
+/// `self.<collection-sub>.<member>` branch), `unwrap_or(Type::dimensionless_scalar())` causes the literal to
+/// carry `Type::dimensionless_scalar()` → BinOp sees `Real + Real = Real` → `result_type = Real ≠ Error`
 /// → RED.
 ///
 /// After step-2 changes to `unwrap_or(Type::Error)`, the literal carries `Type::Error`
@@ -557,30 +557,30 @@ structure Outer {
     assert_no_type_cascade(&module.diagnostics, &["cannot access aggregation"]);
 }
 
-/// Pins the `"sum" | "keys" | "values" => Type::Real` arm of the `fallback_type` match
+/// Pins the `"sum" | "keys" | "values" => Type::dimensionless_scalar()` arm of the `fallback_type` match
 /// in `compile_expr`'s `self.<collection-sub>.<member>` branch
 /// (`COLLECTION_AGGREGATION_MEMBERS` carve-out, task 3639).
 ///
 /// Iterates over all three members (`sum`, `keys`, `values`) to actively guard against a
 /// future split of the merged `expr.rs` arm (e.g. if `keys`/`values` were moved to
 /// `Type::List(...)` once collection-iteration lands). Each member is tested independently
-/// so the test goes RED immediately if any arm diverges from `Type::Real` (design decision
+/// so the test goes RED immediately if any arm diverges from `Type::dimensionless_scalar()` (design decision
 /// #4, task 3657).
 ///
 /// Fixture shape per member: `let broken = self.bolts.<member> + 5`.
-/// - `self.bolts.<member>` → `CompiledExpr::literal(Value::Undef, Type::Real)` (carve-out arm),
+/// - `self.bolts.<member>` → `CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())` (carve-out arm),
 ///   plus the "cannot access aggregation … through self" `Diagnostic::error`.
 /// - `5` → `Type::Int` (integer literal).
-/// - `infer_binop_type(Add, Real, Int)` = `left.clone()` = `Type::Real` (neither operand
+/// - `infer_binop_type(Add, Real, Int)` = `left.clone()` = `Type::dimensionless_scalar()` (neither operand
 ///   is `Type::Error`; `infer_binop_type` returns `left.clone()` for matching-kind numeric
 ///   operands).
 /// - `(Real, Int)` hits `_ => {}` in the Add/Sub dimension check — the
-///   dimensioned+dimensionless error arm only matches `Type::Scalar`, not `Type::Real`, so
+///   dimensioned+dimensionless error arm only matches `Type::Scalar`, not `Type::dimensionless_scalar()`, so
 ///   no extra diagnostic is emitted.
-/// - Net: `result_type == Type::Real`; exactly one error ("cannot access aggregation").
+/// - Net: `result_type == Type::dimensionless_scalar()`; exactly one error ("cannot access aggregation").
 ///
-/// If `"sum" | "keys" | "values" => Type::Real` regressed to `Type::Error`:
-/// `infer_binop_type` short-circuits → `result_type = Type::Error ≠ Type::Real` → RED.
+/// If `"sum" | "keys" | "values" => Type::dimensionless_scalar()` regressed to `Type::Error`:
+/// `infer_binop_type` short-circuits → `result_type = Type::Error ≠ Type::dimensionless_scalar()` → RED.
 ///
 /// Same CONCRETE-type rationale as `self_collection_sub_count_aggregation_pins_int_fallback`;
 /// see that test's docstring for the contrast with sibling Type::Error-asserting tests.
@@ -602,8 +602,8 @@ structure Outer {{
 
         assert_eq!(
             expr.result_type,
-            Type::Real,
-            "sum/keys/values carve-out must pin BinOp result_type == Type::Real for member `{member}`; got {:?}",
+            Type::dimensionless_scalar(),
+            "sum/keys/values carve-out must pin BinOp result_type == Type::dimensionless_scalar() for member `{member}`; got {:?}",
             expr.result_type,
         );
 

@@ -1,0 +1,63 @@
+// Spatial-op field constructors worked example (task 4223 ε).
+//
+// Exercises all four std.fields ε constructors (PRD docs/prds/v0_6/std-fields-api.md
+// §2/§6 B6/B7/B8):
+//
+//   B6  constant_field<D,C>           — uniform field; sample at any point == value
+//   B7  clamp_field<D,Q: Dimension>   — over-range scalar clamped to bound
+//       remap_field<D,Q: Dimension>   — linear remap across a scalar range
+//   B8  threshold<D,Q: Dimension>     — Bool field; true above threshold, false below
+//
+// Includes ≥1 Pressure (MPa) case to demonstrate generic-over-Q value (reason
+// the task blocks on generic-fns task G / 4235).  Real cases provide a robust floor.
+//
+// All assertions made as `reify check` constraint gates (structure range/boolean
+// constraints), matching the compose.ri + cli_generics_eval.rs pattern.
+
+structure def SpatialOpsDemo {
+    // ── B6: constant_field ──────────────────────────────────────────────────────
+    //
+    // constant_field(42.0) sampled at two distinct domain points must both == 42.0.
+    let c0 = sample(constant_field(42.0), 0.0)
+    let c1 = sample(constant_field(42.0), 1.0)
+
+    constraint c0 > 41.999
+    constraint c0 < 42.001
+    constraint c1 > 41.999
+    constraint c1 < 42.001
+
+    // ── B7: clamp_field — Pressure (MPa) ───────────────────────────────────────
+    //
+    // 250MPa input clamped to [10MPa, 200MPa] → 200MPa.
+    // Q binds to PRESSURE; exercises the generic-over-Q value (task G dependency).
+    let clamped_pressure = sample(clamp_field(constant_field(250MPa), 10MPa, 200MPa), 0.0)
+
+    constraint clamped_pressure > 199.99MPa
+    constraint clamped_pressure < 200.01MPa
+
+    // ── B7: clamp_field — Real domain (robust floor) ───────────────────────────
+    //
+    // 250.0 clamped to [10.0, 200.0] → 200.0.
+    let clamped_real = sample(clamp_field(constant_field(250.0), 10.0, 200.0), 0.0)
+
+    constraint clamped_real > 199.999
+    constraint clamped_real < 200.001
+
+    // ── remap_field ─────────────────────────────────────────────────────────────
+    //
+    // remap(50.0, [0.0, 100.0], [0.0, 200.0]) = 50/100 * 200 = 100.0.
+    let remapped = sample(remap_field(constant_field(50.0), 0.0, 100.0, 0.0, 200.0), 0.0)
+
+    constraint remapped > 99.999
+    constraint remapped < 100.001
+
+    // ── B8: threshold — Bool field (Pressure) ───────────────────────────────────
+    //
+    // above: 250MPa > 200MPa threshold → true  (constraint above is Satisfied)
+    // below: 150MPa < 200MPa threshold → false (constraint !below is Satisfied)
+    let above = sample(threshold(constant_field(250MPa), 200MPa), 0.0)
+    let below = sample(threshold(constant_field(150MPa), 200MPa), 0.0)
+
+    constraint above
+    constraint !below
+}

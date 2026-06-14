@@ -362,6 +362,7 @@ pub(crate) fn compile_connection(
         domain: None,
         optimized_target: None,
         span,
+        arg_bindings: Vec::new(),
     });
     *acc.constraint_index += 1;
 
@@ -456,6 +457,7 @@ pub(crate) fn compile_connection(
                 domain: None,
                 optimized_target: None,
                 span,
+                arg_bindings: Vec::new(),
             });
             *acc.constraint_index += 1;
             Some(fc_id)

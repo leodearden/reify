@@ -529,7 +529,7 @@ fn scalar_mul_vector3_scales_components() {
         ]),
         Type::vec3(Type::length()),
     );
-    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     let area = DimensionVector::AREA;
@@ -564,7 +564,7 @@ fn vector3_mul_scalar_commutative() {
         Type::vec3(Type::length()),
     );
     let right = CompiledExpr::literal(Value::length(2.0), Type::length());
-    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     let area = DimensionVector::AREA;
@@ -598,7 +598,7 @@ fn vector3_div_scalar_divides_components() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -617,9 +617,9 @@ fn vector3_div_scalar_divides_components() {
 /// Real(1.0) / Real(NaN) → Undef (NaN denominator must not propagate).
 #[test]
 fn real_div_nan_returns_undef() {
-    let left = CompiledExpr::literal(Value::Real(1.0), Type::Real);
-    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
-    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Real);
+    let left = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::dimensionless_scalar());
+    let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
@@ -636,7 +636,7 @@ fn vector_div_nan_real_returns_undef() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -654,7 +654,7 @@ fn point_div_nan_real_returns_undef() {
         ]),
         Type::point3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(f64::NAN), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -682,7 +682,7 @@ fn vector3_add_different_dimension_returns_undef() {
         ]),
         Type::vec3(Type::angle()),
     );
-    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Add, left, right, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(result, Value::Undef);
@@ -709,7 +709,7 @@ fn scalar_times_vector_combines_dimensions() {
         ]),
         Type::vec3(Type::length()),
     );
-    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::Real);
+    let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::dimensionless_scalar());
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
@@ -786,9 +786,9 @@ fn negate_rank2_tensor_negates_all_inner_elements() {
             Value::Tensor(vec![Value::Real(1.0), Value::Real(2.0)]),
             Value::Tensor(vec![Value::Real(3.0), Value::Real(4.0)]),
         ]),
-        Type::tensor(2, 2, Type::Real),
+        Type::tensor(2, 2, Type::dimensionless_scalar()),
     );
-    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::Real));
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::dimensionless_scalar()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
@@ -818,12 +818,12 @@ fn negate_tensor_of_complex_negates_re_and_im() {
                 dimension: DimensionVector::DIMENSIONLESS,
             },
         ]),
-        Type::tensor(1, 2, Type::complex(Type::Real)),
+        Type::tensor(1, 2, Type::complex(Type::dimensionless_scalar())),
     );
     let expr = CompiledExpr::unop(
         UnOp::Neg,
         operand,
-        Type::tensor(1, 2, Type::complex(Type::Real)),
+        Type::tensor(1, 2, Type::complex(Type::dimensionless_scalar())),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -855,9 +855,9 @@ fn negate_matrix_returns_negated_rank2_tensor() {
             vec![Value::Real(1.0), Value::Real(2.0)],
             vec![Value::Real(3.0), Value::Real(4.0)],
         ]),
-        Type::matrix(2, 2, Type::Real),
+        Type::matrix(2, 2, Type::dimensionless_scalar()),
     );
-    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::Real));
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(2, 2, Type::dimensionless_scalar()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     // Matrix canonicalizes to nested Tensor, then negation applies
@@ -876,9 +876,9 @@ fn negate_matrix_returns_negated_rank2_tensor() {
 fn negate_tensor_mixed_int_real() {
     let operand = CompiledExpr::literal(
         Value::Tensor(vec![Value::Int(1), Value::Real(2.5), Value::Int(-3)]),
-        Type::tensor(1, 3, Type::Real),
+        Type::tensor(1, 3, Type::dimensionless_scalar()),
     );
-    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(1, 3, Type::Real));
+    let expr = CompiledExpr::unop(UnOp::Neg, operand, Type::tensor(1, 3, Type::dimensionless_scalar()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
@@ -1225,7 +1225,7 @@ fn value_vector_div_scalar_returns_vector() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -1275,7 +1275,7 @@ fn value_point_div_scalar_returns_point() {
         ]),
         Type::point3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::point3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -1371,7 +1371,7 @@ fn value_negate_point3_returns_undef() {
 /// Scalar(Real) * Value::Vector → Value::Vector (scaled components).
 #[test]
 fn value_scalar_mul_vector_returns_vector() {
-    let left = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let left = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let right = CompiledExpr::literal(
         Value::Vector(vec![
             Value::length(1.0),
@@ -1404,7 +1404,7 @@ fn value_vector_mul_scalar_returns_vector() {
         ]),
         Type::vec3(Type::length()),
     );
-    let right = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let right = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let expr = CompiledExpr::binop(BinOp::Mul, left, right, Type::vec3(Type::length()));
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -1421,7 +1421,7 @@ fn value_vector_mul_scalar_returns_vector() {
 /// Scalar(Real) * Value::Point → Value::Point (pragmatic deviation for interpolation).
 #[test]
 fn value_scalar_mul_point_returns_point() {
-    let left = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+    let left = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
     let right = CompiledExpr::literal(
         Value::Point(vec![
             Value::length(1.0),
@@ -1471,7 +1471,7 @@ fn value_int_mul_vector_returns_vector() {
 /// Real * Value::Point → Value::Point (pragmatic deviation for interpolation).
 #[test]
 fn value_real_mul_point_returns_point() {
-    let left = CompiledExpr::literal(Value::Real(0.5), Type::Real);
+    let left = CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar());
     let right = CompiledExpr::literal(
         Value::Point(vec![
             Value::length(4.0),
@@ -1723,21 +1723,24 @@ fn assert_point_div_zero_returns_undef(zero: Value, zero_ty: Type) {
 /// Value::Vector / Real(0.0) → Undef (division-by-zero early check).
 #[test]
 fn value_vector_div_real_zero_returns_undef() {
-    assert_vector_div_zero_returns_undef(Value::Real(0.0), Type::Real);
+    assert_vector_div_zero_returns_undef(Value::Real(0.0), Type::dimensionless_scalar());
 }
 
 /// Value::Point / Real(0.0) → Undef (division-by-zero early check for Point).
 #[test]
 fn value_point_div_real_zero_returns_undef() {
-    assert_point_div_zero_returns_undef(Value::Real(0.0), Type::Real);
+    assert_point_div_zero_returns_undef(Value::Real(0.0), Type::dimensionless_scalar());
 }
 
-/// Scalar/Scalar division producing a dimensionless result must return
-/// Value::Scalar { dimension: DIMENSIONLESS }, not Value::Real.
-/// This ensures consistency with eval_mul which always returns Scalar.
+/// Scalar/Scalar division producing a dimensionless result must collapse to
+/// the canonical Value::Real (Invariant V, task 4374/β), NOT
+/// Value::Scalar{DIMENSIONLESS}. eval_div routes through the value-layer
+/// chokepoint Value::from_real_scalar, which returns Real when the result
+/// dimension cancels. (Was pinned to Scalar{dimensionless} before β closed
+/// the leak.)
 #[test]
-fn scalar_div_scalar_dimensionless_returns_scalar() {
-    // 4m / 2m = 2 (dimensionless), should be Scalar not Real
+fn scalar_div_scalar_dimensionless_returns_real() {
+    // 4m / 2m = 2 (dimension cancels) → canonical Value::Real, not Scalar.
     let left = CompiledExpr::literal(Value::length(4.0), Type::length());
     let right = CompiledExpr::literal(Value::length(2.0), Type::length());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
@@ -1745,11 +1748,8 @@ fn scalar_div_scalar_dimensionless_returns_scalar() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Scalar {
-            si_value: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        },
-        "Scalar/Scalar with same dimension must produce Scalar{{dimensionless}}, not Real"
+        Value::Real(2.0),
+        "Scalar/Scalar with cancelling dimension must collapse to Value::Real (Invariant V)"
     );
 }
 
@@ -1890,5 +1890,5 @@ fn value_point3_sub_point2_mismatched_length_returns_undef() {
 /// Pins IEEE 754 -0.0 divisor behaviour: -0.0 == 0.0, so the guard must catch it.
 #[test]
 fn value_vector_div_negative_zero_returns_undef() {
-    assert_vector_div_zero_returns_undef(Value::Real(-0.0), Type::Real);
+    assert_vector_div_zero_returns_undef(Value::Real(-0.0), Type::dimensionless_scalar());
 }

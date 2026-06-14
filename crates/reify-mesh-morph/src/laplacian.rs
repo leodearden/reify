@@ -86,7 +86,7 @@ pub enum LaplacianFailure {
 /// ## Failure modes
 ///
 /// See [`LaplacianFailure`].
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #2947 (mesh-morph VolumeMesh realization wiring) / CN-contract §8 task κ #3429
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #3429 (Mesh-morph engine wiring via ComputeNode at VolumeMesh realization dispatch, engine_build.rs)
 pub fn laplacian_smooth(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],

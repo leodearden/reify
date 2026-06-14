@@ -1,31 +1,56 @@
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
-// for the full design spec. This file declares the global Envelope (global
-// parameters + kinematic centerlines), a small library of construction
-// primitives + composed motion-system assemblies (CoreXY = X stage + Y
-// stage, each = one LinearStage instantiated + mirrored), then the
-// non-motion sub-assembly placeholders (A, D–J), and finally a top-level
-// Printer that wires them together.
+// for the full design spec. Construction primitives + a directly-composed
+// CoreXY motion system, the non-motion sub-assembly placeholders (A, D–J), the
+// global Envelope, and a top-level Printer.
 //
-// NOTE 1: positioning of the motion-system pieces in world frame is
-// deliberately not pinned down here yet. The current focus is the
-// containment hierarchy + de-duplication; world placement is a follow-up.
+// PLACEMENT MODEL (v0_6 sub-placement-and-surfacing, task 3903/T5 — landed):
+// Hierarchical placement is DECLARATIVE. Each leaf is modelled in its own local
+// frame (a solid of revolution along local +Z, centred on the origin; boxes
+// centred too). A composing structure positions a child once, at the `sub`
+// site, via `at transform3(orient, translation)`; placed child geometry
+// auto-surfaces, composed into the parent's frame, all the way up the tree.
+// Rotate a leaf's local +Z onto a world axis with
+// `orient_axis_angle(vec3(1m,0,0), 90deg)` (→Y) / `(vec3(0,1m,0), 90deg)` (→X).
 //
-// NOTE 2: cross-sub geometry access (`self.<sub>.body`) does not currently
-// work for Solid-typed members in v0.1 — even `param body : Solid = …`
-// does not expose Solid across a sub boundary (returns "unknown member
-// 'body' on sub …" at compile-geometry). Workaround: each primitive
-// PLACES ITS OWN GEOMETRY in the parent's local frame via its own
-// (pos_x, pos_y, pos_z) params, and parent assemblies just CONTAIN subs
-// (no body re-construction, no mirror() calls on sub bodies). Mirror
-// semantics are realised by instantiating a second sub with sign-flipped
-// position + offset params. See bug filed in fused-memory.
+// PER-INSTANCE SIZING (task 4147 — landed): constructor-arg overrides at a `sub`
+// site now flow into surfaced child geometry — the child RE-REALIZES with the
+// overridden params (verified to thread through expressions and multiple nesting
+// levels). So per-instance sizes are passed directly rather than tuned into a
+// shared leaf default: the X-gantry rails are BearingRod(length: 2*y_rail_offset)
+// and the Y rails BearingRod(length: y_rail_len); the tendon z-levels (z_a/z_b),
+// the idler fore/aft split, and the bearing OD are single-sourced (in DriveTendons
+// / CoreXY) and threaded down. (Earlier revisions TUNED shared leaf defaults
+// because overrides were dropped — that workaround is now retired.)
 //
-// NOTE 3: `if cond then box(...) else box(...)` returning Solid also
-// crashes the geometry compiler ("unresolvable GeomRef::Step(0)") — all
-// if-then-else here returns Length only; box() and translate() calls are
-// unconditional.
+// COREXY GEOMETRY (agreed in design review):
+//  - Round rails => the X gantry is a STACKED PAIR (two rails) to constrain roll
+//    about the rail axis; their midplane coincides with the Y-rail plane.
+//  - The lowest X-rail bearing sits a small clearance above the build volume and
+//    DEFINES the motion-system Z height (gantry fixed high; the Z-bed drops).
+//  - CoreXY drive tendons (γ): two belts, A & B. In real CoreXY a single rope
+//    drives X and Y jointly: each belt runs along ONE Y rail, crosses the gantry,
+//    and returns along the OTHER Y rail — a diagonal. Belt A takes the FRONT half
+//    of the right rail and the BACK half of the left rail; belt B the converse. A
+//    belt turns 90° onto the gantry at the carriage idler, so each rail run is a
+//    HALF span (carriage → rail end), NOT the full rail — the far half (no belt)
+//    is trimmed, leaving a SHARP corner where rail meets cross (the idler wrap
+//    profile is not modelled yet). Each run is DOUBLED above and below its rail
+//    axis (±z_a / ±z_b) to null moments (spec "paired in-plane tendons"). So per
+//    rail FOUR half-spans (belt A ±z_a, belt B ±z_b) + four FULL gantry crosses at
+//    the same Z levels => TWELVE spans: a RailTendons (half-spans, A-front/B-back)
+//    on each rail + one TendonQuad (full spans) turned 90° for the crosses. The
+//    A/B fore-aft split AND the per-rail converse both come from a 180°-about-Z
+//    placement of the left rail + left idler stack. The stacked X-gantry rails are
+//    spread (x_rail_offset) to leave room for the crosses to thread between them.
+//    Idler routing pulleys (608ZZ + grooved sheave) stack at each Y-carriage
+//    corner. Deferred: the gantry-cross fore/aft split (crosses still run on y=0),
+//    live x_head/y_head tracking (a future live-input feature).
+//
+// VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
+// `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
+// task 3904/T6; the Outline eye-icon tri-state full/semi/hidden works today).
 
 #version(0.1)
 
@@ -34,323 +59,461 @@
 /// Linear acceleration (m/s²).
 type Acceleration = Length / Time / Time
 
-// ── Axis enum (used by orientation-aware composed assemblies) ───────────────
+// ── Construction primitives (centred; rods/tendons along local +Z) ──────────
 
-/// Long-axis selector for the orientation-aware composed assemblies
-/// (GuideAssembly, LinearStage). The construction primitives take per-axis
-/// dimensions directly; the composed wrappers translate `long_axis` into
-/// (size_x, size_y, size_z) via Length-typed if-then-else.
-enum Axis { X, Y, Z }
-
-// ── Construction primitives (axis-agnostic, self-positioning boxes) ─────────
-//
-// Each primitive takes (size_x, size_y, size_z) for its envelope plus
-// (pos_x, pos_y, pos_z) for its placement in the parent's local frame.
-// `let body = translate(box(...), pos_x, pos_y, pos_z)` — the body is
-// realised in the engine when the primitive is instantiated as a sub.
-
-/// Cylindrical air-bearing housing (box stand-in pending the `rotate`
-/// arg-name fix). Real lip clearance is ~5 µm; OD ≈ housing OD.
+/// Cylindrical air-bearing housing / carriage bearing: an annular sleeve
+/// (bore = rod_diameter, outer = outer_diameter) along local +Z, centred.
 pub structure AirBearing {
-    param size_x : Length = 90mm
-    param size_y : Length = 150mm
-    param size_z : Length = 90mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param rod_diameter   : Length = 60mm
+    param outer_diameter : Length = 90mm
+    param length         : Length = 150mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    let body = difference(
+        translate(cylinder(outer_diameter / 2, length), 0mm, 0mm, 0mm - length / 2),
+        translate(cylinder(rod_diameter / 2, length * 1.2), 0mm, 0mm, 0mm - length * 0.6)
+    )
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint outer_diameter > rod_diameter
+    constraint rod_diameter > 0mm
+    constraint length > 0mm
 }
 
-/// Precision-ground stainless rod (box stand-in pending the `rotate`
-/// arg-name fix; see project_rotate_arg_name_mismatch_may08).
+/// Precision-ground stainless rod (linear-rail rod): solid cylinder along local
+/// +Z, centred. Used for both Y rails and the X gantry rails; CoreXY overrides
+/// `length` per instance (Y rails = y_rail_len; X gantry rails = 2*y_rail_offset
+/// so the gantry spans exactly between the Y rails — task 4147 override fix).
 pub structure BearingRod {
-    param size_x : Length = 60mm
-    param size_y : Length = 800mm
-    param size_z : Length = 60mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param diameter : Length = 60mm
+    param length   : Length = 800mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint diameter > 0mm
+    constraint length > 0mm
 }
 
-/// Single Vectran tendon (6 mm braid, on-rail span only). The closed-loop
-/// path through capstans + motor is out of scope for v0.1 model.
+/// Single Vectran tendon (6 mm braid, on-rail straight span): slender cylinder
+/// along local +Z, centred. Closed-loop routing through capstans is out of
+/// scope for v0.1.
 pub structure LinearTendon {
-    param size_x : Length = 6mm
-    param size_y : Length = 800mm
-    param size_z : Length = 6mm
-    param pos_x  : Length = 0mm
-    param pos_y  : Length = 0mm
-    param pos_z  : Length = 0mm
+    param diameter : Length = 6mm
+    param length   : Length = 800mm
 
-    let body = translate(box(size_x, size_y, size_z), pos_x, pos_y, pos_z)
+    let body = translate(cylinder(diameter / 2, length), 0mm, 0mm, 0mm - length / 2)
 
-    constraint size_x > 0mm
-    constraint size_y > 0mm
-    constraint size_z > 0mm
+    constraint diameter > 0mm
+    constraint length > 0mm
 }
 
-// ── Composed assemblies ─────────────────────────────────────────────────────
+/// Carriage block — the bridging body that joins a rail bearing to the gantry
+/// (Y carriages) or carries the toolhead (head carriage). Box, centred.
+pub structure CarriageBlock {
+    param width  : Length = 90mm    // X
+    param depth  : Length = 90mm    // Y
+    param height : Length = 300mm   // Z (bridges the stacked X-rail pair at ±x_rail_offset=140mm + margin)
+
+    let body = box(width, depth, height)
+
+    constraint width > 0mm
+    constraint depth > 0mm
+    constraint height > 0mm
+}
+
+/// Idler routing pulley: a 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with
+/// a sheave pressed onto its OD — a flanged wheel whose rim carries a groove the
+/// 6mm tendon seats in. Modelled along local +Z (the spin axis), centred; the
+/// composing site stands it on the axis it should turn about. Axle bolt + bearing
+/// shields are not modelled.
+///
+/// GROOVE SHAPE: the groove is RECTANGULAR (flat-bottomed: two retaining flanges
+/// either side of a recessed core). A true semicircular seat MATCHING the round
+/// tendon profile wants `torus` (fn torus(major,minor)->Solid is spec'd) — but
+/// torus is NOT a runtime geometry builtin yet (the dispatch has cylinder/sphere/
+/// revolve/union/… but no torus/cone), so the round seat is deferred to that fix
+/// (or a revolve-of-profile). Filed as a dogfood gap.
+///
+/// Body is ONE inlined union/difference tree so the boolean operands do NOT
+/// auto-surface as stray meshes — only `body` surfaces (scalar `let`s are
+/// non-geometry, so they don't surface either).
+pub structure IdlerPulley {
+    // 608ZZ bearing core.
+    param brg_od    : Length = 22mm
+    param brg_bore  : Length = 8mm
+    param brg_width : Length = 7mm
+    // Sheave (flanged grooved wheel pressed on the bearing OD).
+    param sheave_od    : Length = 36mm   // flange (outer) diameter
+    param groove_depth : Length = 3mm    // radial depth, rim → groove bottom
+    param groove_width : Length = 6mm    // == tendon diameter (the seat width)
+    param flange_width : Length = 2mm    // each retaining flange
+
+    let brg_r       = brg_od / 2
+    let sheave_r    = sheave_od / 2
+    let groove_r    = sheave_r - groove_depth          // recessed groove-bottom radius
+    let groove_half = groove_width / 2
+    let bore_len    = groove_width + flange_width * 3   // through-bore length (> sheave width)
+
+    let body = union(
+        // 608ZZ bearing — annular sleeve along local +Z, centred.
+        difference(
+            translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
+            translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
+        ),
+        // Sheave: two retaining flanges (full radius) + a recessed grooved core,
+        // bored to the bearing OD (press fit).
+        difference(
+            union(
+                union(
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
+                ),
+                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            ),
+            translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
+        )
+    )
+
+    constraint sheave_od > brg_od
+    constraint groove_r > brg_r
+    constraint brg_od > brg_bore
+}
+
+// ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
+
+/// Four FULL-LENGTH tendon spans sharing one axis, in the vertical plane through
+/// that axis: belt A as an OUTER pair (±z_a) and belt B as an INNER pair (±z_b),
+/// each pair straddling the axis above and below to null moments about the bearing
+/// (spec "paired in-plane tendons"). The four spans run along local +Y; the
+/// composing site turns the quad 90° about Z for the gantry X-cross and translates
+/// it into place.
+///
+/// Used now for the GANTRY CROSSES only — the full 800mm == 2 * y_rail_offset
+/// carriage-to-carriage gantry span (spans reuse LinearTendon's 800mm default).
+/// The Y-rail runs are HALF spans (CoreXY turns each belt onto the gantry at the
+/// carriage), so they use RailTendons, not this. z_a/z_b are overridden by
+/// DriveTendons (the single source for the whole drive — task 4147 override fix).
+pub structure TendonQuad {
+    /// Outer (belt A) half-separation above/below the axis.
+    param z_a : Length = 80mm
+    /// Inner (belt B) half-separation (still clears the air-bearing OD).
+    param z_b : Length = 55mm
+
+    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
+    let neg_z_a  = 0mm - z_a
+    let neg_z_b  = 0mm - z_b
+
+    sub a_upper = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, z_a))      // belt A, above axis
+    sub a_lower = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, neg_z_a))  // belt A, below axis
+    sub b_upper = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, z_b))      // belt B, above axis
+    sub b_lower = LinearTendon() at transform3(rot_to_y, vec3(0mm, 0mm, neg_z_b))  // belt B, below axis
+
+    constraint z_a > z_b
+    constraint z_b > 0mm
+}
+
+/// The drive tendons running along ONE Y rail, trimmed to true CoreXY topology.
+/// Each belt runs the rail on ONLY ONE side of the carriage (it turns onto the
+/// gantry cross at the carriage idler), so belt A is a HALF span toward the FRONT
+/// (+Y, y∈[0,+400mm]) and belt B a half span toward the BACK (−Y, y∈[−400,0mm]) —
+/// the diagonal CoreXY routing (belt A: front-this-rail ↔ back-other-rail; belt B
+/// the converse). Each belt is doubled above/below the rail axis (±z_a / ±z_b) for
+/// moment nulling, as on the cross. The half meets the gantry cross at y = 0 with
+/// a SHARP corner (the idler wrap profile is not modelled). This is the A-FRONT /
+/// B-BACK rail; the opposite rail gets the converse via a 180°-about-Z placement
+/// (DriveTendons), matching the idler fore/aft flip. z_a/z_b are overridden by
+/// DriveTendons (single source for the whole drive — task 4147 override fix).
+pub structure RailTendons {
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
+
+    let rot_to_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // span runs along local +Y
+    // Each rail belt run is a HALF span (carriage → rail end): a LinearTendon
+    // overridden to `span`. Centre offset = span / 2, so a +half span is
+    // y∈[0,+span] (front) and a −half span is y∈[−span,0] (back) — both anchored
+    // on the cross line y=0. (Was a separate HalfTendon leaf before the task-4147
+    // override fix; now just a length override on the one LinearTendon.)
+    let span     = 400mm
+    let half     = span / 2
+    let neg_half = 0mm - half
+    let neg_z_a  = 0mm - z_a
+    let neg_z_b  = 0mm - z_b
+
+    // Belt A → FRONT half, doubled ±z_a.
+    sub a_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, z_a))
+    sub a_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, half, neg_z_a))
+    // Belt B → BACK half, doubled ±z_b.
+    sub b_upper = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, z_b))
+    sub b_lower = LinearTendon(length: span) at transform3(rot_to_y, vec3(0mm, neg_half, neg_z_b))
+
+    constraint z_a > z_b
+    constraint z_b > 0mm
+}
+
+/// The idler stack at ONE Y-carriage corner: one pulley per tendon Z level (belt
+/// A outer ±z_a, belt B inner ±z_b), each turning that belt from its Y-rail run
+/// onto the gantry cross. Vertical (local +Z) spin axes — the tendons wrap them
+/// in the horizontal plane. Stacked 25mm apart in Z (z_a−z_b) while each pulley
+/// is only ~10mm thick along its axis, so the four clear each other. z_a/z_b are
+/// overridden by DriveTendons (single source for the whole drive — task 4147 fix).
+///
+/// FORE/AFT SPLIT: belt A's two pulleys sit FORWARD (+Y by ab_split) and belt B's
+/// two sit BEHIND (−Y by ab_split), so each belt's rope is tangent to the gantry-
+/// cross tendon (y = 0) on opposite sides — the start of the CoreXY over/under
+/// crossing, where the two ropes must pass each other without fouling. The two A
+/// discs (z = ±z_a) and two B discs (z = ±z_b) lie at different Z, so the fore/aft
+/// pairs never collide. This stack is the A-FRONT / B-BEHIND variant; the opposite
+/// carriage gets the converse by a 180°-about-Z placement (DriveTendons).
+pub structure CarriageIdlers {
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
+    /// Fore/aft (Y) half-separation of the belt-A vs belt-B turn points. == r_pitch
+    /// (== IdlerPulley sheave_od/2 = 18mm) so each turn point sits tangent to the
+    /// y = 0 cross tendon as the rope rides the rim (overridden by DriveTendons to
+    /// its r_pitch — single source; task 4147 override fix).
+    param ab_split : Length = 18mm
+
+    let neg_z_a = 0mm - z_a
+    let neg_z_b = 0mm - z_b
+    let neg_ab  = 0mm - ab_split
+
+    sub a_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, ab_split, z_a))      // belt A, front
+    sub a_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, ab_split, neg_z_a))
+    sub b_upper = IdlerPulley() at transform3(orient_identity(), vec3(0mm, neg_ab,   z_b))      // belt B, behind
+    sub b_lower = IdlerPulley() at transform3(orient_identity(), vec3(0mm, neg_ab,   neg_z_b))
+
+    constraint z_a > z_b
+    constraint z_b > 0mm
+    constraint ab_split > 0mm
+}
+
+/// CoreXY drive tendons — TWELVE spans + the carriage and corner idler stacks,
+/// routed to true CoreXY topology. Belts A (outer ±z_a) and B (inner ±z_b), each
+/// doubled above/below for moment balance. Each belt runs ONE side of each rail
+/// only (it turns onto the gantry at the carriage), so the rails use RailTendons
+/// (HALF spans): the right rail A-front/B-back, the left rail the CONVERSE via a
+/// 180°-about-Z placement (matching the idler flip). The gantry crosses stay
+/// FULL-length — a TendonQuad turned 90° about Z. A CarriageIdlers stack at each
+/// Y-carriage turns each belt from its rail run onto the cross. At the rail ends:
+/// the BACK corners turn the rail run inboard toward the capstan; the FRONT
+/// corners sit outboard and U-turn the run onto a front-to-back RETURN tendon +
+/// back idler, carrying the front strand to the rear so both ends of every belt
+/// land at the back, where a back-cross tendon joins them — CLOSING each belt
+/// into a full CoreXY loop (each Z layer a complete belt; the ±z pair is the
+/// moment-balanced double). PROVISIONAL beyond this point: the capstans (each taps
+/// a back-cross) are the next step. Deferred: the gantry-cross fore/aft split
+/// (crosses still run on y = 0) and live x_head/y_head tracking (a future
+/// live-input feature).
+pub structure DriveTendons {
+    /// Transverse position of each rail == the Y-rail axis. CoreXY overrides this
+    /// with y_rail_offset so the tendons sit in the rail's vertical plane (single
+    /// source via the task-4147 override fix; was hand-kept-in-step).
+    param rail_x : Length = 400mm
+    /// Outer (belt A) / inner (belt B) tendon Z half-separations — the SINGLE
+    /// SOURCE for the whole drive. Threaded down into TendonQuad / RailTendons /
+    /// CarriageIdlers and reused for the corner idlers / returns / back-crosses
+    /// below, so all twelve+ spans and every idler share one z_a/z_b. CoreXY
+    /// overrides z_a with its tendon_outer_z (which drives x_rail_offset).
+    param z_a : Length = 80mm
+    param z_b : Length = 55mm
+
+    let rot_to_cross = orient_axis_angle(vec3(0mm, 0mm, 1m), 90deg)  // Y runs → gantry X-cross
+    let flip_ab      = orient_axis_angle(vec3(0mm, 0mm, 1m), 180deg) // swap A↔B fore/aft (rails + idlers)
+    let neg_rail_x   = 0mm - rail_x
+
+    // Y rails: HALF spans (RailTendons), A-front/B-back on the right; the left
+    // rail is the CONVERSE via 180°-about-Z (the rail tendons lie on x = 0 in the
+    // child frame, so the rotation only swaps the A/B fore/aft, not the rail X).
+    sub rail_r = RailTendons(z_a: z_a, z_b: z_b) at transform3(orient_identity(), vec3(rail_x,     0mm, 0mm))  // right Y rail
+    sub rail_l = RailTendons(z_a: z_a, z_b: z_b) at transform3(flip_ab,           vec3(neg_rail_x, 0mm, 0mm))  // left Y rail (converse)
+    // Gantry crosses: FULL-length quad turned 90° about Z.
+    sub cross  = TendonQuad(z_a: z_a, z_b: z_b) at transform3(rot_to_cross,      vec3(0mm,        0mm, 0mm))
+
+    // Idler placement: TANGENT to the tendons it routes, not centred on the
+    // rail×cross intersection. The rope rides the sheave at pitch radius r_pitch,
+    // so each idler centre sits r_pitch inboard of the rail axis (X); the belt-A/
+    // belt-B FORE/AFT split inside CarriageIdlers puts each turn point r_pitch off
+    // the cross line (±Y) — so every tendon centreline is tangent to its rope's
+    // pitch circle (a 90° wrap from rail run to gantry cross). r_pitch == IdlerPulley
+    // sheave_od/2 and is threaded into CarriageIdlers.ab_split as the single
+    // source (task 4147 fix). The stack CENTRE therefore sits on the cross line (y = 0); the
+    // fore/aft split alone carries the ±Y offset.
+    let r_pitch    = 18mm
+    let idler_in_r = rail_x - r_pitch         // right stack: inboard of the right rail
+    let idler_in_l = neg_rail_x + r_pitch     // left stack: inboard of the left rail
+
+    // Right carriage: belt A turns in FRONT (+Y), belt B BEHIND (−Y). z_a/z_b and
+    // the fore/aft split (ab_split == r_pitch) come from this struct — single source.
+    sub idlers_r = CarriageIdlers(z_a: z_a, z_b: z_b, ab_split: r_pitch) at transform3(orient_identity(), vec3(idler_in_r, 0mm, 0mm))
+    // Left carriage: the CONVERSE (A behind, B in front). The 180°-about-Z
+    // placement swaps the fore/aft split; the pulleys lie on the x = 0 axis, so
+    // the X tangency offset (idler_in_l) is unaffected by the rotation.
+    sub idlers_l = CarriageIdlers(z_a: z_a, z_b: z_b, ab_split: r_pitch) at transform3(flip_ab, vec3(idler_in_l, 0mm, 0mm))
+
+    // ── Corner idlers + front-to-back returns (rough-out) ───────────────────
+    // Close each belt loop to the REAR (where the capstans sit) WITHOUT disturbing
+    // the diagonal active runs. One belt terminates at each corner — FR & BL =
+    // belt A (±z_a outer), BR & FL = belt B (±z_b inner) — each doubled above/below
+    // for moment balance, vertical (+Z) spin axes.
+    //
+    //  • BACK corners (BR, BL): the rail run ends here; the idler sits r_pitch
+    //    INBOARD and turns the run toward the rear capstan.
+    //  • FRONT corners (FR, FL): the idler sits r_pitch OUTBOARD and U-turns the
+    //    rail run onto a front-to-back RETURN tendon that runs rearward just
+    //    outside the rail (one sheave-OD out, tangent to both idlers); a BACK
+    //    idler at the rear of each return turns it toward the capstan. This
+    //    carries the front strand to the back, so BOTH ends of every belt land at
+    //    the rear.
+    //
+    // PROVISIONAL: the capstans + the final rear connection are the next step.
+    // (z_a/z_b are this struct's own params — the single source, see below.)
+    let rot_to_y    = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // return runs along +Y
+    // z_a / z_b are now params (single source, threaded into the subs above) and
+    // reused here for the corner idlers / returns / back-crosses.
+    let neg_z_a     = 0mm - z_a
+    let neg_z_b     = 0mm - z_b
+    let rail_half   = 400mm   // == BearingRod.length / 2 — rail runs end at ±rail_half
+    let corner_y    = rail_half - r_pitch         // corner-idler Y (front +corner_y, back −corner_y)
+    let neg_corn    = 0mm - corner_y
+    let idler_out_r = rail_x + r_pitch            // right FRONT idler: OUTBOARD of the right rail
+    let idler_out_l = neg_rail_x - r_pitch        // left  FRONT idler: OUTBOARD of the left rail
+    let return_x_r  = rail_x + r_pitch * 2        // right return: one sheave-OD outboard
+    let return_x_l  = neg_rail_x - r_pitch * 2    // left  return
+
+    // BACK corners — INBOARD (rail run → toward capstan). BL = belt A, BR = belt B.
+    sub corner_bl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, z_a))
+    sub corner_bl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_l, neg_corn, neg_z_a))
+    sub corner_br_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, z_b))
+    sub corner_br_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_in_r, neg_corn, neg_z_b))
+
+    // FRONT corners — OUTBOARD, U-turn onto the rearward return. FR = belt A, FL = belt B.
+    sub corner_fr_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, z_a))
+    sub corner_fr_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, corner_y, neg_z_a))
+    sub corner_fl_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, z_b))
+    sub corner_fl_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, corner_y, neg_z_b))
+
+    // Front-to-back RETURN tendons (full rail length, just outboard of each rail).
+    sub return_r_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, z_a))
+    sub return_r_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_r, 0mm, neg_z_a))
+    sub return_l_u = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, z_b))
+    sub return_l_l = LinearTendon() at transform3(rot_to_y, vec3(return_x_l, 0mm, neg_z_b))
+
+    // BACK idler at the rear of each return (turns it toward the capstan).
+    sub backidler_r_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, z_a))
+    sub backidler_r_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_r, neg_corn, neg_z_a))
+    sub backidler_l_u = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, z_b))
+    sub backidler_l_l = IdlerPulley() at transform3(orient_identity(), vec3(idler_out_l, neg_corn, neg_z_b))
+
+    // Back-cross tendons — CLOSE each belt loop across the REAR, joining its two
+    // rear ends at the belt's Z level: belt A (±z_a) BL-inboard ↔ right-outboard
+    // return idler; belt B (±z_b) BR-inboard ↔ left-outboard return idler. They run
+    // r_pitch BEHIND the back pulleys (at y = −rail_half, the rail-end plane), so
+    // each is TANGENT to the rear of its pulleys — a proper 90° wrap onto the rail/
+    // return run, the same tangent relation the rail tendons have with the corner
+    // idlers. Each span is 2*rail_x == LinearTendon's 800mm default, centred at
+    // ±r_pitch. The two belts' back-crosses cross at the rear (different Z, no
+    // contact) — the CoreXY rear crossing — completing the loops. Each Z layer
+    // (top OR bottom) is a full CoreXY belt; the pair is the moment-balanced
+    // double. Capstans next: each taps a back-cross.
+    let rot_to_x    = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // span runs along +X
+    let neg_r_pit   = 0mm - r_pitch
+    let backcross_y = neg_corn - r_pitch     // r_pitch behind the back pulleys (== −rail_half), tangent
+    sub backcross_a_u = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, z_a))
+    sub backcross_a_l = LinearTendon() at transform3(rot_to_x, vec3(r_pitch,   backcross_y, neg_z_a))
+    sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, z_b))
+    sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, neg_z_b))
+
+    constraint rail_x > 0mm
+}
+
+// ── CoreXY motion system (directly composed) ─────────────────────────────────
 //
-// Composed assemblies have NO geometry of their own — they only instantiate
-// sub-primitives at appropriate positions. The contained subs realise their
-// bodies independently; the assembly just provides the parameter mapping.
+// Local frame: +X = gantry (left↔right), +Y = Y-rail axis (front↔back), +Z = up.
+// Origin = gantry midplane centre (== the Y-rail plane). The Y rails are fixed
+// and run full-Y; the gantry (stacked X-rail pair) + Y carriages + head carriage
+// sit at the gantry's current Y (y_head) and the head's X (x_head).
 
-/// One rod + one air-bearing carriage, co-axial. Geometry is rod-centred
-/// (rod centre at local origin, long axis = `long_axis`); the bearing
-/// centre is offset along that axis by `bearing_offset` (signed). The
-/// whole assembly is then translated by (pos_x, pos_y, pos_z) in the
-/// parent's frame.
-pub structure GuideAssembly {
-    param rod_dia        : Length = 60mm
-    param rod_length     : Length = 800mm
-    param bearing_od     : Length = 90mm
-    param bearing_length : Length = 150mm
-    /// Bearing centre offset from rod centre, along `long_axis` (signed).
-    param bearing_offset : Length = 0mm
-    param long_axis      : Axis   = Axis.Y
-    /// Origin of this guide assembly in the parent's local frame.
-    param pos_x          : Length = 0mm
-    param pos_y          : Length = 0mm
-    param pos_z          : Length = 0mm
-
-    // Per-axis dimensions: long axis gets `length`, others get `dia`/`od`.
-    let rod_size_x     = if long_axis == Axis.X then rod_length else rod_dia
-    let rod_size_y     = if long_axis == Axis.Y then rod_length else rod_dia
-    let rod_size_z     = if long_axis == Axis.Z then rod_length else rod_dia
-    let bearing_size_x = if long_axis == Axis.X then bearing_length else bearing_od
-    let bearing_size_y = if long_axis == Axis.Y then bearing_length else bearing_od
-    let bearing_size_z = if long_axis == Axis.Z then bearing_length else bearing_od
-
-    // Bearing offset: only the long-axis component is non-zero.
-    let bearing_off_x = if long_axis == Axis.X then bearing_offset else 0mm
-    let bearing_off_y = if long_axis == Axis.Y then bearing_offset else 0mm
-    let bearing_off_z = if long_axis == Axis.Z then bearing_offset else 0mm
-
-    sub rod = BearingRod(
-        size_x: rod_size_x, size_y: rod_size_y, size_z: rod_size_z,
-        pos_x:  pos_x,      pos_y:  pos_y,      pos_z:  pos_z
-    )
-    sub bearing = AirBearing(
-        size_x: bearing_size_x, size_y: bearing_size_y, size_z: bearing_size_z,
-        pos_x:  pos_x + bearing_off_x,
-        pos_y:  pos_y + bearing_off_y,
-        pos_z:  pos_z + bearing_off_z
-    )
-
-    constraint bearing_od >= rod_dia
-    constraint bearing_length > 0mm
-    constraint bearing_offset + bearing_length / 2 <=  rod_length / 2
-    constraint bearing_offset - bearing_length / 2 >= -rod_length / 2
-}
-
-/// One guide assembly + one paired set of tendons. The pair is offset
-/// transverse to the rod axis: `tendon_offset` is the in-plane horizontal
-/// offset (perpendicular to both `long_axis` and gravity-Z), and the pair
-/// is split ±`tendon_pair_offset` in Z about the rod plane (moment
-/// cancellation about the rod axis). A standalone LinearStage models a
-/// single rail; an X- or Y-stage is two of these, mirrored.
-pub structure LinearStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 800mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 150mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    /// In-plane transverse offset of the tendon pair from the rod axis,
-    /// in the horizontal direction perpendicular to `long_axis`. Sign sets
-    /// "outboard" direction; YStage / XStage flip it for the pair.
-    param tendon_offset      : Length = 50mm
-    /// Vertical (Z) half-separation of the paired tendons about the rod
-    /// plane. Pair sits at ±tendon_pair_offset in Z.
-    param tendon_pair_offset : Length = 12mm
-    param long_axis          : Axis   = Axis.Y
-    /// Origin of this stage in the parent's local frame.
-    param pos_x              : Length = 0mm
-    param pos_y              : Length = 0mm
-    param pos_z              : Length = 0mm
-
-    sub guide = GuideAssembly(
-        rod_dia:        rod_dia,
-        rod_length:     rod_length,
-        bearing_od:     bearing_od,
-        bearing_length: bearing_length,
-        bearing_offset: bearing_offset,
-        long_axis:      long_axis,
-        pos_x:          pos_x,
-        pos_y:          pos_y,
-        pos_z:          pos_z
-    )
-
-    // Tendon per-axis dimensions: same shape rule as rod (long axis =
-    // rod_length, others = tendon_dia).
-    let tendon_size_x = if long_axis == Axis.X then rod_length else tendon_dia
-    let tendon_size_y = if long_axis == Axis.Y then rod_length else tendon_dia
-    let tendon_size_z = if long_axis == Axis.Z then rod_length else tendon_dia
-
-    // Tendon-offset decomposition. For a horizontal long axis (X or Y),
-    // `tendon_offset` lies along the OTHER horizontal axis, and the pair
-    // offset is in Z. For Z long-axis (vertical rod) we degrade gracefully
-    // and place both tendons at the same Z, separated only in X.
-    let tpos_off_x = if long_axis == Axis.X then 0mm
-                     else if long_axis == Axis.Y then tendon_offset
-                     else tendon_pair_offset
-    let tpos_off_y = if long_axis == Axis.X then tendon_offset
-                     else if long_axis == Axis.Y then 0mm
-                     else tendon_offset
-    let tpos_off_z = if long_axis == Axis.X then tendon_pair_offset
-                     else if long_axis == Axis.Y then tendon_pair_offset
-                     else 0mm
-    let tneg_off_x = if long_axis == Axis.X then 0mm
-                     else if long_axis == Axis.Y then tendon_offset
-                     else 0mm - tendon_pair_offset
-    let tneg_off_y = if long_axis == Axis.X then tendon_offset
-                     else if long_axis == Axis.Y then 0mm
-                     else tendon_offset
-    let tneg_off_z = if long_axis == Axis.X then 0mm - tendon_pair_offset
-                     else if long_axis == Axis.Y then 0mm - tendon_pair_offset
-                     else 0mm
-
-    sub tendon_pos = LinearTendon(
-        size_x: tendon_size_x, size_y: tendon_size_y, size_z: tendon_size_z,
-        pos_x:  pos_x + tpos_off_x,
-        pos_y:  pos_y + tpos_off_y,
-        pos_z:  pos_z + tpos_off_z
-    )
-    sub tendon_neg = LinearTendon(
-        size_x: tendon_size_x, size_y: tendon_size_y, size_z: tendon_size_z,
-        pos_x:  pos_x + tneg_off_x,
-        pos_y:  pos_y + tneg_off_y,
-        pos_z:  pos_z + tneg_off_z
-    )
-
-    constraint tendon_pair_offset > tendon_dia
-}
-
-/// Two Y-aligned LinearStages: one at -rail_offset on X, then a logical
-/// MIRROR across the YZ plane to give the second rail at +rail_offset.
-/// Mirror is implemented by sign-flipping the second stage's tendon_offset
-/// (tendons stay outboard of each respective rail). Default geometry
-/// centres the rail pair on x = 0.
-pub structure YStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 800mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 150mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    param tendon_offset      : Length = 60mm
-    param tendon_pair_offset : Length = 12mm
-    /// Half the centre-to-centre separation between the two Y rails. The
-    /// "left" rail sits at x = -rail_offset, the mirrored "right" rail at
-    /// x = +rail_offset.
-    param rail_offset        : Length = 360mm
-
-    let neg_rail_offset    = 0mm - rail_offset
-    let neg_tendon_offset  = 0mm - tendon_offset
-
-    sub stage_left = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.Y,
-        pos_x:              neg_rail_offset
-    )
-    sub stage_right = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      neg_tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.Y,
-        pos_x:              rail_offset
-    )
-
-    constraint rail_offset > 0mm
-}
-
-/// Two X-aligned LinearStages: one at -rail_offset on Z (lower), then a
-/// logical MIRROR across the XY plane to give the second rail at
-/// +rail_offset (upper). For the gantry's stacked rail pair. Mirror across
-/// Z does not need to flip `tendon_offset` (it's a Y offset, perpendicular
-/// to the mirror normal). Default geometry centres the rail pair on z = 0.
-pub structure XStage {
-    param rod_dia            : Length = 60mm
-    param rod_length         : Length = 720mm
-    param bearing_od         : Length = 90mm
-    param bearing_length     : Length = 120mm
-    param bearing_offset     : Length = 0mm
-    param tendon_dia         : Length = 6mm
-    /// In-plane transverse offset of each rail's tendon pair (along Y for
-    /// an X-long-axis stage). 0 = tendons in the same Y plane as the rod.
-    param tendon_offset      : Length = 0mm
-    param tendon_pair_offset : Length = 12mm
-    /// Half the Z centre-to-centre separation between the stacked X rails.
-    /// Lower rail at z = -rail_offset; mirrored upper rail at z = +rail_offset.
-    param rail_offset        : Length = 50mm
-
-    let neg_rail_offset = 0mm - rail_offset
-
-    sub stage_lower = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.X,
-        pos_z:              neg_rail_offset
-    )
-    sub stage_upper = LinearStage(
-        rod_dia:            rod_dia,
-        rod_length:         rod_length,
-        bearing_od:         bearing_od,
-        bearing_length:     bearing_length,
-        bearing_offset:     bearing_offset,
-        tendon_dia:         tendon_dia,
-        tendon_offset:      tendon_offset,
-        tendon_pair_offset: tendon_pair_offset,
-        long_axis:          Axis.X,
-        pos_z:              rail_offset
-    )
-
-    constraint rail_offset > 0mm
-}
-
-/// CoreXY motion system: X stage on the moving gantry beam, Y stage as the
-/// stationary side rails. The Y stage carries the gantry; the X stage
-/// carries the toolhead carriage. Carriage envelope is a thin placeholder
-/// here — toolhead detail belongs to DToolhead.
 pub structure CoreXY {
-    sub y_stage = YStage()
-    sub x_stage = XStage()
+    /// Y-rail centre-to-centre half-separation. The X-gantry rail length is
+    /// DERIVED as 2*this (x_rail_len below) so the gantry exactly spans between
+    /// the Y rails — a length override now that task 4147 is fixed (was a shared
+    /// tuned BearingRod default; see header).
+    param y_rail_offset : Length = 400mm
+    /// Gantry position along Y (0 = mid travel) and toolhead position along X.
+    param y_head : Length = 0mm
+    param x_head : Length = 0mm
+
+    // ── X-rail spread DERIVED to clear the gantry-cross tendons ───────────
+    // The head bearings RIDE the stacked X rails, so each bearing's inner face
+    // (x_rail_offset − x_brg_radius) must clear the OUTERMOST gantry-cross tendon
+    // (its surface at tendon_outer_z + tendon radius). The rail half-separation
+    // is therefore a FORMULA of the tendon + bearing geometry, not a free dim:
+    // widen a tendon level or a bearing and the rails spread to suit. These two
+    // dims are the SINGLE SOURCE — threaded DOWN into the leaves (task 4147
+    // override fix): tendon_outer_z → DriveTendons.z_a, and x_brg_radius*2 →
+    // AirBearing.outer_diameter — so the leaf defaults can no longer drift out of
+    // step with the clearance formula.
+    /// Outer (belt A) tendon Z level — drives DriveTendons.z_a (threaded).
+    param tendon_outer_z  : Length = 80mm
+    /// X-rail bearing radius — drives AirBearing.outer_diameter = 2*this (threaded).
+    param x_brg_radius    : Length = 45mm
+    /// Radial clearance from the bearing inner face to the outer tendon surface
+    /// (folds in the 3mm tendon radius).
+    param x_brg_clearance : Length = 15mm
+
+    /// Z half-separation of the stacked X-gantry rails, DERIVED:
+    ///   x_rail_offset − x_brg_radius  =  tendon_outer_z + x_brg_clearance
+    /// → 80 + 45 + 15 = 140mm (was a hand-tuned 120mm that buried the bearings
+    /// in the outer tendon). Their midplane stays the Y-rail plane (z = 0).
+    let x_rail_offset = tendon_outer_z + x_brg_radius + x_brg_clearance
+
+    // Rail lengths, now per-instance (task 4147 override fix) instead of a shared
+    // tuned BearingRod default: the X-gantry rails span carriage-to-carriage
+    // (== 2*y_rail_offset) while the Y rails run the full Y travel. Both are 800mm
+    // at the current envelope but no longer coupled — change y_rail_offset and only
+    // the X rails follow.
+    let x_rail_len = y_rail_offset * 2
+    let y_rail_len = 800mm
+
+    let rot_to_y   = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)   // leaf +Z → +Y
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)   // leaf +Z → +X
+    let neg_y_rail = 0mm - y_rail_offset
+    let neg_x_rail = 0mm - x_rail_offset
+
+    // Fixed Y side-rails (run full Y).
+    sub y_rail_l = BearingRod(length: y_rail_len) at transform3(rot_to_y, vec3(neg_y_rail, 0mm, 0mm))
+    sub y_rail_r = BearingRod(length: y_rail_len) at transform3(rot_to_y, vec3(y_rail_offset, 0mm, 0mm))
+
+    // Y carriages: a bearing riding each Y rail at the gantry's Y, plus a block
+    // bridging up/down to the stacked gantry-rail ends.
+    sub y_carriage_l_brg = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_y, vec3(neg_y_rail,    y_head, 0mm))
+    sub y_carriage_r_brg = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_y, vec3(y_rail_offset, y_head, 0mm))
+    sub y_carriage_l_blk = CarriageBlock() at transform3(orient_identity(), vec3(neg_y_rail,    y_head, 0mm))
+    sub y_carriage_r_blk = CarriageBlock() at transform3(orient_identity(), vec3(y_rail_offset, y_head, 0mm))
+
+    // X gantry: two stacked rails along +X, straddling the Y-rail plane in Z,
+    // ends meeting the two Y carriages.
+    sub x_rail_lower = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, neg_x_rail))
+    sub x_rail_upper = BearingRod(length: x_rail_len) at transform3(rot_to_x, vec3(0mm, y_head, x_rail_offset))
+
+    // Toolhead carriage riding the gantry at x_head: a bearing on each gantry
+    // rail plus a bridging block.
+    sub head_brg_lower = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_x, vec3(x_head, y_head, neg_x_rail))
+    sub head_brg_upper = AirBearing(outer_diameter: x_brg_radius * 2) at transform3(rot_to_x, vec3(x_head, y_head, x_rail_offset))
+    sub head_block     = CarriageBlock() at transform3(orient_identity(), vec3(x_head, y_head, 0mm))
+
+    // CoreXY drive tendons (twelve spans: doubled A/B on both rails + crosses).
+    // z_a/rail_x threaded down so tendon_outer_z + y_rail_offset are the single source.
+    sub tendons = DriveTendons(rail_x: y_rail_offset, z_a: tendon_outer_z) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    constraint y_rail_offset > 0mm
+    constraint tendon_outer_z > 0mm
+    constraint x_brg_clearance > 0mm
+    // Verify the head bearings clear the outer X tendon (drives x_rail_offset):
+    constraint x_rail_offset - x_brg_radius > tendon_outer_z + 3mm
 }
 
 // ── Envelope (global parameters + kinematic centerlines) ────────────────────
 
-/// Global build envelope and shared cross-cutting parameters. Geometry that
-/// belongs to a single sub-assembly (rails/bearings/tendons → CoreXY; bed
-/// travel centreline → E) lives in that sub-assembly, not here.
+/// Global build envelope and shared cross-cutting parameters.
 pub structure Envelope {
     meta {
         project = "printer_v01",
@@ -401,8 +564,9 @@ pub structure Envelope {
     let y_axis = vec3(0mm, 1m, 0mm)
     let z_axis = vec3(0mm, 0mm, 1m)
 
-    // Visualisation: build-volume cuboid (FLB corner at world origin).
-    let build_volume_solid = translate(
+    // Visualisation: build-volume cuboid (FLB corner at world origin). Reference
+    // geometry, not a part — hidden by default (toggle in the Outline).
+    aux let build_volume_solid = translate(
         box(build_x, build_y, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
@@ -421,39 +585,31 @@ pub structure Envelope {
 }
 
 // ── Sub-assemblies (A, D–J) ─────────────────────────────────────────────────
-//
-// B (Y-axis) and C (Gantry + X-axis) from the doc's sub-assembly table are
-// now realised as CoreXY (= XStage + YStage), defined above. The remaining
-// placeholders cover the non-motion sub-assemblies; each will grow into its
-// own owned geometry as the model fleshes out.
 
 /// Assembly A — Frame: polymer-concrete-filled steel sandwich (structural
-/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy
-/// granite fill.
+/// backbone). Laser-cut steel skeleton + heterogeneous-aggregate epoxy granite.
 pub structure AFrame {
     param wall_thickness : Length = 100mm
 }
 
-/// Assembly D — Toolhead: carriage on the X-rail + 4-tool kinematic dock on
-/// the frame; v0.1 fits 2 tools (4-tool dock designed in).
+/// Assembly D — Toolhead: 4-tool kinematic dock on the frame (the carriage that
+/// rides the gantry is modelled in CoreXY as the head carriage). v0.1 fits 2.
 pub structure DToolhead {
     param tool_dock_pitch : Length = 80mm
 }
 
-/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet,
-/// 4-corner electronic-tilt servo Z, parking shutter (no bellows). Owns
-/// the Z-travel centreline visualisation.
+/// Assembly E — Z-bed: 12 mm Mic-6 plate, magnetic flexible PEI sheet, 4-corner
+/// electronic-tilt servo Z, parking shutter (no bellows). Owns the Z-travel
+/// centreline visualisation.
 pub structure EZBed {
-    // Envelope-derived parameters. Defaults mirror Envelope so EZBed
-    // renders standalone; Printer overrides from `env.<...>`.
     param build_x : Length = 500mm
     param build_y : Length = 800mm
     param build_z : Length = 600mm
 
     param bed_plate_thickness : Length = 12mm
 
-    // Z-bed travel centreline (kept thin; the plate itself is modelled later).
-    let z_bed_travel_centerline = translate(
+    // Z-bed travel centreline (reference viz, not a part — hidden by default).
+    aux let z_bed_travel_centerline = translate(
         box(6mm, 6mm, build_z),
         build_x / 2, build_y / 2, build_z / 2
     )
@@ -461,22 +617,22 @@ pub structure EZBed {
     constraint bed_plate_thickness > 0mm
 }
 
-/// Assembly F — Chamber: insulated panels (steel skin + mineral-wool /
-/// aerogel), thermal break to frame, 2–3 kW heater + circulation, lighting.
-/// 80 °C commissioned; 130 °C-capable design.
+/// Assembly F — Chamber: insulated panels (steel skin + mineral-wool / aerogel),
+/// thermal break to frame, 2–3 kW heater + circulation, lighting. 80 °C
+/// commissioned; 130 °C-capable design.
 pub structure FChamber {
     param panel_insulation_thickness : Length = 50mm
 }
 
-/// Assembly G — Electronics: drive enclosure (7× Granite Argon + 5× Ioni-HC)
-/// + Klipper host (Pi 5 / x86 SBC) + wiring loom; mounted OUTSIDE chamber.
+/// Assembly G — Electronics: drive enclosure (7× Granite Argon + 5× Ioni-HC) +
+/// Klipper host (Pi 5 / x86 SBC) + wiring loom; mounted OUTSIDE chamber.
 pub structure GElectronics {
     param enclosure_depth : Length = 400mm
 }
 
 /// Assembly H — Air system: existing P4 / 3 °C dew-point shop air, augmented
-/// 0.01 μm coalescing + activated carbon + point-of-use desiccant to ISO
-/// 8573-1 class 1–2. Distributes to (track-2) air bearings + chamber pneums.
+/// 0.01 μm coalescing + activated carbon + point-of-use desiccant to ISO 8573-1
+/// class 1–2. Distributes to (track-2) air bearings + chamber pneumatics.
 pub structure HAir {
     param dew_point_target : Temperature = 3degC
 }
@@ -495,15 +651,17 @@ pub structure JAuxiliary {
 
 // ── Top-level integration ───────────────────────────────────────────────────
 
-/// Top-level printer integration. Wires the non-motion sub-assemblies (A,
-/// D–J) and the unified motion system (CoreXY = XStage + YStage) against
-/// the shared Envelope.
+/// Top-level printer integration. The motion system is modelled about its own
+/// gantry-midplane origin, then placed so the lowest X-rail bearing clears the
+/// build-volume top: motion Z = build_z + clearance + x_rail_offset +
+/// bearing_radius = 600 + 20 + 140 + 45 = 805mm; centred over the build in X/Y.
 pub structure Printer {
     sub env = Envelope()
 
     sub a_frame = AFrame()
 
     sub motion = CoreXY()
+        at transform3(orient_identity(), vec3(250mm, 400mm, 805mm))
 
     sub d_toolhead = DToolhead()
 

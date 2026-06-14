@@ -37,6 +37,10 @@ const CONE_BOTTOM_R_M: f64 = 10.0e-3;
 const CONE_TOP_R_M: f64 = 5.0e-3;
 const CONE_HEIGHT_M: f64 = 20.0e-3;
 
+/// 20mm major-radius / 5mm minor-radius torus for the torus-side tests.
+const TORUS_MAJOR_R_M: f64 = 20.0e-3;
+const TORUS_MINOR_R_M: f64 = 5.0e-3;
+
 fn box_op() -> GeometryOp {
     GeometryOp::Box {
         width: Value::Real(BOX_SIDE_M),
@@ -71,6 +75,13 @@ fn cone_pointed_op() -> GeometryOp {
         bottom_radius: Value::Real(CONE_BOTTOM_R_M),
         top_radius: Value::Real(0.0),
         height: Value::Real(CONE_HEIGHT_M),
+    }
+}
+
+fn torus_op() -> GeometryOp {
+    GeometryOp::Torus {
+        major_radius: Value::Real(TORUS_MAJOR_R_M),
+        minor_radius: Value::Real(TORUS_MINOR_R_M),
     }
 }
 
@@ -367,6 +378,90 @@ fn seed_primitive_attributes_sphere_records_role_side_for_each_face() {
         assert!(
             attr.mod_history.is_empty(),
             "sphere face #{idx} mod_history should be empty per task-1 invariant"
+        );
+    }
+}
+
+// ─── task-4157 step-13: Torus → ≥1 face entries, all Role::Side ──────────────
+//
+// Mirrors the Sphere arm: a torus has no caps, so every face is Role::Side and
+// every edge is Role::NewEdge. RED until the seeder's GeometryOp::Torus dispatch
+// arm lands (step-14); before that the catch-all `_ => Ok(())` seeds nothing,
+// so `table.len()` is 0 and the per-face lookup panics.
+
+#[test]
+fn seed_primitive_attributes_torus_records_role_side_for_each_face() {
+    if !OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let mut kernel = OcctKernelHandle::spawn();
+    let torus_id = kernel
+        .execute(&torus_op())
+        .expect("torus should build")
+        .id;
+
+    // Pre-extract face/edge handles ONCE — fresh ids each call.
+    let face_handles = kernel
+        .extract_faces(torus_id)
+        .expect("extract_faces(torus) should succeed");
+    let edge_handles = kernel
+        .extract_edges(torus_id)
+        .expect("extract_edges(torus) should succeed");
+
+    // OCCT's torus parameterisation may emit 1+ faces; the contract is
+    // "at least 1". We don't pin an exact count.
+    assert!(
+        !face_handles.is_empty(),
+        "a torus should have at least 1 face from extract_faces"
+    );
+
+    let feature_id = body_realization_feature_id();
+    let mut table = TopologyAttributeTable::default();
+    seed_primitive_attributes(
+        &mut table,
+        &mut kernel,
+        &face_handles,
+        &edge_handles,
+        &[],
+        &feature_id,
+        &torus_op(),
+    )
+    .expect("seed_primitive_attributes for a torus should succeed");
+
+    // One entry per face + one per edge (mirrors the Sphere contract).
+    assert_eq!(
+        table.len(),
+        face_handles.len() + edge_handles.len(),
+        "torus: one entry per face + one per edge"
+    );
+
+    for (idx, &face_id) in face_handles.iter().enumerate() {
+        let attr = table.lookup(face_id).unwrap_or_else(|| {
+            panic!(
+                "torus face #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, face_id
+            )
+        });
+        assert_eq!(
+            attr.role,
+            Role::Side,
+            "torus face #{idx} role should be Role::Side (torus has no caps)"
+        );
+    }
+
+    for (idx, &edge_id) in edge_handles.iter().enumerate() {
+        let attr = table.lookup(edge_id).unwrap_or_else(|| {
+            panic!(
+                "torus edge #{} (handle {:?}) must have a TopologyAttribute entry",
+                idx, edge_id
+            )
+        });
+        assert_eq!(
+            attr.role,
+            Role::NewEdge,
+            "torus edge #{idx} role should be Role::NewEdge"
         );
     }
 }

@@ -159,6 +159,12 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
         Declaration::TypeAlias(t) => walk_annotations(&t.annotations, diagnostics),
         // A module declaration has no annotations and no embedded expressions.
         Declaration::Module(_) => {}
+        // A default declaration has no annotations and no embedded dot-chain expressions
+        // to walk in task A (the RHS is accepted but not compiled; task B).
+        Declaration::Default(_) => {}
+        // Grammar producer only (task α 4395). Body/DOF dot-chain lint is
+        // deferred to task β (DOF self-check + body type enforcement).
+        Declaration::Joint(_) => {}
     }
 }
 
@@ -197,6 +203,13 @@ fn walk_members(
     }
     for member in members {
         match member {
+            // Relate-block relations are ordinary expressions — walk them so
+            // dot-chain lints apply inside `relate { … }` too (task δ 4384).
+            MemberDecl::Relate(r) => {
+                for rel in &r.relations {
+                    walk_expr(rel, diagnostics);
+                }
+            }
             MemberDecl::Param(p) => {
                 walk_annotations(&p.annotations, diagnostics);
                 if let Some(default) = &p.default {
@@ -486,6 +499,14 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
                 }
             }
         }
+        // `auto(seed = a.b.c.d, …)` params carry arbitrary value expressions, so
+        // recurse into each so deep dot-chains nested inside them are still
+        // linted (geometric-relations δ, 4384).
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                walk_expr_depth(v, diagnostics, next);
+            }
+        }
         // Leaf expressions — no children. `EnumAccess`, like `IndexAccess` and
         // `FunctionCall`, acts as a chain root simply by virtue of not being
         // `ExprKind::MemberAccess` — chain detection in the MemberAccess arm
@@ -497,7 +518,6 @@ fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize)
         | ExprKind::BoolLiteral(_)
         | ExprKind::Ident(_)
         | ExprKind::EnumAccess { .. }
-        | ExprKind::Auto { .. }
         | ExprKind::Undef => {}
     }
 }
@@ -692,6 +712,7 @@ mod tests {
                 ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![leaf],
+                    arg_names: vec![None],
                 },
                 ArmKind::ConditionalCondition => ExprKind::Conditional {
                     condition: Box::new(leaf),
@@ -793,6 +814,7 @@ mod tests {
                 ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
                     name: "f".to_string(),
                     args: vec![shallow_leaf(span), leaf],
+                    arg_names: vec![None, None],
                 },
                 ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
                 ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),

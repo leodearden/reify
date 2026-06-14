@@ -143,8 +143,7 @@ fn check_cfg_malformed_value_exits_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let main_path = write_two_way_project(tmp.path());
 
-    let (status, _stdout, stderr) =
-        common::run_with_args(&["check", "--cfg", "=bad", &main_path]);
+    let (status, _stdout, stderr) = common::run_with_args(&["check", "--cfg", "=bad", &main_path]);
     assert!(
         !status.success(),
         "reify check --cfg =bad should exit non-zero (empty key).\nstderr: {stderr}"

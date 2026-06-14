@@ -161,11 +161,12 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   return (
     <div class={styles.backdrop} onClick={() => props.onClose()}>
-      <div class={styles.card} onClick={(e) => e.stopPropagation()}>
+      <div class={styles.card} data-testid="command-palette" onClick={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}
           type="text"
           class={styles.input}
+          data-testid="command-palette-input"
           placeholder={
             isSymbolMode()
               ? 'Search symbols…'
@@ -202,6 +203,7 @@ export function CommandPalette(props: CommandPaletteProps) {
                     class={`${styles.item} ${index() === selectedIndex() ? styles.selected : ''}`}
                     role="option"
                     aria-selected={index() === selectedIndex()}
+                    data-testid="command-palette-item"
                     onClick={() => {
                       props.runCommand(cmd.id);
                       props.onClose();

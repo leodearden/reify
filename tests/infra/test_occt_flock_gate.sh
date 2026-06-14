@@ -123,7 +123,8 @@ export TEST_PLAN_SEGS
 echo ""
 echo "--- Test 10: plan has NO cargo-test-occt-gated.sh invocation (task 4451: OCCT folded into nextest pool) ---"
 
-# Task 4451 folds OCCT crates into the nextest pool (occt test-group max-threads=4).
+# Task 4451 folds OCCT crates into the nextest pool (occt test-group max-threads=24,
+# env-driven, default 24 — raised from 4 by task 4503/γ).
 # The flock-gated debug pass is gone; cargo-test-occt-gated.sh is retained only as
 # a standalone/manual runner.
 assert "plan contains NO cargo-test-occt-gated.sh invocation (gated pass dropped, task 4451)" \
@@ -141,8 +142,8 @@ echo ""
 echo "--- Test 12: nextest --workspace pass has NO --exclude (OCCT folded in, task 4451) ---"
 
 # After the fold the full-workspace debug nextest pass covers ALL crates including
-# OCCT ones. The nextest occt test-group (max-threads=4) bounds their concurrency.
-# A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
+# OCCT ones. The nextest occt test-group (max-threads=24, env-driven, default 24)
+# bounds their concurrency. A bare --workspace pass WITHOUT --exclude is now the CORRECT form.
 assert "full-workspace nextest pass does NOT have --exclude (OCCT no longer excluded, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -E 'cargo (test|nextest run) --workspace' | grep -q -- '--exclude'"
 
@@ -243,20 +244,38 @@ assert "Test 16: stderr contains log line with 'acquired', 'OCCT lock', and nume
 
 rm -f "$_LOCK16" "$_ERR16"
 
-# -- Test 17: no gated invocations in plan; workspace pass uses 90m outer timeout --
+# -- Test 17: no gated invocations in plan; both passes use unified 60m outer timeout --
 echo ""
-echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; workspace nextest pass uses 90m timeout (task 4451) ---"
+echo "--- Test 17: no REIFY_OCCT_TEST_TIMEOUT in plan; both nextest passes use unified 60m timeout (η/4521 floor 798.9s × 4.5 → 60m, task 4520) ---"
 
 # Task 4451 drops the gated passes: REIFY_OCCT_TEST_TIMEOUT= no longer appears.
-# The full-workspace nextest pass retains its 90m outer timeout.
+# Both nextest passes (debug --workspace and release --release) use the single unified
+# 60m outer timeout re-derived from η/4521's authoritative measured floor: 798.9s
+# (worst-observed cold real-load) × 4.5 production-weighted margin = ceil(3595.05s) →
+# rounded up to 60m (3600s). Bound (3600s) > floor (798.9s) by construction.
+# Asserted below for BOTH the debug pass (Test 17) and release pass (Test 17b).
+# See verify.sh add_test_passes and docs/prds/jobserver-merge-priority-balancer.acceptance-report.md.
 assert "Test 17: REIFY_OCCT_TEST_TIMEOUT= does NOT appear in the plan (no gated pass, task 4451)" \
     bash -c "[ \"\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -oF 'REIFY_OCCT_TEST_TIMEOUT=' | wc -l | tr -d ' ')\" -eq 0 ]"
 
 assert "Test 17: no ./scripts/cargo-test-occt-gated in the plan at all (folded into nextest, task 4451)" \
     bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q './scripts/cargo-test-occt-gated'"
 
-assert "Test 17: debug full-workspace nextest pass uses 90m outer timeout (retained)" \
-    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
+assert "Test 17: debug full-workspace nextest pass uses unified 60m outer timeout (η/4521 floor 798.9s × 4.5, task 4520)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+
+# -- Test 17b: release pass uses the same unified 60m outer timeout (task 4520) ------
+echo ""
+echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor 798.9s × 4.5 → 60m, retiring 75m, task 4520) ---"
+
+# The release pass (--release) was previously assigned 75m (a larger budget on the
+# LIGHTER pass — load-inconsistent band-aid lineage). Task 4520/ζ′ unifies both passes
+# to the single re-derived 60m: the debug --workspace pass is the HEAVIER compile (all
+# crates) yet already clears 60m battle-tested (task 4453), so the lighter
+# release-sensitive-subset pass clears 60m a fortiori. The --release token in the
+# regex discriminates this assertion from Test 17's --workspace assertion.
+assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520)" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

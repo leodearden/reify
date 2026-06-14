@@ -1,0 +1,22 @@
+// gdt_removed_2018_purpose.ri — GD&T β + purpose combined fixture: removed-2018 callout.
+//
+// Contains a Concentricity callout (removed in ASME Y14.5-2018 → GdtRemoved2018 warning)
+// and a purpose with a deliberately satisfiable constraint. Used by task 4589 CLI e2e
+// tests to verify that `reify check --purpose` runs the GD&T pass but treats
+// GdtRemoved2018 as non-fatal (exit 0 with warning on stderr).
+//
+// Compiles CLEAN (legality is a check-time lint, not a compile error).
+
+structure ConcentricityPurpose {
+    param width : Length = 80mm
+
+    let conc = Concentricity(
+        tolerance_value: 0.01mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}

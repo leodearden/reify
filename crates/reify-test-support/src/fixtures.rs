@@ -347,6 +347,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                                 span: SourceSpan::new(375, 384),
                             },
                         ],
+                        arg_names: vec![None, None, None],
                     },
                     span: SourceSpan::new(356, 385),
                 },
@@ -651,8 +652,8 @@ pub fn field_module() -> CompiledModule {
     use reify_ir::CompiledExpr;
 
     // A simple constant analytical body: f(x) = 273.15 (temperature in Kelvin)
-    let body = CompiledExpr::literal(Value::Real(273.15), Type::Real);
-    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+    let body = CompiledExpr::literal(Value::Real(273.15), Type::dimensionless_scalar());
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
         .analytical(body)
         .build();
 
@@ -737,7 +738,7 @@ pub fn constrained_structure_module() -> reify_compiler::CompiledModule {
     let width_ref = CompiledExpr::value_ref(crate::vcid(entity, "width"), Type::length());
     let two_times_width = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         width_ref,
         Type::length(),
     );
@@ -807,7 +808,7 @@ pub fn parent_child_module() -> CompiledModule {
     let arg_expr = CompiledExpr::binop(
         BinOp::Mul,
         width_ref(),
-        CompiledExpr::literal(Value::Real(0.5), Type::Real),
+        CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar()),
         Type::length(),
     );
 
@@ -909,7 +910,7 @@ pub fn annotated_module() -> CompiledModule {
         .annotation(annotation(OPTIMIZED_ANNOTATION))
         .build();
 
-    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::Real)
+    let temp_field = CompiledFieldBuilder::new("temp", Type::Geometry, Type::dimensionless_scalar())
         .imported()
         .annotation(annotation(DEPRECATED_ANNOTATION))
         .build();

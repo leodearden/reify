@@ -1,0 +1,11 @@
+module main
+
+#cfg(target = "linux")
+import platform_linux
+
+#cfg(target = "wasm")
+import platform_wasm
+
+structure def Entry {
+    param p : Platform
+}

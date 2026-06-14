@@ -120,7 +120,7 @@ pub struct CompiledAssocFnSig {
     pub has_self: bool,
     /// Resolved types of the non-self parameters, in declaration order.
     pub params: Vec<Type>,
-    /// Resolved return type (defaults to `Type::Real` when unannotated).
+    /// Resolved return type (defaults to `Type::dimensionless_scalar()` when unannotated).
     pub return_type: Type,
 }
 
@@ -1121,6 +1121,26 @@ pub struct CompiledConstraint {
     /// this field. A follow-up will extend the solver seam to route through
     /// an `OptimizedImpl` as well.
     pub optimized_target: Option<String>,
+    /// Explicit call-site argument bindings captured at constraint
+    /// instantiation (η/4480). Each entry is `(param_name,
+    /// compiled_arg_expr)` for an argument that was EXPLICITLY passed at the
+    /// `constraint Foo(a: x, ...)` call site. Params that fell back to their
+    /// declared default are NOT recorded.
+    ///
+    /// This is the seam the GD&T conformance pass
+    /// (`Engine::measure_gdt_conformance`) uses to detect a *geometric*
+    /// `Conforms` instance: `Conforms`'s predicate body never references its
+    /// `actual` param, so an explicit `actual` binding cannot be recovered by
+    /// walking the compiled predicate — unlike `RepresentationWithin`, whose
+    /// args ARE its predicate. The presence of `"actual"` here is the signal,
+    /// and the bound `CompiledExpr` is how the pass resolves the geometry to
+    /// measure.
+    ///
+    /// Populated only by `expand_constraint_inst` (the `constraint Foo(...)`
+    /// instantiation path); every other construction site defaults this to an
+    /// empty `Vec`. It is purely additive — the compiled predicate `expr` is
+    /// unchanged whether or not an unused param is explicitly bound (B4).
+    pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
 /// A realization declaration — specifies geometry to produce.
@@ -1228,6 +1248,9 @@ pub enum PrimitiveKind {
     /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
     /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
     Wedge,
+    /// Torus (ring): `torus(major_radius, minor_radius)`. Built at the kernel
+    /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
+    Torus,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1239,6 +1262,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Tube => f.write_str("tube"),
             PrimitiveKind::Cone => f.write_str("cone"),
             PrimitiveKind::Wedge => f.write_str("wedge"),
+            PrimitiveKind::Torus => f.write_str("torus"),
         }
     }
 }
@@ -1269,6 +1293,8 @@ pub enum ModifyKind {
     Shell,
     Draft,
     Thicken,
+    ZoneSlab,
+    OffsetSolid,
 }
 
 impl ModifyKind {
@@ -1285,12 +1311,14 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::Fillet,
         Self::Chamfer,
         Self::Shell,
         Self::Draft,
         Self::Thicken,
+        Self::ZoneSlab,
+        Self::OffsetSolid,
     ];
 
     /// Count of variants — derived from `ALL.len()`, not hand-maintained.
@@ -1309,6 +1337,8 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Shell => f.write_str("shell"),
             ModifyKind::Draft => f.write_str("draft"),
             ModifyKind::Thicken => f.write_str("thicken"),
+            ModifyKind::ZoneSlab => f.write_str("zone_slab"),
+            ModifyKind::OffsetSolid => f.write_str("offset_solid"),
         }
     }
 }
@@ -1320,6 +1350,7 @@ pub enum TransformKind {
     Rotate,
     Scale,
     RotateAround,
+    ApplyTransform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1329,6 +1360,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::Rotate => f.write_str("rotate"),
             TransformKind::Scale => f.write_str("scale"),
             TransformKind::RotateAround => f.write_str("rotate_around"),
+            TransformKind::ApplyTransform => f.write_str("apply_transform"),
         }
     }
 }
@@ -1425,6 +1457,10 @@ pub enum ProfileKind {
     Rectangle,
     /// Circle in the XY plane: `circle(radius)`.
     Circle,
+    /// Closed planar polygon from flat coordinate pairs: `polygon(x1,y1, x2,y2, ...)`.
+    Polygon,
+    /// Ellipse in the XY plane: `ellipse(semi_major, semi_minor)`.
+    Ellipse,
 }
 
 impl std::fmt::Display for ProfileKind {
@@ -1432,6 +1468,8 @@ impl std::fmt::Display for ProfileKind {
         match self {
             ProfileKind::Rectangle => f.write_str("rectangle"),
             ProfileKind::Circle => f.write_str("circle"),
+            ProfileKind::Polygon => f.write_str("polygon"),
+            ProfileKind::Ellipse => f.write_str("ellipse"),
         }
     }
 }
@@ -1548,7 +1586,7 @@ impl CompiledConstraintDef {
 /// | Velocity (L·T⁻¹) | 0=1, 2=-1       | `false` |
 /// | Angle·T⁻¹        | 2=-1, 7=1       | `false` |
 /// | Dimensionless    | all zero         | `false` |
-/// | `Type::Real`     | not a Scalar     | `false` |
+/// | `Type::dimensionless_scalar()`     | not a Scalar     | `false` |
 pub fn is_geometric_param_type(ty: &Type) -> bool {
     if let Type::Scalar { dimension } = ty {
         // At least one of Length (slot 0) or Angle (slot 7) must be nonzero.
@@ -1615,6 +1653,7 @@ mod kind_display_tests {
             (PrimitiveKind::Tube, "tube"),
             (PrimitiveKind::Cone, "cone"),
             (PrimitiveKind::Wedge, "wedge"),
+            (PrimitiveKind::Torus, "torus"),
         ]);
     }
 
@@ -1635,6 +1674,8 @@ mod kind_display_tests {
             (ModifyKind::Shell, "shell"),
             (ModifyKind::Draft, "draft"),
             (ModifyKind::Thicken, "thicken"),
+            (ModifyKind::ZoneSlab, "zone_slab"),
+            (ModifyKind::OffsetSolid, "offset_solid"),
         ]);
     }
 
@@ -1645,6 +1686,7 @@ mod kind_display_tests {
             (TransformKind::Rotate, "rotate"),
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
+            (TransformKind::ApplyTransform, "apply_transform"),
         ]);
     }
 
@@ -1735,10 +1777,10 @@ mod reflective_param_type_predicate_tests {
         );
     }
 
-    /// `Type::Real` and a dimensionless `Type::Scalar` must be excluded.
+    /// `Type::dimensionless_scalar()` and a dimensionless `Type::Scalar` must be excluded.
     #[test]
     fn geometric_excludes_dimensionless_and_real() {
-        assert!(!is_geometric_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_geometric_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
             "Dimensionless Scalar must be excluded"
@@ -1786,7 +1828,7 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
             "TraitObject(\"Rigid\") must be excluded"
         );
-        assert!(!is_material_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_material_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_material_param_type(&Type::length()),
             "Length must be excluded"

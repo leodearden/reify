@@ -73,19 +73,25 @@ fi
 
 # Defensively re-assert the relative gate path so hooks/reference-transaction is
 # live at the exact refs/heads/main move below.  Claude Code's worktree feature
-# can overwrite core.hooksPath to the inert .git/hooks samples dir; this is the
-# guard for the manual-landing path (see task 4380).  When core.hooksPath is
-# already 'hooks' this is a true no-op.
-# TODO(post-4379): switch to `git config --worktree core.hooksPath hooks` once
-#   task 4379 (extensions.worktreeConfig isolation) lands.
-git config core.hooksPath hooks \
-    || { echo 'land.sh: ERROR — could not set core.hooksPath (read-only or locked config); aborting before the main move to avoid landing with a dark gate.' >&2; exit 1; }
+# can overwrite the SHARED core.hooksPath to the inert .git/hooks samples dir;
+# this is the guard for the manual-landing path (see task 4380).  The write goes
+# to the per-worktree config (extensions.worktreeConfig, task 4379), which git
+# reads first — so it beats any shared-config clobber.  When the per-worktree
+# core.hooksPath is already 'hooks' this is a true no-op.  If worktreeConfig is
+# not enabled, git config --worktree errors and we fail loudly below.
+git config --worktree core.hooksPath hooks \
+    || { echo 'land.sh: ERROR — could not set per-worktree core.hooksPath (extensions.worktreeConfig missing, or read-only/locked config); aborting before the main move to avoid landing with a dark gate.' >&2; exit 1; }
 
 # Sanction the upcoming refs/heads/main move for hooks/reference-transaction.
 # shellcheck source=hooks/main-gate-lib.sh
 . "$ROOT/hooks/main-gate-lib.sh"
 main_gate_mark
 
+# Run the merge gate as role=merge so the held test-run slot and PSI gate exempt
+# the manual-land path — without this a manual land queues behind a task slot
+# (merge-starvation / livelock; PRD §5 D5). Exporting propagates the role to the
+# pre-merge-commit child spawned by git merge.
+export DF_VERIFY_ROLE=merge
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
 if git merge --no-ff "$BRANCH"; then
     landed="$(git rev-parse HEAD)"

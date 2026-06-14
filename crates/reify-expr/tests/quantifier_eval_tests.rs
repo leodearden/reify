@@ -565,10 +565,10 @@ fn forall_cell_iteration_with_determinacy_predicate_returns_false_when_one_undet
     // cell-iteration trigger only fires on placeholder-derived lists).
     let collection = CompiledExpr::reflective_cell_list(
         vec![
-            CompiledExpr::value_ref(cell_a.clone(), Type::Real),
-            CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(cell_b.clone(), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     // Predicate: determined($loop_var)
@@ -620,10 +620,10 @@ fn exists_cell_iteration_with_determinacy_predicate_returns_true_when_one_determ
     // Collection: ReflectiveCellList (task-2458: narrowed from ListLiteral).
     let collection = CompiledExpr::reflective_cell_list(
         vec![
-            CompiledExpr::value_ref(cell_a.clone(), Type::Real),
-            CompiledExpr::value_ref(cell_b.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_a.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(cell_b.clone(), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     let predicate =
@@ -674,18 +674,18 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
     // Collection: `[E.x, E.y]` — a user could legally write this.
     let collection = CompiledExpr::list_literal(
         vec![
-            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     // Predicate: `p > 0` — references the loop var via ValueRef. Value-iteration
     // binds `p` to E.x's value / E.y's value per iteration; both are positive.
     let predicate = CompiledExpr::binop(
         BinOp::Gt,
-        CompiledExpr::value_ref(loop_var.clone(), Type::Real),
-        CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        CompiledExpr::value_ref(loop_var.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         Type::Bool,
     );
 
@@ -711,16 +711,16 @@ fn forall_user_written_list_of_value_refs_with_arithmetic_predicate_works() {
 
     let predicate2 = CompiledExpr::binop(
         BinOp::Gt,
-        CompiledExpr::value_ref(ValueCellId::new("$quant0.S", "p"), Type::Real),
-        CompiledExpr::literal(Value::Real(0.0), Type::Real),
+        CompiledExpr::value_ref(ValueCellId::new("$quant0.S", "p"), Type::dimensionless_scalar()),
+        CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         Type::Bool,
     );
     let collection2 = CompiledExpr::list_literal(
         vec![
-            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
     let expr2 = make_quantifier(
         QuantifierKind::ForAll,
@@ -759,10 +759,10 @@ fn forall_user_written_value_ref_list_uses_value_iteration_not_cell_iteration() 
     // Collection: user-authored ListLiteral of ValueRefs (not a ReflectiveCellList).
     let collection = CompiledExpr::list_literal(
         vec![
-            CompiledExpr::value_ref(cell_x.clone(), Type::Real),
-            CompiledExpr::value_ref(cell_y.clone(), Type::Real),
+            CompiledExpr::value_ref(cell_x.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(cell_y.clone(), Type::dimensionless_scalar()),
         ],
-        Type::List(Box::new(Type::Real)),
+        Type::List(Box::new(Type::dimensionless_scalar())),
     );
 
     // Predicate: determined($loop_var) — the path-divergence witness.

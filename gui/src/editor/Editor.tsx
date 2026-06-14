@@ -15,14 +15,21 @@ import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToC
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import { occurrenceHighlightExtension } from './occurrenceHighlight';
-import { renameCommand, type RenameUi } from './rename';
+import {
+  renameCommand,
+  applyWorkspaceEdit,
+  applyWorkspaceEditAcrossFiles,
+  applyTextEditsToString,
+  type RenameUi,
+  type ApplyEditFn,
+} from './rename';
 import { findUsesCommand, type ReferenceResult } from './references';
 import { createNavHistory } from '../hooks/useNavHistory';
 import type { NavEntry } from '../hooks/useNavHistory';
 import type { createEditorStore } from '../stores/editorStore';
 import type { FileData, SourceLocation, DiagnosticInfo } from '../types';
 import { errorMessage } from '../utils/errorClassifier';
-import { isSameFile, normalizePath, pathToUri } from '../utils/pathUtils';
+import { isSameFile, normalizePath, pathToUri, workspaceRootUriForFile, canonicalizeKey } from '../utils/pathUtils';
 import styles from './Editor.module.css';
 
 // Intentionally shared by both the backend source-sync debounce (updateSource)
@@ -292,6 +299,68 @@ export function Editor(props: EditorProps) {
       },
     };
 
+    // Multi-file WorkspaceEdit applicator for F2 rename.
+    //
+    // Wires applyWorkspaceEditAcrossFiles with concrete sinks:
+    //   active file      → applyWorkspaceEdit (single CM dispatch, flows through
+    //                       updateListener → markDirty + updateSource + didChange)
+    //   open-inactive    → applyTextEditsToString + store + disk + LSP didChange
+    //                       + invalidate fileStates cache so tab-switch re-renders
+    //   closed file      → read disk via bridgeOpenFile + applyTextEditsToString
+    //                       + saveFile (no tab opened)
+    const applyEditFn: ApplyEditFn = (cmView, edit, activeUri) => {
+      applyWorkspaceEditAcrossFiles(edit, activeUri, {
+        isOpen: (uri) => {
+          const key = canonicalizeKey(uri);
+          return props.store.state.openFiles.some((f) => f.path === key);
+        },
+        applyActive: (uri, edits) => {
+          // Route through the live CM view so the rename is a single undo-able
+          // transaction and flows through the updateListener's dirty / sync path.
+          applyWorkspaceEdit(cmView, { changes: { [uri]: edits } }, uri);
+        },
+        applyOpenInactive: (uri, edits) => {
+          const key = canonicalizeKey(uri);
+          const file = props.store.state.openFiles.find((f) => f.path === key);
+          if (!file) return;
+          const newContent = applyTextEditsToString(file.content, edits);
+          // Reflect edits in the store so the file-switch effect picks up the
+          // new content when the user switches to this tab.
+          props.store.updateFileContent(file.path, newContent);
+          // Persist to disk.
+          saveFile(file.path, newContent).catch((err: unknown) =>
+            console.error('rename: failed to save inactive buffer', err),
+          );
+          // Notify the LSP server (file may not be LSP-open yet — ignore any error).
+          lspVersion++;
+          lspClient
+            .didChange(uri, newContent, lspVersion)
+            .catch((_err: unknown) => {
+              /* file may not be didOpen'd in LSP yet — ignore */
+            });
+          // Invalidate cached EditorState so switching to this tab reloads from
+          // the updated store content rather than the pre-rename CM snapshot.
+          // Use pathToUri(key) — the same decoded, non-percent-encoded form that
+          // fileStates entries are keyed by — rather than the raw WorkspaceEdit URI
+          // (which may be percent-encoded by Url::from_file_path on the backend).
+          // For ASCII-only paths both are equal; for paths with spaces/non-ASCII the
+          // raw URI would be a no-op delete and leave a stale EditorState in the map.
+          fileStates.delete(pathToUri(key));
+        },
+        applyClosed: (uri, edits) => {
+          const path = normalizePath(uri);
+          bridgeOpenFile(path)
+            .then((fileData) => {
+              const newContent = applyTextEditsToString(fileData.content, edits);
+              return saveFile(fileData.path, newContent);
+            })
+            .catch((err: unknown) =>
+              console.error('rename: failed to write closed file', err),
+            );
+        },
+      });
+    };
+
     // Extract extensions into a shared variable for reuse when creating
     // fresh EditorState instances for newly opened files
     extensions = [
@@ -329,7 +398,7 @@ export function Editor(props: EditorProps) {
           // and applying the WorkspaceEdit dispatches one CM change that flows
           // through the updateListener below → markDirty + updateSource + didChange.
           key: 'F2',
-          run: renameCommand(() => currentUri, lspClient, renameUi),
+          run: renameCommand(() => currentUri, lspClient, renameUi, applyEditFn),
           preventDefault: true,
         },
         {
@@ -498,9 +567,13 @@ export function Editor(props: EditorProps) {
       window.__REIFY_DEBUG__.editorView = view;
     }
 
-    // Initialize LSP, send 'initialized' notification, then open the document
+    // Initialize LSP, send 'initialized' notification, then open the document.
+    // Pass the workspace root URI (directory of the active .ri file) so the
+    // backend sets workspace_root and activates κ cross-file references/rename.
+    // When no file is active, workspaceRootUriForFile returns undefined which
+    // preserves the existing single-file fallback behaviour.
     lspClient
-      .initialize()
+      .initialize(workspaceRootUriForFile(activeFile))
       .then(() => lspClient.initialized())
       .then(() => {
         if (activeFile) {

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexSet;
 
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePathParseError, SourceSpan};
+use reify_ir::ConstraintChecker;
 
 use crate::cfg::{CfgSet, cfg_satisfied};
 use crate::CompiledModule;
@@ -868,10 +869,46 @@ pub fn merge_imported_pub_templates(
 /// uniformly. A *gated-out* import is inert (its module is never resolved), so
 /// it can never produce such an error (mirrors γ's
 /// `cfg_gating_unsatisfied_import_never_resolved`).
+///
+/// Delegates to [`compile_entry_with_stdlib_cfg_checked`] with the default
+/// [`crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// stub. For callers that need to inject a real [`ConstraintChecker`], use
+/// [`compile_entry_with_stdlib_cfg_checked`] directly.
 pub fn compile_entry_with_stdlib_cfg(
     parsed: &reify_ast::ParsedModule,
     resolver: &ModuleResolver,
     cfg: &CfgSet,
+) -> CompiledModule {
+    compile_entry_with_stdlib_cfg_checked(
+        parsed,
+        resolver,
+        cfg,
+        &crate::compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+    )
+}
+
+/// Like [`compile_entry_with_stdlib_cfg`], but accepts an explicit
+/// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility.
+///
+/// Recursive import compiles (inside the DAG walk) keep the stub checker to
+/// bound β's blast radius per design decision §4. Only the entry module's
+/// compile call (`compile_with_prelude_context_checked`) receives `checker`.
+///
+/// **Entry/import asymmetry — constant constraints:** this boundary is
+/// intentional but is visible for constant-foldable constraints (e.g.
+/// `constraint 0 > 1`): a module with such a constraint will have its
+/// `auto:` candidates rejected when compiled as the *entry* (real checker
+/// applied) but accepted when compiled as an *import* (stub → Indeterminate).
+/// For cell-dependent constraints the compile-time `ValueMap` is empty (Undef),
+/// so both paths return `Indeterminate` and no divergence is observable.
+/// The integration test `compile_entry_with_stdlib_cfg_checked_import_uses_stub`
+/// pins this as a regression guard. Threading `checker` into DAG-walk import
+/// compiles for consistent cross-role resolution is left as a follow-up.
+pub fn compile_entry_with_stdlib_cfg_checked(
+    parsed: &reify_ast::ParsedModule,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
     let mut dag = ModuleDag::with_cfg(cfg.clone());
 
@@ -893,6 +930,7 @@ pub fn compile_entry_with_stdlib_cfg(
     // Compile each followed import. Collect — do NOT early-return on —
     // import-compile errors so a broken import still lets the entry compile
     // (with the failure surfaced as a diagnostic below).
+    // NOTE: recursive import compiles use the stub checker (bounded blast radius).
     let mut import_error_diags: Vec<Diagnostic> = Vec::new();
     for import in &followed_imports {
         if let Err(diags) = dag.compile_module(&import.path, resolver) {
@@ -919,7 +957,11 @@ pub fn compile_entry_with_stdlib_cfg(
             .chain(user_import_refs.iter().copied())
             .collect();
 
-        crate::compile_with_prelude_context(parsed, &crate::PreludeContext::new(&prelude_refs))
+        crate::compile_with_prelude_context_checked(
+            parsed,
+            &crate::PreludeContext::new(&prelude_refs),
+            checker,
+        )
     };
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ). The entry source

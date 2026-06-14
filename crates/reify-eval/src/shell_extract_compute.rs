@@ -4,31 +4,37 @@
 //! See `docs/prds/v0_4/shell-extract-engine-bridge.md` §4–§8 and
 //! `docs/prds/v0_3/compute-node-contract.md` §4 for the full specification.
 //!
-//! # γ-only SampledField seam
+//! # Dual-source SDF input (task ε, #4511)
 //!
-//! PRD §5 contract: `value_inputs=[options: ElasticOptions]`,
-//! `realization_inputs=[body_geom: BRep or Mesh]`. However,
-//! `RealizationReadHandle` content accessors are deferred to δ/ε/ζ per
-//! `engine_compute.rs:104-110`. For γ the trampoline reads the geometry SDF
-//! from `value_inputs[1]` (a `Value::SampledField`) with an inline
-//! `// γ-only seam` comment. Tasks δ/ε will migrate it to
-//! `realization_inputs[0]` once the realization-read API lands.
+//! The trampoline implements the dual-source SDF selection specified in
+//! `docs/prds/v0_6/realization-read-api.md` §9 task ε / D3:
+//!
+//! 1. **Prefer `realization_inputs[0].sdf()`** when the handle is present and
+//!    its content is `RealizedContent::Sdf`.
+//! 2. **Fall back to `value_inputs[1]`** (`Value::SampledField`) — the
+//!    production slab path (task γ, #3834), retained as the live route until
+//!    real-body realization wiring lands in task ζ (#4091).
+//! 3. **Fail** with a dual-source diagnostic when neither is available.
+//!
+//! Realization-read API migration history (task ids, not Greek letters — two
+//! PRDs' namespaces collide): α=#4507, β=#4508, δ=#4510, γ=#4514, ε=#4511.
+//! See `docs/prds/v0_6/realization-read-api.md` for the full migration plan.
 //!
 //! # Cancellation granularity
 //!
-//! Per PRD §11 OQ-5 (decided during γ): cancellation is polled at each of
-//! the five phase boundaries (medial-mask, mid-surface, prune, mesh, segment)
-//! rather than per-voxel. Per-phase polling is sufficient for sub-100ms
-//! synthetic-slab runs; tighter inner-loop granularity can land in ε or a
-//! follow-up without interface breakage.
+//! Per PRD §11 OQ-5 (decided during γ, #3834): cancellation is polled at
+//! each of the five phase boundaries (medial-mask, mid-surface, prune, mesh,
+//! segment) rather than per-voxel. Per-phase polling is sufficient for
+//! sub-100ms synthetic-slab runs; tighter inner-loop granularity can land in
+//! a follow-up task without interface breakage.
 
 use std::hash::{Hash, Hasher};
 
 use reify_core::Diagnostic;
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
-    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, StructureInstanceData,
-    StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
+    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, SampledField,
+    StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_shell_extract::{
     GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
@@ -323,37 +329,52 @@ fn parse_elastic_options_from_value(
 
 /// Synchronous compute trampoline for `"shell-extract::extract"`.
 ///
-/// # Inputs (γ-only shape)
+/// # Inputs
 ///
 /// - `value_inputs[0]`: `Value::StructureInstance("ElasticOptions")` or
 ///   `Value::Undef` (use producer defaults)
-/// - `value_inputs[1]`: `Value::SampledField` carrying the SDF of the body
-///   geometry — **γ-only seam**; tasks δ/ε will migrate this to
-///   `realization_inputs[0]` once `RealizationReadHandle` content accessors land.
+/// - `realization_inputs[0]` *(preferred)*: a [`RealizationReadHandle`] whose
+///   `sdf()` returns `Some(&SampledField)` — the body geometry SDF sourced
+///   from the realization pipeline (task ε, #4511 / realization-read-api.md §9).
+/// - `value_inputs[1]` *(fallback)*: `Value::SampledField` — the slab SDF
+///   produced by `build_slab_sdf` in the production FEA path (task γ, #3834).
+///   Used when `realization_inputs[0].sdf()` is absent or `None`.
+///
+/// At least one of the two SDF sources must be present; if neither is, the
+/// trampoline returns `ComputeOutcome::Failed` with a dual-source diagnostic.
 ///
 /// # Cancellation
 ///
 /// Polled at each of the five phase boundaries (medial-mask, mid-surface,
 /// prune, mesh, segment). Per PRD §11 OQ-5: per-phase polling is sufficient
-/// for synthetic-slab runtimes; tighter inner-loop granularity deferred to ε.
+/// for synthetic-slab runtimes; tighter inner-loop granularity can land in a
+/// follow-up task without interface breakage.
 pub fn shell_extract_compute_fn(
     value_inputs: &[Value],
-    _realization_inputs: &[RealizationReadHandle],
+    realization_inputs: &[RealizationReadHandle],
     options: &Value,
     _prior_warm_state: Option<&OpaqueState>,
     cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    // ── Read SampledField from value_inputs[1] (γ-only seam) ─────────────────
-    let sdf = match value_inputs.get(1) {
-        Some(Value::SampledField(sf)) => sf,
-        _ => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(
-                    "shell-extract::extract: value_inputs[1] must be Value::SampledField \
-                     (γ-only seam; δ migrates to realization_inputs[0])",
-                )],
-            };
-        }
+    // ── Dual-source SDF read: prefer realization_inputs[0].sdf(), fall back to
+    // value_inputs[1] Value::SampledField (realization-read-api.md §9 ε / D3,
+    // task ε=#4511). ──────────────────────────────────────────────────────────
+    let sdf: &SampledField = match realization_inputs.first().and_then(|h| h.sdf()) {
+        Some(sf) => sf,
+        None => match value_inputs.get(1) {
+            Some(Value::SampledField(sf)) => sf,
+            _ => {
+                return ComputeOutcome::Failed {
+                    diagnostics: vec![Diagnostic::error(
+                        "shell-extract::extract: no body SDF available — neither \
+                         realization_inputs[0].sdf() nor value_inputs[1] \
+                         (Value::SampledField) is present. Provide the body geometry \
+                         SDF via one of these two sources \
+                         (realization-read-api.md §9 ε / D3, task #4511).",
+                    )],
+                };
+            }
+        },
     };
 
     // ── Parse options ─────────────────────────────────────────────────────────
@@ -398,6 +419,26 @@ pub fn shell_extract_compute_fn(
     // ── Phase 2: mid-surface extraction ───────────────────────────────────
     if cancellation.is_cancelled() {
         return ComputeOutcome::Cancelled;
+    }
+
+    // PRD §7 row 6 — E_SHELL_NO_MEDIAL: medial-mask phase succeeded but
+    // produced zero medial voxels. The body is fully solid (every voxel lies
+    // outside the narrow band) or the voxel resolution is too coarse to
+    // detect any interior surface. Short-circuit before Phase 2 so that
+    // extract_mid_surface never receives an empty mask.
+    // Cancellation check precedes this guard so Cancelled always wins.
+    if medial_mask.voxels.is_empty() {
+        return ComputeOutcome::Failed {
+            diagnostics: vec![
+                Diagnostic::error(format!(
+                    "shell-extract::extract: medial-mask phase: no medial axis found \
+                     — body '{}' may be too degenerate for shell extraction \
+                     (geometry fully solid or voxel resolution too coarse)",
+                    sdf.name
+                ))
+                .with_code(reify_core::DiagnosticCode::ShellNoMedial),
+            ],
+        };
     }
     let raw_mesh = match extract_mid_surface(sdf, &medial_mask, &mid_surf_opts) {
         Ok(m) => m,

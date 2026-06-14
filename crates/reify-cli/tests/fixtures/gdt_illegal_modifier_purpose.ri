@@ -1,0 +1,24 @@
+// gdt_illegal_modifier_purpose.ri — GD&T β + purpose combined fixture.
+//
+// Contains an illegal GD&T callout (Flatness with MMC modifier) and a purpose
+// with a deliberately satisfiable constraint. Used by task 4589 CLI e2e tests
+// to verify that `reify check --purpose` enforces GD&T legality:
+//  - The ONLY source of a non-zero exit is the GdtIllegalModifier escalation.
+//  - The purpose constraint itself is satisfied (80mm > 0mm), so the exit
+//    is not caused by a constraint violation or a purpose-activation failure.
+//
+// Compiles CLEAN (legality is a check-time lint, not a compile error).
+
+structure FlatnessMmcPurpose {
+    param width : Length = 80mm
+
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}

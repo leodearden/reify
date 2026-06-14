@@ -38,7 +38,6 @@ fn is_scalar_like_leaf(ty: &Type) -> bool {
         ty,
         Type::Bool
             | Type::Int
-            | Type::Real
             | Type::String
             | Type::Scalar { .. }
             | Type::Enum(_)
@@ -59,7 +58,7 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
     //
     // CONSUMER side (`to.is_error()`): declared annotations are resolved via
     // `resolve_type_with_aliases`, which always falls back to a concrete type
-    // (e.g. Type::Real, Type::StructureRef) — Type::Error never legitimately
+    // (e.g. Type::dimensionless_scalar(), Type::StructureRef) — Type::Error never legitimately
     // appears as the expected/declared type. The debug_assert below catches any
     // call site that accidentally passes Error as `to` (a bug, not a cascade).
     // In release builds the short-circuit preserves cascade safety as a
@@ -212,7 +211,7 @@ pub fn implicitly_converts_to(from: &Type, to: &Type) -> bool {
 ///
 /// `param_ty.is_error()` **must never legitimately occur**: production call sites
 /// pass types that originate from `resolve_type_with_aliases`, which always falls
-/// back to a concrete type (e.g. `Type::Real`, `Type::StructureRef`) and never
+/// back to a concrete type (e.g. `Type::dimensionless_scalar()`, `Type::StructureRef`) and never
 /// returns `Type::Error`. The debug_assert below catches any future regression,
 /// including the two recursive calls in the body below (both safe by the same
 /// invariants). In release builds the short-circuit preserves cascade safety as
@@ -229,8 +228,10 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
     if param_ty.is_error() || arg_ty.is_error() {
         return true;
     }
-    // Allow Int→Real widening coercion
-    if matches!((param_ty, arg_ty), (Type::Real, Type::Int)) {
+    // Allow Int→dimensionless-scalar widening coercion
+    if let (Type::Scalar { dimension }, Type::Int) = (param_ty, arg_ty)
+        && dimension.is_dimensionless()
+    {
         return true;
     }
     // PRD §4.4 (task 4117 β): Selector(_) arg coerces ONE-DIRECTIONALLY to a
@@ -283,13 +284,17 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 ///
 /// **Policy: strict equality, not bidirectional `type_compatible`.**
 ///
-/// Call-site overload resolution (`resolve_function_overload`) and
-/// `try_default_padding`'s prefix check both use exact type equality — `f(1)` is
-/// already rejected today for `fn f(x: Real)` because `Type::Int != Type::Real`.
-/// A default value is conceptually inserted at the padded call site, so the
-/// definition-site check must be at least as strict as the call-site check;
-/// otherwise a default could synthesize an argument that an explicit call would
-/// refuse, creating a type-system inconsistency.
+/// The definition-site default-expression check must be at least as strict as
+/// the call-site check so that a default cannot synthesize an argument that an
+/// explicit call would refuse, creating a type-system inconsistency.  Strict
+/// equality is correct here because a struct-ctor default (e.g. `ElasticOptions()`)
+/// already produces exactly the param's `StructureRef` type — so the check
+/// passes without any relaxation.
+///
+/// Note: `try_default_padding`'s PREFIX check (whether the provided args match
+/// the leading params) uses the same trait/type-param wildcard predicate as
+/// `resolve_function_overload` — it is NOT strict equality.  Only this
+/// definition-site default-expression-vs-param-type check is strict.
 ///
 /// **Anti-cascade guard.** If either type is `Type::Error` (poison sentinel from
 /// a failed `compile_expr`), silently accept — the root-cause diagnostic was
@@ -297,7 +302,7 @@ pub fn type_compatible(param_ty: &Type, arg_ty: &Type) -> bool {
 /// and `type_compatible` (task-448 / task-1918 cascade-safety contract).
 ///
 /// Note: `param_ty` is always a concrete resolved type (never `Type::Error`) in
-/// production — `resolve_type_expr_with_aliases` always falls back to `Type::Real`
+/// production — `resolve_type_expr_with_aliases` always falls back to `Type::dimensionless_scalar()`
 /// on failure. The `param_ty.is_error()` branch is therefore dead code in practice
 /// but is included for symmetry and belt-and-braces safety.
 pub(crate) fn fn_param_default_compatible(param_ty: &Type, default_ty: &Type) -> bool {
@@ -363,6 +368,12 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
 /// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
 /// variant forces a compile-time decision here, in lock-step with the sibling
 /// `unify` / `substitute_type_params` walks.
+///
+/// See also [`type_carries_dim_param`] for the sibling predicate that covers
+/// dimension-kinded parameters (`Type::ScalarParam`). The two predicates are
+/// kept separate because dimension params are a distinct kind (D7) — they are
+/// NOT substituted by type-param logic. The overload-resolution wildcard ORs
+/// them together at two sites.
 pub(crate) fn type_carries_type_param(t: &Type) -> bool {
     match t {
         // The type-parameter leaf itself.
@@ -400,7 +411,6 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         // All remaining leaves carry no inner `Type`.
         Type::Bool
         | Type::Int
-        | Type::Real
         | Type::String
         | Type::Scalar { .. }
         | Type::Enum(_)
@@ -413,9 +423,94 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::AffineMap(_)
         | Type::Plane
         | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
+        // Dimension-param scalar: carries no *type* param; dimension binding is
+        // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
+        // `type_carries_dim_param` — not by type-param substitution.
+        | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Whether `t` (or any type nested within it) carries a dimension-kinded
+/// parameter (`Type::ScalarParam`).
+///
+/// This is the sibling of [`type_carries_type_param`] for dimension params.
+/// It uses the SAME constructor recursion (List/Set/Keyed/Option/Complex/Range;
+/// Map; Field; Function params+return; Point/Vector/Tensor/Matrix quantity;
+/// Union) and returns `true` at the `ScalarParam(_)` leaf, `false` at all
+/// other leaves.
+///
+/// The match is intentionally exhaustive (no `_` wildcard) so that a new
+/// `Type` variant forces a compile-time decision here, in lock-step with
+/// `type_carries_type_param`, `unify`, and `substitute_type_params`.
+///
+/// Wired into the generic-candidate wildcard in `resolve_function_overload`
+/// and `try_default_padding` (OR'd with `type_carries_type_param`) so that
+/// a `Scalar<Q>` parameter is recognised as a generic wildcard slot (task 4235
+/// ζ / D8).
+pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // All remaining leaves carry no `ScalarParam`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Type-param leaf: carries no *dimension* param.
+        | Type::TypeParam(_)
         | Type::Error => false,
     }
 }
@@ -585,10 +680,26 @@ pub(crate) fn unify(
         | (Type::Matrix { .. }, _)
         | (Type::Union(_), _) => Ok(()),
 
+        // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
+        // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing
+        // re-bind = Err(TypeArgConflict)). For non-Scalar args the arm falls
+        // through to the leaves block and binds nothing (conservative per D8).
+        (Type::ScalarParam(p), Type::Scalar { .. }) => match subst.get(p) {
+            None => {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            Some(existing) if existing == arg => Ok(()),
+            Some(existing) => Err(TypeArgConflict {
+                param: p.clone(),
+                existing: existing.clone(),
+                incoming: arg.clone(),
+            }),
+        },
+
         // True leaves (no inner `Type` to bind):
         (Type::Bool, _)
         | (Type::Int, _)
-        | (Type::Real, _)
         | (Type::String, _)
         | (Type::Scalar { .. }, _)
         | (Type::Enum(_), _)
@@ -601,9 +712,16 @@ pub(crate) fn unify(
         | (Type::AffineMap(_), _)
         | (Type::Plane, _)
         | (Type::Axis, _)
+        | (Type::Direction, _)
+        // Relation directive (γ): a leaf with no inner `Type` to bind.
+        | (Type::Relation, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)
+        // Dimension-param scalar against a non-Scalar arg: binds nothing (the
+        // ScalarParam vs Scalar{..} case is handled by the arm above; reaching
+        // this leaf means arg is not a concrete Scalar).
+        | (Type::ScalarParam(_), _)
         | (Type::Error, _) => Ok(()),
     }
 }
@@ -662,7 +780,9 @@ pub(crate) fn resolve_function_overload<'a>(
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
                         type_carries_trait_object(param_ty)
-                            || (is_generic && type_carries_type_param(param_ty))
+                            || (is_generic
+                                && (type_carries_type_param(param_ty)
+                                    || type_carries_dim_param(param_ty)))
                             || type_carries_type_param(arg_ty)
                             || param_ty == arg_ty
                     })
@@ -842,6 +962,31 @@ pub(crate) fn modulo_operands_are_int(left: &Type, right: &Type) -> bool {
     matches!(left, Type::Int) && matches!(right, Type::Int)
 }
 
+/// Returns `true` if `expr` is a syntactic literal zero as defined in §7.2:
+///
+/// - `NumberLiteral { value == 0.0 }` — covers both `0` (`is_real:false`) and
+///   `0.0` (`is_real:true`).
+/// - `UnOp { op: "-", operand }` where `operand` is itself a syntactic zero
+///   (recursive) — covers `-0`, `-0.0`, and double-negated forms like `--0`.
+///
+/// HARD BOUND: a constant-folded zero written as `1 - 1` is an
+/// `ExprKind::BinOp`, NOT a `NumberLiteral`, so it returns `false` here.
+/// This preserves the §7.2 contract that coercion applies only to syntactic
+/// literal zeros, not to computed expressions that happen to evaluate to zero.
+///
+/// Colocated with `is_comparison_op` / `modulo_operands_are_int` as a pure,
+/// unit-testable predicate; diagnostic emission / rewrite lives in
+/// `expr.rs::compile_binop` (task-4485/β).
+pub(crate) fn is_syntactic_zero_literal(expr: &reify_ast::Expr) -> bool {
+    match &expr.kind {
+        reify_ast::ExprKind::NumberLiteral { value, .. } => *value == 0.0,
+        reify_ast::ExprKind::UnOp { op, operand } if op == "-" => {
+            is_syntactic_zero_literal(operand)
+        }
+        _ => false,
+    }
+}
+
 /// Parse a string unary operator into a `UnOp`.
 pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
     match op {
@@ -883,20 +1028,13 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
                     right.clone()
                 }
             }
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Div => match (left, right) {
             (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                let result = ld.div(rd);
-                if result.is_dimensionless() {
-                    Type::Real
-                } else {
-                    Type::Scalar { dimension: result }
-                }
+                Type::Scalar { dimension: ld.div(rd) }
             }
             (Type::Scalar { .. }, _) => left.clone(),
-            (Type::Real, _) | (_, Type::Real) => Type::Real,
             _ => Type::Int,
         },
         BinOp::Mod => left.clone(),
@@ -908,16 +1046,42 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 ///
 /// Searches `named` for the UNIQUE same-name candidate where:
 /// - the candidate has more params than `provided` args,
-/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]` exactly, and
+/// - the provided prefix `arg_types[..provided]` matches `cand.params[..provided]`
+///   using the same trait/type-param wildcard predicate as
+///   `resolve_function_overload` (see below), and
 /// - every trailing `cand.param_defaults[provided..]` is `Some`.
+///
+/// **Prefix predicate (mirrors `resolve_function_overload`):**
+/// For each `(param_ty, arg_ty)` pair in the provided prefix, the pair
+/// *matches* when any of:
+/// - `type_carries_trait_object(param_ty)` — trait-object param is a wildcard;
+///   the concrete arg type's trait conformance is validated downstream by
+///   `phase_fn_arg_conformance`, not here.
+/// - `is_generic && type_carries_type_param(param_ty)` — type-param-carrying
+///   param in a generic candidate is a wildcard (gated on non-empty `type_params`
+///   so concrete candidates are unaffected — INV-6).
+/// - `type_carries_type_param(arg_ty)` — a TypeParam-typed arg (inside a
+///   generic fn body) matches any param type (D4, task-4232 γ).
+/// - `param_ty == arg_ty` — exact equality for concrete params.
+///
+/// This alignment is intentional: a call padded with defaults is compiled as a
+/// normal `UserFunctionCall` whose trait-arg conformance is checked by
+/// `phase_fn_arg_conformance`. Using stricter prefix semantics here than in the
+/// overload resolver created a gap where `options` defaults on solver functions
+/// were unreachable for any call involving trait-typed leading params (e.g. a
+/// `ConstitutiveLaw`/`ElasticMaterial` material arg or a `List<Load>` loads
+/// arg). (task-4544.)
 ///
 /// `provided` is `arg_types.len()` — callers no longer pass `compiled_args`
 /// because only its length was used and `arg_types` is always length-aligned
 /// to `compiled_args` by construction (task-3702).
 ///
 /// If exactly one such candidate exists, returns it together with the cloned default
-/// `CompiledExpr`s for the trailing params. Returns `None` when zero or multiple
-/// candidates are satisfiable (caller falls through to the existing NoMatch error).
+/// `CompiledExpr`s for the trailing params. When multiple candidates are satisfiable,
+/// prefers the subset whose prefix matches by strict `param_ty == arg_ty` (mirrors
+/// `resolve_function_overload`'s exact-match tie-break); if that subset has exactly
+/// one entry it is returned, otherwise `None`. Returns `None` when zero candidates
+/// are satisfiable (caller falls through to the existing NoMatch error).
 ///
 /// **Invariant:** every candidate in `named` must satisfy
 /// `param_defaults.len() == params.len()` (task-3702 strict alignment now
@@ -950,11 +1114,21 @@ pub(crate) fn try_default_padding<'a>(
         if cand.param_defaults.len() != cand.params.len() {
             continue;
         }
-        // Provided prefix types must match candidate params exactly.
+        // Provided prefix types must match candidate params using the same
+        // trait/type-param wildcard predicate as `resolve_function_overload`.
+        // See the function-level doc for the full rationale.
+        let is_generic = !cand.type_params.is_empty();
         let prefix_matches = cand.params[..provided]
             .iter()
             .zip(arg_types[..provided].iter())
-            .all(|((_, param_ty), arg_ty)| param_ty == arg_ty);
+            .all(|((_, param_ty), arg_ty)| {
+                type_carries_trait_object(param_ty)
+                    || (is_generic
+                        && (type_carries_type_param(param_ty)
+                            || type_carries_dim_param(param_ty)))
+                    || type_carries_type_param(arg_ty)
+                    || param_ty == arg_ty
+            });
         if !prefix_matches {
             continue;
         }
@@ -970,7 +1144,34 @@ pub(crate) fn try_default_padding<'a>(
 
     match satisfiable.len() {
         1 => Some(satisfiable.into_iter().next().unwrap()),
-        _ => None,
+        0 => None,
+        _ => {
+            // Multiple candidates pass the wildcard prefix — prefer the subset
+            // whose prefix matches by strict equality (mirrors
+            // `resolve_function_overload`'s exact-match tie-break).
+            //
+            // When the exact subset is empty (all wildcard) or has more than
+            // one entry (two exact matches), we return None and let the caller
+            // fall through to its generic NoMatch error.  This is an
+            // intentional UX trade-off: a genuinely ambiguous defaultable call
+            // surfaces "no matching overload" rather than a dedicated Ambiguous
+            // diagnostic.  Defaultable-overload ambiguity is rare in practice;
+            // if a clearer user-facing diagnostic is ever warranted, this arm
+            // could surface an Ambiguous result before returning None.
+            let exact: Vec<_> = satisfiable
+                .into_iter()
+                .filter(|(cand, _)| {
+                    cand.params[..provided]
+                        .iter()
+                        .zip(arg_types[..provided].iter())
+                        .all(|((_, param_ty), arg_ty)| param_ty == arg_ty)
+                })
+                .collect();
+            match exact.len() {
+                1 => Some(exact.into_iter().next().unwrap()),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -989,7 +1190,7 @@ mod tests {
     fn stub_body() -> CompiledFnBody {
         CompiledFnBody {
             let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            result_expr: CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         }
     }
 
@@ -1006,7 +1207,7 @@ mod tests {
             is_pub: false,
             params,
             param_defaults,
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body(),
             content_hash: ContentHash::of_str(name),
             annotations: vec![],
@@ -1050,7 +1251,7 @@ mod tests {
             "g",
             vec![
                 ("j", Type::TraitObject("DrivingJoint".to_string())),
-                ("k", Type::Real),
+                ("k", Type::dimensionless_scalar()),
             ],
         )];
         // arg k is Int, not Real → no match
@@ -1069,8 +1270,8 @@ mod tests {
     /// Must hold both before and after step-2 (no regression).
     #[test]
     fn overload_all_concrete_fn_unchanged() {
-        let fns = vec![make_fn("h", vec![("x", Type::Real)])];
-        let resolved = resolve_function_overload("h", &[Type::Real], &fns);
+        let fns = vec![make_fn("h", vec![("x", Type::dimensionless_scalar())])];
+        let resolved = resolve_function_overload("h", &[Type::dimensionless_scalar()], &fns);
         assert!(
             matches!(resolved, OverloadResolution::Resolved(_)),
             "h(Real) should resolve on Real arg"
@@ -1200,19 +1401,19 @@ mod tests {
     fn fmt_dim_mismatch_non_scalar_does_not_panic() {
         // Left non-Scalar, right Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::Real, &force_ty(), test_span());
+            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &force_ty(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Left Scalar, right non-Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::Real, test_span());
+            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::dimensionless_scalar(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Both non-Scalar
         let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::Real, &Type::Real, test_span());
+            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &Type::dimensionless_scalar(), test_span());
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }
@@ -1228,7 +1429,7 @@ mod tests {
     #[test]
     fn binop_mul_right_error_yields_error() {
         assert_eq!(
-            infer_binop_type(BinOp::Mul, &Type::Real, &Type::Error),
+            infer_binop_type(BinOp::Mul, &Type::dimensionless_scalar(), &Type::Error),
             Type::Error,
         );
     }
@@ -1296,14 +1497,14 @@ mod tests {
         ];
         for (op, label) in ops {
             assert_eq!(
-                infer_binop_type(*op, &Type::Error, &Type::Real),
+                infer_binop_type(*op, &Type::Error, &Type::dimensionless_scalar()),
                 Type::Error,
                 "BinOp::{:?} ({}) failed to propagate Type::Error from LEFT operand",
                 op,
                 label,
             );
             assert_eq!(
-                infer_binop_type(*op, &Type::Real, &Type::Error),
+                infer_binop_type(*op, &Type::dimensionless_scalar(), &Type::Error),
                 Type::Error,
                 "BinOp::{:?} ({}) failed to propagate Type::Error from RIGHT operand",
                 op,
@@ -1356,7 +1557,7 @@ mod tests {
     fn stub_body_real() -> CompiledFnBody {
         CompiledFnBody {
             let_bindings: vec![],
-            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::Real),
+            result_expr: CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
         }
     }
 
@@ -1377,17 +1578,17 @@ mod tests {
     /// task-3702 (tighten try_default_padding signature)
     #[test]
     fn try_default_padding_new_signature_returns_padded_fn() {
-        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::Real);
+        let default_expr = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "f".to_string(),
             doc: None,
             is_pub: false,
             params: vec![
-                ("x".to_string(), Type::Real),
-                ("y".to_string(), Type::Real),
+                ("x".to_string(), Type::dimensionless_scalar()),
+                ("y".to_string(), Type::dimensionless_scalar()),
             ],
             param_defaults: vec![None, Some(default_expr.clone())],
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("f_stub_3702"),
             annotations: vec![],
@@ -1396,7 +1597,7 @@ mod tests {
         };
 
         // New signature: no compiled_args — only arg_types.
-        let result = try_default_padding(&[&cand], &[Type::Real]);
+        let result = try_default_padding(&[&cand], &[Type::dimensionless_scalar()]);
 
         let (matched_fn, defaults) = result.expect("should find a matching candidate");
         assert!(
@@ -1435,19 +1636,19 @@ mod tests {
     /// `(Real, Int)` is rejected (left is Real) → `false`.
     #[test]
     fn modulo_operands_real_int_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Real, &Type::Int));
+        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::Int));
     }
 
     /// `(Int, Real)` is rejected (right is Real) → `false`.
     #[test]
     fn modulo_operands_int_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Int, &Type::Real));
+        assert!(!modulo_operands_are_int(&Type::Int, &Type::dimensionless_scalar()));
     }
 
     /// `(Real, Real)` — both wrong → `false`.
     #[test]
     fn modulo_operands_real_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Real, &Type::Real));
+        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()));
     }
 
     /// `(Scalar{LENGTH}, Scalar{LENGTH})` — dimensioned types are not Int → `false`.
@@ -1578,7 +1779,7 @@ mod tests {
         use reify_core::ty::SelectorKind;
         assert!(
             !type_compatible(
-                &Type::List(Box::new(Type::Real)),
+                &Type::List(Box::new(Type::dimensionless_scalar())),
                 &Type::Selector(SelectorKind::Face)
             ),
             "List<Real> param with Selector(Face) arg must be incompatible (only List<Geometry> coerces)"
@@ -1633,7 +1834,7 @@ mod tests {
     #[test]
     fn type_compatible_any_selector_param_real_arg_is_false() {
         assert!(
-            !type_compatible(&Type::AnySelector, &Type::Real),
+            !type_compatible(&Type::AnySelector, &Type::dimensionless_scalar()),
             "AnySelector param with Real arg must be incompatible"
         );
     }
@@ -1685,9 +1886,9 @@ mod tests {
             name: "bad".to_string(),
             doc: None,
             is_pub: false,
-            params: vec![("x".to_string(), Type::Real)],
+            params: vec![("x".to_string(), Type::dimensionless_scalar())],
             param_defaults: Vec::new(), // invariant violation — intentional for this test
-            return_type: Type::Real,
+            return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("bad_stub_3702"),
             annotations: vec![],
@@ -1715,8 +1916,8 @@ mod tests {
     fn unify_binds_bare_type_param() {
         // (a) unify(TypeParam("T"), Real) → Ok, subst == {T: Real}.
         let mut subst = HashMap::new();
-        assert!(unify(&tp("T"), &Type::Real, &mut subst).is_ok());
-        assert_eq!(subst.get("T"), Some(&Type::Real));
+        assert!(unify(&tp("T"), &Type::dimensionless_scalar(), &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::dimensionless_scalar()));
         assert_eq!(subst.len(), 1);
     }
 
@@ -1747,14 +1948,14 @@ mod tests {
                     codomain: Box::new(tp("C")),
                 },
                 &Type::Field {
-                    domain: Box::new(Type::Real),
+                    domain: Box::new(Type::dimensionless_scalar()),
                     codomain: Box::new(Type::length()),
                 },
                 &mut subst,
             )
             .is_ok()
         );
-        assert_eq!(subst.get("B"), Some(&Type::Real));
+        assert_eq!(subst.get("B"), Some(&Type::dimensionless_scalar()));
         assert_eq!(subst.get("C"), Some(&Type::length()));
         assert_eq!(subst.len(), 2);
     }
@@ -1765,11 +1966,11 @@ mod tests {
         //     conflict.param == "T".
         let mut subst = HashMap::new();
         assert!(unify(&tp("T"), &Type::Int, &mut subst).is_ok());
-        let err = unify(&tp("T"), &Type::Real, &mut subst)
+        let err = unify(&tp("T"), &Type::dimensionless_scalar(), &mut subst)
             .expect_err("re-binding T to a different type must conflict");
         assert_eq!(err.param, "T");
         assert_eq!(err.existing, Type::Int);
-        assert_eq!(err.incoming, Type::Real);
+        assert_eq!(err.incoming, Type::dimensionless_scalar());
     }
 
     #[test]
@@ -1842,16 +2043,16 @@ mod tests {
     fn overload_concrete_beats_generic_on_exact_match() {
         // Tie-break (INV-6 guard): concrete f(Real)->Real + generic f<T>(x:T)->T
         // called with Real resolves to the CONCRETE overload (exact match wins).
-        let concrete = make_fn("f", vec![("x", Type::Real)]); // non-generic, returns Real
+        let concrete = make_fn("f", vec![("x", Type::dimensionless_scalar())]); // non-generic, returns Real
         let generic = make_generic_fn("f", vec![("x", tp("T"))], &["T"], tp("T"));
         let fns = vec![concrete, generic];
-        match resolve_function_overload("f", &[Type::Real], &fns) {
+        match resolve_function_overload("f", &[Type::dimensionless_scalar()], &fns) {
             OverloadResolution::Resolved(matched) => {
                 assert!(
                     matched.type_params.is_empty(),
                     "exact concrete overload should win over the generic one"
                 );
-                assert_eq!(matched.return_type, Type::Real);
+                assert_eq!(matched.return_type, Type::dimensionless_scalar());
             }
             OverloadResolution::NoMatch(_) => panic!("expected Resolved(concrete), got NoMatch"),
             OverloadResolution::Ambiguous(_) => {
@@ -1874,18 +2075,18 @@ mod tests {
         assert!(type_carries_type_param(&tp("T")));
         assert!(type_carries_type_param(&Type::Field {
             domain: Box::new(tp("D")),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         }));
         assert!(
             type_carries_type_param(&Type::List(Box::new(Type::Field {
                 domain: Box::new(tp("D")),
-                codomain: Box::new(Type::Real),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }))),
             "recursion must pass through List into Field"
         );
         assert!(type_carries_type_param(&Type::Function {
-            params: vec![Type::Real, tp("T")],
-            return_type: Box::new(Type::Real),
+            params: vec![Type::dimensionless_scalar(), tp("T")],
+            return_type: Box::new(Type::dimensionless_scalar()),
         }));
         assert!(type_carries_type_param(&Type::Union(vec![Type::Int, tp("T")])));
         assert!(type_carries_type_param(&Type::Tensor {
@@ -1898,9 +2099,9 @@ mod tests {
         assert!(type_carries_type_param(&Type::Range(Box::new(tp("T")))));
 
         // Negative: no type-param anywhere → false (leaves + concrete nesting).
-        assert!(!type_carries_type_param(&Type::Real));
+        assert!(!type_carries_type_param(&Type::dimensionless_scalar()));
         assert!(!type_carries_type_param(&Type::Field {
-            domain: Box::new(Type::Real),
+            domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::length()),
         }));
         assert!(!type_carries_type_param(&Type::List(Box::new(Type::Int))));
@@ -1914,17 +2115,17 @@ mod tests {
         // because recursion stopped at Option/List/Set/Map.
         let field_param = Type::Field {
             domain: Box::new(tp("D")),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         let fns = vec![make_generic_fn(
             "sample",
             vec![("f", field_param)],
             &["D"],
-            Type::Real,
+            Type::dimensionless_scalar(),
         )];
         let arg = Type::Field {
             domain: Box::new(Type::length()),
-            codomain: Box::new(Type::Real),
+            codomain: Box::new(Type::dimensionless_scalar()),
         };
         assert!(
             matches!(
@@ -1932,6 +2133,565 @@ mod tests {
                 OverloadResolution::Resolved(_)
             ),
             "generic candidate with a Field<T, Real> param should resolve"
+        );
+    }
+
+    // ── Step-3 RED: α behavioural contract for infer_binop_type ──────────────
+    //
+    // infer_binop_type(Div, length(), length()) must return dimensionless_scalar(),
+    // not Type::dimensionless_scalar() (the old special-case). RED today: returns Type::dimensionless_scalar().
+    #[test]
+    fn infer_div_length_by_length_returns_dimensionless_scalar() {
+        assert_eq!(
+            infer_binop_type(BinOp::Div, &Type::length(), &Type::length()),
+            Type::dimensionless_scalar(),
+            "Length / Length should produce dimensionless_scalar(), not Type::dimensionless_scalar()"
+        );
+    }
+
+    // type_compatible(dimensionless_scalar, Int) must return true (Int-widening
+    // for the canonical dimensionless type). RED today: returns false (only
+    // the (Type::dimensionless_scalar(), Type::Int) guard matches).
+    #[test]
+    fn type_compatible_dimensionless_scalar_accepts_int() {
+        assert!(
+            type_compatible(&Type::dimensionless_scalar(), &Type::Int),
+            "dimensionless_scalar() should be compatible with Type::Int (Int-widening)"
+        );
+    }
+
+    // ── task-4544: try_default_padding trait-carrying prefix wildcard ─────────
+
+    /// Positive: a TraitObject-typed leading param acts as a wildcard so that a
+    /// StructureRef arg (a concrete type satisfying the trait at runtime) passes
+    /// the prefix check and the trailing default is returned.
+    ///
+    /// Candidate: `f(j: TraitObject("DrivingJoint"), y: Real)` where `y` has
+    /// default `Real(1.0)`.  Call: `f(StructureRef("X"))` — 1 arg.
+    ///
+    /// Expected: `Some((&cand, [Real(1.0)]))`.
+    ///
+    /// RED before step-2: the strict `param_ty == arg_ty` prefix check rejects
+    /// `TraitObject("DrivingJoint") != StructureRef("X")` → returns None.
+    #[test]
+    fn try_default_padding_resolves_when_leading_param_is_trait_carrying() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                (
+                    "j".to_string(),
+                    Type::TraitObject("DrivingJoint".to_string()),
+                ),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_trait_prefix"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide ONE arg of type StructureRef("X") — the TraitObject param is
+        // a wildcard (concrete type conforms at runtime), so the trailing
+        // Real default must be returned.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "trait-carrying leading param must act as a wildcard: expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand),
+            "returned candidate must be the same object"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_expr.content_hash,
+            "returned default must be the Real(1.0) literal"
+        );
+    }
+
+    /// Disambiguation: when two same-name candidates both pass the wildcard prefix
+    /// check (one has a trait-typed leading param, the other has a matching exact
+    /// concrete param), the exact-match one wins.
+    ///
+    /// Candidate A: `f(j: TraitObject("T"), y: Real=1.0)` — passes via wildcard for
+    ///   any StructureRef arg.
+    /// Candidate B: `f(x: StructureRef("X"), y: Real=2.0)` — passes via exact match
+    ///   for a StructureRef("X") arg.
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass the wildcard-inclusive prefix check,
+    /// so `satisfiable.len() == 2`. The tie-break prefers the exact-match subset
+    /// (only B), returning candidate B with default `Real(2.0)`.
+    #[test]
+    fn try_default_padding_exact_match_wins_over_wildcard() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("T".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::StructureRef("X".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b.clone())],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_tiebreak_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        let (matched_fn, defaults) = result.expect(
+            "exact-match tie-break must resolve to candidate B; expected Some, got None",
+        );
+        assert!(
+            std::ptr::eq(matched_fn, &cand_b),
+            "tie-break must prefer the exact-match candidate (cand_b)"
+        );
+        assert_eq!(defaults.len(), 1, "one trailing default expected");
+        assert_eq!(
+            defaults[0].content_hash, default_b.content_hash,
+            "returned default must be cand_b's Real(2.0)"
+        );
+    }
+
+    /// Negative control: a concrete (non-trait) leading param that mismatches the
+    /// provided arg type must still return `None` — the loosening is scoped to
+    /// trait/type-param wildcards only.
+    ///
+    /// Candidate: `g(x: Int, y: Real)` where `y` has default `Real(1.0)`.
+    /// Call: `g(Real)` — Int ≠ Real, concrete param, no wildcard.
+    ///
+    /// Expected: `None` (both before and after step-2).
+    #[test]
+    fn try_default_padding_concrete_mismatch_still_returns_none() {
+        let default_expr =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let cand = CompiledFunction {
+            name: "g".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("x".to_string(), Type::Int),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_expr)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("g_4544_concrete_mismatch"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Provide Real where Int is expected — concrete mismatch, must stay None.
+        let result = try_default_padding(
+            &[&cand],
+            &[Type::dimensionless_scalar()],
+        );
+        assert!(
+            result.is_none(),
+            "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
+        );
+    }
+
+    /// Ambiguity: two same-name candidates both pass the wildcard prefix check
+    /// but neither has an exact-match prefix — `try_default_padding` returns
+    /// `None`, falling through to the caller's generic NoMatch error.
+    ///
+    /// Candidate A: `f(j: TraitObject("Joint1"), y: Real=1.0)`
+    /// Candidate B: `f(k: TraitObject("Joint2"), y: Real=2.0)`
+    ///
+    /// Call: `f(StructureRef("X"))`.  Both pass via wildcard (`TraitObject`
+    /// matches any arg); neither matches by strict equality.
+    /// `satisfiable.len() == 2`, exact subset is empty → returns `None`.
+    ///
+    /// This documents the intentional UX contract: genuinely ambiguous
+    /// defaultable padding degrades to NoMatch (not Ambiguous).  See the
+    /// multi-candidate arm comment in `try_default_padding` for rationale.
+    #[test]
+    fn try_default_padding_all_wildcard_ambiguity_returns_none() {
+        let default_a =
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b =
+            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let cand_a = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("j".to_string(), Type::TraitObject("Joint1".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_a)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_a"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+        let cand_b = CompiledFunction {
+            name: "f".to_string(),
+            doc: None,
+            is_pub: false,
+            params: vec![
+                ("k".to_string(), Type::TraitObject("Joint2".to_string())),
+                ("y".to_string(), Type::dimensionless_scalar()),
+            ],
+            param_defaults: vec![None, Some(default_b)],
+            return_type: Type::dimensionless_scalar(),
+            body: stub_body_real(),
+            content_hash: ContentHash::of_str("f_4544_allwild_b"),
+            annotations: vec![],
+            optimized_target: None,
+            type_params: vec![],
+        };
+
+        // Both candidates match via wildcard; neither matches by exact equality
+        // → exact subset is empty → None (ambiguous padding falls through to
+        // NoMatch, not Ambiguous).
+        let result = try_default_padding(
+            &[&cand_a, &cand_b],
+            &[Type::StructureRef("X".to_string())],
+        );
+        assert!(
+            result.is_none(),
+            "two wildcard-only candidates must return None (ambiguous padding \
+             degrades to NoMatch — see multi-candidate arm of try_default_padding)"
+        );
+    }
+
+    // ── is_syntactic_zero_literal predicate (task-4485/β) ────────────────────
+
+    /// Helper: build a bare AST `Expr` with a dummy span for unit-testing predicates.
+    fn make_ast_expr(kind: reify_ast::ExprKind) -> reify_ast::Expr {
+        reify_ast::Expr { kind, span: SourceSpan::new(0, 1) }
+    }
+
+    /// `NumberLiteral{value:0.0, is_real:false}` — the bare `0` integer form — must
+    /// return `true`.
+    #[test]
+    fn syntactic_zero_int_literal_zero_is_true() {
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `NumberLiteral{value:0.0, is_real:true}` — the `0.0` real form — must
+    /// return `true`.
+    #[test]
+    fn syntactic_zero_real_literal_zero_is_true() {
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{op:"-", operand: NumberLiteral{0.0}}` — the `-0` form — must
+    /// return `true` (unary-neg recursion).
+    #[test]
+    fn syntactic_zero_neg_zero_is_true() {
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{"-", UnOp{"-", 0.0}}` — double-neg zero `--0.0` — must return `true`
+    /// (recursive unary-neg chain).
+    #[test]
+    fn syntactic_zero_double_neg_zero_is_true() {
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let neg_inner = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(neg_inner),
+        });
+        assert!(is_syntactic_zero_literal(&expr));
+    }
+
+    /// `NumberLiteral{value:1.0, is_real:false}` — non-zero literal — must return `false`.
+    #[test]
+    fn syntactic_zero_nonzero_literal_is_false() {
+        let expr =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `ExprKind::Ident("x")` — identifier reference — must return `false`.
+    #[test]
+    fn syntactic_zero_ident_is_false() {
+        let expr = make_ast_expr(reify_ast::ExprKind::Ident("x".to_string()));
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `UnOp{"-", Ident("x")}` — negated identifier — must return `false`.
+    #[test]
+    fn syntactic_zero_neg_ident_is_false() {
+        let inner = make_ast_expr(reify_ast::ExprKind::Ident("x".to_string()));
+        let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
+            op: "-".to_string(),
+            operand: Box::new(inner),
+        });
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    /// `BinOp{"-", NumberLiteral{1.0}, NumberLiteral{1.0}}` — constant-folded shape
+    /// `1 - 1` — must return `false` (syntactic-only contract, §7.2 HARD BOUND).
+    #[test]
+    fn syntactic_zero_binop_one_minus_one_is_false() {
+        let one_a =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let one_b =
+            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::BinOp {
+            op: "-".to_string(),
+            left: Box::new(one_a),
+            right: Box::new(one_b),
+        });
+        assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    // ── task 4235 ζ: unify dimension-slot binding (D8) ───────────────────────
+
+    /// (a) `unify(ScalarParam("Q"), Scalar{LENGTH})` binds Q → Scalar{LENGTH}.
+    ///
+    /// RED until step-2: the leaf arm `(Type::ScalarParam(_), _) => Ok(())` binds
+    /// nothing, so subst stays empty.
+    #[test]
+    fn unify_scalar_param_binds_to_concrete_scalar() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(result.is_ok(), "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}");
+        assert_eq!(
+            subst.get("Q"),
+            Some(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "subst[\"Q\"] should be Scalar{{LENGTH}} after binding, got {:?}",
+            subst.get("Q")
+        );
+    }
+
+    /// (b) Re-unifying the SAME `(ScalarParam("Q"), Scalar{LENGTH})` after Q is
+    /// already bound to Scalar{LENGTH} is idempotent — no error.
+    ///
+    /// RED until step-2: the leaf arm binds nothing, so (a) never binds; the
+    /// idempotent check is vacuous before (a) passes — but (a) failing is itself
+    /// the RED signal, so (b) is an additional gate once (a) is green.
+    #[test]
+    fn unify_scalar_param_idempotent_rebind() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(
+            result.is_ok(),
+            "idempotent rebind of Q→Scalar{{LENGTH}} should be Ok, got {result:?}"
+        );
+    }
+
+    /// (c) After Q→Scalar{LENGTH}, unifying with Scalar{MASS} → TypeArgConflict.
+    ///
+    /// RED until step-2: the leaf arm never sets subst, so the conflict arm can
+    /// never fire.
+    #[test]
+    fn unify_scalar_param_conflict_emits_type_arg_conflict() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::MASS },
+            &mut subst,
+        );
+        match result {
+            Err(TypeArgConflict { param, existing, incoming }) => {
+                assert_eq!(param, "Q", "conflict param should be Q");
+                assert_eq!(
+                    existing,
+                    Type::Scalar { dimension: DimensionVector::LENGTH },
+                    "existing should be Scalar{{LENGTH}}"
+                );
+                assert_eq!(
+                    incoming,
+                    Type::Scalar { dimension: DimensionVector::MASS },
+                    "incoming should be Scalar{{MASS}}"
+                );
+            }
+            Ok(()) => panic!(
+                "expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"
+            ),
+        }
+    }
+
+    /// (d) Non-scalar arg (`Bool`) against `ScalarParam("Q")` binds nothing and
+    /// returns Ok (conservative per D8).
+    ///
+    /// GREEN even before step-2 (the leaf arm already returns Ok for any arg).
+    #[test]
+    fn unify_scalar_param_non_scalar_arg_binds_nothing() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Bool,
+            &mut subst,
+        );
+        assert!(result.is_ok(), "non-scalar arg against ScalarParam should be Ok, got {result:?}");
+        assert!(
+            subst.is_empty(),
+            "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
+        );
+    }
+
+    // ── task 4235 ζ: type_carries_dim_param + overload dim-param wildcard ─────
+
+    /// Helper: ScalarParam shorthand.
+    fn sp(name: &str) -> Type {
+        Type::ScalarParam(name.to_string())
+    }
+
+    /// `type_carries_dim_param(ScalarParam("Q"))` must return true.
+    ///
+    /// RED until step-6: the function does not exist (compile error).
+    #[test]
+    fn type_carries_dim_param_bare_scalar_param_is_true() {
+        assert!(
+            type_carries_dim_param(&sp("Q")),
+            "ScalarParam should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Vector3<ScalarParam("Q")>)` must return true
+    /// (dim-param in the quantity slot).
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_vector3_quantity_is_true() {
+        let vec3_q = Type::Vector { n: 3, quantity: Box::new(sp("Q")) };
+        assert!(
+            type_carries_dim_param(&vec3_q),
+            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Scalar{LENGTH})` must return false.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_concrete_scalar_is_false() {
+        assert!(
+            !type_carries_dim_param(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(TypeParam("T"))` must return false — a type-param
+    /// is not a dimension-param.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_type_param_is_false() {
+        assert!(
+            !type_carries_dim_param(&tp("T")),
+            "TypeParam should NOT carry a dim-param"
+        );
+    }
+
+    /// Overload wildcard for dim-param: `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
+    /// called with `(Scalar{LENGTH}, Real)` must resolve to Resolved.
+    ///
+    /// RED until step-6: the wildcard predicate only checks type_carries_type_param,
+    /// which returns false for ScalarParam → NoMatch.
+    #[test]
+    fn overload_selects_generic_candidate_with_scalar_param() {
+        let scale_q = make_generic_fn(
+            "scale_q",
+            vec![("x", sp("Q")), ("k", Type::dimensionless_scalar())],
+            &["Q"],
+            sp("Q"),
+        );
+        let fns = vec![scale_q];
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_q",
+                    &[Type::Scalar { dimension: DimensionVector::LENGTH }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic scale_q<Q> should resolve against (Scalar{{LENGTH}}, Real)"
+        );
+    }
+
+    /// INV-6 regression: a non-generic all-concrete fn still resolves only on
+    /// exact match — adding the dim-param wildcard must not break this.
+    ///
+    /// GREEN before step-6 too (the non-generic branch is unaffected).
+    #[test]
+    fn overload_non_generic_concrete_fn_still_requires_exact_match() {
+        let concrete = make_fn(
+            "scale_concrete",
+            vec![("x", Type::Scalar { dimension: DimensionVector::LENGTH }), ("k", Type::dimensionless_scalar())],
+        );
+        let fns = vec![concrete];
+        // Calling with (MASS, Real) must NOT resolve — only (LENGTH, Real) is exact.
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_concrete",
+                    &[Type::Scalar { dimension: DimensionVector::MASS }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::NoMatch(_)
+            ),
+            "concrete fn must NOT resolve for wrong dimension arg — exact match only"
         );
     }
 }

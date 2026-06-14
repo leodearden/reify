@@ -30,18 +30,18 @@ fn eval_cached_emits_circular_let_binding_diagnostic() {
     // `a = b + 1.0`  and  `b = a + 1.0` — mutually recursive
     let expr_a = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Real),
+        value_ref_typed("S", "b", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
     let expr_b = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Real),
+        value_ref_typed("S", "a", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .let_binding("S", "a", Type::Real, expr_a)
-        .let_binding("S", "b", Type::Real, expr_b)
+        .let_binding("S", "a", Type::dimensionless_scalar(), expr_a)
+        .let_binding("S", "b", Type::dimensionless_scalar(), expr_b)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -313,7 +313,7 @@ fn eval_cached_emits_sub_component_unknown_structure_collection_diagnostic() {
         .param(
             "Parent",
             "count",
-            Type::Real,
+            Type::dimensionless_scalar(),
             Some(literal(Value::Real(3.0))),
         )
         .collection_sub_component("ribs", "DoesNotExist", count_id)
@@ -873,18 +873,18 @@ fn eval_cached_repeat_call_re_emits_solver_no_progress_warning() {
 fn eval_cached_repeat_call_with_unchanged_module_re_emits_circular_diagnostic() {
     let expr_a = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Real),
+        value_ref_typed("S", "b", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
     let expr_b = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Real),
+        value_ref_typed("S", "a", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .let_binding("S", "a", Type::Real, expr_a)
-        .let_binding("S", "b", Type::Real, expr_b)
+        .let_binding("S", "a", Type::dimensionless_scalar(), expr_a)
+        .let_binding("S", "b", Type::dimensionless_scalar(), expr_b)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1032,18 +1032,18 @@ fn eval_cached_does_not_cache_cyclic_let_cells() {
     // eval_cached_emits_circular_let_binding_diagnostic)
     let expr_a = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Real),
+        value_ref_typed("S", "b", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
     let expr_b = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Real),
+        value_ref_typed("S", "a", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .let_binding("S", "a", Type::Real, expr_a)
-        .let_binding("S", "b", Type::Real, expr_b)
+        .let_binding("S", "a", Type::dimensionless_scalar(), expr_a)
+        .let_binding("S", "b", Type::dimensionless_scalar(), expr_b)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))
@@ -1299,18 +1299,18 @@ fn eval_and_eval_cached_emit_byte_identical_circular_let_diagnostic() {
     // Same cyclic fixture as eval_cached_emits_circular_let_binding_diagnostic
     let expr_a = binop(
         BinOp::Add,
-        value_ref_typed("S", "b", Type::Real),
+        value_ref_typed("S", "b", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
     let expr_b = binop(
         BinOp::Add,
-        value_ref_typed("S", "a", Type::Real),
+        value_ref_typed("S", "a", Type::dimensionless_scalar()),
         literal(Value::Real(1.0)),
     );
 
     let template = TopologyTemplateBuilder::new("S")
-        .let_binding("S", "a", Type::Real, expr_a)
-        .let_binding("S", "b", Type::Real, expr_b)
+        .let_binding("S", "a", Type::dimensionless_scalar(), expr_a)
+        .let_binding("S", "b", Type::dimensionless_scalar(), expr_b)
         .build();
 
     let module = CompiledModuleBuilder::new(ModulePath::single("test"))

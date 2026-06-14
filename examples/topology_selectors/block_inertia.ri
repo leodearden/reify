@@ -16,16 +16,9 @@
 // Eval-deepening coverage (gated on eval-side dispatch landing):
 //   crates/reify-eval/tests/topology_selector_smoke_tests.rs::
 //     block_inertia_evals_moment_of_inertia_to_tensor  ← #[ignore]-gated
-//
-// The `i` cell stays at Value::Undef until `try_eval_topology_selector` in
-// crates/reify-eval/src/geometry_ops.rs adds the `moment_of_inertia` arm
-// (the 11 task-2699 names fall through to `_ => return None` today; see
-// geometry_ops.rs:1646-1661).  The gated test documents the expected
-// Value::Tensor shape (rank-2, 3×3 MomentOfInertia-dimensioned scalars;
-// analytic form: I_xx = (1/12)·m·(H²+D²), etc.) per PRD §3.9.
 
 structure def BlockInertia {
     let b = box(50mm, 30mm, 10mm)
-    let steel_density = 7850.0
+    let steel_density = 7850kg/m^3
     let i = moment_of_inertia(b, steel_density)
 }

@@ -30,21 +30,19 @@ pub use stackup::diagnose as stackup_diagnose;
 /// `Value::Undef` result is a usage error.
 pub use dfm::diagnose as dfm_diagnose;
 
-/// Public re-export of the ISO tolerancing diagnostic classifier (task α).
+/// Public re-export of the ISO tolerancing diagnostic classifier (task α/4461).
 ///
 /// Flags `iso_it_tolerance` out-of-envelope calls (well-typed args that fall
 /// outside IT5–IT18 / ≤500 mm) with a `Severity::Error` Diagnostic.
 /// Returns `None` for valid calls, for `effective_tolerance_zone`, and for
 /// non-tolerancing names.
 ///
-/// Wiring this into `reify-expr`'s diagnostic sink (like `stackup_diagnose`
-/// at `reify-expr/src/lib.rs:1271`) is a deferred consumer hookup outside α's
-/// two-file scope; α ships the classifier + re-export, unit-tested in isolation.
-///
-/// TODO(sibling β/ε): add `tolerancing_diagnose` to the builtin fallthrough
-/// arm in `reify-expr/src/lib.rs` (mirror the `stackup_diagnose` call at
-/// `:1271`) so out-of-envelope `iso_it_tolerance` calls surface as user-visible
-/// `Severity::Error` diagnostics rather than silent `Value::Undef` returns.
+/// Called by `crates/reify-expr/src/lib.rs` at the builtin fallthrough arm
+/// (`emit_undef_builtin_diagnostics`, next to `stackup_diagnose`) to push a
+/// `Severity::Error` into the `EvalContext` sink when a well-typed but
+/// out-of-envelope `iso_it_tolerance` returns `Value::Undef`. Mirrors the
+/// `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose` /
+/// `dynamics_diagnose` pattern.
 pub use tolerancing::diagnose as tolerancing_diagnose;
 
 /// Public re-export of the multi-load-case FEA error classifier.
@@ -96,6 +94,19 @@ pub use dynamics::eval::resolve_body_mass;
 /// `geometry_diagnose` pattern.
 pub use dynamics::eval::diagnose as dynamics_diagnose;
 
+/// Public re-export of the `center_of_mass` fallback-Warning diagnostic hook
+/// (task 4471).
+///
+/// Called by `crates/reify-expr/src/lib.rs` immediately after
+/// `emit_dfm_diagnostics` (both-path hook at `lib.rs:475`) as
+/// `emit_snapshot_diagnostics`. Fires a `Severity::Warning` with code
+/// `W_SnapshotCenterOfMassDensityFallback` ONLY in the **mixed** case: ≥1
+/// body carries resolvable mass (via `resolve_body_mass`) while ≥1 other
+/// body does not. Pure-legacy snapshots (all unresolved) and all-resolved
+/// snapshots stay silent. Mirrors the `dfm_diagnose` / `flexure_diagnose`
+/// both-path pattern.
+pub use snapshot::diagnose as snapshot_diagnose;
+
 /// Public re-export of the von Mises scalar kernel for cross-crate reuse.
 ///
 /// Called by `crates/reify-expr/src/field_reductions.rs` in the
@@ -105,6 +116,25 @@ pub use dynamics::eval::diagnose as dynamics_diagnose;
 /// duplicating the formula inlined at
 /// `crates/reify-eval/src/compute_targets/elastic_static.rs:667`.
 pub use analysis::compute_von_mises_3x3;
+/// Public re-export of the max-shear scalar kernel for cross-crate reuse.
+///
+/// Called by `crates/reify-expr/src/field_reductions.rs` in the
+/// `project_max_shear_sampled` helper to project each 9-float stride-1 window
+/// of a Sampled tensor field to a scalar max-shear value during field
+/// reduction (max/min/argmax/argmin of a MaxShear-derived field). Mirrors
+/// the `compute_von_mises_3x3` precedent: the formula has a single home in
+/// `analysis.rs`, shared by both the `max_shear` builtin and the
+/// cross-crate field reduction.
+pub use analysis::compute_max_shear_3x3;
+/// Public re-export of the symmetric-3×3 eigenvalue kernel for cross-crate reuse.
+///
+/// Called by `crates/reify-expr/src/field_reductions.rs` in the
+/// `project_principal_stresses_sampled` helper to project each 9-float
+/// stride-1 window of a Sampled tensor field to a scalar principal-stress
+/// value during field reduction (max/min/argmax/argmin of a
+/// PrincipalStresses-derived field). Selects `eigs[2]` (max principal σ₁)
+/// or `eigs[0]` (min principal σ₃) per window (task 4562).
+pub use analysis::compute_eigenvalues_3x3;
 /// Public re-export of the impulse-shaper math (`ImpulseTrain` + its residual /
 /// convolution API) and the `Shaper`→`ImpulseTrain` marshalling boundary.
 ///

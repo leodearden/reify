@@ -4,14 +4,17 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+mod analysis_signatures;
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
 pub mod cfg;
+mod coerce;
 mod compile_builder;
 mod conformance;
 mod connect;
 mod constants;
+mod datum_projection;
 mod diagnostics;
 mod entity;
 mod expr;
@@ -28,7 +31,13 @@ mod guards;
 mod ice;
 mod list_helpers;
 mod joint_signatures;
+mod joint_self_check;
+mod builtin_signatures;
 mod math_signatures;
+// `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
+// to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
+pub mod relation_signatures;
+mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
@@ -36,6 +45,7 @@ mod scc;
 mod scope;
 pub mod si_units;
 pub mod stdlib_loader;
+pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
@@ -45,6 +55,7 @@ mod types;
 mod units;
 
 pub use compile_builder::pre_pass::check_module_path_decl;
+pub use entity::satisfies_trait_bound;
 pub use geometry::derive_feature_tags;
 pub use prelude_context::PreludeContext;
 pub use type_compat::{implicitly_converts_to, type_compatible};
@@ -69,6 +80,7 @@ pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
 pub(crate) use list_helpers::*;
+pub(crate) use analysis_signatures::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use math_signatures::*;
 pub(crate) use scope::*;
@@ -87,7 +99,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, DeterminacyPredicateKind, ObjectiveCombination, ObjectiveSet, ObjectiveSense, ObjectiveTerm, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, DeterminacyPredicateKind, ObjectiveCombination, ObjectiveSet, ObjectiveSense, ObjectiveTerm, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
 
 /// Expose `validate_annotations` to integration tests without plumbing a full
 /// compilation context.
@@ -140,12 +152,31 @@ pub fn compile(parsed: &reify_ast::ParsedModule) -> CompiledModule {
 /// Compile a parsed module with the full standard library prelude.
 ///
 /// This is the recommended entry point for compiling user modules with full
-/// stdlib support. Delegates to [`compile_with_prelude_context`] with a
-/// `&'static PreludeContext` that is built once (via [`stdlib_loader::load_stdlib_context`])
-/// and shared across all calls, avoiding re-flattening stdlib enum definitions
-/// on every compilation.
+/// stdlib support. Delegates to [`compile_with_stdlib_checked`] with the
+/// default [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// stub, which returns `Satisfaction::Indeterminate` for every constraint.
+///
+/// For callers that need to inject a real `ConstraintChecker` (e.g. CLI/GUI
+/// entry points that hold a `SimpleConstraintChecker`), use
+/// [`compile_with_stdlib_checked`] instead.
 pub fn compile_with_stdlib(parsed: &reify_ast::ParsedModule) -> CompiledModule {
-    compile_with_prelude_context(parsed, stdlib_loader::load_stdlib_context())
+    compile_with_stdlib_checked(
+        parsed,
+        &compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+    )
+}
+
+/// Like [`compile_with_stdlib`] but allows injecting a custom
+/// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
+/// filtering.
+///
+/// The standard library prelude is loaded once (via
+/// [`stdlib_loader::load_stdlib_context`]) and reused across calls.
+pub fn compile_with_stdlib_checked(
+    parsed: &reify_ast::ParsedModule,
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
+    compile_with_prelude_context_checked(parsed, stdlib_loader::load_stdlib_context(), checker)
 }
 
 /// Parse a source string with the stdlib's prelude enum names pre-seeded
@@ -183,9 +214,10 @@ pub fn parse_with_stdlib(
 /// `CompiledModule` contains only the user's own definitions — prelude
 /// definitions are used as context but not duplicated in the output.
 ///
-/// This is a thin wrapper around [`compile_with_prelude_refs`] that accepts
-/// owned `CompiledModule` slices for external callers. Internal code should
-/// prefer `compile_with_prelude_refs` to avoid cloning.
+/// This is a thin wrapper around [`compile_with_prelude_checked`] that passes
+/// the default [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// stub. External callers that need to inject a real checker use
+/// [`compile_with_prelude_checked`].
 ///
 /// **Performance note:** this wrapper allocates a `Vec<&CompiledModule>` on
 /// every call. For the typical call site with a small prelude this is
@@ -195,8 +227,23 @@ pub fn compile_with_prelude(
     parsed: &reify_ast::ParsedModule,
     prelude: &[CompiledModule],
 ) -> CompiledModule {
+    compile_with_prelude_checked(
+        parsed,
+        prelude,
+        &compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+    )
+}
+
+/// Like [`compile_with_prelude`] but allows injecting a custom
+/// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
+/// filtering.
+pub fn compile_with_prelude_checked(
+    parsed: &reify_ast::ParsedModule,
+    prelude: &[CompiledModule],
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
     let refs: Vec<&CompiledModule> = prelude.iter().collect();
-    compile_with_prelude_refs(parsed, &refs)
+    compile_with_prelude_refs_checked(parsed, &refs, checker)
 }
 
 /// Merge user functions with prelude functions, applying the canonical shadowing rule:
@@ -303,6 +350,11 @@ pub fn merge_prelude_purposes(
 /// user modules against the same prelude (e.g. `compile_with_stdlib`) pay
 /// the allocation cost only once.
 ///
+/// Delegates to [`compile_with_prelude_context_checked`] with the default
+/// [`compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker`]
+/// stub. External callers that need to inject a real checker use
+/// [`compile_with_prelude_context_checked`] directly.
+///
 /// This is also the single phase-orchestration body shared with
 /// [`compile_with_prelude_refs`] (which builds an ad-hoc [`PreludeContext`]
 /// and delegates here). Keeping a single orchestrator guarantees the two
@@ -319,6 +371,26 @@ pub fn merge_prelude_purposes(
 pub fn compile_with_prelude_context(
     parsed: &reify_ast::ParsedModule,
     ctx: &PreludeContext,
+) -> CompiledModule {
+    compile_with_prelude_context_checked(
+        parsed,
+        ctx,
+        &compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+    )
+}
+
+/// Like [`compile_with_prelude_context`] but allows injecting a custom
+/// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
+/// filtering.
+///
+/// This is the real phase-orchestration body. Every other compiler entry
+/// point ultimately delegates here (via the wrapper chain). The `checker`
+/// is threaded into [`compile_builder::auto_type_param_phase::phase_auto_type_param_resolution`]
+/// and nowhere else — all other phases are unaffected.
+pub fn compile_with_prelude_context_checked(
+    parsed: &reify_ast::ParsedModule,
+    ctx: &PreludeContext,
+    checker: &dyn ConstraintChecker,
 ) -> CompiledModule {
     let mut compile_ctx = compile_builder::ctx::CompilationCtx::new();
 
@@ -425,9 +497,12 @@ pub fn compile_with_prelude_context(
     // BEFORE the bound-check pass: the resolver rewrites placeholder slots to
     // concrete `Type::StructureRef`, so `phase_pending_bound_checks` sees the
     // resolved candidate rather than the synthetic `__auto_<bound>` placeholder.
+    // The `checker` is threaded in from the caller; default entry points pass
+    // `&CompileTimeIndeterminateChecker` (via the non-`_checked` wrappers).
     compile_builder::auto_type_param_phase::phase_auto_type_param_resolution(
         &mut compile_ctx,
         prelude_refs,
+        checker,
     );
 
     // Resolve deferred sub-instance-override `auto` / `auto(free)` cells raised
@@ -476,17 +551,30 @@ pub fn compile_with_prelude_context(
 /// compiled modules whose exported definitions (units, traits, enums,
 /// constraint defs) are visible during compilation.
 ///
-/// Builds an ad-hoc [`PreludeContext`] from `prelude` and delegates to
-/// [`compile_with_prelude_context`], so both paths share a single phase
-/// orchestrator. The one-shot context allocation is negligible for the
-/// non-stdlib path; the stdlib hot-path bypasses this function entirely via
-/// [`compile_with_stdlib`].
+/// Delegates to [`compile_with_prelude_refs_checked`] with the default stub.
+/// Internal callers that need to inject a real checker use
+/// [`compile_with_prelude_refs_checked`] directly.
 ///
 /// External callers should use [`compile_with_prelude`] instead.
 pub(crate) fn compile_with_prelude_refs(
     parsed: &reify_ast::ParsedModule,
     prelude: &[&CompiledModule],
 ) -> CompiledModule {
+    compile_with_prelude_refs_checked(
+        parsed,
+        prelude,
+        &compile_builder::auto_type_param_phase::CompileTimeIndeterminateChecker,
+    )
+}
+
+/// Like [`compile_with_prelude_refs`] but allows injecting a custom
+/// [`ConstraintChecker`] for compile-time `auto:` candidate feasibility
+/// filtering.
+pub(crate) fn compile_with_prelude_refs_checked(
+    parsed: &reify_ast::ParsedModule,
+    prelude: &[&CompiledModule],
+    checker: &dyn ConstraintChecker,
+) -> CompiledModule {
     let ctx = PreludeContext::new(prelude);
-    compile_with_prelude_context(parsed, &ctx)
+    compile_with_prelude_context_checked(parsed, &ctx, checker)
 }

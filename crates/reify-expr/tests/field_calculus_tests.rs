@@ -8,10 +8,14 @@
 //! and field_eval_tests.rs.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_expr::{EvalContext, eval_expr};
 use reify_core::{ContentHash, DimensionVector, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, UnOp, Value, ValueMap};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, InterpolationKind, ResolvedFunction,
+    SampledField, SampledGridKind, UnOp, Value, ValueMap,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -101,7 +105,7 @@ fn make_analytical_field(domain: Type, codomain: Type, lambda: Value) -> (Value,
 #[test]
 fn make_field_with_source_builds_field_with_given_source() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
     // Compile-time exhaustiveness guard: adding a new FieldSourceKind variant
@@ -120,7 +124,8 @@ fn make_field_with_source_builds_field_with_given_source() {
             | FieldSourceKind::VonMises
             | FieldSourceKind::PrincipalStresses
             | FieldSourceKind::MaxShear
-            | FieldSourceKind::SafetyFactor => {}
+            | FieldSourceKind::SafetyFactor
+            | FieldSourceKind::Restricted => {}
         }
     }
 
@@ -137,16 +142,17 @@ fn make_field_with_source_builds_field_with_given_source() {
         FieldSourceKind::PrincipalStresses,
         FieldSourceKind::MaxShear,
         FieldSourceKind::SafetyFactor,
+        FieldSourceKind::Restricted,
     ] {
         let (field, field_type) =
-            make_field_with_source(Type::Real, Type::Real, source_kind.clone(), lambda.clone());
+            make_field_with_source(Type::dimensionless_scalar(), Type::dimensionless_scalar(), source_kind.clone(), lambda.clone());
 
         // Type::Field carries the supplied domain and codomain.
         assert_eq!(
             field_type,
             Type::Field {
-                domain: Box::new(Type::Real),
-                codomain: Box::new(Type::Real),
+                domain: Box::new(Type::dimensionless_scalar()),
+                codomain: Box::new(Type::dimensionless_scalar()),
             }
         );
 
@@ -161,8 +167,8 @@ fn make_field_with_source_builds_field_with_given_source() {
             panic!("expected Value::Field");
         };
 
-        assert_eq!(domain_type, Type::Real);
-        assert_eq!(codomain_type, Type::Real);
+        assert_eq!(domain_type, Type::dimensionless_scalar());
+        assert_eq!(codomain_type, Type::dimensionless_scalar());
         assert_eq!(source, source_kind);
         assert_eq!(*boxed_lambda, lambda);
     }
@@ -172,7 +178,7 @@ fn make_field_with_source_builds_field_with_given_source() {
 fn curl_result_type(domain: Type) -> Type {
     Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     }
 }
 
@@ -182,7 +188,7 @@ fn curl_result_type(domain: Type) -> Type {
 fn scalar_field_result_type(domain: Type) -> Type {
     Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
+        codomain: Box::new(Type::dimensionless_scalar()),
     }
 }
 
@@ -192,7 +198,7 @@ fn gradient_result_type(domain: Type, n: usize) -> Type {
         domain: Box::new(domain),
         codomain: Box::new(Type::Vector {
             n,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         }),
     }
 }
@@ -201,31 +207,31 @@ fn gradient_result_type(domain: Type, n: usize) -> Type {
 #[test]
 fn gradient_result_type_returns_field_vec_n_real() {
     // n=2: Vector2(Real) codomain
-    let domain2 = Type::point2(Type::Real);
+    let domain2 = Type::point2(Type::dimensionless_scalar());
     let got2 = gradient_result_type(domain2.clone(), 2);
     let expected2 = Type::Field {
         domain: Box::new(domain2),
-        codomain: Box::new(Type::vec2(Type::Real)),
+        codomain: Box::new(Type::vec2(Type::dimensionless_scalar())),
     };
     assert_eq!(got2, expected2);
 
     // n=3: Vector3(Real) codomain
-    let domain3 = Type::point3(Type::Real);
+    let domain3 = Type::point3(Type::dimensionless_scalar());
     let got3 = gradient_result_type(domain3.clone(), 3);
     let expected3 = Type::Field {
         domain: Box::new(domain3),
-        codomain: Box::new(Type::vec3(Type::Real)),
+        codomain: Box::new(Type::vec3(Type::dimensionless_scalar())),
     };
     assert_eq!(got3, expected3);
 
     // n=4: arbitrary n — guards the collapsed single-expression form
-    let domain4 = Type::point3(Type::Real);
+    let domain4 = Type::point3(Type::dimensionless_scalar());
     let got4 = gradient_result_type(domain4.clone(), 4);
     let expected4 = Type::Field {
         domain: Box::new(domain4),
         codomain: Box::new(Type::Vector {
             n: 4,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         }),
     };
     assert_eq!(got4, expected4);
@@ -234,11 +240,11 @@ fn gradient_result_type_returns_field_vec_n_real() {
 /// Unit test for `scalar_field_result_type`: Real codomain result field.
 #[test]
 fn scalar_field_result_type_returns_field_real_codomain() {
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     let got = scalar_field_result_type(domain.clone());
     let expected = Type::Field {
         domain: Box::new(domain),
-        codomain: Box::new(Type::Real),
+        codomain: Box::new(Type::dimensionless_scalar()),
     };
     assert_eq!(got, expected);
 }
@@ -291,15 +297,15 @@ impl SamplePoint {
         match self {
             SamplePoint::Point3([a, b, c]) => (
                 Value::Point(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
-                Type::point3(Type::Real),
+                Type::point3(Type::dimensionless_scalar()),
             ),
             SamplePoint::Vector3([a, b, c]) => (
                 Value::Vector(vec![Value::Real(a), Value::Real(b), Value::Real(c)]),
-                Type::vec3(Type::Real),
+                Type::vec3(Type::dimensionless_scalar()),
             ),
             SamplePoint::Vector2([a, b]) => (
                 Value::Vector(vec![Value::Real(a), Value::Real(b)]),
-                Type::vec2(Type::Real),
+                Type::vec2(Type::dimensionless_scalar()),
             ),
         }
     }
@@ -320,11 +326,11 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -332,8 +338,8 @@ fn build_divergence_identity_field(label: &str) -> (Value, Type) {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
 
     let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
@@ -372,7 +378,7 @@ fn run_divergence_identity_test(sample_point: SamplePoint, label: &str) {
             CompiledExpr::literal(div_result, div_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -404,17 +410,17 @@ fn build_curl_rotation_field(label: &str) -> (Value, Type) {
     // Lambda: |x, y, z| vec3(-y, x, 0)
     let neg_y = CompiledExpr::unop(
         UnOp::Neg,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = make_function_call(
         "vec3",
         vec![
             neg_y,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::literal(Value::Real(0.0), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -422,8 +428,8 @@ fn build_curl_rotation_field(label: &str) -> (Value, Type) {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
 
     let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
@@ -462,7 +468,7 @@ fn run_curl_rotation_test(sample_point: SamplePoint, label: &str) {
             CompiledExpr::literal(curl_result, curl_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -484,27 +490,27 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
     // Lambda: |x, y, z| x*x + y*y + z*z
     let xx = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let yy = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let zz = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::dimensionless_scalar()),
         zz,
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -512,8 +518,8 @@ fn build_laplacian_quadratic_field(label: &str) -> (Value, Type) {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     let (field, field_type) = make_analytical_field(domain_type.clone(), codomain_type, lambda);
 
@@ -552,7 +558,7 @@ fn run_laplacian_quadratic_test(sample_point: SamplePoint, label: &str) {
             CompiledExpr::literal(lap_result, lap_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -610,7 +616,7 @@ fn run_dim_metadata_test(
         .collect();
 
     // Dummy body: value_ref to the first parameter (never evaluated).
-    let body = CompiledExpr::value_ref(ids[0].clone(), Type::Real);
+    let body = CompiledExpr::value_ref(ids[0].clone(), Type::dimensionless_scalar());
 
     // Build lambda.
     let params: Vec<(&str, ValueCellId)> = names[..n].iter().copied().zip(ids).collect();
@@ -671,7 +677,7 @@ const MAX_POINT_ARITY: usize = 3;
 /// with component values matching the domain's quantity type:
 ///  - `Point{n, Real}` or `Point{n, Int}` → components are `Value::Real`
 ///  - `Point{n, Scalar{dim}}` → components are `Value::Scalar { si_value, dimension }`
-///  - bare `Type::Real` / `Type::Int` → `(Value::Real(1.0), Type::Real)`
+///  - bare `Type::dimensionless_scalar()` / `Type::Int` → `(Value::Real(1.0), Type::dimensionless_scalar())`
 ///  - bare `Type::Scalar{dim}` → `(Value::Scalar{1.0, dim}, domain.clone())`
 ///
 /// Eliminates the `(Value, Type)` desynchronisation risk of constructing sample
@@ -687,7 +693,8 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
             let comps: Vec<Value> = coords[..*n]
                 .iter()
                 .map(|&v| match quantity.as_ref() {
-                    Type::Real | Type::Int => Value::Real(v),
+                    Type::Int => Value::Real(v),
+                    Type::Scalar { dimension } if dimension.is_dimensionless() => Value::Real(v),
                     Type::Scalar { dimension } => Value::Scalar {
                         si_value: v,
                         dimension: *dimension,
@@ -700,7 +707,8 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
                 .collect();
             (Value::Point(comps), domain.clone())
         }
-        Type::Real | Type::Int => (Value::Real(1.0), Type::Real),
+        Type::Int => (Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::Scalar { dimension } if dimension.is_dimensionless() => (Value::Real(1.0), Type::dimensionless_scalar()),
         Type::Scalar { dimension } => (
             Value::Scalar {
                 si_value: 1.0,
@@ -717,7 +725,7 @@ fn make_sample_point(domain: &Type) -> (Value, Type) {
 fn make_sample_point_panics_when_point_arity_exceeds_three() {
     let domain = Type::Point {
         n: 4,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
     let _ = make_sample_point(&domain);
 }
@@ -821,7 +829,7 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
     let op_expr = make_function_call(
         op,
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real, // placeholder result_type; not used by the evaluator
+        Type::dimensionless_scalar(), // placeholder result_type; not used by the evaluator
     );
 
     let values = ValueMap::new();
@@ -833,9 +841,9 @@ fn eval_field_op(op: &str, domain: Type, codomain: Type) -> Value {
 fn eval_field_op_panics_when_point_arity_exceeds_three() {
     let domain = Type::Point {
         n: 4,
-        quantity: Box::new(Type::Real),
+        quantity: Box::new(Type::dimensionless_scalar()),
     };
-    let _ = eval_field_op("gradient", domain, Type::Real);
+    let _ = eval_field_op("gradient", domain, Type::dimensionless_scalar());
 }
 
 /// `codomain_component_type` returns the inner quantity for Vector codomains
@@ -863,10 +871,10 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
     );
 
     // (b) Vec3(Real) → Real
-    let vec3_real = Type::vec3(Type::Real);
+    let vec3_real = Type::vec3(Type::dimensionless_scalar());
     assert_eq!(
         codomain_component_type(&vec3_real),
-        Type::Real,
+        Type::dimensionless_scalar(),
         "Vec3(Real) should yield Real"
     );
 
@@ -893,14 +901,14 @@ fn codomain_component_type_returns_vector_quantity_or_codomain_itself() {
 
     // (e) Real → Real
     assert_eq!(
-        codomain_component_type(&Type::Real),
-        Type::Real,
+        codomain_component_type(&Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
         "Real should yield itself"
     );
 }
 
 /// `build_eval_field_op_body` (Vector branch) stamps each `value_ref` with the
-/// codomain's component type (the inner quantity of the Vector), not `Type::Real`.
+/// codomain's component type (the inner quantity of the Vector), not `Type::dimensionless_scalar()`.
 ///
 /// Case 1: Vec3(Scalar<Velocity>) → component type is Scalar<Velocity>.
 /// Case 2: Vec3(Real)             → component type is Real (regression check).
@@ -963,7 +971,7 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
     }
 
     // ── Case 2: Vec3(Real) — regression check ────────────────────────────────
-    let vec3_real = Type::vec3(Type::Real);
+    let vec3_real = Type::vec3(Type::dimensionless_scalar());
     let body2 = build_eval_field_op_body(&ids, &vec3_real);
 
     match &body2.kind {
@@ -997,7 +1005,7 @@ fn build_eval_field_op_body_vector_branch_stamps_codomain_component_type() {
     for ty in &value_ref_types2 {
         assert_eq!(
             *ty,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "case 2: each ValueRef should have result_type Real, got {:?}",
             ty
         );
@@ -1083,7 +1091,7 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
     }
 
     // ── Case 2: Real — regression check ──────────────────────────────────────
-    let body2 = build_eval_field_op_body(&ids, &Type::Real);
+    let body2 = build_eval_field_op_body(&ids, &Type::dimensionless_scalar());
 
     match &body2.kind {
         CompiledExprKind::BinOp { op, .. } => {
@@ -1098,7 +1106,7 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
     }
     assert_eq!(
         body2.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "case 2: top-level result_type should be Real, got {:?}",
         body2.result_type
     );
@@ -1127,7 +1135,7 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
     for ty in &value_ref_types2 {
         assert_eq!(
             *ty,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "case 2: each ValueRef should be Real, got {:?}",
             ty
         );
@@ -1135,7 +1143,7 @@ fn build_eval_field_op_body_scalar_branch_stamps_codomain_into_sum_nodes() {
     for ty in &binop_add_types2 {
         assert_eq!(
             *ty,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "case 2: each BinOp(Add) should be Real, got {:?}",
             ty
         );
@@ -1188,15 +1196,15 @@ fn gradient_1d_quadratic_accuracy() {
     // Lambda: |x| x * x
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let domain_type = Type::Real;
+    let domain_type = Type::dimensionless_scalar();
 
-    let (field, field_type) = make_analytical_field(domain_type, Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type, Type::dimensionless_scalar(), lambda);
 
     // gradient(field)
     let grad_expr = make_function_call(
@@ -1219,9 +1227,9 @@ fn gradient_1d_quadratic_accuracy() {
         "sample",
         vec![
             CompiledExpr::literal(grad_result, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1249,27 +1257,27 @@ fn gradient_3d_sum_of_squares_accuracy() {
     // Lambda: |x, y, z| x*x + y*y + z*z
     let xx = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let yy = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let zz = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::dimensionless_scalar()),
         zz,
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1277,9 +1285,9 @@ fn gradient_3d_sum_of_squares_accuracy() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
-    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::dimensionless_scalar(), lambda);
 
     // gradient(field)
     let grad_expr = make_function_call(
@@ -1306,7 +1314,7 @@ fn gradient_3d_sum_of_squares_accuracy() {
             CompiledExpr::literal(grad_result, gradient_result_type(domain_type.clone(), 3)),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1397,7 +1405,7 @@ fn curl_two_element_vector_sample_point_returns_undef() {
             CompiledExpr::literal(curl_result, curl_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1432,7 +1440,7 @@ fn divergence_two_element_vector_sample_point_returns_undef() {
             CompiledExpr::literal(div_result, div_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1494,7 +1502,7 @@ fn laplacian_two_element_vector_sample_point_returns_undef() {
             CompiledExpr::literal(lap_result, lap_field_type),
             CompiledExpr::literal(point, point_literal_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1519,13 +1527,13 @@ fn gradient_1d_scalar_codomain_type() {
     // Lambda: |x| x * x
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), lambda);
 
     let grad_expr = make_function_call(
         "gradient",
@@ -1547,8 +1555,7 @@ fn gradient_1d_scalar_codomain_type() {
     if let Value::Field { codomain_type, .. } = &grad_result {
         // 1D gradient of Real→Real produces Real codomain
         match codomain_type {
-            Type::Real => {} // correct
-            Type::Scalar { dimension } if *dimension == DimensionVector::DIMENSIONLESS => {} // also fine
+            Type::Scalar { dimension } if dimension.is_dimensionless() => {} // dimensionless scalar (Real)
             other => panic!(
                 "gradient_1d_scalar_codomain_type: expected Real or dimensionless Scalar codomain, got {:?}",
                 other
@@ -1572,12 +1579,12 @@ fn gradient_3d_vector_codomain_type() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1585,9 +1592,9 @@ fn gradient_3d_vector_codomain_type() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
-    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::dimensionless_scalar(), lambda);
 
     let grad_expr = make_function_call(
         "gradient",
@@ -1628,28 +1635,28 @@ fn field_composition_sample_identity() {
     // Lambda: |x| 2*x + 1
     let two_x = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
         two_x,
-        CompiledExpr::literal(Value::Real(1.0), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), lambda);
 
     // sample(field, 3.0) → 2*3+1 = 7.0
     let sample_expr = make_function_call(
         "sample",
         vec![
             CompiledExpr::literal(field, field_type),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let values = ValueMap::new();
@@ -1677,9 +1684,9 @@ fn gradient_dimensional_correctness() {
     // Lambda: |x| 2.0 * x (temperature field over length domain)
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
@@ -1743,11 +1750,11 @@ fn divergence_constant_field_near_zero() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
-            CompiledExpr::literal(Value::Real(1.0), Type::Real),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
+            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar()),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1755,10 +1762,10 @@ fn divergence_constant_field_near_zero() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
     let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::vec3(Type::Real), lambda);
+        make_analytical_field(domain_type.clone(), Type::vec3(Type::dimensionless_scalar()), lambda);
 
     // divergence(field) → scalar field ≈ 0
     let div_expr = make_function_call(
@@ -1785,7 +1792,7 @@ fn divergence_constant_field_near_zero() {
             CompiledExpr::literal(div_result, scalar_field_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1815,26 +1822,26 @@ fn gradient_linear_field_constant() {
     // Lambda: |x, y, z| x + 2*y + 3*z
     let two_y = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let three_z = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(3.0), Type::Real),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
             two_y,
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         three_z,
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1842,9 +1849,9 @@ fn gradient_linear_field_constant() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
-    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::dimensionless_scalar(), lambda);
 
     // gradient(field) should give constant [1, 2, 3]
     let grad_expr = make_function_call(
@@ -1878,7 +1885,7 @@ fn gradient_linear_field_constant() {
                 ),
                 CompiledExpr::literal(point.clone(), domain_type.clone()),
             ],
-            Type::vec3(Type::Real),
+            Type::vec3(Type::dimensionless_scalar()),
         );
         let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
         assert_gradient_vector(
@@ -1903,26 +1910,26 @@ fn laplacian_linear_field_near_zero() {
     // Lambda: |x, y, z| x + 2*y + 3*z
     let two_y = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(2.0), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let three_z = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::literal(Value::Real(3.0), Type::Real),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
             two_y,
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         three_z,
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -1930,9 +1937,9 @@ fn laplacian_linear_field_near_zero() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
-    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::dimensionless_scalar(), lambda);
 
     // laplacian(field) → scalar field ≈ 0
     let lap_expr = make_function_call(
@@ -1959,7 +1966,7 @@ fn laplacian_linear_field_near_zero() {
             CompiledExpr::literal(lap_result, scalar_field_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -1984,7 +1991,7 @@ fn laplacian_linear_field_near_zero() {
 ///
 /// This verifies that compute_divergence correctly derives the result codomain
 /// dimension from the input field's domain and codomain component dimensions,
-/// rather than unconditionally returning Type::Real.
+/// rather than unconditionally returning Type::dimensionless_scalar().
 #[test]
 fn divergence_dimensional_correctness() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -2009,9 +2016,9 @@ fn divergence_dimensional_correctness() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -2086,12 +2093,12 @@ fn laplacian_dimensional_correctness() {
         BinOp::Add,
         CompiledExpr::binop(
             BinOp::Add,
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -2138,7 +2145,7 @@ fn laplacian_dimensional_correctness() {
 }
 
 /// Divergence of a dimensionless Point{3,Real} → Vector{3,Real} field still
-/// returns Type::Real as the result codomain (regression guard).
+/// returns Type::dimensionless_scalar() as the result codomain (regression guard).
 ///
 /// Ensures the fallback path in compute_divergence does not break the existing
 /// behaviour for dimensionless fields now that the dimensioned path is wired up.
@@ -2146,8 +2153,8 @@ fn laplacian_dimensional_correctness() {
 fn divergence_dimensionless_still_real() {
     let div_result = eval_field_op(
         "divergence",
-        Type::point3(Type::Real),
-        Type::vec3(Type::Real),
+        Type::point3(Type::dimensionless_scalar()),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     let Value::Field {
         codomain_type: ref actual_codomain,
@@ -2161,9 +2168,9 @@ fn divergence_dimensionless_still_real() {
     };
     assert_eq!(
         *actual_codomain,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "divergence of dimensionless Point{{3,Real}}→Vector{{3,Real}} should have codomain \
-         Type::Real, got {:?}",
+         Type::dimensionless_scalar(), got {:?}",
         actual_codomain
     );
 }
@@ -2177,8 +2184,8 @@ fn divergence_dimensionless_still_real() {
 /// so the step-3 implementation change cannot regress it.
 #[test]
 fn divergence_sample_dimensionless_returns_real() {
-    let domain = Type::point3(Type::Real);
-    let div_result = eval_field_op("divergence", domain.clone(), Type::vec3(Type::Real));
+    let domain = Type::point3(Type::dimensionless_scalar());
+    let div_result = eval_field_op("divergence", domain.clone(), Type::vec3(Type::dimensionless_scalar()));
     let sampled = sample_field(div_result, domain);
     match sampled {
         Value::Real(v) => {
@@ -2265,7 +2272,7 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
 /// **Current behavior (bug):** `compute_divergence` calls `dim_quotient_type` with
 /// `codomain_dim = DIMENSIONLESS` and `domain_dim = LENGTH`.  Because the codomain is
 /// already dimensionless, the guard `cd != DIMENSIONLESS` fails and the `_ =>` arm
-/// returns the fallback `Type::Real` unchanged.  `wrap_scalar_result` then produces
+/// returns the fallback `Type::dimensionless_scalar()` unchanged.  `wrap_scalar_result` then produces
 /// `Value::Real` — the dimensional information is lost.
 ///
 /// **`#[ignore]` is load-bearing:** un-ignoring this test without also fixing *both*
@@ -2274,14 +2281,15 @@ fn divergence_sample_dimensional_correctness_returns_scalar() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-            losing the 1/Length result dimension; expected Value::Scalar{1/Length}"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::dimensionless_scalar(), \
+            losing the 1/Length result dimension; expected Value::Scalar{1/Length}; \
+            fix owned by task 4373 (real-dimensionless α)"]
 fn divergence_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
     });
     // Dimensionless codomain: Vector{3, Real}
-    let codomain = Type::vec3(Type::Real);
+    let codomain = Type::vec3(Type::dimensionless_scalar());
 
     let div_result = eval_field_op("divergence", domain.clone(), codomain);
     let sampled = sample_field(div_result, domain);
@@ -2335,7 +2343,7 @@ fn divergence_sample_mixed_length_to_real_placeholder() {
 fn divergence_sample_mixed_real_to_velocity_returns_scalar() {
     let velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     // Dimensionless domain: Point{3, Real}
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     // Dimensioned codomain: Vector{3, Scalar<Velocity>}
     let codomain = Type::vec3(Type::Scalar {
         dimension: velocity_dim,
@@ -2373,13 +2381,13 @@ fn divergence_sample_mixed_real_to_velocity_returns_scalar() {
 }
 
 /// Laplacian of a dimensionless Point{3,Real} → Real field still returns
-/// Type::Real as the result codomain (regression guard).
+/// Type::dimensionless_scalar() as the result codomain (regression guard).
 ///
 /// Ensures the fallback path in compute_laplacian does not break the existing
 /// behaviour for dimensionless fields now that the dimensioned path is wired up.
 #[test]
 fn laplacian_dimensionless_still_real() {
-    let lap_result = eval_field_op("laplacian", Type::point3(Type::Real), Type::Real);
+    let lap_result = eval_field_op("laplacian", Type::point3(Type::dimensionless_scalar()), Type::dimensionless_scalar());
     let Value::Field {
         codomain_type: ref actual_codomain,
         ..
@@ -2392,8 +2400,8 @@ fn laplacian_dimensionless_still_real() {
     };
     assert_eq!(
         *actual_codomain,
-        Type::Real,
-        "laplacian of dimensionless Point{{3,Real}}→Real should have codomain Type::Real, \
+        Type::dimensionless_scalar(),
+        "laplacian of dimensionless Point{{3,Real}}→Real should have codomain Type::dimensionless_scalar(), \
          got {:?}",
         actual_codomain
     );
@@ -2406,8 +2414,8 @@ fn laplacian_dimensionless_still_real() {
 /// so the step-6 implementation change cannot regress it.
 #[test]
 fn laplacian_sample_dimensionless_returns_real() {
-    let domain = Type::point3(Type::Real);
-    let lap_result = eval_field_op("laplacian", domain.clone(), Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
+    let lap_result = eval_field_op("laplacian", domain.clone(), Type::dimensionless_scalar());
     let sampled = sample_field(lap_result, domain);
     match sampled {
         Value::Real(v) => {
@@ -2490,27 +2498,27 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
     // Lambda: |x, y, z| x*x + y*y + z*z
     let xx = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let yy = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let zz = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        CompiledExpr::value_ref(z_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::binop(BinOp::Add, xx, yy, Type::Real),
+        CompiledExpr::binop(BinOp::Add, xx, yy, Type::dimensionless_scalar()),
         zz,
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -2530,7 +2538,7 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real, // placeholder result_type; not used by the evaluator (matches eval_field_op)
+        Type::dimensionless_scalar(), // placeholder result_type; not used by the evaluator (matches eval_field_op)
     );
 
     let values = ValueMap::new();
@@ -2578,7 +2586,7 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 /// **Current behavior (bug):** `compute_laplacian` calls `dim_quotient_type` with
 /// `codomain_dim = DIMENSIONLESS` and `domain_dim = LENGTH`.  Because the codomain is
 /// already dimensionless, the guard `cd != DIMENSIONLESS` fails and the `_ =>` arm
-/// returns the fallback `Type::Real` unchanged.  `wrap_scalar_result` then produces
+/// returns the fallback `Type::dimensionless_scalar()` unchanged.  `wrap_scalar_result` then produces
 /// `Value::Real` — the 1/Length² dimensional information is lost.
 ///
 /// **`#[ignore]` is load-bearing:** un-ignoring this test without also fixing *both*
@@ -2587,14 +2595,15 @@ fn laplacian_sample_dimensional_quadratic_returns_scalar_six() {
 /// cause it to fail with `Value::Real`.  This is the early-warning signal: a naïve
 /// un-ignore serves as a concrete, executable spec for the required fix.
 #[test]
-#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::Real, \
-            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}"]
+#[ignore = "known bug: dim_quotient_type cd==DIMENSIONLESS branch returns Type::dimensionless_scalar(), \
+            losing the 1/Length\u{00b2} result dimension; expected Value::Scalar{1/Length\u{00b2}}; \
+            fix owned by task 4373 (real-dimensionless α)"]
 fn laplacian_sample_mixed_length_to_real_placeholder() {
     let domain = Type::point3(Type::Scalar {
         dimension: DimensionVector::LENGTH,
     });
     // Dimensionless codomain: Real
-    let codomain = Type::Real;
+    let codomain = Type::dimensionless_scalar();
 
     let lap_result = eval_field_op("laplacian", domain.clone(), codomain);
     let sampled = sample_field(lap_result, domain);
@@ -2647,7 +2656,7 @@ fn laplacian_sample_mixed_length_to_real_placeholder() {
 #[test]
 fn laplacian_sample_mixed_real_to_temperature_returns_scalar() {
     // Dimensionless domain: Point{3, Real}
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     // Dimensioned codomain: Scalar<Temperature>
     let codomain = Type::Scalar {
         dimension: DimensionVector::TEMPERATURE,
@@ -2696,8 +2705,8 @@ fn laplacian_sample_mixed_real_to_temperature_returns_scalar() {
 fn divergence_non_field_returns_undef() {
     let expr = make_function_call(
         "divergence",
-        vec![CompiledExpr::literal(Value::Real(1.0), Type::Real)],
-        Type::Real,
+        vec![CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())],
+        Type::dimensionless_scalar(),
     );
     let values = ValueMap::new();
     let result = eval_expr(&expr, &EvalContext::simple(&values));
@@ -2721,23 +2730,23 @@ fn curl_2d_vector_field_returns_undef() {
     // Lambda: |x, y| vec2(-y, x)
     let neg_y = CompiledExpr::unop(
         UnOp::Neg,
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let body = make_function_call(
         "vec2",
-        vec![neg_y, CompiledExpr::value_ref(x_id.clone(), Type::Real)],
-        Type::vec2(Type::Real),
+        vec![neg_y, CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar())],
+        Type::vec2(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(vec![("x", x_id), ("y", y_id)], body, ValueMap::new());
 
     let (field, field_type) =
-        make_analytical_field(Type::point2(Type::Real), Type::vec2(Type::Real), lambda);
+        make_analytical_field(Type::point2(Type::dimensionless_scalar()), Type::vec2(Type::dimensionless_scalar()), lambda);
 
     let curl_expr = make_function_call(
         "curl",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real, // result type doesn't matter — we expect Undef
+        Type::dimensionless_scalar(), // result type doesn't matter — we expect Undef
     );
 
     let values = ValueMap::new();
@@ -2774,27 +2783,27 @@ fn divergence_gradient_field_returns_undef() {
             // x*x
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                CompiledExpr::value_ref(x_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
             // y*y
             CompiledExpr::binop(
                 BinOp::Mul,
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                CompiledExpr::value_ref(y_id.clone(), Type::Real),
-                Type::Real,
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+                Type::dimensionless_scalar(),
             ),
-            Type::Real,
+            Type::dimensionless_scalar(),
         ),
         // z*z
         CompiledExpr::binop(
             BinOp::Mul,
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            Type::Real,
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
         ),
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -2802,9 +2811,9 @@ fn divergence_gradient_field_returns_undef() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
-    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(domain_type.clone(), Type::dimensionless_scalar(), lambda);
 
     // gradient(field) — should succeed and produce a Gradient-sourced field
     // with domain=Point3 and codomain=Vec3(Real).
@@ -2834,7 +2843,7 @@ fn divergence_gradient_field_returns_undef() {
             grad_result,
             gradient_result_type(domain_type, 3),
         )],
-        Type::Real, // result type doesn't matter — we expect Undef
+        Type::dimensionless_scalar(), // result type doesn't matter — we expect Undef
     );
 
     let result = eval_expr(&div_expr, &EvalContext::simple(&values));
@@ -2861,10 +2870,10 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
     let body = make_function_call(
         "vec2",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
         ],
-        Type::vec2(Type::Real),
+        Type::vec2(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -2874,12 +2883,12 @@ fn divergence_field_with_mismatched_dims_returns_undef() {
 
     // n=3 domain, n=2 codomain — mismatch!
     let (field, field_type) =
-        make_analytical_field(Type::point3(Type::Real), Type::vec2(Type::Real), lambda);
+        make_analytical_field(Type::point3(Type::dimensionless_scalar()), Type::vec2(Type::dimensionless_scalar()), lambda);
 
     let div_expr = make_function_call(
         "divergence",
         vec![CompiledExpr::literal(field, field_type)],
-        Type::Real, // result type doesn't matter — we expect Undef
+        Type::dimensionless_scalar(), // result type doesn't matter — we expect Undef
     );
 
     let values = ValueMap::new();
@@ -2912,11 +2921,11 @@ fn curl_irrotational_field_near_zero() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -2924,10 +2933,10 @@ fn curl_irrotational_field_near_zero() {
         ValueMap::new(),
     );
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
 
     let (field, field_type) =
-        make_analytical_field(domain_type.clone(), Type::vec3(Type::Real), lambda);
+        make_analytical_field(domain_type.clone(), Type::vec3(Type::dimensionless_scalar()), lambda);
 
     // curl(field) → vector field
     let curl_expr = make_function_call(
@@ -2954,7 +2963,7 @@ fn curl_irrotational_field_near_zero() {
             CompiledExpr::literal(curl_result, curl_result_type(domain_type.clone())),
             CompiledExpr::literal(point, domain_type),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -2969,8 +2978,8 @@ fn curl_irrotational_field_near_zero() {
 
 /// Laplacian of the 1D quadratic f(x) = x*x at x=3.0 ≈ 2.0.
 ///
-/// d²/dx²(x²) = 2 at every x. Domain is Type::Real (bare scalar, not Point),
-/// which exercises the `Type::Real` arm in compute_laplacian (lib.rs:933) and
+/// d²/dx²(x²) = 2 at every x. Domain is Type::dimensionless_scalar() (bare scalar, not Point),
+/// which exercises the `Type::dimensionless_scalar()` arm in compute_laplacian (lib.rs:933) and
 /// the `Value::Real(r) if r.is_finite() => vec![*r]` coords-extraction arm in
 /// compute_numerical_laplacian_at_point (lib.rs:1627). With n=1 and a single
 /// lambda param, single_point_param = (1==1 && 1>1) = false, so the decomposed
@@ -2982,19 +2991,19 @@ fn laplacian_1d_quadratic_accuracy() {
     // Lambda: |x| x*x
     let body = CompiledExpr::binop(
         BinOp::Mul,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(vec![("x", x_id)], body, ValueMap::new());
 
-    let (field, field_type) = make_analytical_field(Type::Real, Type::Real, lambda);
+    let (field, field_type) = make_analytical_field(Type::dimensionless_scalar(), Type::dimensionless_scalar(), lambda);
 
     // laplacian(field) → scalar field
     let lap_expr = make_function_call(
         "laplacian",
         vec![CompiledExpr::literal(field, field_type)],
-        scalar_field_result_type(Type::Real),
+        scalar_field_result_type(Type::dimensionless_scalar()),
     );
 
     let values = ValueMap::new();
@@ -3010,10 +3019,10 @@ fn laplacian_1d_quadratic_accuracy() {
     let sample_expr = make_function_call(
         "sample",
         vec![
-            CompiledExpr::literal(lap_result, scalar_field_result_type(Type::Real)),
-            CompiledExpr::literal(Value::Real(3.0), Type::Real),
+            CompiledExpr::literal(lap_result, scalar_field_result_type(Type::dimensionless_scalar())),
+            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar()),
         ],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
@@ -3037,14 +3046,14 @@ fn laplacian_1d_quadratic_accuracy() {
 /// dimensionless (Real), so the unified preserve-codomain strategy should
 /// preserve the Vector's component type (Scalar<Length>) as the result codomain.
 ///
-/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+/// Under the old divergence fallback (`_ => Type::dimensionless_scalar()`), this test fails.
 #[test]
 fn divergence_real_domain_preserves_dim_codomain() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let component_type = Type::Scalar {
         dimension: DimensionVector::LENGTH,
     };
@@ -3054,9 +3063,9 @@ fn divergence_real_domain_preserves_dim_codomain() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3107,15 +3116,15 @@ fn divergence_dim_domain_preserves_real_codomain() {
         dimension: DimensionVector::LENGTH,
     };
     let domain_type = Type::point3(domain_quantity);
-    let codomain_type = Type::vec3(Type::Real);
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
 
     // Lambda body unused (metadata-only test).
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3145,7 +3154,7 @@ fn divergence_dim_domain_preserves_real_codomain() {
     if let Value::Field { codomain_type, .. } = &div_result {
         assert_eq!(
             *codomain_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "divergence of Point{{3,Length}}→Vector{{3,Real}} should preserve codomain Real, got {:?}",
             codomain_type
         );
@@ -3155,7 +3164,7 @@ fn divergence_dim_domain_preserves_real_codomain() {
 /// Divergence of Point{3, Int} → Vector{3, Scalar<Length>}: Int is treated as
 /// dimensionless, so the unified preserve-codomain strategy preserves Scalar<Length>.
 ///
-/// Under the old divergence fallback (`_ => Type::Real`), this test fails.
+/// Under the old divergence fallback (`_ => Type::dimensionless_scalar()`), this test fails.
 #[test]
 fn divergence_int_domain_preserves_dim_codomain() {
     let x_id = ValueCellId::new("$lambda0.S", "x");
@@ -3172,9 +3181,9 @@ fn divergence_int_domain_preserves_dim_codomain() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3223,7 +3232,7 @@ fn laplacian_real_domain_preserves_dim_codomain() {
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let codomain_type = Type::Scalar {
         dimension: DimensionVector::LENGTH,
     };
@@ -3231,9 +3240,9 @@ fn laplacian_real_domain_preserves_dim_codomain() {
     // Lambda body unused (metadata-only test).
     let body = CompiledExpr::binop(
         BinOp::Add,
-        CompiledExpr::value_ref(x_id.clone(), Type::Real),
-        CompiledExpr::value_ref(y_id.clone(), Type::Real),
-        Type::Real,
+        CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+        CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+        Type::dimensionless_scalar(),
     );
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -3285,10 +3294,10 @@ fn laplacian_dim_domain_preserves_real_codomain() {
         dimension: DimensionVector::LENGTH,
     };
     let domain_type = Type::point3(domain_quantity);
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
 
     // Lambda body unused (metadata-only test).
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -3316,7 +3325,7 @@ fn laplacian_dim_domain_preserves_real_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "laplacian of Point{{3,Length}}→Real should preserve codomain Real, got {:?}",
             codomain_type
         );
@@ -3324,7 +3333,7 @@ fn laplacian_dim_domain_preserves_real_codomain() {
 }
 
 /// Laplacian of Point{3, Scalar<Length>} → Scalar{DIMENSIONLESS}: the codomain is
-/// explicitly dimensionless, so the result should be downgraded to Type::Real.
+/// explicitly dimensionless, so the result should be downgraded to Type::dimensionless_scalar().
 ///
 /// The current fallback (`_ => codomain_type.clone()`) returns Scalar{DIMENSIONLESS}
 /// instead of Real — this test exposes that bug.
@@ -3338,13 +3347,13 @@ fn laplacian_explicit_dimensionless_scalar_codomain() {
         dimension: DimensionVector::LENGTH,
     };
     let domain_type = Type::point3(domain_quantity);
-    // Explicitly-dimensionless Scalar (not Type::Real, but Scalar<DIMENSIONLESS>).
+    // Explicitly-dimensionless Scalar (not Type::dimensionless_scalar(), but Scalar<DIMENSIONLESS>).
     let codomain_type = Type::Scalar {
         dimension: DimensionVector::DIMENSIONLESS,
     };
 
     // Lambda body unused (metadata-only test).
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -3372,7 +3381,7 @@ fn laplacian_explicit_dimensionless_scalar_codomain() {
     if let Value::Field { codomain_type, .. } = &lap_result {
         assert_eq!(
             *codomain_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "laplacian of Point{{3,Length}}→Scalar{{DIMENSIONLESS}} should downgrade codomain to Real, got {:?}",
             codomain_type
         );
@@ -3395,7 +3404,7 @@ fn laplacian_int_domain_preserves_dim_codomain() {
     };
 
     // Lambda body unused (metadata-only test).
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -3445,13 +3454,13 @@ fn gradient_real_domain_preserves_dim_codomain() {
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    let domain_type = Type::point3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
     let codomain_type = Type::Scalar {
         dimension: DimensionVector::LENGTH,
     };
 
     // Lambda body unused (metadata-only test).
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -3508,7 +3517,7 @@ fn gradient_int_domain_preserves_dim_codomain() {
     };
 
     // Lambda body unused (metadata-only test).
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     let lambda = make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -3578,9 +3587,9 @@ fn curl_dimensional_correctness() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3631,15 +3640,15 @@ fn curl_dimensionless_still_vec3_real() {
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
 
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3662,7 +3671,7 @@ fn curl_dimensionless_still_vec3_real() {
     let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
 
     if let Value::Field { codomain_type, .. } = &curl_result {
-        let expected = Type::vec3(Type::Real);
+        let expected = Type::vec3(Type::dimensionless_scalar());
         assert_eq!(
             *codomain_type, expected,
             "curl of dimensionless field should have Vector{{3,Real}} codomain, got {:?}",
@@ -3701,9 +3710,9 @@ fn curl_sample_dimensional_correctness_returns_scalar() {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3810,16 +3819,16 @@ fn curl_sample_dimensionless_returns_real() {
     let y_id = ValueCellId::new("$lambda0.S", "y");
     let z_id = ValueCellId::new("$lambda0.S", "z");
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::vec3(Type::Real);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
 
     // Lambda: |x, y, z| vec3(z, x, y)
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
         ],
         codomain_type.clone(),
     );
@@ -3957,9 +3966,9 @@ fn laplacian_dimensional_correctness_int_domain_int_codomain() {
     );
 }
 
-/// This is the only laplacian test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// This is the only laplacian test exercising the `result_dim == DIMENSIONLESS => Type::dimensionless_scalar()`
 /// inner arm of `dim_quotient_type`. Codomain `Length²` divided by `Length²`
-/// (domain-dim squared) collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+/// (domain-dim squared) collapses to `DIMENSIONLESS`, so the inner arm returns `Type::dimensionless_scalar()`.
 #[test]
 fn laplacian_dimensional_correctness_result_dimensionless_returns_real() {
     run_dim_metadata_test(
@@ -3971,7 +3980,7 @@ fn laplacian_dimensional_correctness_result_dimensionless_returns_real() {
             dimension: DimensionVector::LENGTH.pow(2),
         },
         FieldSourceKind::Analytical,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "laplacian_dimensional_correctness_result_dimensionless_returns_real",
     );
 }
@@ -4051,9 +4060,9 @@ fn divergence_dimensional_correctness_2d() {
     );
 }
 
-/// This is the only divergence test exercising the `result_dim == DIMENSIONLESS => Type::Real`
+/// This is the only divergence test exercising the `result_dim == DIMENSIONLESS => Type::dimensionless_scalar()`
 /// inner arm of `dim_quotient_type`. Codomain component `Length` divided by domain
-/// `Length` collapses to `DIMENSIONLESS`, so the inner arm returns `Type::Real`.
+/// `Length` collapses to `DIMENSIONLESS`, so the inner arm returns `Type::dimensionless_scalar()`.
 #[test]
 fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
     run_dim_metadata_test(
@@ -4065,7 +4074,7 @@ fn divergence_dimensional_correctness_result_dimensionless_returns_real() {
             dimension: DimensionVector::LENGTH,
         }),
         FieldSourceKind::Analytical,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "divergence_dimensional_correctness_result_dimensionless_returns_real",
     );
 }
@@ -4099,9 +4108,9 @@ fn divergence_dimensional_correctness_composed_source() {
 /// `compute_divergence` (calculus.rs:229-231).
 ///
 /// For a `Point{3,Scalar<Length>} → Vec3(Scalar{DIMENSIONLESS})` field, the
-/// `divergence_fallback` is set to `Type::Real` because the codomain component type
+/// `divergence_fallback` is set to `Type::dimensionless_scalar()` because the codomain component type
 /// is `Scalar{DIMENSIONLESS}`. `dim_quotient_type` then returns the fallback because
-/// `cd == DIMENSIONLESS`, so `result_codomain = Type::Real`.
+/// `cd == DIMENSIONLESS`, so `result_codomain = Type::dimensionless_scalar()`.
 ///
 /// This arm is distinct from:
 /// - The `_` wildcard arm (hit when codomain is non-Scalar-DIMENSIONLESS)
@@ -4130,8 +4139,8 @@ fn divergence_scalar_dimensionless_codomain_downgrade() {
     };
     assert_eq!(
         *actual_codomain,
-        Type::Real,
-        "divergence of Point{{3,Length}}→Vec3(DIMENSIONLESS) should have codomain Type::Real, \
+        Type::dimensionless_scalar(),
+        "divergence of Point{{3,Length}}→Vec3(DIMENSIONLESS) should have codomain Type::dimensionless_scalar(), \
          got {:?}",
         actual_codomain
     );
@@ -4149,8 +4158,8 @@ fn divergence_scalar_dimensionless_codomain_downgrade() {
 /// `compute_gradient` (calculus.rs:120-122).
 ///
 /// For a `Point{3,Real} → Scalar{DIMENSIONLESS}` field, `gradient_fallback` is set to
-/// `Type::Real` because the codomain is `Scalar{DIMENSIONLESS}`. `dim_quotient_type`
-/// returns the fallback because `cd == DIMENSIONLESS`, so `gradient_quantity = Type::Real`.
+/// `Type::dimensionless_scalar()` because the codomain is `Scalar{DIMENSIONLESS}`. `dim_quotient_type`
+/// returns the fallback because `cd == DIMENSIONLESS`, so `gradient_quantity = Type::dimensionless_scalar()`.
 /// With `n = 3`, `result_codomain = Vector{3, Real}`.
 ///
 /// This arm is distinct from:
@@ -4159,7 +4168,7 @@ fn divergence_scalar_dimensionless_codomain_downgrade() {
 ///   dd are non-DIMENSIONLESS)
 #[test]
 fn gradient_scalar_dimensionless_codomain_downgrade() {
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     let codomain = Type::Scalar {
         dimension: DimensionVector::DIMENSIONLESS,
     };
@@ -4178,7 +4187,7 @@ fn gradient_scalar_dimensionless_codomain_downgrade() {
     };
     assert_eq!(
         *actual_codomain,
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
         "gradient of Point{{3,Real}}→Scalar{{DIMENSIONLESS}} should have codomain Vec3(Real), \
          got {:?}",
         actual_codomain
@@ -4224,7 +4233,7 @@ fn sample_point_enum_correctness() {
     );
     assert_eq!(
         ty,
-        Type::point3(Type::Real),
+        Type::point3(Type::dimensionless_scalar()),
         "Point3 should produce Type::point3(Real)"
     );
     if let Value::Point(items) = &val {
@@ -4242,7 +4251,7 @@ fn sample_point_enum_correctness() {
     );
     assert_eq!(
         ty,
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
         "Vector3 should produce Type::vec3(Real)"
     );
     if let Value::Vector(items) = &val {
@@ -4260,7 +4269,7 @@ fn sample_point_enum_correctness() {
     );
     assert_eq!(
         ty,
-        Type::vec2(Type::Real),
+        Type::vec2(Type::dimensionless_scalar()),
         "Vector2 should produce Type::vec2(Real)"
     );
     if let Value::Vector(items) = &val {
@@ -4287,7 +4296,7 @@ fn make_trivial_3d_scalar_lambda() -> Value {
     let x_id = ValueCellId::new("$arc_share_test.S", "x");
     let y_id = ValueCellId::new("$arc_share_test.S", "y");
     let z_id = ValueCellId::new("$arc_share_test.S", "z");
-    let body = CompiledExpr::value_ref(x_id.clone(), Type::Real);
+    let body = CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar());
     make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
         body,
@@ -4304,11 +4313,11 @@ fn make_trivial_3d_vector_lambda() -> Value {
     let body = make_function_call(
         "vec3",
         vec![
-            CompiledExpr::value_ref(x_id.clone(), Type::Real),
-            CompiledExpr::value_ref(y_id.clone(), Type::Real),
-            CompiledExpr::value_ref(z_id.clone(), Type::Real),
+            CompiledExpr::value_ref(x_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(y_id.clone(), Type::dimensionless_scalar()),
+            CompiledExpr::value_ref(z_id.clone(), Type::dimensionless_scalar()),
         ],
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
     );
     make_value_lambda(
         vec![("x", x_id), ("y", y_id), ("z", z_id)],
@@ -4322,7 +4331,7 @@ fn eval_unary_field_op(op: &str, source: Value, source_type: Type) -> Value {
     let op_expr = make_function_call(
         op,
         vec![CompiledExpr::literal(source, source_type)],
-        Type::Real, // placeholder result_type; not inspected by the evaluator
+        Type::dimensionless_scalar(), // placeholder result_type; not inspected by the evaluator
     );
     eval_expr(&op_expr, &EvalContext::simple(&ValueMap::new()))
 }
@@ -4331,7 +4340,7 @@ fn eval_unary_field_op(op: &str, source: Value, source_type: Type) -> Value {
 /// field operators (gradient / divergence / curl / laplacian).
 ///
 /// Constructs a `FieldSourceKind::Analytical` source field with domain
-/// `Type::point3(Type::Real)`, the given `codomain`, and a freshly wrapped
+/// `Type::point3(Type::dimensionless_scalar())`, the given `codomain`, and a freshly wrapped
 /// `Arc<Value>` around `lambda`.  Runs `op_name` via `eval_unary_field_op`,
 /// then asserts that the result's nested source-field lambda `Arc::ptr_eq`s
 /// with the original — proving no deep clone of the compiled expression tree
@@ -4341,7 +4350,7 @@ fn eval_unary_field_op(op: &str, source: Value, source_type: Type) -> Value {
 /// `assert_unary_op_shares_source_lambda("new_op", codomain, make_lambda())`.
 fn assert_unary_op_shares_source_lambda(op_name: &str, codomain: Type, lambda: Value) {
     let source_lambda: Arc<Value> = Arc::new(lambda);
-    let domain = Type::point3(Type::Real);
+    let domain = Type::point3(Type::dimensionless_scalar());
     let source = Value::Field {
         domain_type: domain.clone(),
         codomain_type: codomain.clone(),
@@ -4375,7 +4384,7 @@ fn assert_unary_op_shares_source_lambda(op_name: &str, codomain: Type, lambda: V
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn gradient_result_arc_shares_source_lambda() {
-    assert_unary_op_shares_source_lambda("gradient", Type::Real, make_trivial_3d_scalar_lambda());
+    assert_unary_op_shares_source_lambda("gradient", Type::dimensionless_scalar(), make_trivial_3d_scalar_lambda());
 }
 
 /// `compute_divergence` stores the source field's lambda via `Arc::clone` —
@@ -4384,7 +4393,7 @@ fn gradient_result_arc_shares_source_lambda() {
 fn divergence_result_arc_shares_source_lambda() {
     assert_unary_op_shares_source_lambda(
         "divergence",
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
         make_trivial_3d_vector_lambda(),
     );
 }
@@ -4395,7 +4404,7 @@ fn divergence_result_arc_shares_source_lambda() {
 fn curl_result_arc_shares_source_lambda() {
     assert_unary_op_shares_source_lambda(
         "curl",
-        Type::vec3(Type::Real),
+        Type::vec3(Type::dimensionless_scalar()),
         make_trivial_3d_vector_lambda(),
     );
 }
@@ -4404,7 +4413,7 @@ fn curl_result_arc_shares_source_lambda() {
 /// no deep copy of the compiled expression tree occurs.
 #[test]
 fn laplacian_result_arc_shares_source_lambda() {
-    assert_unary_op_shares_source_lambda("laplacian", Type::Real, make_trivial_3d_scalar_lambda());
+    assert_unary_op_shares_source_lambda("laplacian", Type::dimensionless_scalar(), make_trivial_3d_scalar_lambda());
 }
 
 /// `sample` of an `Imported` field whose lambda slot holds a `Value::SampledField`
@@ -4443,8 +4452,8 @@ fn sample_imported_field_with_sampled_field_lambda_dispatches_to_interpolation()
         oob_emitted: AtomicBool::new(false),
     };
 
-    let domain_type = Type::point3(Type::Real);
-    let codomain_type = Type::Real;
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
 
     // Probe point strictly in-bounds — trilinear interpolation at (0.5,0.5,0.5)
     // yields the average of all 8 corners = 4.5.
@@ -4496,6 +4505,920 @@ fn sample_imported_field_with_sampled_field_lambda_dispatches_to_interpolation()
          got {:?} (expected {:?})",
         result,
         expected
+    );
+}
+
+// ── ε integration acceptance (PRD §5): sampled eager-lower + stride-n sample ──
+
+/// Build a Regular1D `SampledField` with `n` nodes, spacing `h`,
+/// where `data[i] = f(x_i)` and `x_i = i as f64 * h`.
+fn make_sampled_1d(n: usize, h: f64, f: impl Fn(f64) -> f64) -> SampledField {
+    let axis: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+    let data: Vec<f64> = axis.iter().map(|&x| f(x)).collect();
+    SampledField {
+        name: "test-1d".to_string(),
+        kind: SampledGridKind::Regular1D,
+        bounds_min: vec![0.0],
+        bounds_max: vec![(n - 1) as f64 * h],
+        spacing: vec![h],
+        axis_grids: vec![axis],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Build a Regular2D `SampledField` with `nx × ny` nodes, spacings `hx`/`hy`,
+/// where `data[i * ny + j] = f(x_i, y_j)`.
+fn make_sampled_2d(
+    nx: usize,
+    ny: usize,
+    hx: f64,
+    hy: f64,
+    f: impl Fn(f64, f64) -> f64,
+) -> SampledField {
+    let xs: Vec<f64> = (0..nx).map(|i| i as f64 * hx).collect();
+    let ys: Vec<f64> = (0..ny).map(|j| j as f64 * hy).collect();
+    let mut data = Vec::with_capacity(nx * ny);
+    for &x in &xs {
+        for &y in &ys {
+            data.push(f(x, y));
+        }
+    }
+    SampledField {
+        name: "test-2d".to_string(),
+        kind: SampledGridKind::Regular2D,
+        bounds_min: vec![0.0, 0.0],
+        bounds_max: vec![(nx - 1) as f64 * hx, (ny - 1) as f64 * hy],
+        spacing: vec![hx, hy],
+        axis_grids: vec![xs, ys],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Integration acceptance (PRD §5, task ε test (a)):
+/// `sample(gradient(F_2d_linear), node_point)` returns exact partial derivatives
+/// via gradient eager-lowering + stride-n sample.
+///
+/// `F_2d_linear(x, y) = 3x + 5y` on a 4×3 Regular2D grid (hx = hy = 0.5).
+/// Gradient of an affine function is algebraically exact on a uniform grid;
+/// sampling at grid node (0.5, 0.5) returns `Value::Vector([3.0, 5.0])`,
+/// each component <1e-12 from the expected partial.
+///
+/// Exercises the full pipeline: Sampled eager-lower in `compute_gradient` →
+/// stride-2 `sample_at_point` deinterleave → `sample()` builtin dispatch.
+#[test]
+fn sampled_gradient_2d_linear_sample_returns_exact_partials() {
+    // Build Regular2D SampledField: f(x, y) = 3x + 5y.
+    let sf = make_sampled_2d(4, 3, 0.5, 0.5, |x, y| 3.0 * x + 5.0 * y);
+
+    let domain_type = Type::point2(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // gradient(field) → eager-lowered Sampled field, codomain = Vector{2, Real}.
+    let expected_grad_codomain = Type::vec2(Type::dimensionless_scalar());
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(expected_grad_codomain.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        grad_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "gradient of 2D Sampled scalar field should return Sampled Field, got {:?}",
+        grad_result
+    );
+
+    // sample(gradient_field, Point(0.5, 0.5)) — grid node (1, 1); exact for affine.
+    let point = Value::Point(vec![Value::Real(0.5), Value::Real(0.5)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        expected_grad_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    assert_gradient_vector(
+        &sample_result,
+        &[3.0, 5.0],
+        1e-12,
+        "sample(gradient(3x+5y), node (0.5, 0.5))",
+    );
+}
+
+/// Integration acceptance (PRD §5, task ε test (b)):
+/// `sample(gradient(F_1d_linear), x)` returns the exact scalar slope via
+/// gradient eager-lowering (1D out_stride=1 → scalar path).
+///
+/// `F_1d_linear(x) = 2x + 3` on a 5-node Regular1D grid (h = 1.0).
+/// Gradient of an affine function is exact; sampling at node x = 1.0 returns
+/// `Value::Real(2.0)`, within <1e-12 of the exact slope.
+///
+/// Exercises: Sampled eager-lower in `compute_gradient` → stride-1 output (scalar
+/// path in `sample_at_point`, unchanged from scalar sampled fields).
+#[test]
+fn sampled_gradient_1d_linear_sample_returns_exact_slope() {
+    // Build Regular1D SampledField: f(x) = 2x + 3.
+    let sf = make_sampled_1d(5, 1.0, |x| 2.0 * x + 3.0);
+
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // gradient(field) → eager-lowered Sampled field, codomain = Real (1D scalar).
+    let grad_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let grad_expr = make_function_call(
+        "gradient",
+        vec![CompiledExpr::literal(field, field_type)],
+        grad_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let grad_result = eval_expr(&grad_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&grad_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "gradient of 1D Sampled scalar field should return Sampled Field, got {:?}",
+        grad_result
+    );
+
+    // sample(gradient_field, Real(1.0)) — node 1 of 5; exact for affine.
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(grad_result, grad_field_type),
+            CompiledExpr::literal(Value::Real(1.0), domain_type),
+        ],
+        codomain_type,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(gradient(2x+3), 1.0) should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 2.0).abs() < 1e-12,
+        "sample(gradient(2x+3), 1.0) should be exactly 2.0, got {} (error {})",
+        val,
+        (val - 2.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ε test (c)):
+/// `max(laplacian(F_1d_quadratic))` returns the exact constant second derivative
+/// via laplacian eager-lowering + scalar Sampled reduction.
+///
+/// `F_1d_quadratic(x) = 1.5x² + x + 2` on a 7-node Regular1D grid (h = 0.5).
+/// Laplacian of a quadratic is algebraically exact at every node including
+/// boundaries (one-sided 3-point second difference = 2a); `max` over the
+/// constant-3.0 Sampled laplacian field returns `Value::Real(3.0)`, <1e-12 from
+/// the exact value 2a = 3.0.
+///
+/// Exercises: Sampled eager-lower in `compute_laplacian` → stride-1 output
+/// (scalar Sampled field) → `reduce_sampled_extremum` in field_reductions.
+#[test]
+fn sampled_laplacian_1d_quadratic_max_returns_exact_second_deriv() {
+    // Build Regular1D SampledField: f(x) = 1.5*x^2 + x + 2.  2a = 3.0.
+    let sf = make_sampled_1d(7, 0.5, |x| 1.5 * x * x + x + 2.0);
+
+    let domain_type = Type::dimensionless_scalar();
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // laplacian(field) → eager-lowered Sampled field, codomain = Real.
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type.clone()),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&lap_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "laplacian of 1D Sampled scalar field should return Sampled Field, got {:?}",
+        lap_result
+    );
+
+    // max(laplacian_field) → Value::Real(3.0) via reduce_sampled_extremum.
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(lap_result, lap_field_type)],
+        codomain_type,
+    );
+
+    let max_result = eval_expr(&max_expr, &EvalContext::simple(&values));
+
+    let val = max_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "max(laplacian(1.5x²+x+2)) should be numeric, got {:?}",
+            max_result
+        )
+    });
+    assert!(
+        (val - 3.0).abs() < 1e-12,
+        "max(laplacian(1.5x²+x+2)) should be exactly 3.0 (2a where a=1.5), \
+         got {} (error {})",
+        val,
+        (val - 3.0).abs()
+    );
+}
+
+// ── ζ integration acceptance (PRD §5): divergence/curl eager-lower + stride-n ──
+
+/// Build a Regular3D stride-3 `SampledField` with `nx × ny × nz` nodes, uniform
+/// spacing `h`, where each node g stores the 3-component vector `f(x, y, z)` as
+/// `data[g*3+0..g*3+2]` in x-major order.
+fn make_sampled_3d_vector(
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    h: f64,
+    f: impl Fn(f64, f64, f64) -> [f64; 3],
+) -> SampledField {
+    let xs: Vec<f64> = (0..nx).map(|i| i as f64 * h).collect();
+    let ys: Vec<f64> = (0..ny).map(|j| j as f64 * h).collect();
+    let zs: Vec<f64> = (0..nz).map(|k| k as f64 * h).collect();
+    let mut data = Vec::with_capacity(nx * ny * nz * 3);
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let v = f(x, y, z);
+                data.push(v[0]);
+                data.push(v[1]);
+                data.push(v[2]);
+            }
+        }
+    }
+    SampledField {
+        name: "test-3d-vec".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![(nx - 1) as f64 * h, (ny - 1) as f64 * h, (nz - 1) as f64 * h],
+        spacing: vec![h, h, h],
+        axis_grids: vec![xs, ys, zs],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Integration acceptance (PRD §5, task ζ test (a)):
+/// `sample(divergence(F_3d_linear), node_point)` returns the exact divergence
+/// via divergence eager-lowering + stride-1 scalar sample.
+///
+/// `F(x, y, z) = (x, 2y, 3z)` on a 4×4×4 Regular3D grid (h=1.0).
+/// Divergence of an affine vector field is algebraically exact on a uniform grid;
+/// sampling at grid node (1.0, 1.0, 1.0) returns `Value::Real(6.0)`, <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_divergence` → stride-1 output
+/// (scalar Sampled field) → `sample()` builtin dispatch → `sample_at_point` scalar path.
+#[test]
+fn sampled_divergence_3d_linear_sample_returns_exact_divergence() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let div_codomain = Type::dimensionless_scalar(); // scalar quotient
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // divergence(field) → eager-lowered Sampled field, codomain = Real.
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(div_codomain.clone()),
+    };
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        div_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "divergence of 3D Sampled vector field should return Sampled Field, got {:?}",
+        div_result
+    );
+
+    // sample(div_field, Point3(1.0, 1.0, 1.0)) — grid node (1,1,1); exact for affine.
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(div_result, div_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        div_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(divergence(F), node) should be numeric, got {:?}",
+            sample_result
+        )
+    });
+    assert!(
+        (val - 6.0).abs() < 1e-12,
+        "sample(divergence((x,2y,3z)), node) should be exactly 6.0, \
+         got {} (error {})",
+        val,
+        (val - 6.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ζ test (b)):
+/// `max(divergence(F_3d_linear))` returns the exact constant divergence
+/// via divergence eager-lowering + scalar Sampled reduction.
+///
+/// `F(x, y, z) = (x, 2y, 3z)` on a 4×4×4 Regular3D grid (h=1.0).
+/// Divergence is uniformly 6.0; `max` over the constant-6.0 Sampled scalar
+/// field returns `Value::Real(6.0)`, <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_divergence` → stride-1 output
+/// → `reduce_sampled_extremum` in field_reductions.
+#[test]
+fn sampled_divergence_3d_linear_max_returns_exact_divergence() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, z| [x, 2.0 * y, 3.0 * z]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let div_codomain = Type::dimensionless_scalar();
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // divergence(field) → eager-lowered Sampled scalar field.
+    let div_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(div_codomain.clone()),
+    };
+    let div_expr = make_function_call(
+        "divergence",
+        vec![CompiledExpr::literal(field, field_type)],
+        div_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let div_result = eval_expr(&div_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&div_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "divergence of 3D Sampled vector field should return Sampled Field, got {:?}",
+        div_result
+    );
+
+    // max(divergence_field) → Value::Real(6.0) via reduce_sampled_extremum.
+    let max_expr = make_function_call(
+        "max",
+        vec![CompiledExpr::literal(div_result, div_field_type)],
+        div_codomain,
+    );
+
+    let max_result = eval_expr(&max_expr, &EvalContext::simple(&values));
+
+    let val = max_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "max(divergence(F)) should be numeric, got {:?}",
+            max_result
+        )
+    });
+    assert!(
+        (val - 6.0).abs() < 1e-12,
+        "max(divergence((x,2y,3z))) should be exactly 6.0 (div=1+2+3), \
+         got {} (error {})",
+        val,
+        (val - 6.0).abs()
+    );
+}
+
+/// Integration acceptance (PRD §5, task ζ test (c)):
+/// `sample(curl(F_3d_linear), node_point)` returns the exact curl vector
+/// via curl eager-lowering + stride-3 sample.
+///
+/// `F(x, y, z) = (-y, x, 0)` on a 4×4×4 Regular3D grid (h=1.0).
+/// curl F = (0 - 0, 0 - 0, 1 - (-1)) = (0, 0, 2).
+/// FD is algebraically exact for degree-1 polys; sampling at node (1,1,1) returns
+/// `Value::Vector([Real(0), Real(0), Real(2)])`, each component <1e-12.
+///
+/// Exercises: Sampled eager-lower in `compute_curl` → stride-3 output
+/// (stride-n Sampled field) → `sample()` dispatch → `sample_at_point` stride-n path.
+#[test]
+fn sampled_curl_3d_linear_sample_returns_exact_curl() {
+    let sf = make_sampled_3d_vector(4, 4, 4, 1.0, |x, y, _z| [-y, x, 0.0]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::vec3(Type::dimensionless_scalar());
+    let curl_codomain = Type::vec3(Type::dimensionless_scalar());
+
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type,
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // curl(field) → eager-lowered Sampled field, codomain = vec3(Real).
+    let curl_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(curl_codomain.clone()),
+    };
+    let curl_expr = make_function_call(
+        "curl",
+        vec![CompiledExpr::literal(field, field_type)],
+        curl_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let curl_result = eval_expr(&curl_expr, &EvalContext::simple(&values));
+
+    assert!(
+        matches!(&curl_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "curl of 3D Sampled vector field should return Sampled Field, got {:?}",
+        curl_result
+    );
+
+    // sample(curl_field, Point3(1.0, 1.0, 1.0)) — grid node (1,1,1); exact for affine.
+    let point = Value::Point(vec![Value::Real(1.0), Value::Real(1.0), Value::Real(1.0)]);
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(curl_result, curl_field_type),
+            CompiledExpr::literal(point, domain_type),
+        ],
+        curl_codomain,
+    );
+
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    // Expected: Vector([Real(0), Real(0), Real(2)])
+    assert_gradient_vector(
+        &sample_result,
+        &[0.0, 0.0, 2.0],
+        1e-12,
+        "sample(curl((-y,x,0)), node (1,1,1))",
+    );
+}
+
+// ── η fixture builders and helpers (pre-1 / PRD §9 task η) ──────────────────
+
+/// Build a Regular3D stride-1 `SampledField` with n×n×n nodes, uniform spacing `h`,
+/// where `data[i*(n*n) + j*n + k] = sqrt((x−cx)²+(y−cy)²+(z−cz)²) − radius`
+/// (sphere signed-distance function centered at `center` with given `radius`).
+/// Grid layout: `xi = i as f64 * h`, x-major order (same as `make_sampled_3d_vector`).
+///
+/// Singularity-safe: pass `center = [base + h/2, …]` so no node falls at r=0
+/// (center sits at the midpoint between adjacent nodes; min r ≈ h·√3/2 > 0).
+fn make_sphere_sdf_3d(n: usize, h: f64, center: [f64; 3], radius: f64) -> SampledField {
+    let xs: Vec<f64> = (0..n).map(|i| i as f64 * h).collect();
+    let ys: Vec<f64> = (0..n).map(|j| j as f64 * h).collect();
+    let zs: Vec<f64> = (0..n).map(|k| k as f64 * h).collect();
+    let mut data = Vec::with_capacity(n * n * n);
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dz = z - center[2];
+                data.push((dx * dx + dy * dy + dz * dz).sqrt() - radius);
+            }
+        }
+    }
+    SampledField {
+        name: "sphere-sdf-3d".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![(n - 1) as f64 * h, (n - 1) as f64 * h, (n - 1) as f64 * h],
+        spacing: vec![h, h, h],
+        axis_grids: vec![xs, ys, zs],
+        interpolation: InterpolationKind::Linear,
+        data,
+        oob_emitted: AtomicBool::new(false),
+    }
+}
+
+/// Analytic Laplacian of the sphere SDF φ(p) = |p−c| − R:
+/// ∇²φ = 2/r, where r = |p−c| is the distance from the sphere center.
+///
+/// Derivation (3D): φ = r − R ⟹ ∇φ = (p−c)/r ⟹
+/// ∇²φ = Σᵢ ∂/∂xᵢ[(xᵢ−cᵢ)/r] = Σᵢ [1/r − (xᵢ−cᵢ)²/r³]
+/// = 3/r − r²/r³ = 3/r − 1/r = 2/r.
+/// At the surface r = R: ∇²φ = 2/R = 2H (twice mean curvature H = 1/R).
+/// Valid for r > 0.
+fn sphere_lap_exact(r: f64) -> f64 {
+    2.0 / r
+}
+
+/// Evaluate `laplacian(sphere_sdf)` for a 3D scalar sphere SDF and return the
+/// lowered `Value::Field { source: Sampled, lambda: Value::SampledField(_) }`.
+///
+/// Convenience wrapper used by the η acceptance tests (steps 3/5) to avoid
+/// repeating the field construction and eval_expr boilerplate.
+/// Calls the landed `compute_laplacian` Sampled dispatch (calculus.rs:312) —
+/// no production code change in task η.
+fn build_sphere_lap_field(n: usize, h: f64, center: [f64; 3], radius: f64) -> Value {
+    let sf = make_sphere_sdf_3d(n, h, center, radius);
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type,
+    );
+    let values = ValueMap::new();
+    eval_expr(&lap_expr, &EvalContext::simple(&values))
+}
+
+/// Compute `max |∇²_h φ(node) − sphere_lap_exact(r)| / 1` over interior nodes
+/// of `lap_field` (a Sampled scalar `Value::Field`) that lie in the annular band
+/// `r_inner ≤ r ≤ r_outer` (r = distance from `center`).
+///
+/// Interior = node index strictly between 0 and n−1 on every axis.
+/// Returns `(max_err, band_count)`; callers assert `band_count > 0` to guard
+/// against a silent empty-band pass.
+///
+/// Data layout: x-major, so `data[i·ny·nz + j·nz + k]` for node (i,j,k).
+fn band_max_error(
+    lap_field: &Value,
+    center: [f64; 3],
+    r_inner: f64,
+    r_outer: f64,
+) -> (f64, usize) {
+    let sf = match lap_field {
+        Value::Field { lambda, .. } => match lambda.as_ref() {
+            Value::SampledField(sf) => sf,
+            other => panic!("band_max_error: expected SampledField lambda, got {:?}", other),
+        },
+        other => panic!("band_max_error: expected Value::Field, got {:?}", other),
+    };
+    let nx = sf.axis_grids[0].len();
+    let ny = sf.axis_grids[1].len();
+    let nz = sf.axis_grids[2].len();
+    let mut max_err = 0.0_f64;
+    let mut count = 0usize;
+    for i in 1..nx - 1 {
+        for j in 1..ny - 1 {
+            for k in 1..nz - 1 {
+                let x = sf.axis_grids[0][i];
+                let y = sf.axis_grids[1][j];
+                let z = sf.axis_grids[2][k];
+                let dx = x - center[0];
+                let dy = y - center[1];
+                let dz = z - center[2];
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                if r < r_inner || r > r_outer {
+                    continue;
+                }
+                let g = i * ny * nz + j * nz + k;
+                let fd_val = sf.data[g];
+                let exact = sphere_lap_exact(r);
+                let err = (fd_val - exact).abs();
+                if err > max_err {
+                    max_err = err;
+                }
+                count += 1;
+            }
+        }
+    }
+    (max_err, count)
+}
+
+// ── η acceptance (PRD §9 task η): SDF mean-curvature ∇²φ ≈ 2/R sphere ────────
+//
+// Asserts ∇²φ ≈ 2/r (interior nodes in fixed annular band R_inner≤r≤R_outer)
+// and ∇²φ ≈ 2/R (surface sample at exact surface point r=R) for a sphere SDF
+// φ(p)=|p−c|−R, via the Sampled-Laplacian eager-lowering (deps ε/δ, tasks 4568/4567).
+//
+// No production code change — pure consumer/acceptance task (PRD §9 task η).
+//
+// PRD §6 numeric premise (G6): ∇²φ = 2/r in 3D. Central 2nd-diff leading error
+// ≤ h²/(2r³); interior bound h²/r³ (2× margin). Surface-sample bound 2h²/R³
+// (FD h²/(2R³) + linear-interp h²/(2R³)).
+//
+// PRD §10 boundary-order decision: first-order one-sided stencil retained at
+// grid boundaries; ghost-node extrapolation deferred. Boundary nodes exist in
+// the output SampledField but are excluded from all numeric assertions (steps 3/5/7).
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// `laplacian(sphere_sdf)` eager-lowers to a Sampled scalar Field.
+///
+/// Structural contract: the `compute_laplacian` Sampled dispatch (calculus.rs:312)
+/// calls `sampled_differential(sf, Laplacian)` and returns
+/// `Value::Field { source: Sampled, lambda: Value::SampledField(out) }` where
+/// `out` is a stride-1 scalar SampledField with `data.len() == n³`.
+///
+/// Grid: n=21, h=0.1, box [0,2]³, sphere R=1.0 centered at (1.05,1.05,1.05)
+/// (offset by h/2 from node (10,10,10) so no node lands at r=0; min r ≈ 0.087).
+///
+/// PRD §10: first-order one-sided boundary stencil retained; boundary nodes are
+/// present in `out.data` but excluded from numeric assertions (steps 3/5/7).
+#[test]
+fn sphere_sdf_laplacian_eager_lowers_to_sampled_scalar_field() {
+    let n = 21usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    // Center offset by h/2 from node (10,10,10) at (1.0,1.0,1.0);
+    // no node lands at r=0 (minimum r ≈ 0.05·√3 ≈ 0.087).
+    let center = [1.0 + h / 2.0, 1.0 + h / 2.0, 1.0 + h / 2.0];
+    let sf = make_sphere_sdf_3d(n, h, center, radius);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let codomain_type = Type::dimensionless_scalar();
+    let (field, field_type) = make_field_with_source(
+        domain_type.clone(),
+        codomain_type.clone(),
+        FieldSourceKind::Sampled,
+        Value::SampledField(sf),
+    );
+
+    // laplacian(field) → eager-lowered Sampled scalar field.
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type),
+        codomain: Box::new(codomain_type),
+    };
+    let lap_expr = make_function_call(
+        "laplacian",
+        vec![CompiledExpr::literal(field, field_type)],
+        lap_field_type.clone(),
+    );
+
+    let values = ValueMap::new();
+    let lap_result = eval_expr(&lap_expr, &EvalContext::simple(&values));
+
+    // Structural: result is a Sampled Field.
+    assert!(
+        matches!(&lap_result, Value::Field { source: FieldSourceKind::Sampled, .. }),
+        "laplacian of 3D Sampled scalar sphere SDF should return Sampled Field, got {:?}",
+        lap_result
+    );
+
+    // Structural: lambda is a SampledField with n³ scalar data points (stride-1).
+    if let Value::Field { lambda, .. } = &lap_result {
+        if let Value::SampledField(out) = lambda.as_ref() {
+            assert_eq!(
+                out.data.len(),
+                n * n * n,
+                "laplacian of {}×{}×{} sphere SDF: expected {} data points, got {}",
+                n,
+                n,
+                n,
+                n * n * n,
+                out.data.len()
+            );
+        } else {
+            panic!(
+                "laplacian Sampled field lambda should be Value::SampledField, got {:?}",
+                lambda
+            );
+        }
+    }
+}
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// Interior nodes in a fixed annular band satisfy |∇²_h φ − 2/r| ≤ h²/r³.
+///
+/// For a sphere SDF φ(p) = |p−c| − R the central 2nd-difference Laplacian
+/// has leading FD error ≤ h²/(2r³) (see PRD §6 derivation). The asserted
+/// bound h²/r³ is 2× that, covering O(h⁴) terms and interpolation with margin.
+///
+/// Only INTERIOR nodes are checked (indices 1..n−1 on every axis), excluding
+/// the first-order one-sided boundary stencil (PRD §10). Assertions are also
+/// restricted to the fixed physical annular band 0.5R ≤ r ≤ 1.5R to bound
+/// the 1/r³ singularity (excludes near-center nodes) and the 1/r³ blow-up.
+/// The band guard `assert!(count > 0)` prevents a silent empty-band pass.
+///
+/// Grid: n=21, h=0.1, box [0,2]³, R=1.0, center=(1.05,1.05,1.05).
+#[test]
+fn sphere_sdf_laplacian_matches_2_over_r_interior_band() {
+    let n = 21usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    let center = [1.0 + h / 2.0, 1.0 + h / 2.0, 1.0 + h / 2.0];
+
+    let lap_result = build_sphere_lap_field(n, h, center, radius);
+
+    let r_inner = 0.5 * radius;
+    let r_outer = 1.5 * radius;
+    let (max_err, count) = band_max_error(&lap_result, center, r_inner, r_outer);
+
+    assert!(
+        count > 0,
+        "Expected at least one interior node in annular band [{}R, {}R]; got 0 — \
+         check grid params (n={}, h={}, R={}, center={:?})",
+        r_inner / radius,
+        r_outer / radius,
+        n,
+        h,
+        radius,
+        center
+    );
+
+    // PRD §6: leading FD error ≤ h²/(2r³); bound = h²/r³ (2× margin).
+    // At r = r_inner = 0.5, bound = h²/r_inner³ = 0.01/0.125 = 0.08.
+    // This is a pointwise assertion per node using the node's own r.
+    let floor = h * h / (r_inner * r_inner * r_inner);
+    assert!(
+        max_err <= floor,
+        "Interior-band Laplacian error {:.6e} exceeds floor {:.6e} = h²/r_inner³ \
+         (n={}, h={}, R={}, band [{:.1}R,{:.1}R], {} nodes checked)",
+        max_err,
+        floor,
+        n,
+        h,
+        radius,
+        r_inner / radius,
+        r_outer / radius,
+        count
+    );
+}
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// O(h²) convergence: refining h → h/2 reduces the interior-band Laplacian error by ≥3×.
+///
+/// Method: build `laplacian(sphere_sdf)` on coarse (n=21, h=0.1) and fine (n=41, h=0.05)
+/// grids over the same physical box [0,2]³ and same sphere (R=1.0, center=(1.025,1.025,1.025)).
+/// Compute max |∇²_h φ − 2/r| over the fixed annular band 0.5R ≤ r ≤ 1.5R (interior nodes
+/// only, boundary band excluded per PRD §10). Assert fine_err ≤ coarse_err/3.
+/// Theoretical O(h²) ratio ≈ 4 (halving h squares the error); threshold 3 leaves margin.
+///
+/// Center=(1.025,1.025,1.025): 1.025/h_coarse=10.25 and 1.025/h_fine=20.5 — not integers —
+/// so no node in either grid lands at r=0 (singularity-safe, PRD §6 G6).
+///
+/// Mirrors sampled_fd::gradient_sin_convergence_rate (same ratio-test structure, PRD §6).
+/// PRD §10: first-order one-sided stencil retained; boundary nodes excluded from band.
+#[test]
+fn sphere_sdf_laplacian_o_h2_convergence_under_refinement() {
+    let radius = 1.0_f64;
+    let r_inner = 0.5 * radius;
+    let r_outer = 1.5 * radius;
+    // Center: 1.025/h_coarse=10.25 and 1.025/h_fine=20.5 — not on any grid node.
+    let center = [1.025_f64, 1.025, 1.025];
+
+    // Coarse: n=21, h=0.1, box [0, 2.0]³.
+    let h_coarse = 0.1_f64;
+    let n_coarse = 21_usize;
+    let coarse_lap = build_sphere_lap_field(n_coarse, h_coarse, center, radius);
+    let (coarse_err, coarse_count) = band_max_error(&coarse_lap, center, r_inner, r_outer);
+
+    // Fine: n=41, h=0.05, same physical box [0, 2.0]³ (n = 2*(n_coarse−1)+1).
+    let h_fine = h_coarse / 2.0;
+    let n_fine = 2 * (n_coarse - 1) + 1; // 41
+    let fine_lap = build_sphere_lap_field(n_fine, h_fine, center, radius);
+    let (fine_err, fine_count) = band_max_error(&fine_lap, center, r_inner, r_outer);
+
+    assert!(
+        coarse_count > 0,
+        "Coarse grid: expected interior band nodes, got 0 \
+         (n={n_coarse}, h={h_coarse}, R={radius}, band [{r_inner:.2},{r_outer:.2}])"
+    );
+    assert!(
+        fine_count > 0,
+        "Fine grid: expected interior band nodes, got 0 \
+         (n={n_fine}, h={h_fine}, R={radius}, band [{r_inner:.2},{r_outer:.2}])"
+    );
+
+    // PRD §6: leading error ≤ h²/(2r³); halving h reduces by ≈4×.
+    // Threshold 3 (< theoretical 4) leaves margin for O(h⁴) remainder.
+    assert!(
+        fine_err <= coarse_err / 3.0,
+        "O(h²) convergence violated: coarse_err={coarse_err:.6e} fine_err={fine_err:.6e} \
+         ratio={:.2} (expected ≥3, theoretical ≈4; \
+         coarse n={n_coarse} h={h_coarse}, fine n={n_fine} h={h_fine})",
+        coarse_err / fine_err
+    );
+}
+
+/// η acceptance (PRD §9 task η, PRD §6 numeric premise):
+/// `sample(laplacian(sphere_sdf), surface_point)` approximates 2/R within 2h²/R³.
+///
+/// A Point3 at (center_x + R, center_y, center_z) lies exactly on the sphere (r = R)
+/// and strictly interior to the grid (no boundary node touched by linear interpolation).
+/// The sampled Laplacian approximates ∇²φ = 2/R (mean curvature signal, PRD §6 G6)
+/// with combined O(h²) FD + linear-interp error:
+///   FD ≤ h²/(2R³), linear-interp ≤ h²/(2R³) → sum h²/R³.
+/// Asserted bound: 2h²/R³ (2× margin).
+///
+/// Grid: n=31, h=0.1, box [0,3]³, R=1.0, center=(1.525,1.5,1.5).
+/// center_x=1.525=15.25h — not on any grid node → no node lands at r=0.
+/// Surface point: (2.525,1.5,1.5) — x=25.25h between interior nodes 25 and 26.
+///
+/// PRD §10: first-order one-sided stencil retained; surface point chosen strictly
+/// interior so the sample touches only central-difference nodes.
+#[test]
+fn sphere_sdf_laplacian_sample_at_surface_point_approx_2_over_r() {
+    let n = 31_usize;
+    let h = 0.1_f64;
+    let radius = 1.0_f64;
+    // center_x = 1.525: 1.525/h = 15.25 — not an integer, so no grid node has r=0.
+    let center = [1.525_f64, 1.5, 1.5];
+
+    let lap_result = build_sphere_lap_field(n, h, center, radius);
+
+    // Surface point at center + (R,0,0): x=2.525=25.25h, between interior nodes 25 and 26.
+    let surface_point = Value::Point(vec![
+        Value::Real(center[0] + radius),
+        Value::Real(center[1]),
+        Value::Real(center[2]),
+    ]);
+
+    let domain_type = Type::point3(Type::dimensionless_scalar());
+    let lap_field_type = Type::Field {
+        domain: Box::new(domain_type.clone()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+    let sample_expr = make_function_call(
+        "sample",
+        vec![
+            CompiledExpr::literal(lap_result, lap_field_type),
+            CompiledExpr::literal(surface_point, domain_type),
+        ],
+        Type::dimensionless_scalar(),
+    );
+
+    let values = ValueMap::new();
+    let sample_result = eval_expr(&sample_expr, &EvalContext::simple(&values));
+
+    let lap_val = sample_result.as_f64().unwrap_or_else(|| {
+        panic!(
+            "sample(laplacian(sphere_sdf), surface_point) expected numeric scalar, got {:?}",
+            sample_result
+        )
+    });
+
+    // PRD §6: |∇²_h φ(surface_point) − 2/R| ≤ 2h²/R³ = 2·0.01/1.0 = 0.02.
+    let exact = 2.0 / radius;
+    let bound = 2.0 * h * h / (radius * radius * radius);
+    assert!(
+        (lap_val - exact).abs() <= bound,
+        "surface-sample Laplacian {lap_val:.6e} deviates from 2/R={exact:.6e} \
+         by {:.6e} > 2h²/R³={bound:.6e} \
+         (n={n}, h={h}, R={radius}, surface_point=({:.3},{:.3},{:.3}))",
+        (lap_val - exact).abs(),
+        center[0] + radius, center[1], center[2]
     );
 }
 

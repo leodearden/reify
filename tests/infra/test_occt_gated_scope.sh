@@ -93,19 +93,20 @@ assert "declared OCCT-touching set equals cargo-metadata-derived set (no missing
     test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
-# Nextest occt-group assertions (task 4451):
-# (a) [test-groups] occt max-threads = 4 (bounded; was inert 1 when staged).
+# Nextest occt-group assertions (task 4451, task 4503/γ):
+# (a) [test-groups] occt max-threads = 24 (env-driven, default 24).
+#     task 4451 raised it from inert 1 to 4; task 4503/γ raises 4→24 with the
+#     held-slot semaphore (task β/4502) as the cross-run safety bound.
 # (b) [[profile.default.overrides]] filter for test-group 'occt' contains
 #     package(<crate>) for every declared OCCT crate (drift catch: a missing
 #     crate would escape the max-threads cap and run unbounded in the pool).
-# RED: max-threads = 1 today; GREEN after step-2 impl raises it to 4.
 # ---------------------------------------------------------------------------
 NEXTEST_TOML="$REPO_ROOT/.config/nextest.toml"
 
 echo ""
-echo "--- Nextest occt-group (task 4451): max-threads = 4 (bounded, not inert 1) ---"
-assert "nextest.toml: [test-groups] occt has max-threads = 4 (bounded, not inert 1)" \
-    grep -qF 'occt = { max-threads = 4 }' "$NEXTEST_TOML"
+echo "--- Nextest occt-group (task 4503/γ): max-threads = 24 (env-driven, default 24) ---"
+assert "nextest.toml: [test-groups] occt has max-threads = 24 (env-driven, default 24)" \
+    grep -qF 'occt = { max-threads = 24 }' "$NEXTEST_TOML"
 
 echo ""
 echo "--- Nextest occt-group (task 4451): filter drift check (every declared crate is package()-filtered) ---"
@@ -126,7 +127,7 @@ done <<< "$DECLARED_CRATES"
 # wrapped in the standard outer timeout.
 # RED against current verify.sh (which still emits the gated pass).
 # ---------------------------------------------------------------------------
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
+TEST_PLAN_SEGS="$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --print-plan | grep -v '^#')"
 export TEST_PLAN_SEGS
 
 echo ""
@@ -174,5 +175,111 @@ echo ""
 echo "--- Test 8 (task 4451): workspace nextest pass is wrapped in outer timeout ---"
 assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" \
     bash -c "printf '%s' \"\$FULL_WS_DEBUG\" | grep -qE 'timeout[[:space:]]+--kill-after=60[[:space:]]+[0-9]+m[[:space:]]'"
+
+# ---------------------------------------------------------------------------
+# Tests 9–12 (task 4503/γ): --config-file plan assertions for the env-driven
+# occt nextest group cap (REIFY_OCCT_NEXTEST_MAX_THREADS, default 24).
+#
+# Mechanism: scripts/gen-nextest-config.sh generates a full copy of
+# .config/nextest.toml with the occt literal rewritten to the resolved cap,
+# and prints the temp path to stdout.  scripts/verify.sh passes that path as
+# `cargo nextest run ... --config-file <real-tmp>` in EXECUTE mode.
+#
+# --print-plan mode (hermetic oracle): verify.sh emits a static placeholder
+# path (`…/reify-nextest-occt.<print-plan-placeholder>`) instead of calling
+# gen-nextest-config.sh.  No subprocess is spawned and no temp file is created
+# during plan inspection.  The placeholder path is NOT re-runnable; only the
+# execute path produces a real config file.  Test 9 checks the 'reify-nextest-occt'
+# prefix (present in both the real path and the placeholder), not a real file.
+#
+# NOTE: the broken cargo-config form `--config 'test-groups.occt.max-threads=N'`
+# (the step-3 mechanism) is a NO-OP for nextest test-groups — it overrides CARGO
+# config, not nextest's own test-groups (verified on nextest 0.9.136).  That form
+# must not be re-shipped; see regression guard below.
+#
+# Guard: plan-shape assertions are only meaningful when the plan actually uses
+# cargo nextest run.  When NEXTEST=0 the plan uses cargo test (no --config-file
+# support), so skip the plan-shape checks (vacuous pass).
+# ---------------------------------------------------------------------------
+PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
+GEN_CFG="$REPO_ROOT/scripts/gen-nextest-config.sh"
+
+echo ""
+echo "--- Tests 9–12 (task 4503/γ): --config-file plan assertions for env-driven occt cap ---"
+
+# Test 9 (plan-shape): every cargo nextest run line carries --config-file <path>
+# where the path contains the 'reify-nextest-occt' prefix.  In --print-plan mode
+# (used here) this is the static placeholder; in execute mode it is the real temp path.
+assert "every 'cargo nextest run' plan line carries '--config-file' with 'reify-nextest-occt' path" \
+    bash -c "
+        if [ '${PLAN_HAS_NEXTEST}' -eq 0 ]; then exit 0; fi
+        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+            | grep 'cargo nextest run' \
+            | grep -v -- '--config-file.*reify-nextest-occt' || true)
+        [ -z \"\$bad\" ]
+    "
+
+# Regression guard: NO cargo nextest run line may carry the broken Cargo-config form.
+# cargo --config overrides CARGO configuration only; test-groups is a nextest config
+# key and --config is a silent no-op for it (verified empirically on nextest 0.9.136).
+assert "NO 'cargo nextest run' line carries the broken cargo-config form --config test-groups.occt.max-threads" \
+    bash -c "
+        bad=\$(printf '%s\n' \"\$TEST_PLAN_SEGS\" \
+            | grep 'cargo nextest run' \
+            | grep -F -- \"--config 'test-groups.occt.max-threads\" || true)
+        [ -z \"\$bad\" ]
+    "
+
+# Test 10 (behavioral gold, default): gen-nextest-config.sh with
+# REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file that makes
+# 'cargo nextest show-config test-groups' report 'group: occt (max threads = 24)'.
+# Guarded on nextest being available (vacuous pass when absent, mirroring the
+# NEXTEST tolerance in the plan-shape tests above).
+HAVE_NEXTEST=0
+if cargo nextest --version >/dev/null 2>&1; then
+    HAVE_NEXTEST=1
+fi
+
+assert "gen-nextest-config.sh default: 'cargo nextest show-config' reports 'group: occt (max threads = 24)'" \
+    bash -c "
+        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
+        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        out=\$(cd \"${REPO_ROOT}\" && cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null || true)
+        rm -f \"\$cfg\"
+        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 24)'
+    "
+
+# Test 11 (behavioral gold, override): REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces
+# a config that makes show-config report 'group: occt (max threads = 7)'.
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: show-config reports 'group: occt (max threads = 7)'" \
+    bash -c "
+        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
+        out=\$(cd \"${REPO_ROOT}\" && cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null || true)
+        rm -f \"\$cfg\"
+        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 7)'
+    "
+
+# Test 12a (fallback, no nextest required): gen-nextest-config.sh default output
+# contains the TOML literal 'occt = { max-threads = 24 }' so the mechanism has
+# coverage even when nextest is absent from PATH.
+assert "gen-nextest-config.sh default: output file contains TOML 'occt = { max-threads = 24 }'" \
+    bash -c "
+        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        rc=0
+        grep -qF 'occt = { max-threads = 24 }' \"\$cfg\" || rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
+    "
+
+# Test 12b: override REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces 'occt = { max-threads = 7 }'.
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: output file contains TOML 'occt = { max-threads = 7 }'" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
+        rc=0
+        grep -qF 'occt = { max-threads = 7 }' \"\$cfg\" || rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
+    "
 
 test_summary

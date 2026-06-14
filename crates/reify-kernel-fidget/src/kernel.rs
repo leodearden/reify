@@ -216,13 +216,14 @@ impl FidgetKernel {
     /// compilation is acceptable for v0.2 — a `Mutex<HashMap<GeometryHandleId,
     /// JitShape>>` cache layer is a non-breaking optimisation later.
     ///
-    /// TODO(jit-cache): callers that evaluate the same handle many times
+    /// TODO(#4592): callers that evaluate the same handle many times
     /// (e.g. per-pixel raster sampling) currently pay one full JIT
     /// compilation per call. A per-handle `JitShape` cache (keyed on the
     /// `GeometryHandleId`, invalidated when the Tree changes — which it
     /// never does today since handles are immutable post-insert) is
-    /// non-breaking and should be the next optimisation. File a follow-up
-    /// task before any caller starts hot-looping this path.
+    /// non-breaking and should be the next optimisation. When a caller
+    /// starts hot-looping this path, re-check this trigger under #4592
+    /// (land the per-handle cache or graduate to a dedicated task).
     ///
     /// `f32` mirrors fidget's native float width; reify's `f64` callers
     /// should cast at the boundary.
@@ -616,6 +617,7 @@ mod tests {
         let err = kernel
             .execute(&GeometryOp::Fillet {
                 target: GeometryHandleId(1),
+                edges: vec![],
                 radius: Value::Real(0.1),
             })
             .expect_err("Fillet must be rejected on Sdf");

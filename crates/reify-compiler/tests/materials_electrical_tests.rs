@@ -76,9 +76,9 @@ fn electrical_module_loads_with_no_errors_and_three_traits() {
 ///   required_members (len 1):
 ///     resistivity → RequirementKind::Param(Type::Scalar { ELECTRIC_RESISTIVITY })
 ///   defaults (at least the three optional params):
-///     dielectric_constant   → DefaultKind::Param { cell_type: Type::Real }
+///     dielectric_constant   → DefaultKind::Param { cell_type: Type::dimensionless_scalar() }
 ///     dielectric_strength   → DefaultKind::Param { cell_type: Type::Scalar { DIELECTRIC_STRENGTH } }
-///     magnetic_permeability → DefaultKind::Param { cell_type: Type::Real }
+///     magnetic_permeability → DefaultKind::Param { cell_type: Type::dimensionless_scalar() }
 #[test]
 fn electrically_characterized_one_required_three_optional_params() {
     let module = load_stdlib_module();
@@ -131,14 +131,14 @@ fn electrically_characterized_one_required_three_optional_params() {
 
     // ── defaults: three optional params (DefaultKind::Param) ─────────────────
     let expected_defaults: [(&str, Type); 3] = [
-        ("dielectric_constant", Type::Real),
+        ("dielectric_constant", Type::dimensionless_scalar()),
         (
             "dielectric_strength",
             Type::Scalar {
                 dimension: DimensionVector::DIELECTRIC_STRENGTH,
             },
         ),
-        ("magnetic_permeability", Type::Real),
+        ("magnetic_permeability", Type::dimensionless_scalar()),
     ];
 
     for (name, expected_cell_type) in &expected_defaults {

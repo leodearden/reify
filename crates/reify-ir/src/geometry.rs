@@ -3,7 +3,7 @@ use std::fmt;
 
 use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
-use crate::value::Value;
+use crate::value::{SampledField, Value};
 
 /// Unique identifier for a geometry handle within a kernel session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -281,6 +281,8 @@ pub enum Operation {
     PrimitiveCone,
     /// Wedge (trapezoidal prism) primitive with bbox corner at origin.
     PrimitiveWedge,
+    /// Torus primitive (ring about the Z axis; non-convex).
+    PrimitiveTorus,
 
     // ── Modify (local edits to a single shape) ──────────────────────────────
     /// Fillet (round) edges by radius.
@@ -293,6 +295,10 @@ pub enum Operation {
     ModifyDraft,
     /// Thicken a surface by offset.
     ModifyThicken,
+    /// Offset a face ±width/2 and cap into a centered slab solid.
+    ModifyZoneSlab,
+    /// Offset a solid outward/inward by distance.
+    ModifyOffsetSolid,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -357,6 +363,10 @@ pub enum Operation {
     ProfileRectangle,
     /// Circular face (disk) centred at origin in the XY plane.
     ProfileCircle,
+    /// Closed planar polygon face in the XY plane (variadic vertex list).
+    ProfilePolygon,
+    /// Ellipse face (filled ellipse disk) centred at origin in the XY plane.
+    ProfileEllipse,
 
     // ── Convert (representation change) ─────────────────────────────────────
     /// Convert geometry from one [`ReprKind`] family to another. The pair
@@ -566,6 +576,15 @@ pub enum GeometryOp {
         height: Value,
         top_width: Value,
     },
+    /// Create a torus primitive centered at origin about the Z axis.
+    ///
+    /// Built at the kernel layer via `BRepPrimAPI_MakeTorus(major_radius,
+    /// minor_radius)`. Requires `minor_radius < major_radius` (a
+    /// self-intersecting torus is rejected at the kernel boundary).
+    Torus {
+        major_radius: Value,
+        minor_radius: Value,
+    },
     /// Boolean union.
     Union {
         left: GeometryHandleId,
@@ -582,8 +601,14 @@ pub enum GeometryOp {
         right: GeometryHandleId,
     },
     /// Fillet (round) edges by radius.
+    ///
+    /// `edges` is the curated selection of edges to round. An **empty** list is
+    /// the all-edges back-compat path (legacy 2-arg `fillet(solid, radius)`); a
+    /// non-empty list names the specific edges to round (3-arg
+    /// `fillet(solid, edges, radius)`).
     Fillet {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         radius: Value,
     },
     /// Chamfer edges by distance.
@@ -784,8 +809,15 @@ pub enum GeometryOp {
         degree: usize,
     },
     /// Apply draft angle to faces.
+    ///
+    /// `faces` is the curated selection of faces to draft. An **empty** list is
+    /// the all-draftable back-compat path (legacy 3-arg `draft(solid, angle, plane)`);
+    /// a non-empty list names the specific faces to draft (4-arg
+    /// `draft(solid, faces, angle, neutral_plane)`).
     Draft {
         target: GeometryHandleId,
+        /// Curated face selection. Empty = all draftable faces (3-arg back-compat).
+        faces: Vec<GeometryHandleId>,
         angle: Value,
         plane: GeometryHandleId,
     },
@@ -793,6 +825,16 @@ pub enum GeometryOp {
     Thicken {
         target: GeometryHandleId,
         offset: Value,
+    },
+    /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
+    ZoneSlab {
+        target: GeometryHandleId,
+        width: Value,
+    },
+    /// Offset a solid outward (positive) or inward (negative) by distance.
+    OffsetSolid {
+        target: GeometryHandleId,
+        distance: Value,
     },
     /// Shell a solid (hollow it out, removing specified faces).
     Shell {
@@ -836,6 +878,21 @@ pub enum GeometryOp {
     /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
     /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
     CircleProfile { radius: Value },
+    /// Closed planar polygon face in the XY plane at z=0, centred as given by
+    /// the caller-supplied vertices.  `points` is a list of 2-D (x, y) vertices
+    /// in order; at least 3 non-collinear points are required.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    PolygonProfile { points: Vec<[f64; 2]> },
+    /// Ellipse face (filled ellipse disk) centred at origin in the XY plane at z=0.
+    ///
+    /// `semi_major` and `semi_minor` are the half-axis lengths; both must be
+    /// finite and positive.  The kernel normalises `major = max(a, b)` internally.
+    ///
+    /// The resulting `BRep` face is consumable by `Extrude`, `Revolve`,
+    /// `Loft`, and any other sweep that expects a `Surface`-dimension profile.
+    EllipseProfile { semi_major: Value, semi_minor: Value },
 }
 
 impl GeometryOp {
@@ -855,6 +912,7 @@ impl GeometryOp {
             GeometryOp::Tube { .. } => "Tube",
             GeometryOp::Cone { .. } => "Cone",
             GeometryOp::Wedge { .. } => "Wedge",
+            GeometryOp::Torus { .. } => "Torus",
             GeometryOp::Union { .. } => "Union",
             GeometryOp::Difference { .. } => "Difference",
             GeometryOp::Intersection { .. } => "Intersection",
@@ -886,10 +944,14 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::ZoneSlab { .. } => "ZoneSlab",
+            GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
             GeometryOp::Split { .. } => "Split",
             GeometryOp::RectangleProfile { .. } => "RectangleProfile",
             GeometryOp::CircleProfile { .. } => "CircleProfile",
+            GeometryOp::PolygonProfile { .. } => "PolygonProfile",
+            GeometryOp::EllipseProfile { .. } => "EllipseProfile",
         }
     }
 }
@@ -1314,6 +1376,82 @@ pub enum GeometryQuery {
         u: f64,
         v: f64,
     },
+    /// Compute the maximum deviation between an `actual` mesh (produced by
+    /// tessellating `actual` at `tolerance` deflection) and the exact B-rep
+    /// `nominal` shape.
+    ///
+    /// # Semantics
+    /// Promotes `OcctKernel::measure_mesh_deviation` (built tess-QA-only by
+    /// task 4198) into a repr-gated geometry query. The kernel arm:
+    /// 1. Tessellates `actual` at the given `tolerance` (metres) via
+    ///    `OcctKernel::tessellate(actual, tolerance)`.
+    /// 2. Calls `OcctKernel::measure_mesh_deviation(nominal, &actual_mesh)` —
+    ///    samples 4 interior points per triangle, projects onto the exact
+    ///    nominal B-rep, returns the global maximum deviation in metres.
+    ///
+    /// # Wire format
+    /// `Value::Real(dev_m)` where `dev_m ≥ 0` is in SI metres.
+    /// The eval dispatcher wraps this into
+    /// `Value::Scalar { dimension: LENGTH, si_value: dev_m }`.
+    ///
+    /// # Honest floor (G6)
+    /// For a unit box offset by 0.5 mm the true maximum deviation is exactly
+    /// 0.5 mm (= 5e-4 m). The f32-quantization error on planar faces is
+    /// ≤ 1e-5 m (mesh_deviation.rs B1 bound, validated by done 4198) — ~2
+    /// orders below the 0.5 mm signal. Tests assert an inequality, not
+    /// exactness.
+    ///
+    /// # Capability
+    /// `BRepOnly` — both operands require OCCT: `actual` must be tessellated
+    /// by OCCT, and `nominal` projected onto its exact B-rep.
+    ///
+    /// ζ / PRD contract C4 (`docs/prds/v0_6/gdt-geometric-zones-and-containment.md`).
+    MaxDeviation {
+        /// Handle to the actual (as-built / measured) geometry.
+        actual: GeometryHandleId,
+        /// Handle to the nominal (design-intent) geometry.
+        nominal: GeometryHandleId,
+        /// Tessellation deflection for `actual` (metres). The eval
+        /// dispatcher fills this from `MAX_DEVIATION_TESSELLATION_TOLERANCE_M`
+        /// (= 0.0001 m, mirroring `Engine::DEFAULT_TESSELLATION_TOLERANCE`).
+        tolerance: f64,
+    },
+    /// Project a face's underlying analytic surface to a datum `Value`
+    /// (geometric-relations ε, PRD §7.2 / design §2.2).
+    ///
+    /// Backed by `BRepAdaptor_Surface::GetType()` (`GeomAbs_*`) classification
+    /// → `gp_*::Axis()`/`Location()` extraction. Returns the projected datum
+    /// `Value` selected by GeomAbs kind: `Value::Axis` for Cylinder/Cone,
+    /// `Value::Plane` for Plane, `Value::Point` for the Sphere centre. The
+    /// radius / semi-angle / apex parameters ride in the FFI struct's
+    /// `scalar1`/`scalar2` and are retained in the bundle's trait record but
+    /// are not consumed by the `.axis`/`.plane`/`.point` projections here.
+    ///
+    /// # Capability
+    /// `BRepOnly` — analytic surface classification requires OCCT; mesh /
+    /// voxel representations cannot answer it.
+    FaceAnalyticDatum(GeometryHandleId),
+    /// Project an edge's underlying analytic curve to a datum `Value`
+    /// (geometric-relations ε).
+    ///
+    /// Backed by `BRepAdaptor_Curve::GetType()` (`GeomAbs_*`) classification.
+    /// Returns `Value::Axis` for a `GeomAbs_Line` edge (position + direction)
+    /// and for a `GeomAbs_Circle`/`Ellipse` edge (centre + axis direction; the
+    /// radius rides in the FFI struct).
+    ///
+    /// # Capability
+    /// `BRepOnly` — analytic curve classification requires OCCT.
+    EdgeAnalyticDatum(GeometryHandleId),
+    /// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+    /// (geometric-relations ε).
+    ///
+    /// Returns `Value::Real(tol_m)` — the face/edge/vertex tolerance in
+    /// kernel-native units (metres). Feeds the feature-datum dedup tolerance
+    /// formula `max(confusion_floor, localTol(A), localTol(B))` (design §2.3).
+    ///
+    /// # Capability
+    /// `BRepOnly` — `BRep_Tool::Tolerance` is an OCCT B-rep concept.
+    ShapeLocalTolerance(GeometryHandleId),
 }
 
 impl GeometryQuery {
@@ -1355,6 +1493,10 @@ impl GeometryQuery {
             GeometryQuery::FaceNormalAt { .. } => "FaceNormalAt",
             GeometryQuery::CurveCurvatureAt { .. } => "CurveCurvatureAt",
             GeometryQuery::SurfaceCurvatureAt { .. } => "SurfaceCurvatureAt",
+            GeometryQuery::MaxDeviation { .. } => "MaxDeviation",
+            GeometryQuery::FaceAnalyticDatum(_) => "FaceAnalyticDatum",
+            GeometryQuery::EdgeAnalyticDatum(_) => "EdgeAnalyticDatum",
+            GeometryQuery::ShapeLocalTolerance(_) => "ShapeLocalTolerance",
         }
     }
 }
@@ -1417,6 +1559,14 @@ impl GeometryQuery {
             // property evaluation — not available on Mesh representations.
             GeometryQuery::CurveCurvatureAt { .. } => QueryCapability::BRepOnly,
             GeometryQuery::SurfaceCurvatureAt { .. } => QueryCapability::BRepOnly,
+            // ζ / C4: both operands require OCCT (actual tessellated by OCCT,
+            // nominal projected onto exact B-rep) — so MaxDeviation is BRepOnly.
+            GeometryQuery::MaxDeviation { .. } => QueryCapability::BRepOnly,
+            // ε: analytic surface/curve classification + BRep_Tool::Tolerance
+            // require OCCT — BRep-only (mesh/voxel reprs cannot answer them).
+            GeometryQuery::FaceAnalyticDatum(_) => QueryCapability::BRepOnly,
+            GeometryQuery::EdgeAnalyticDatum(_) => QueryCapability::BRepOnly,
+            GeometryQuery::ShapeLocalTolerance(_) => QueryCapability::BRepOnly,
 
             // All other extant variants default to BRepAndMesh.
             GeometryQuery::Volume(_) => QueryCapability::BRepAndMesh,
@@ -2195,6 +2345,14 @@ pub enum AttributeHistory {
     /// `BRepAlgoAPI_Common` for binary boolean ops
     /// (`GeometryOp::Union` / `Difference` / `Intersection`; task 8, #2656).
     Boolean(BooleanOpHistoryRecords),
+    /// Records produced by `BRepFilletAPI_MakeFillet` (for
+    /// `GeometryOp::Fillet`) or `BRepFilletAPI_MakeChamfer` (for
+    /// `GeometryOp::Chamfer`); task 7, #2831.
+    ///
+    /// Uses [`LocalFeatureOpHistoryRecords`] whose per-stream parent kinds
+    /// differ from the boolean case: `face_generated` parents are **edges**,
+    /// and `edge_generated` parents are **vertices** (cross-kind).
+    LocalFeature(LocalFeatureOpHistoryRecords),
 }
 
 /// Outcome of a [`KernelAttributeHook::propagate_attributes`] call (or of the
@@ -2453,6 +2611,23 @@ pub trait GeometryKernel: Send + Sync {
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
         Err(QueryError::QueryFailed(
             "topology extraction not supported by this kernel".into(),
+        ))
+    }
+
+    /// Densify an OpenVDB voxel grid stored under `handle` into a CPU-resident
+    /// [`SampledField`].
+    ///
+    /// Overridden by `OpenVdbKernel` to run the FFI read-back →
+    /// `build_realized_grid_source` → `lower_to_sampled` pipeline described in
+    /// realization-read-api.md §3.3 (δ).  All other kernels inherit this
+    /// default, which returns
+    /// `Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))`.
+    fn densify_grid_to_sampled(
+        &mut self,
+        _handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        Err(QueryError::QueryFailed(
+            "densify_grid_to_sampled not supported by this kernel".into(),
         ))
     }
 
@@ -3124,6 +3299,44 @@ pub struct BooleanOpHistoryRecords {
     /// `BooleanOpHistory.silent_drop_count` (C++ struct) into separate face/edge
     /// or left/right counters before adding new consumers; the deferred split is
     /// intentional pending that task's specification of required granularity.
+    pub silent_drop_count: u32,
+    pub face_modified: Vec<HistoryRecord>,
+    pub face_generated: Vec<HistoryRecord>,
+    pub face_deleted: Vec<DeletedRecord>,
+    pub edge_modified: Vec<HistoryRecord>,
+    pub edge_generated: Vec<HistoryRecord>,
+    pub edge_deleted: Vec<DeletedRecord>,
+}
+
+/// All Modified / Generated / Deleted history records for a single
+/// **local-feature operation** (`GeometryOp::Fillet` / `GeometryOp::Chamfer`;
+/// task 7, #2831).
+///
+/// Structural sibling of [`BooleanOpHistoryRecords`].  The per-stream parent
+/// kinds differ from the boolean case — they are **cross-kind**:
+///
+/// | Stream           | Parent kind | Result kind |
+/// |------------------|-------------|-------------|
+/// | `face_modified`  | FACE        | FACE        |
+/// | `face_generated` | EDGE        | FACE        |
+/// | `edge_modified`  | EDGE        | EDGE        |
+/// | `edge_generated` | VERTEX      | EDGE        |
+///
+/// `parent_index` on every inner record is always `0` (a fillet/chamfer has
+/// one target shape, not two operands), included only for layout-uniformity
+/// with the boolean variant.
+///
+/// Returned by `OcctKernel::fillet_with_history`,
+/// `OcctKernel::fillet_edges_with_history`, and
+/// `OcctKernel::chamfer_with_history` (via `LocalFeatureOpHistoryRecords`
+/// re-exported by `reify-kernel-occt`).  Consumed by
+/// `reify_eval::propagate_attributes_via_local_feature_history`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalFeatureOpHistoryRecords {
+    /// Number of Modified/Generated children that the FFI primitive observed
+    /// but could not map back into the result face/edge map (i.e. the child
+    /// shape reported by BRep_Builder was absent from the result's TopExp
+    /// map).  For well-formed BRep operations this should be zero.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -5729,19 +5942,22 @@ mod tests {
             Operation::BooleanUnion,
             Operation::BooleanDifference,
             Operation::BooleanIntersection,
-            // Primitives (6)
+            // Primitives (7)
             Operation::PrimitiveBox,
             Operation::PrimitiveCylinder,
             Operation::PrimitiveSphere,
             Operation::PrimitiveTube,
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
-            // Modify (5)
+            Operation::PrimitiveTorus,
+            // Modify (7)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
             Operation::ModifyDraft,
             Operation::ModifyThicken,
+            Operation::ModifyZoneSlab,
+            Operation::ModifyOffsetSolid,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -5838,11 +6054,14 @@ mod tests {
             Operation::PrimitiveTube => {}
             Operation::PrimitiveCone => {}
             Operation::PrimitiveWedge => {}
+            Operation::PrimitiveTorus => {}
             Operation::ModifyFillet => {}
             Operation::ModifyChamfer => {}
             Operation::ModifyShell => {}
             Operation::ModifyDraft => {}
             Operation::ModifyThicken => {}
+            Operation::ModifyZoneSlab => {}
+            Operation::ModifyOffsetSolid => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -5869,6 +6088,8 @@ mod tests {
             Operation::CurveNurbsCurve => {}
             Operation::ProfileRectangle => {}
             Operation::ProfileCircle => {}
+            Operation::ProfilePolygon => {}
+            Operation::ProfileEllipse => {}
             Operation::Convert { from: _ } => {}
         }
     }
@@ -6323,6 +6544,13 @@ mod tests {
                 },
             ),
             (
+                "Torus",
+                GeometryOp::Torus {
+                    major_radius: Value::Real(0.02),
+                    minor_radius: Value::Real(0.005),
+                },
+            ),
+            (
                 "Union",
                 GeometryOp::Union {
                     left: GeometryHandleId(1),
@@ -6347,6 +6575,7 @@ mod tests {
                 "Fillet",
                 GeometryOp::Fillet {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     radius: Value::Real(0.001),
                 },
             ),
@@ -6556,6 +6785,7 @@ mod tests {
                 "Draft",
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
+                    faces: vec![],
                     angle: Value::Real(0.1),
                     plane: GeometryHandleId(2),
                 },
@@ -6565,6 +6795,20 @@ mod tests {
                 GeometryOp::Thicken {
                     target: GeometryHandleId(1),
                     offset: Value::Real(0.001),
+                },
+            ),
+            (
+                "ZoneSlab",
+                GeometryOp::ZoneSlab {
+                    target: GeometryHandleId(1),
+                    width: Value::Real(0.002),
+                },
+            ),
+            (
+                "OffsetSolid",
+                GeometryOp::OffsetSolid {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
                 },
             ),
             (
@@ -6590,6 +6834,19 @@ mod tests {
                 },
             ),
             (
+                "PolygonProfile",
+                GeometryOp::PolygonProfile {
+                    points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]],
+                },
+            ),
+            (
+                "EllipseProfile",
+                GeometryOp::EllipseProfile {
+                    semi_major: Value::Real(0.010),
+                    semi_minor: Value::Real(0.005),
+                },
+            ),
+            (
                 "Split",
                 GeometryOp::Split {
                     target: GeometryHandleId(1),
@@ -6602,7 +6859,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 41;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6966,6 +7223,24 @@ mod tests {
                 "expected Err(OperationFailed(_)) from trait-object ingest_mesh; got {other:?}"
             ),
         }
+    }
+
+    /// Default `densify_grid_to_sampled` returns `Err(QueryError::QueryFailed(_))`
+    /// when called through a trait object on a kernel that does not override it.
+    ///
+    /// Mirrors the `ingest_mesh_default_returns_does_not_accept_via_trait_object`
+    /// pattern.  Pins realization-read-api.md §3.3 (δ): kernels that never set up
+    /// a voxel grid must propagate honest failure, not panic or silently return a
+    /// fabricated field.
+    #[test]
+    fn densify_grid_to_sampled_default_returns_query_failed_via_trait_object() {
+        let mut boxed: Box<dyn GeometryKernel> = Box::new(DefaultsOnlyKernel);
+        let result = boxed.densify_grid_to_sampled(GeometryHandleId(1));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "expected Err(QueryError::QueryFailed(_)) from default \
+             densify_grid_to_sampled; got: {result:?}",
+        );
     }
 
     // ── STL serializer unit tests ────────────────────────────────────────────
@@ -7478,5 +7753,112 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let removed = table.remove(GeometryHandleId(99));
         assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    /// `GeometryOp::Fillet` records a curated `edges` selection alongside
+    /// `target`/`radius`. A non-empty list names the specific edges to round;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg fillet).
+    #[test]
+    fn fillet_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            radius: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Fillet { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated fillet must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Fillet"),
+        }
+
+        // Back-compat: empty edges = all-edges fillet.
+        let all_edges = GeometryOp::Fillet {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            radius: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Fillet { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat fillet must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Fillet"),
+        }
+    }
+
+    /// δ / contract: `GeometryOp::Draft` records a curated `faces` selection
+    /// alongside `target`/`angle`/`plane`. A non-empty list names the specific
+    /// faces to draft; an empty list is the all-draftable back-compat path
+    /// (legacy 3-arg `draft(solid, angle, plane)`).
+    ///
+    /// RED until step-2 adds the `faces` field.
+    #[test]
+    fn draft_records_curated_faces_selection() {
+        // Curated selection: one named face.
+        let curated = GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![GeometryHandleId(2)],
+            angle: Value::Real(0.05),
+            plane: GeometryHandleId(3),
+        };
+        match curated {
+            GeometryOp::Draft { faces, .. } => {
+                assert_eq!(
+                    faces.len(),
+                    1,
+                    "curated draft must record the 1 curated face"
+                );
+            }
+            _ => panic!("expected GeometryOp::Draft"),
+        }
+
+        // Back-compat: empty faces = all-draftable.
+        let all_faces = GeometryOp::Draft {
+            target: GeometryHandleId(1),
+            faces: vec![],
+            angle: Value::Real(0.05),
+            plane: GeometryHandleId(3),
+        };
+        match all_faces {
+            GeometryOp::Draft { faces, .. } => {
+                assert!(
+                    faces.is_empty(),
+                    "3-arg back-compat draft must record an empty face selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Draft"),
+        }
+    }
+
+    /// ζ / contract C4: `MaxDeviation` is repr-gate-classified `BRepOnly` and
+    /// has the canonical kind label "MaxDeviation".
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn max_deviation_query_has_brep_only_capability_and_kind_name() {
+        let q = GeometryQuery::MaxDeviation {
+            actual: GeometryHandleId(1),
+            nominal: GeometryHandleId(2),
+            tolerance: 1e-4,
+        };
+        assert_eq!(
+            q.capability_kind(),
+            QueryCapability::BRepOnly,
+            "MaxDeviation must be BRepOnly: both operands require an exact B-rep (OCCT)"
+        );
+        assert_eq!(
+            q.kind_name(),
+            "MaxDeviation",
+            "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
+        );
     }
 }

@@ -512,6 +512,41 @@ describe('Editor scrollToLocation', () => {
     expect(sel.anchor).toBe(expectedAnchor);
     expect(sel.head).toBe(expectedHead);
   });
+
+  // task-4403 γ sequencing lock: proves the file-switch effect (created first at Editor.tsx:617)
+  // runs before the scroll effect (created second at Editor.tsx:757) so that setActiveFile +
+  // setScrollToLocation → cursor lands in the swapped-in doc.  Expected GREEN with no Editor.tsx
+  // change — #3358 regressed in App.tsx (missing setActiveFile call), not here.
+  it('activate-then-scroll: setActiveFile before setScrollToLocation scrolls in the swapped-in document (task-4403 γ sequencing lock)', () => {
+    // Start with file1 active; file2 also open but not active.
+    const store = setupStore([file1, file2]);
+    store.setActiveFile(file1.path);
+    const [scrollTo, setScrollTo] = createSignal<SourceLocation | null>(null);
+    render(() => <Editor store={store} scrollToLocation={scrollTo} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Sanity: cursor is at 0 in file1's doc.
+    expect(view.state.selection.main.head).toBe(0);
+
+    // Step 1: switch active file to file2.
+    // The file-switch effect (Editor.tsx:617) fires synchronously, swapping the CodeMirror
+    // document to file2's content ('structure Mount {}').
+    store.setActiveFile(file2.path);
+
+    // Step 2: set scroll target to a span inside file2.
+    // The scroll effect (Editor.tsx:757) re-fires on the new signal identity; it reads
+    // activeFile (now file2.path), passes isSameFile, and dispatches the selection.
+    // file2 content: 'structure Mount {}' — offset 10 = 'M', offset 15 = ' ' after 'Mount'.
+    // column 11 (1-indexed) → anchor = 10; end_column 16 (1-indexed) → head = 15.
+    setScrollTo({ file_path: file2.path, line: 1, column: 11, end_line: 1, end_column: 16 });
+
+    const sel = view.state.selection.main;
+    // If the file-switch ran FIRST (correct): isSameFile(file2, file2) → cursor moves to 10/15.
+    // If it hadn't (regression): isSameFile(file2, file1) → cursor stays at 0.
+    expect(sel.anchor).toBe(10);
+    expect(sel.head).toBe(15);
+  });
 });
 
 describe('Editor save error callback', () => {

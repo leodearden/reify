@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
+import { createRoot } from 'solid-js';
 import type { GuiState } from '../types';
+import type { DiagnosticEntry } from '../panels';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { createEditorStore } from '../stores/editorStore';
 
 // Mock Tauri APIs before any component imports
 vi.mock('@tauri-apps/api/core', () => ({
@@ -85,9 +88,9 @@ vi.mock('../editor/FileTabs', () => ({
 }));
 
 // Mock bridge functions
-const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] };
+const emptyState: GuiState = { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] };
 vi.mock('../bridge', () => ({
-  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
+  getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
   setParameter: vi.fn().mockResolvedValue(undefined),
   exportGeometry: vi.fn().mockResolvedValue(undefined),
@@ -96,7 +99,7 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
-  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
+  openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
   onMeshUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -123,7 +126,7 @@ vi.mock('../bridge', () => ({
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
-  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] }),
+  getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
@@ -154,7 +157,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE } from '../App';
+import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -176,7 +179,7 @@ beforeEach(() => {
   capturedEditorLiveContentRef = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
-  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
   vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
@@ -328,6 +331,7 @@ describe('App initial state loading', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
 
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
@@ -394,6 +398,7 @@ describe('App dynamic window title', () => {
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     render(() => <App />);
@@ -412,6 +417,7 @@ describe('App dynamic window title', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     render(() => <App />);
@@ -437,6 +443,7 @@ describe('App dynamic window title', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     render(() => <App />);
@@ -532,6 +539,7 @@ describe('App async mount/cleanup race conditions', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     // Flush macrotasks so setTimeout(0) callbacks execute
@@ -683,6 +691,7 @@ describe('App navigation wiring', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   it('viewport onSelect triggers getSourceLocation from bridge', async () => {
@@ -837,7 +846,7 @@ describe('App initialization loading state', () => {
     expect(screen.queryByTestId('app-layout')).toBeNull();
 
     // Resolve to transition to ready
-    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+    resolveGetState({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -870,7 +879,7 @@ describe('App initialization loading state', () => {
     });
 
     // Reset to succeed on retry
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
 
     fireEvent.click(screen.getByText('Retry'));
 
@@ -883,7 +892,7 @@ describe('App initialization loading state', () => {
   });
 
   it('after successful getInitialState, app-layout is shown and loading/error are gone', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+    vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
 
     render(() => <App />);
 
@@ -960,6 +969,7 @@ describe('App changedFiles multi-file tracking (R-1)', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1068,6 +1078,7 @@ describe('App dirty-file check before reload (R-4)', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1191,6 +1202,7 @@ describe('App handleReload partial failure', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1384,6 +1396,7 @@ describe('App handleReload race condition', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -1519,6 +1532,7 @@ describe('App handleSetParameter error handling', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -1565,6 +1579,7 @@ describe('App re-evaluate error toast', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -1609,6 +1624,7 @@ describe('App F5 re-evaluate multi-file', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1658,6 +1674,7 @@ describe('App F5 re-evaluate uses live buffer content', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
     vi.mocked(bridge.updateSource).mockResolvedValue(undefined as any);
 
@@ -1710,6 +1727,7 @@ describe('App event subscription error toast', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -1783,6 +1801,7 @@ describe('App reload error toast', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -1950,7 +1969,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(bridge.getInitialState).toHaveBeenCalledTimes(2);
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -1979,6 +1998,7 @@ describe('App initApp concurrent execution guard', () => {
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     const { unmount } = render(() => <App />);
@@ -2041,7 +2061,7 @@ describe('App initApp concurrent execution guard', () => {
     expect(screen.getByTestId('app-loading')).toBeTruthy();
 
     // Clean up: resolve the deferred promise
-    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [] });
+    resolveRetry({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] });
     await waitFor(() => {
       expect(screen.getByTestId('app-layout')).toBeTruthy();
     });
@@ -2290,6 +2310,7 @@ describe('App Ctrl+O open file', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     // Mock pickOpenPath to return a path
@@ -2323,6 +2344,7 @@ describe('App handleOpen dirty-check confirmation', () => {
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
   }
 
@@ -2415,6 +2437,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
   }
 
@@ -2532,6 +2555,7 @@ describe('App handleNew dirty-check confirmation', () => {
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
   }
 
@@ -2620,6 +2644,7 @@ describe('App end-to-end toast integration', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -2797,6 +2822,7 @@ describe('App onSend context forwarding', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
     vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
 
@@ -2854,6 +2880,7 @@ describe('App claudeSendMessage error-path integration', () => {
         tessellation_diagnostics: [],
         compile_diagnostics: [],
         tensegrity_wires: [],
+        tensegrity_surfaces: [],
       });
 
       render(() => <App />);
@@ -3158,6 +3185,7 @@ describe('App handleSave uses live buffer content', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     });
 
     render(() => <App />);
@@ -3312,6 +3340,10 @@ describe('App tessellation diagnostics end-to-end wiring', () => {
   it('clicking a tessellation diagnostic row in the panel triggers setScrollToLocation', async () => {
     render(() => <App />);
     await waitFor(() => expect(tessellationDiagnosticsCallback).toBeDefined());
+    // Seed main.ri as active so this remains a pure in-file navigation test
+    // (avoids incidentally exercising the cross-file open path added in γ task-4403).
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.openFile({ path: 'main.ri', content: '' });
 
     tessellationDiagnosticsCallback!([
       {
@@ -3426,6 +3458,10 @@ describe('App compile diagnostics end-to-end wiring', () => {
   it('clicking a diagnostic row triggers navigation via setScrollToLocation', async () => {
     render(() => <App />);
     await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    // Seed helper.ri as active so this remains a pure in-file navigation test
+    // (warningDiag.file_path = 'helper.ri'; avoids cross-file open path added in γ task-4403).
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+    capturedEditorStore.openFile({ path: 'helper.ri', content: '' });
 
     compileDiagnosticsCallback!([warningDiag]);
 
@@ -3478,6 +3514,49 @@ describe('App compile diagnostics end-to-end wiring', () => {
       expect(badge).toBeTruthy();
       expect(badge!.textContent).toMatch(/1 error/i);
     });
+  });
+
+  it('γ task-4403: cross-file navigate activates file, scrolls, and panel stays expanded', async () => {
+    render(() => <App />);
+    await waitFor(() => expect(compileDiagnosticsCallback).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore).toBeTruthy());
+
+    // Seed: main.ri active, helper.ri also open but not active
+    capturedEditorStore.openFile({ path: 'main.ri', content: '' });
+    capturedEditorStore.openFile({ path: 'helper.ri', content: '' });
+    capturedEditorStore.setActiveFile('main.ri');
+
+    // Fire a compile diagnostic on helper.ri (the non-active file)
+    compileDiagnosticsCallback!([{
+      file_path: 'helper.ri',
+      line: 5, column: 2, end_line: 5, end_column: 10,
+      severity: 'Error',
+      message: 'cross-file nav integration test',
+      code: null,
+    }]);
+
+    await waitFor(() => expect(screen.getByTestId('diagnostics-count')).toBeTruthy());
+
+    // Expand the panel via badge click
+    fireEvent.click(screen.getByTestId('diagnostics-count'));
+    await waitFor(() => expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false'));
+
+    // Click the diagnostic row → triggers cross-file navigation
+    const row = document.querySelector('[data-testid="diagnostic-row"]') as HTMLElement;
+    expect(row).toBeTruthy();
+    fireEvent.click(row!);
+
+    // Active file must switch to helper.ri
+    await waitFor(() => {
+      expect(capturedEditorStore.state.activeFile).toBe('helper.ri');
+    });
+
+    // Scroll target must be set to the helper.ri location
+    const loc = capturedEditorScrollToLocation?.();
+    expect(loc).toMatchObject({ file_path: 'helper.ri', line: 5, column: 2, end_line: 5, end_column: 10 });
+
+    // Panel must stay expanded (docked design — no modal to dismiss)
+    expect(screen.getByTestId('diagnostics-panel').getAttribute('data-collapsed')).toBe('false');
   });
 });
 
@@ -4931,6 +5010,7 @@ describe('App externallyChanged store wiring', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5096,6 +5176,7 @@ describe('App file-changed auto-reload (non-dirty)', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5188,6 +5269,7 @@ describe('App file-changed isSameFile cross-format matching', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5238,6 +5320,7 @@ describe('App handleSave aborts when file is externally changed', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5370,6 +5453,7 @@ describe('App handleSave conflict prompt: Reload from disk', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5454,6 +5538,7 @@ describe('App handleSave conflict prompt: Overwrite', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5532,6 +5617,7 @@ describe('App handleSave conflict prompt: Overwrite uses live buffer', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5612,6 +5698,7 @@ describe('App save-conflict resolution clears the reload-prompt banner', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileChangedCallback: ((data: { path: string; content: string }) => void) | undefined;
@@ -5913,6 +6000,7 @@ describe('App file-removed event handling', () => {
     tessellation_diagnostics: [],
     compile_diagnostics: [],
     tensegrity_wires: [],
+    tensegrity_surfaces: [],
   };
 
   let fileRemovedCallback: ((data: { path: string }) => void) | undefined;
@@ -6168,6 +6256,7 @@ describe('App refreshEntityTree wires reconcileToTree (step-7)', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
 
     // Seed both meshes via getInitialState
@@ -6234,6 +6323,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
 
     // Design B: loaded directly via initFromState (simulates a file-switch reinit)
@@ -6258,6 +6348,7 @@ describe('App epoch/staleness guard for refreshEntityTree (task 4251)', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     };
 
     // Deferred promise for the FIRST getEntityTree call (the stale in-flight fetch).
@@ -6336,6 +6427,7 @@ describe('App forwards compileDiagnostics to Editor (task-4252)', () => {
       tessellation_diagnostics: [],
       compile_diagnostics: [errorDiag],
       tensegrity_wires: [],
+      tensegrity_surfaces: [],
     } as any);
 
     await renderAndWaitForReady();
@@ -6377,5 +6469,167 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
 
     expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
     expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
+  });
+});
+
+// ── navigateToDiagnostic unit tests (task-4403 γ) ────────────────────────────
+
+function makeDiagnosticEntry(overrides: Partial<DiagnosticEntry> = {}): DiagnosticEntry {
+  return {
+    file_path: 'main.ri',
+    line: 5, column: 2, end_line: 5, end_column: 10,
+    severity: 'Error', message: 'test error', code: null, source: 'compile',
+    ...overrides,
+  };
+}
+
+describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
+  it('has_location===false → setScrollToLocation, bridge openFile, and store.setActiveFile are NOT called', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+
+      const openFileSpy = vi.fn().mockResolvedValue({ path: 'main.ri', content: '' });
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      await navigateToDiagnostic(
+        makeDiagnosticEntry({ file_path: 'main.ri', has_location: false }),
+        { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy },
+      );
+
+      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
+      expect(openFileSpy).not.toHaveBeenCalled();
+      expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+
+  it('same-file diagnostic → setScrollToLocation called once with span; bridge openFile and store.setActiveFile NOT called', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+
+      const openFileSpy = vi.fn();
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({
+        file_path: 'main.ri',
+        line: 7, column: 4, end_line: 7, end_column: 9,
+      });
+      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+
+      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
+      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
+        file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9,
+      });
+      expect(openFileSpy).not.toHaveBeenCalled();
+      expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+
+  it('cross-file, already open → store.setActiveFile called, bridge openFile NOT called, setScrollToLocation called once', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      // Open main.ri (active) then helper.ri (also open, but not active)
+      store.openFile({ path: 'main.ri', content: '' });
+      store.openFile({ path: 'helper.ri', content: '' });
+      // After openFile helper.ri, activeFile is helper.ri; make main.ri active
+      store.setActiveFile('main.ri');
+      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+
+      const openFileSpy = vi.fn();
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({
+        file_path: 'helper.ri',
+        line: 10, column: 3, end_line: 10, end_column: 8,
+      });
+      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+
+      // Active file must have switched to helper.ri (canonical key)
+      expect(store.state.activeFile).toBe('helper.ri');
+      // Bridge openFile must NOT have been called (file was already in openFiles)
+      expect(openFileSpy).not.toHaveBeenCalled();
+      // setScrollToLocation must have been called exactly once with the helper.ri span
+      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
+      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
+        file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8,
+      });
+
+      dispose();
+    });
+  });
+
+  it('cross-file, NOT open → bridge openFile called, file loaded into store (active), setScrollToLocation called once', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+      // helper.ri is NOT in openFiles
+
+      const helperFileData = { path: 'helper.ri', content: 'structure Helper {}' };
+      const openFileSpy = vi.fn().mockResolvedValue(helperFileData);
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({
+        file_path: 'helper.ri',
+        line: 2, column: 1, end_line: 2, end_column: 15,
+      });
+      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+
+      // Bridge openFile must have been called with the diagnostic's file path
+      expect(openFileSpy).toHaveBeenCalledTimes(1);
+      expect(openFileSpy).toHaveBeenCalledWith('helper.ri');
+      // File must now be in the store and active
+      expect(store.state.openFiles.some(f => f.path === 'helper.ri')).toBe(true);
+      expect(store.state.activeFile).toBe('helper.ri');
+      // setScrollToLocation called once AFTER the open
+      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
+      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
+        file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15,
+      });
+
+      dispose();
+    });
+  });
+
+  it('open-failure → showToast called with error, setScrollToLocation NOT called, activeFile unchanged', async () => {
+    await createRoot(async (dispose) => {
+      const store = createEditorStore();
+      store.openFile({ path: 'main.ri', content: '' });
+
+      const diskError = new Error('disk read error');
+      const openFileSpy = vi.fn().mockRejectedValue(diskError);
+      const setScrollToLocationSpy = vi.fn();
+      const showToastSpy = vi.fn();
+
+      const diag = makeDiagnosticEntry({ file_path: 'missing.ri' });
+
+      // In RED state, navigateToDiagnostic propagates the rejection.
+      // Catch it here so assertions can still run.
+      try {
+        await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
+      } catch {
+        // Expected in RED state — step-8 wraps in try/catch so it won't throw.
+      }
+
+      expect(showToastSpy).toHaveBeenCalledTimes(1);
+      expect(showToastSpy).toHaveBeenCalledWith(
+        expect.stringContaining('missing.ri'),
+        'error',
+      );
+      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
+      expect(store.state.activeFile).toBe('main.ri');
+
+      dispose();
+    });
   });
 });

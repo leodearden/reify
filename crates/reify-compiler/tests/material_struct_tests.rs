@@ -260,10 +260,6 @@ const BOLTFLANGE_MIRROR_SOURCE: &str = r#"
             param bolt_circle_radius : Length = 45mm
             param hole_radius : Length = 4mm
 
-            // Rigid trait requirement (Rigid's own param; Physical's geometry +
-            // material slots are below). Disc OD 120 mm, h 12 mm, mass ≈ 0.86 kg → I_z ≈ 0.002 kg·m²
-            param moment_of_inertia : MomentOfInertia = 0.002 * 1kg * 1m * 1m
-
             // Canonical Material struct default — the task-1876 payoff this
             // test pins (recorded StructureInstanceCtor with 3 bound args).
             param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)

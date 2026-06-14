@@ -1,0 +1,189 @@
+// dev_capstan.ri — ISOLATED design sketch for the CoreXY drive capstan + fairlead.
+//
+// Standalone scratch file (NOT imported by printer.ri) for designing the two new
+// drive components in isolation before integrating into DriveTendons/CoreXY.
+// Self-contained: IdlerPulley is copied verbatim from printer.ri so this file
+// renders on its own (single-file; no cross-file import in v0.1).
+//
+// DRIVE MODEL (agreed 2026-06-01): Vectran on a DUAL-ANCHOR WINCH CAPSTAN — both
+// rope ends fixed to a helically-grooved drum (positive, zero-slip; NOT a friction
+// wrap). Each belt's moment-balanced ±z pair = the TWO WINDINGS on one capstan, so
+// there are 2 capstans (one per X/Y motor). As the drum turns it reels rope on one
+// side / pays out the other; the active wrap band migrates axially, tracked by a
+// PASSIVE TRANSLATING FAIRLEAD "shuttle" carrying 4 idlers that each take the first
+// 90° corner on one of the 4 leads.
+//
+// FRAME: capstan axis = local +Z; leads leave tangentially in planes parallel to
+// YZ (lower winding at the FRONT +X, upper at the BACK −X, so they never share an
+// X-plane). The shuttle translates along Z to follow the band.
+//
+// BALANCE (design intent): on the shuttle the two idler-pairs turn in OPPOSITE
+// senses (one pair "away", one "towards") so their couples about Y cancel → net
+// force AND moment ≈ 0, enabling a near-rail-less float (a light rail is kept as
+// insurance for the first-order-only rotational nulling + dynamics). The capstan's
+// residual couple about X (from the two windings' axial separation under unequal
+// tension) is reacted by its own shaft bearings — benign.
+//
+// MODELLING CAVEATS:
+//  - The HELICAL GROOVE itself is not modelled (no helical-sweep / thread feature;
+//    same gap class as the missing `torus` seat). The drum renders as a smooth core
+//    at root-Ø with `lead` annotated; the wrap band is the grooved axial region.
+//  - Override drop (task 4147): the 4 shuttle idlers are identical IdlerPulley
+//    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
+//    ShuttlePlate size is hand-matched to the idler corner spacing for the same
+//    reason (can't pass sizes through the `sub`).
+
+#version(0.1)
+
+// ── Idler routing pulley (copied verbatim from printer.ri) ──────────────────
+/// 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with a flanged grooved sheave
+/// pressed on its OD; modelled along local +Z (spin axis), centred. Rectangular
+/// (flat-bottomed) groove — a round seat wants `torus` (unimplemented). One inlined
+/// union/difference tree so only `body` surfaces.
+pub structure IdlerPulley {
+    param brg_od    : Length = 22mm
+    param brg_bore  : Length = 8mm
+    param brg_width : Length = 7mm
+    param sheave_od    : Length = 36mm
+    param groove_depth : Length = 3mm
+    param groove_width : Length = 6mm
+    param flange_width : Length = 2mm
+
+    let brg_r       = brg_od / 2
+    let sheave_r    = sheave_od / 2
+    let groove_r    = sheave_r - groove_depth
+    let groove_half = groove_width / 2
+    let bore_len    = groove_width + flange_width * 3
+
+    let body = union(
+        difference(
+            translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
+            translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
+        ),
+        difference(
+            union(
+                union(
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
+                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
+                ),
+                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            ),
+            translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
+        )
+    )
+
+    constraint sheave_od > brg_od
+    constraint groove_r > brg_r
+    constraint brg_od > brg_bore
+}
+
+// ── Capstan (dual-anchor winch drum) ────────────────────────────────────────
+/// Helically-grooved winch drum, axis = local +Z, centred. Both belt ends anchor
+/// to it; rotation reels one end in / pays the other out. Carries BOTH windings of
+/// the belt's ±z moment pair (axially adjacent on the one drum). Smooth core at
+/// root-Ø + two retaining flanges + axial shaft bore. Groove helix not modelled —
+/// `lead` is the (clearance) pitch.
+///
+/// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
+/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+pub structure Capstan {
+    param rope_dia    : Length = 6mm
+    /// D/d ratio
+    ///  Tendon-life lever. Larger ratio -> shallower bends -> longer life.
+    ///    8 ≈ Vectran-friendly.
+    ///  Sets mechanical advantage for drive. Larger -> Higher top speed, lower Acceleration.
+    param d_ratio     : Real   = 8.0
+    let drum_d : Length = rope_dia * d_ratio
+    /// Helical pitch. CLEARANCE lead (> rope_dia) so adjacent wraps don't rub/wedge
+    /// (wedging would drift the effective Ø → transmission-ratio error).
+    param lead        : Length = 7mm
+    /// Max per-belt rope feed = X-travel + Y-travel (documentation; drives turns).
+    param feed        : Length = 1300mm
+    /// Active wrap turns ≈ feed / (π·drum_Ø).
+    let active_turns : Real  = feed / (pi * drum_d)
+    /// Dead (anchored) turns total, both ends — keep tension off the anchors.
+    param dead_total  : Real   = 4.0
+    /// Windings per drum = the belt's ±z moment pair (documentation; one drum band).
+    param windings    : Int    = 2
+    param bore_dia    : Length = 19mm     // motor shaft
+
+    let drum_r     = drum_d / 2
+    let flange_r   = drum_r + rope_dia * 1.5      // stands proud of the rope crest
+    let flange_w   = 6mm
+    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let bore_r     = bore_dia / 2
+
+    // One inlined tree: core + two flanges, bored through. (No intermediate geometry
+    // lets — they would auto-surface as stray meshes.)
+    let body = difference(
+        union(
+            union(
+                translate(cylinder(drum_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
+                translate(cylinder(flange_r, flange_w), 0mm, 0mm, groove_len / 2)
+            ),
+            translate(cylinder(flange_r, flange_w), 0mm, 0mm, 0mm - groove_len / 2 - flange_w)
+        ),
+        translate(cylinder(bore_r, groove_len + flange_w * 4), 0mm, 0mm, 0mm - groove_len / 2 - flange_w * 2)
+    )
+
+    constraint drum_r > bore_r
+    constraint flange_r > drum_r
+    constraint lead > rope_dia        // clearance lead
+    constraint d_ratio > 0.0
+}
+
+// ── Fairlead shuttle ────────────────────────────────────────────────────────
+/// The shuttle carrier plate (a leaf so it surfaces as one body). Hand-sized to
+/// span the 4 idler corners (override drop — can't pass dims through the `sub`).
+pub structure ShuttlePlate {
+    param length : Length = 90mm
+    param width : Length = 150mm
+    param thickness : Length = 10mm
+    let body = box(length, width, thickness)
+    constraint length > 0mm
+    constraint width > 0mm
+    constraint thickness > 0mm
+}
+
+/// Passive translating fairlead: a plate + 4 routing idlers, one per capstan lead.
+/// Idler spin axes = local +X (ropes turn in YZ planes); idlers at the 4 corners
+/// (±X = front/back winding, ±Y = up/down lead). The shuttle slides along +Z
+/// (plate normal = Z = capstan axis) to track the migrating band over `stroke`.
+/// Front pair (+X) and back pair (−X) turn in OPPOSITE senses so the Y-couples
+/// cancel (balanced float).
+pub structure Fairlead {
+    /// Front/back half-spacing of the idler stack (≈ drum_r + clearance).
+    param x_corner : Length = 30mm
+    /// Up/down half-spacing of the lead turn points.
+    param y_corner : Length = 50mm
+    /// Band-migration travel range the shuttle covers (= Capstan active band).
+    param stroke   : Length = 63mm
+
+    let rot_to_x = orient_axis_angle(vec3(0mm, 1mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
+    let rot_to_y = orient_axis_angle(vec3(1mm, 0mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
+    let neg_x = 0mm - x_corner
+    let neg_y = 0mm - y_corner
+    // Idlers stand proud of the carrier on a bracket standoff (axle + bracket not
+    // modelled). z_mount = plate_half + sheave_radius + gap so the wheels clear.
+    let z_mount = 25mm
+
+    sub plate    = ShuttlePlate() at transform3(rot_to_y, vec3(0mm, 0mm, 0mm))
+    sub idler_fu = IdlerPulley()  at transform3(rot_to_x, vec3(x_corner, y_corner, z_mount))  // front-upper
+    sub idler_fl = IdlerPulley()  at transform3(rot_to_x, vec3(x_corner, neg_y,   z_mount))  // front-lower
+    sub idler_bu = IdlerPulley()  at transform3(rot_to_x, vec3(neg_x,    y_corner, z_mount))  // back-upper
+    sub idler_bl = IdlerPulley()  at transform3(rot_to_x, vec3(neg_x,    neg_y,   z_mount))  // back-lower
+
+    constraint x_corner > 0mm
+    constraint y_corner > 0mm
+    constraint stroke > 0mm
+}
+
+// ── Isolated assembly (capstan + shuttle, side by side for inspection) ───────
+/// Top-level: the capstan at the origin (axis +Z) and the fairlead shuttle stood
+/// off in +X so both are clearly visible. Relative pose is for inspection only —
+/// real mating belongs to the DriveTendons integration step.
+pub structure CapstanDrive {
+    sub capstan = Capstan()  at transform3(orient_identity(), vec3(0mm,   0mm, 0mm))
+    sub shuttle = Fairlead() at transform3(orient_identity(), vec3(150mm, 0mm, 0mm))
+}

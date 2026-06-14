@@ -181,5 +181,73 @@ assert "_TMPDIRS array is declared" \
 assert "cleanup() function defined" \
     bash -c "grep -Eq '^cleanup\(\) \{' '$THIS_FILE'"
 
+# -- Test 7: failed-test diagnostic naming in summary --------------------------
+echo ""
+echo "--- Test 7: failed-test diagnostic naming in summary ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # 7a: mixed pass+fail — FAILED line names the failing test, not the passing one
+    TMPDIR_T7A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T7A")
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T7A/test_pass.sh"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T7A/test_boom.sh"
+    chmod +x "$TMPDIR_T7A/test_pass.sh" "$TMPDIR_T7A/test_boom.sh"
+    t7a_out="$(bash "$RUN_ALL" "$TMPDIR_T7A" 2>&1)" || true
+    rm -rf "$TMPDIR_T7A"
+
+    if echo "$t7a_out" | grep -qE '^=== FAILED:'; then
+        assert "=== FAILED: line is emitted on partial failure" true
+    else
+        assert "=== FAILED: line is emitted on partial failure (got: $t7a_out)" false
+    fi
+
+    if echo "$t7a_out" | grep -E '^=== FAILED:' | grep -q 'test_boom'; then
+        assert "=== FAILED: line names the failing test (test_boom.sh)" true
+    else
+        assert "=== FAILED: line names the failing test test_boom.sh (got: $t7a_out)" false
+    fi
+
+    if ! echo "$t7a_out" | grep -E '^=== FAILED:' | grep -q 'test_pass'; then
+        assert "=== FAILED: line does NOT name the passing test (test_pass.sh)" true
+    else
+        assert "=== FAILED: line must NOT name the passing test test_pass.sh (got: $t7a_out)" false
+    fi
+
+    # 7b: all-pass — no === FAILED: line emitted
+    TMPDIR_T7B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T7B")
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T7B/test_alpha.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T7B/test_beta.sh"
+    chmod +x "$TMPDIR_T7B/test_alpha.sh" "$TMPDIR_T7B/test_beta.sh"
+    t7b_out="$(bash "$RUN_ALL" "$TMPDIR_T7B" 2>&1)" || true
+    rm -rf "$TMPDIR_T7B"
+
+    if ! echo "$t7b_out" | grep -qE '^=== FAILED:'; then
+        assert "no === FAILED: line emitted on all-pass" true
+    else
+        assert "no === FAILED: line emitted on all-pass (got: $t7b_out)" false
+    fi
+
+    # 7c: regression guard — Summary line still present after the FAILED addition
+    TMPDIR_T7C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T7C")
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T7C/test_fail2.sh"
+    chmod +x "$TMPDIR_T7C/test_fail2.sh"
+    t7c_out="$(bash "$RUN_ALL" "$TMPDIR_T7C" 2>&1)" || true
+    rm -rf "$TMPDIR_T7C"
+
+    if echo "$t7c_out" | grep -qE '^=== Summary:'; then
+        assert "=== Summary: line still present in run_all.sh output" true
+    else
+        assert "=== Summary: line still present in run_all.sh output (got: $t7c_out)" false
+    fi
+else
+    assert "=== FAILED: line is emitted on partial failure (skipped - run_all.sh missing)" false
+    assert "=== FAILED: line names the failing test test_boom.sh (skipped - run_all.sh missing)" false
+    assert "=== FAILED: line does NOT name the passing test test_pass.sh (skipped - run_all.sh missing)" false
+    assert "no === FAILED: line emitted on all-pass (skipped - run_all.sh missing)" false
+    assert "=== Summary: line still present in run_all.sh output (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary

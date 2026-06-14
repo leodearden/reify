@@ -350,14 +350,14 @@ fn keyed_sub_first_entry_overrides_contain_area() {
     assert_eq!(sub.keyed_members.len(), 2, "expected 2 entries");
 
     // The "intake" entry's overrides must be non-empty (contains `area = 5mm`).
-    // The exact member type (param_assignment) is silently dropped until task 3573,
+    // The exact member type (param_assignment) is silently dropped until task 3931,
     // but the override block must not be empty — it contains at least one child.
     // We verify non-emptiness here; the exact member kind is asserted separately
     // once the param_assignment lowering lands.
     //
     // Note: `area = 5mm` is a param_assignment in the CST; lower_specialization_body_members
-    // currently drops param_assignment nodes (see lower_sub, task 3573 TODO). So the
-    // overrides Vec may be empty until task 3573 wires param_assignment lowering.
+    // currently drops param_assignment nodes (see lower_sub). So the
+    // overrides Vec may be empty until task 3931 wires param_assignment lowering.
     // The assertion below checks that the `overrides` Vec is at least constructable
     // (the field exists) and is a Vec (no type error). We do NOT assert len > 0 here
     // because param_assignment lowering is out of scope for this task.

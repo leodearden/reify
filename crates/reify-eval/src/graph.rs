@@ -934,7 +934,7 @@ mod tests {
         let node = ValueCellNode {
             id: id.clone(),
             kind: ValueCellKind::Let,
-            cell_type: Type::Real,
+            cell_type: Type::dimensionless_scalar(),
             default_expr: None,
             content_hash: ContentHash::of_str("volume"),
         };
@@ -1544,8 +1544,8 @@ mod tests {
             .let_binding(
                 "Bracket",
                 "volume",
-                Type::Real,
-                CompiledExpr::literal(Value::Real(0.0), Type::Real),
+                Type::dimensionless_scalar(),
+                CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
             )
             .constraint(
                 "Bracket",
@@ -2018,16 +2018,16 @@ mod tests {
             .param(
                 "A",
                 "x",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
             )
             .build();
         let template2 = TopologyTemplateBuilder::new("A")
             .param(
                 "A",
                 "x",
-                Type::Real,
-                Some(CompiledExpr::literal(Value::Real(1.0), Type::Real)),
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar())),
             )
             .build();
 
@@ -2140,7 +2140,7 @@ mod tests {
         let arg_expr = CompiledExpr::binop(
             BinOp::Mul,
             width_ref(),
-            CompiledExpr::literal(Value::Real(0.5), Type::Real),
+            CompiledExpr::literal(Value::Real(0.5), Type::dimensionless_scalar()),
             Type::length(),
         );
         let parent = TopologyTemplateBuilder::new("Parent")
@@ -2257,7 +2257,7 @@ mod tests {
             ValueCellNode {
                 id: auto_strict_id.clone(),
                 kind: ValueCellKind::Auto { free: false },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_strict"),
             },
@@ -2267,7 +2267,7 @@ mod tests {
             ValueCellNode {
                 id: auto_free_id.clone(),
                 kind: ValueCellKind::Auto { free: true },
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("auto_free"),
             },
@@ -2277,7 +2277,7 @@ mod tests {
             ValueCellNode {
                 id: param_id.clone(),
                 kind: ValueCellKind::Param,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("param"),
             },
@@ -2287,7 +2287,7 @@ mod tests {
             ValueCellNode {
                 id: let_id.clone(),
                 kind: ValueCellKind::Let,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: None,
                 content_hash: ContentHash::of_str("let_cell"),
             },

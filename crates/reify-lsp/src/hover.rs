@@ -147,6 +147,24 @@ pub fn compute_hover_in_context(
         }
     }
 
+    // Try relation builtin (geometric-relations γ, task 4383): surface the ΔDOF
+    // contract. A relation call (`offset(pa, pb, 5mm)`, `concentric(a, b)`) is
+    // not a member, structure, user fn, or keyword, so it reaches this branch.
+    // The gate admits both the pure relation names AND the arity-gated shared
+    // verbs `angle`/`distance`, whose arity-3 DRIVE forms (`distance(a, b, δ)` /
+    // `angle(a, b, θ)`) are relations too. The arg-aware `relation_contract`
+    // returns `None` for the arity-2 DERIVE forms, so those fall through to the
+    // query hover below — keeping the gate and the contract function in agreement
+    // about what counts as a relation. Scoped to the enclosing declaration so the
+    // operand types come from the right call site.
+    if (reify_compiler::relation_signatures::is_relation_typed_fn(word)
+        || reify_compiler::relation_signatures::is_relation_shared_verb(word))
+        && let Some(contract) = ctx.relation_contract(word, enclosing)
+    {
+        let md = format!("```reify\n{contract}\n```");
+        return Some(make_hover_markdown(md));
+    }
+
     // Try keyword
     if let Some(desc) = keyword_description(word) {
         let md = format!("**{word}** — {desc}");
@@ -897,6 +915,85 @@ structure B {
         assert_eq!(
             via_context, via_wrapper,
             "in-context hover must match the wrapper output"
+        );
+    }
+
+    // --- relation ΔDOF contract hover (geometric-relations γ, task 4383) ---
+
+    /// Hovering a relation call surfaces its ΔDOF contract. `offset(pa, pb, 5mm)`
+    /// over two `Plane` operands + a `Length` metric must produce the exact
+    /// signature `offset(Plane,Plane,Length) -> Relation removes 3` — the
+    /// user-observable hover signal (the metric operand renders by its dimension
+    /// name, `Length`, not `Scalar[m]`).
+    ///
+    /// RED: hover has no relation branch yet — `offset` is not a member,
+    /// structure, user fn, or keyword, so hover falls through every branch to
+    /// `None` and `hover_markdown` returns `None`.
+    #[test]
+    fn hover_on_offset_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param pa: Plane\n    param pb: Plane\n    let r = offset(pa, pb, 5mm)\n}";
+        // 'offset' on line 3 starts at column 12 ("    let r = " = 12 chars).
+        let position = Position::new(3, 14); // on 'offset'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for an offset relation call");
+        assert!(
+            md.contains("offset(Plane,Plane,Length) -> Relation removes 3"),
+            "hover should surface the offset ΔDOF contract, got: {md}"
+        );
+    }
+
+    /// `concentric(a, b)` over two `Axis` operands removes 4 DOF (a coincident
+    /// axis). Hover must surface `-> Relation removes 4`.
+    #[test]
+    fn hover_on_concentric_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param a: Axis\n    param b: Axis\n    let r = concentric(a, b)\n}";
+        // 'concentric' on line 3 starts at column 12.
+        let position = Position::new(3, 15); // on 'concentric'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for a concentric relation call");
+        assert!(
+            md.contains("concentric"),
+            "hover should name the relation, got: {md}"
+        );
+        assert!(
+            md.contains("-> Relation removes 4"),
+            "hover should surface the concentric ΔDOF (removes 4), got: {md}"
+        );
+    }
+
+    /// The arity-3 metric DRIVE relation `distance(p1, p2, 5mm)` is a relation
+    /// (it removes 1 DOF), even though `distance` is an arity-gated shared verb
+    /// excluded from `RELATION_FN_NAMES`. Hover must surface its ΔDOF contract —
+    /// the gate is widened with `is_relation_shared_verb` so the DRIVE form is
+    /// reachable, and the Point operands render as bare `Point`.
+    #[test]
+    fn hover_on_distance_drive_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param p1: Point3<Length>\n    param p2: Point3<Length>\n    let r = distance(p1, p2, 5mm)\n}";
+        // 'distance' on line 3 starts at column 12 ("    let r = " = 12 chars).
+        let position = Position::new(3, 14); // on 'distance'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for an arity-3 distance DRIVE relation");
+        assert!(
+            md.contains("distance(Point,Point,Length) -> Relation removes 1"),
+            "hover should surface the distance DRIVE ΔDOF contract, got: {md}"
+        );
+    }
+
+    /// The arity-2 `distance(p1, p2)` DERIVE form is a geometry query, NOT a
+    /// relation: the widened hover gate still must not surface a relation
+    /// contract for it. `relation_contract` returns `None` for the arity-2 form,
+    /// so the branch falls through (to the query/keyword path) rather than
+    /// rendering `-> Relation removes …`.
+    #[test]
+    fn hover_on_distance_derive_form_is_not_a_relation_contract() {
+        let source = "structure S {\n    param p1: Point3<Length>\n    param p2: Point3<Length>\n    let d = distance(p1, p2)\n}";
+        // 'distance' on line 3 starts at column 12.
+        let position = Position::new(3, 14); // on 'distance'
+        let md = hover_markdown(source, position);
+        assert!(
+            md.as_deref()
+                .is_none_or(|m| !m.contains("Relation removes")),
+            "arity-2 distance DERIVE form must not surface a relation contract, got: {md:?}"
         );
     }
 }

@@ -40,10 +40,13 @@
 # Environment baked in (mirrors orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
 #   - . ~/.cargo/env
 #   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
-#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver  ONLY when that FIFO
-#     exists (else cargo uses its own per-process job pool). This is a COMPILE-time
-#     concurrency control; OCCT TEST-execution concurrency is bounded by a separate
-#     mechanism (the semaphore wrapper + --test-threads=1 below).
+#   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:<role-fifo>  ONLY when the role's FIFO exists
+#     (else cargo uses its own per-process job pool). Role→FIFO selection:
+#       merge → ${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}
+#       task  → ${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}
+#     Var-names and defaults match scripts/jobserver-balancer.py (α, task 4516).
+#     This is a COMPILE-time concurrency control; TEST-execution concurrency is
+#     bounded by a separate mechanism (the semaphore wrapper + --test-threads=1 below).
 #   - OCCT LD_LIBRARY_PATH (snap + /opt/reify-deps). The .cargo/config.toml `runner`
 #     remains the primary runtime-lib mechanism for `cargo test`/`cargo run`; this is
 #     belt-and-braces for contexts the runner does not cover.
@@ -102,6 +105,18 @@ if [ ! -f "$SCRIPT_DIR/affected-crates-lib.sh" ]; then
 fi
 # shellcheck source=scripts/affected-crates-lib.sh
 source "$SCRIPT_DIR/affected-crates-lib.sh"
+
+# Test-run counting semaphore (PRD test-run-concurrency-semaphore §3A/§5 D2/D5/D6).
+# Holds one slot (FD 9) across ALL test passes via @@SEMAPHORE_ACQUIRE@@/@@SEMAPHORE_RELEASE@@
+# sentinels in the PLAN array (see add_test_passes / executor below).
+# Bypassed on DF_VERIFY_ROLE=merge or REIFY_TEST_SEMAPHORE_DISABLE=1; knob
+# REIFY_TEST_SEMAPHORE_CONCURRENCY controls the slot count (default 1).
+if [ ! -f "$SCRIPT_DIR/lib_test_semaphore.sh" ]; then
+    echo "verify.sh: ERROR — scripts/lib_test_semaphore.sh not found next to verify.sh" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_test_semaphore.sh
+source "$SCRIPT_DIR/lib_test_semaphore.sh"
 
 usage() {
     sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -401,14 +416,23 @@ apply_env() {
     export CARGO_INCREMENTAL=0
     ENV_LINES+=("export CARGO_INCREMENTAL=0")
 
-    # Inherit the shared global jobserver ONLY when its FIFO exists; otherwise
+    # Inherit the shared global jobserver ONLY when the role's FIFO exists; otherwise
     # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
     # stale fifo path when reify-jobserver.service is down would wedge cargo.
-    if [ -p /tmp/reify-jobserver ]; then
-        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:/tmp/reify-jobserver"
-        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:/tmp/reify-jobserver")
+    # Role→FIFO selection: merge → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
+    #                       task  → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
+    # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
+    local _jb_fifo
+    if [ "$DF_VERIFY_ROLE" = "merge" ]; then
+        _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
     else
-        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no /tmp/reify-jobserver FIFO) — cargo uses its own job pool")
+        _jb_fifo="${REIFY_JOBSERVER_TASK_FIFO:-/tmp/reify-jobserver-task}"
+    fi
+    if [ -p "$_jb_fifo" ]; then
+        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
+        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
+    else
+        ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no $_jb_fifo FIFO) — cargo uses its own job pool")
     fi
 
     # OCCT shared-library search path (mirrors .cargo/run-with-occt.sh).
@@ -521,6 +545,52 @@ decide_scope() {
 decide_scope
 
 # ---------------------------------------------------------------------------
+# Selective infra test injection (task 4523).
+#
+# After decide_scope, read verify-pipeline-infra-tests.txt to derive
+# SELECTED_INFRA_GLOBS: the set of infra-test globs whose artifact was changed
+# on this branch/staged diff.  Empty under scope=all (CHANGED_FILES_RAW="").
+#
+# Design notes (see task 4523 decisions):
+#   • Map is read inline (NOT via a sourced lib) so the throughput/gui_feature
+#     auto-discovery greps don't flag it.  _VP_INFRA_MAP uses a variable
+#     assignment; no 'source' directive for this map — fixture-check greps skip it.
+#   • [ -f ] guard degrades gracefully in fixtures that omit the map.
+#   • GLOB (not explicit names) so future test_verify_*.sh guards are
+#     auto-covered without a map edit.
+# ---------------------------------------------------------------------------
+SELECTED_INFRA_GLOBS=""
+
+select_infra_tests() {
+    local _VP_INFRA_MAP="$SCRIPT_DIR/verify-pipeline-infra-tests.txt"
+    # Graceful degradation: absent map or empty changed-file list -> empty.
+    [ -f "$_VP_INFRA_MAP" ] || return 0
+    [ -n "$CHANGED_FILES_RAW" ] || return 0
+    local _artifact _glob _f _line
+    while IFS= read -r _line; do
+        # Each row: <artifact-path>  <infra-test-glob>
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_artifact" ] || continue
+        [ -n "$_glob"     ] || continue
+        while IFS= read -r _f; do
+            [ -z "$_f" ] && continue
+            if [ "$_f" = "$_artifact" ]; then
+                # Append glob to selection if not already present (whole-token
+                # dedup via space sentinels — prevents false dedup when one
+                # glob is a substring of another, e.g. a specific path vs a
+                # broader wildcard pattern).
+                case " $SELECTED_INFRA_GLOBS " in
+                    *" $_glob "*) : ;;
+                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }$_glob" ;;
+                esac
+                break
+            fi
+        done <<< "$CHANGED_FILES_RAW"
+    done < <(grep -v '^\s*#' "$_VP_INFRA_MAP" | grep -v '^\s*$')
+}
+select_infra_tests
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
@@ -569,7 +639,7 @@ fi
 if [ "$NARROW_ACTIVE" -eq 1 ]; then
     # Build the affected-crate -p flag string. Task 4451: no gated/ungated split;
     # all affected crates (including OCCT ones) go through the single nextest pass,
-    # with the occt test-group (max-threads=4) bounding their concurrency.
+    # with the occt test-group (max-threads=24, env-driven) bounding their concurrency.
     # Word-split $AFFECTED (safe: Rust crate names never contain spaces).
     # shellcheck disable=SC2086
     for _nc in $AFFECTED; do
@@ -594,8 +664,8 @@ PLAN=()
 add() { PLAN+=("$1"); }
 
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
-# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=4)
-# bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
+# Task 4451: the gated/ungated split is gone; the nextest occt group (max-threads=24,
+# env-driven) bounds intra-run concurrency for OCCT-touching release-sensitive crates (reify-eval).
 # reify-kernel-occt, reify-cli, reify-config have zero release-sensitive tests and
 # correctly drop out of the release pass; the debug full-workspace pass covers them.
 _RELEASE_DECLARED="$(release_declared_set)"
@@ -626,25 +696,68 @@ wrap_subshell() {
     esac
 }
 
+# Memoized temp nextest config path (populated on first NEXTEST=1 execute-mode pass in
+# emit_nextest_pass).  scripts/gen-nextest-config.sh writes a full copy of
+# .config/nextest.toml with the occt literal rewritten to the REIFY_OCCT_NEXTEST_MAX_THREADS
+# value (default 24).  nextest --config overrides CARGO config only (NO-OP for test-groups
+# on 0.9.136); --config-file is required to actually override the occt group max-threads.
+# In --print-plan mode the variable stays empty (no subprocess, no temp file — print mode
+# is a hermetic, side-effect-free oracle; execute mode generates the real file).
+_NEXTEST_CONFIG_FILE=""
+
+_verify_cleanup() {
+    if [ -n "$_NEXTEST_CONFIG_FILE" ] && [ -f "$_NEXTEST_CONFIG_FILE" ]; then
+        rm -f "$_NEXTEST_CONFIG_FILE"
+    fi
+}
+trap '_verify_cleanup' EXIT
+
 # emit_nextest_pass <selector> <rel> <outer_timeout>
 # Emit a single nextest (or cargo-test fallback) pass.
 # selector: "--workspace" (full-workspace) or "-p crate1 -p crate2 ..." (narrowed/release)
 # rel: "" (debug) or " --release"
-# outer_timeout: e.g. "90m" or "75m"
+# outer_timeout: e.g. "60m" or "75m"
 # Task 4451: replaces emit_gated_ungated; the flock-gated OCCT pass is dropped.
-# OCCT crates are now included in the pool; the nextest occt test-group (max-threads=4)
-# bounds their intra-run concurrency for FD/memory headroom.
+# Task 4503/γ: env-driven occt cap via REIFY_OCCT_NEXTEST_MAX_THREADS (default 24).
+# scripts/gen-nextest-config.sh generates a temp nextest config (memoized in
+# _NEXTEST_CONFIG_FILE) passed as --config-file; nextest --config overrides CARGO
+# config only (NO-OP for test-groups on 0.9.136) so --config-file is required.
+# In --print-plan mode a static placeholder path is emitted instead of a real temp
+# path so --print-plan remains a pure, hermetic oracle (no subprocess, no temp file).
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
     if [ "$NEXTEST" -eq 1 ]; then
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}"
+        local _cfg_path
+        if [ "$PRINT_PLAN" -eq 1 ]; then
+            # Print mode: emit a representative placeholder so --print-plan is a
+            # pure, hermetic oracle — no subprocess, no temp file created.
+            # The placeholder preserves the 'reify-nextest-occt' prefix so plan-shape
+            # assertions (tests/infra/test_occt_gated_scope.sh Test 9) can still
+            # match the pattern without requiring a real file on disk.
+            # This path is intentionally NOT re-runnable; only execute mode produces
+            # a real config file (memoized in _NEXTEST_CONFIG_FILE).
+            _cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+        else
+            # Execute mode: generate the nextest config once per process (memoized).
+            # Produces a full copy of .config/nextest.toml with the occt cap rewritten
+            # to the resolved env value; removed by _verify_cleanup on EXIT.
+            if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+            fi
+            _cfg_path="$_NEXTEST_CONFIG_FILE"
+        fi
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
     fi
-    add "$cmd"
+    # FD 9 is the held semaphore slot; close it for each gated child so daemon
+    # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
+    # wedge the slot after the test pass exits (2026-04-20 wedge class).
+    # Harmless no-op when the slot was not acquired (merge-exempt or disabled).
+    add "$cmd 9<&-"
 }
 
 add_test_passes() {
@@ -654,25 +767,38 @@ add_test_passes() {
     # In --print-plan mode: printed faithfully as a normal plan line.
     add "./scripts/verify.sh psi-gate"
 
+    # Acquire the test-run semaphore slot AFTER psi-gate so the scarce held
+    # slot is not occupied during a PSI pressure wait (PRD §5 D2).
+    # The executor calls test_semaphore_acquire here; the printer emits a comment.
+    add "@@SEMAPHORE_ACQUIRE@@"
+
     local profile rel outer_timeout
-    # Timeout budgets sized to absorb a COLD merge-worktree workspace compile.
-    # Bumped 2026-06-03 (Leo) after recurring exit-124 cold-compile timeouts on the
-    # merge gate (esc-4178 / esc-4180 cluster killed the debug nextest mid-compile at
-    # the old 30m). sccache shares rustc output across worktrees, so warm runs finish
-    # well inside these — the larger caps only bite a genuinely cold cache.
-    # Bumped 2026-06-09 (task #4447): debug outer_timeout 60m→90m.
-    # NOTE: the outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
-    # (Test 17) — keep them in sync.
+    # Outer timeout: single unified budget re-derived from η/4521's authoritative
+    # real-load floor (task 4520/ζ′).
+    # Floor: 798.9 s (worst-observed cold real-load, genuinely cold-cache, quiet box
+    # with warm host sccache — see docs/prds/jobserver-merge-priority-balancer
+    # .acceptance-report.md §"ζ′/4520 budget floor (authoritative)").
+    # Derivation: ceil(798.9 × 4.5 production-weighted margin) = ceil(3595.05 s) =
+    # 3596 s → rounded up to clean minute-granularity = 60m (3600 s).
+    # Bound 3600 s > floor 798.9 s by construction. The 4.5× margin weights ambient
+    # production contention on top of the quiet-box measurement (the η report endorses
+    # the standing ≈4.5× headroom as appropriate). The debug --workspace pass (all
+    # crates) is the HEAVIER compile and already clears 60m battle-tested (task 4453,
+    # zero exit-124 under η's real-load gate); the lighter release-sensitive-subset
+    # pass clears 60m a fortiori — the prior 75m release budget was load-inconsistent
+    # band-aid lineage (esc-4178/esc-4180/#4447/#4453).
+    # NOTE: both outer timeouts are asserted in tests/infra/test_occt_flock_gate.sh
+    # (Test 17 — debug pass, Test 17b — release pass) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; outer_timeout="75m"
+            rel=" --release"; outer_timeout="60m"
         else
-            rel=""; outer_timeout="90m"
+            rel=""; outer_timeout="60m"
         fi
 
         if [ "$profile" = "release" ]; then
             # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
-            # The nextest occt group (max-threads=4) bounds concurrency for OCCT-touching
+            # The nextest occt group (max-threads=24, env-driven) bounds concurrency for OCCT-touching
             # release-sensitive crates (e.g. reify-eval). Only crates with
             # debug_assertions/overflow-checks-dependent tests need to re-run in release;
             # the DEBUG full-workspace pass covers every other crate.
@@ -693,11 +819,17 @@ add_test_passes() {
             else
                 # Full-workspace debug pass (scope=all and non-narrow branch/staged).
                 # Task 4451: OCCT crates are now IN the pool (--workspace, no --exclude);
-                # the nextest occt test-group (max-threads=4) bounds their concurrency.
+                # the nextest occt test-group (max-threads=24, env-driven) bounds their concurrency.
                 emit_nextest_pass "--workspace" "$rel" "$outer_timeout"
             fi
         fi
     done
+
+    # Release the semaphore slot after all passes complete.
+    # The executor calls test_semaphore_release; the printer emits a comment.
+    # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
+    # so the failure path needs no explicit release sentinel.
+    add "@@SEMAPHORE_RELEASE@@"
 }
 
 build_plan() {
@@ -795,7 +927,7 @@ build_plan() {
     # "npm ci.*|| true", and the trap is on the same line as the npm ci call;
     # the `if`-guard achieves the same set -e safety without that token.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ] && [ -n "$_node_lane" ]; then
-        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi' EXIT"
+        add "{ ${_node_lane} ; } & _VERIFY_NODE_BG_PID=\$!; trap 'if kill \"\$_VERIFY_NODE_BG_PID\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
     fi
 
     # lint: clippy over all targets, warnings-as-errors.
@@ -856,6 +988,25 @@ build_plan() {
         fi
     fi
 
+    # Selective infra injection (task 4523): task-level path runs the infra
+    # drift-guards for any changed verify-pipeline artifact.  FAIL-FAST: emitted
+    # BEFORE add_test_passes (the expensive long-pole).  One guarded for-loop
+    # per glob — the glob literal is embedded in the emitted subshell command
+    # and expands at EXECUTION time under CWD=REPO_ROOT.
+    # set -f / set +f prevents the shell from pathname-expanding the token
+    # during loop iteration here at build time, so the literal glob string
+    # (e.g. tests/infra/test_verify_*.sh) always reaches the emitted plan.
+    # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
+    # (a superset), so the selective subset would double-run hermetic tests.
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
+        local _glob
+        set -f  # disable pathname expansion: keep glob tokens as literals
+        for _glob in $SELECTED_INFRA_GLOBS; do
+            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+        done
+        set +f
+    fi
+
     # test: gated + ungated cargo passes, per profile.
     # Emitted LAST — this is the expensive long-pole (psi-gate + full cargo
     # nextest run + OCCT-gated passes). All cheap gates run before this.
@@ -880,7 +1031,17 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# (no commands — nothing to verify for this action/scope)"
     fi
     for _cmd in "${PLAN[@]+"${PLAN[@]}"}"; do
-        printf '%s\n' "$_cmd"
+        case "$_cmd" in
+            '@@SEMAPHORE_ACQUIRE@@')
+                printf '# >>> test-run semaphore: ACQUIRE held slot — TEST-EXECUTION gated region BEGINS (held in verify.sh, not a fire-and-return line)\n'
+                ;;
+            '@@SEMAPHORE_RELEASE@@')
+                printf '# <<< test-run semaphore: RELEASE held slot — TEST-EXECUTION gated region ENDS\n'
+                ;;
+            *)
+                printf '%s\n' "$_cmd"
+                ;;
+        esac
     done
     exit 0
 fi
@@ -891,6 +1052,20 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
 fi
 
 for _cmd in "${PLAN[@]}"; do
+    case "$_cmd" in
+        '@@SEMAPHORE_ACQUIRE@@')
+            test_semaphore_acquire || {
+                _rc=$?
+                echo "verify.sh: FAILED (exit $_rc): test-run semaphore acquire" >&2
+                exit "$_rc"
+            }
+            continue
+            ;;
+        '@@SEMAPHORE_RELEASE@@')
+            test_semaphore_release || true
+            continue
+            ;;
+    esac
     echo "verify.sh: + $_cmd" >&2
     eval "$_cmd" || {
         _rc=$?

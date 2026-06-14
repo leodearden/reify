@@ -31,13 +31,8 @@ fn build_verbose_with_output_reports_occt_kernel() {
     let out_str = out_path.to_str().expect("temp path is not valid UTF-8");
 
     let bracket = common::fixture_path("bracket.ri");
-    let (status, stdout, stderr) = common::run_with_args(&[
-        "build",
-        &bracket,
-        "-o",
-        out_str,
-        "--verbose",
-    ]);
+    let (status, stdout, stderr) =
+        common::run_with_args(&["build", &bracket, "-o", out_str, "--verbose"]);
 
     assert!(
         status.success(),

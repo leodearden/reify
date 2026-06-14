@@ -14,7 +14,7 @@ use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCell
 
 use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_template_node, module_key, parse_value_string};
+use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
 use crate::types::EntityTreeNode;
 
 #[test]
@@ -2867,6 +2867,13 @@ fn get_diagnostics_labelless_fallback_unchanged_after_optimization() {
         .expect("injected 'no-label-stress' not found");
 
     assert_eq!((d.line, d.column, d.end_line, d.end_column), (1, 1, 1, 1));
+
+    // has_location must be false for a labelless diagnostic (empty labels → no real span).
+    // RED until step-5 adds the field to DiagnosticInfo and sets it in diagnostics_to_info.
+    assert!(
+        !d.has_location,
+        "labelless diagnostic (empty labels) must set has_location = false"
+    );
 }
 
 // --- Multibyte UTF-8 cross-validation ---
@@ -3592,7 +3599,7 @@ fn get_entity_tree_no_realization_has_mesh_false() {
     let tree = session.get_entity_tree();
     let root = &tree[0];
     assert!(!root.has_mesh, "Simple with no realization has_mesh=false");
-    // TODO: extend with direct CompiledModule injection when EngineSession supports it
+    // TODO: extend with direct CompiledModule injection when EngineSession supports it (task 4552)
 }
 
 // ---- Step 5: sub-component tree building tests ----
@@ -10467,14 +10474,14 @@ fn make_elastic_result_value_map(
     use std::sync::Arc;
 
     let stress_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(stress_sf)),
     };
     let disp_field = Value::Field {
-        domain_type: reify_core::Type::Real,
-        codomain_type: reify_core::Type::Real,
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(disp_sf)),
     };
@@ -11483,6 +11490,59 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
         Some("hot-reload-error".to_string()),
         "reload-error diagnostic must carry code 'hot-reload-error'"
     );
+
+    // has_location must be false: the live-edit synthetic site hardcodes line/col=1
+    // with no real source span (engine.rs:2370 producer).
+    // RED until step-5 adds the field to DiagnosticInfo and sets has_location: false there.
+    assert!(
+        !error_diags[0].has_location,
+        "live-edit synthetic reload-error diagnostic must have has_location = false (no real span)"
+    );
+}
+
+/// Cold-start path: a fresh session (never loaded, compiled == None) that has
+/// record_reload_error called before any load must also synthesise a diagnostic
+/// with has_location == false via the early-return cold-start producer
+/// (engine.rs:2165, inside the `compiled.is_none()` guard of build_gui_state).
+///
+/// RED until step-5 adds the field to DiagnosticInfo and sets has_location: false
+/// in the cold-start producer.
+#[test]
+fn staleness_api_cold_start_reload_error_has_no_location() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    // Fresh session — never loaded, so core.compiled() is None.
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Inject a reload error without a prior successful load (cold-start path).
+    session.record_reload_error("cold-boom".to_string());
+
+    // build_gui_state hits the early-return cold-start branch (compiled is None).
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state must succeed even on a cold-start stale session");
+
+    let error_diags: Vec<_> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| d.severity == "Error" && d.message.contains("cold-boom"))
+        .collect();
+    assert_eq!(
+        error_diags.len(),
+        1,
+        "expected exactly one Error diagnostic for the cold-start reload error; got {:?}",
+        state.compile_diagnostics
+    );
+    assert_eq!(
+        error_diags[0].code,
+        Some("hot-reload-error".to_string()),
+        "cold-start reload-error diagnostic must carry code 'hot-reload-error'"
+    );
+    // has_location must be false: the cold-start producer also hardcodes line/col=1.
+    assert!(
+        !error_diags[0].has_location,
+        "cold-start synthetic reload-error diagnostic must have has_location = false (no real span)"
+    );
 }
 
 /// (c) A successful update_source / load after record_reload_error must clear
@@ -12020,5 +12080,337 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
          overridden files[0].content (this is expected behavior per the amended invariant)",
         warn_line,
         bad_lines.len()
+    );
+}
+
+// ── β-inject no-op-contract guard ─────────────────────────────────────────────
+
+/// No-op-contract pin for the GUI single-file compile path (β-inject step-7).
+///
+/// Loads an `auto:` source through `EngineSession::load_from_source` (which
+/// routes to `compile_single_file_with_stdlib`) and asserts that:
+/// 1. `auto_type_substitution` is non-empty — `auto:` resolution ran and
+///    produced a result.
+/// 2. The single type-param `T` was resolved to `ORingSeal` — the sole
+///    `Seal`-conformant candidate in the fixture.
+///
+/// This test is GREEN before step-8 (stub checker wired in engine.rs) and MUST
+/// stay GREEN after step-8 injects the real `SimpleConstraintChecker`.  The
+/// no-op invariant (empty ValueMap → Indeterminate for every cell-dependent
+/// constraint → feasible under both stub and real checker) guarantees this.
+///
+/// If this test fails after step-8, the no-op invariant was violated —
+/// investigate the fixture constraints.
+#[test]
+fn gui_auto_type_resolution_no_op_contract() {
+    let source = r#"
+        trait Seal {}
+        structure def ORingSeal : Seal { param d : Real = 10.0 }
+        structure def Bearing<T: Seal> { param bore : Real = 25.0 }
+        structure def Assembly { sub b = Bearing<auto: Seal>() }
+    "#;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _state = session
+        .load_from_source(source, "beta_inject_no_op")
+        .expect("load_from_source should succeed on valid auto: source");
+
+    let compiled = session
+        .core_state_for_test()
+        .compiled()
+        .expect("compiled module must be present after successful load");
+
+    // The substitution must be non-empty: auto: resolution ran.
+    assert!(
+        !compiled.auto_type_substitution.as_slice().is_empty(),
+        "expected non-empty auto_type_substitution after auto: resolution; got: {:?}",
+        compiled.auto_type_substitution.as_slice()
+    );
+
+    // The type-param T of Bearing resolves to the single Seal candidate ORingSeal.
+    assert_eq!(
+        compiled.auto_type_substitution.as_slice(),
+        &[("T".to_string(), "ORingSeal".to_string())],
+        "expected auto: Seal to resolve to ORingSeal (the only Seal-conformant candidate)"
+    );
+
+    // No error diagnostics.
+    let error_count = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .count();
+    assert_eq!(
+        error_count, 0,
+        "expected no compile errors; got: {:?}",
+        compiled.diagnostics
+    );
+}
+
+// ── Tensegrity-β step-3: tensegrity_surfaces extraction via build_gui_state ──
+
+/// Inline membrane-patch topology source — mirrors `examples/tensegrity_membrane_patch.ri`.
+///
+/// 4 corner nodes of a 1m × 1m flat square at z=0.
+/// 2 triangles: [0,1,2] (bottom-right) and [0,2,3] (top-left).
+fn membrane_patch_source() -> &'static str {
+    r#"
+structure def MembranePatch {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m),
+            point3(0m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [
+            [0, 1, 2],
+            [0, 2, 3]
+        ]
+    )
+    let facets = tensegrity_surfaces(patch)
+}
+"#
+}
+
+/// `build_gui_state()` (via `load_from_source()`) must extract 2 tensegrity surface
+/// facets from the membrane-patch module: both with kind=="membrane".
+///
+/// Asserts:
+/// - `tensegrity_surfaces.len() == 2`
+/// - both facets have `kind == "membrane"`
+/// - facet 0: i0=0, i1=1, i2=2; corner coords match the nodes
+/// - facet 1: i0=0, i1=2, i2=3; corner coords match the nodes
+/// - `entity_path == "MembranePatch"` for all facets (owning template name)
+///
+/// RED until `build_tensegrity_surfaces` is implemented (field always empty).
+#[test]
+fn build_gui_state_extracts_tensegrity_surfaces_from_membrane_patch() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(membrane_patch_source(), "membrane_patch")
+        .expect("membrane_patch load_from_source should succeed");
+
+    assert_eq!(
+        state.tensegrity_surfaces.len(),
+        2,
+        "membrane patch must produce 2 surface facets; got {}",
+        state.tensegrity_surfaces.len()
+    );
+
+    // Both facets are kind "membrane".
+    for (i, facet) in state.tensegrity_surfaces.iter().enumerate() {
+        assert_eq!(
+            facet.kind, "membrane",
+            "facet[{}] kind must be 'membrane'; got '{}'",
+            i, facet.kind
+        );
+    }
+
+    // All facets belong to the MembranePatch template.
+    for facet in &state.tensegrity_surfaces {
+        assert_eq!(
+            facet.entity_path, "MembranePatch",
+            "entity_path must be 'MembranePatch'; got '{}'",
+            facet.entity_path
+        );
+    }
+
+    // Facet 0: triangle [0,1,2] — nodes (0,0,0), (1,0,0), (1,1,0).
+    let f0 = &state.tensegrity_surfaces[0];
+    assert_eq!(f0.i0, 0, "facet0.i0 must be 0");
+    assert_eq!(f0.i1, 1, "facet0.i1 must be 1");
+    assert_eq!(f0.i2, 2, "facet0.i2 must be 2");
+    assert_eq!(f0.x0, 0.0, "facet0.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f0.y0, 0.0, "facet0.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f0.z0, 0.0, "facet0.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f0.x1, 1.0, "facet0.x1 must be 1.0 (node 1 x)");
+    assert_eq!(f0.y1, 0.0, "facet0.y1 must be 0.0 (node 1 y)");
+    assert_eq!(f0.z1, 0.0, "facet0.z1 must be 0.0 (node 1 z)");
+    assert_eq!(f0.x2, 1.0, "facet0.x2 must be 1.0 (node 2 x)");
+    assert_eq!(f0.y2, 1.0, "facet0.y2 must be 1.0 (node 2 y)");
+    assert_eq!(f0.z2, 0.0, "facet0.z2 must be 0.0 (node 2 z)");
+
+    // Facet 1: triangle [0,2,3] — nodes (0,0,0), (1,1,0), (0,1,0).
+    let f1 = &state.tensegrity_surfaces[1];
+    assert_eq!(f1.i0, 0, "facet1.i0 must be 0");
+    assert_eq!(f1.i1, 2, "facet1.i1 must be 2");
+    assert_eq!(f1.i2, 3, "facet1.i2 must be 3");
+    assert_eq!(f1.x0, 0.0, "facet1.x0 must be 0.0 (node 0 x)");
+    assert_eq!(f1.y0, 0.0, "facet1.y0 must be 0.0 (node 0 y)");
+    assert_eq!(f1.z0, 0.0, "facet1.z0 must be 0.0 (node 0 z)");
+    assert_eq!(f1.x1, 1.0, "facet1.x1 must be 1.0 (node 2 x)");
+    assert_eq!(f1.y1, 1.0, "facet1.y1 must be 1.0 (node 2 y)");
+    assert_eq!(f1.z1, 0.0, "facet1.z1 must be 0.0 (node 2 z)");
+    assert_eq!(f1.x2, 0.0, "facet1.x2 must be 0.0 (node 3 x)");
+    assert_eq!(f1.y2, 1.0, "facet1.y2 must be 1.0 (node 3 y)");
+    assert_eq!(f1.z2, 0.0, "facet1.z2 must be 0.0 (node 3 z)");
+}
+
+/// A module with no surface calls must yield an empty `tensegrity_surfaces` vec.
+#[test]
+fn build_gui_state_yields_empty_surfaces_for_non_surface_module() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let state = session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("bracket load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "non-surface module must produce no tensegrity surfaces; got {}",
+        state.tensegrity_surfaces.len()
+    );
+}
+
+/// `surface_data_from_instance` must return `None` (no panic) when a required
+/// integer field (`i0`) is present but has the wrong type (a String instead of Int).
+///
+/// This directly tests the no-panic/skip contract advertised in the docstring of
+/// `collect_surfaces_from_value` / `surface_data_from_instance`: a malformed facet
+/// must be dropped, not cause an unwrap-panic, so a future regression that panics
+/// instead of skipping will fail this test.
+#[test]
+fn surface_data_from_instance_returns_none_for_malformed_field() {
+    use crate::engine::surface_data_from_instance;
+    use reify_ir::{PersistentMap, Value};
+
+    // Near-valid TensegritySurface field set — i0 is a String (wrong type; must be Int).
+    // All other required fields are well-typed so this is the minimal malformed case.
+    let fields: PersistentMap<String, Value> = [
+        ("kind".to_string(), Value::String("membrane".to_string())),
+        ("i0".to_string(), Value::String("not-an-int".to_string())), // MALFORMED
+        ("i1".to_string(), Value::Int(1)),
+        ("i2".to_string(), Value::Int(2)),
+        ("x0".to_string(), Value::Real(0.0)),
+        ("y0".to_string(), Value::Real(0.0)),
+        ("z0".to_string(), Value::Real(0.0)),
+        ("x1".to_string(), Value::Real(1.0)),
+        ("y1".to_string(), Value::Real(0.0)),
+        ("z1".to_string(), Value::Real(0.0)),
+        ("x2".to_string(), Value::Real(1.0)),
+        ("y2".to_string(), Value::Real(1.0)),
+        ("z2".to_string(), Value::Real(0.0)),
+    ]
+    .into_iter()
+    .collect();
+
+    let result = surface_data_from_instance(&fields, "TestEntity");
+    assert!(
+        result.is_none(),
+        "malformed i0 (String instead of Int) must return None without panicking; got {:?}",
+        result
+    );
+}
+
+/// A module that binds a Tensegrity struct but never calls `tensegrity_surfaces()`
+/// must yield an empty `tensegrity_surfaces` vec (type-name filter test).
+#[test]
+fn build_tensegrity_surfaces_filters_non_tensegrity_surface_struct_instances() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Re-use the tensegrity-only source that has no tensegrity_surfaces() call.
+    let source = r#"
+structure def TOnly {
+    let patch = Tensegrity(
+        nodes: [
+            point3(0m, 0m, 0m),
+            point3(1m, 0m, 0m),
+            point3(1m, 1m, 0m)
+        ],
+        struts: [],
+        cables: [],
+        surfaces: [[0, 1, 2]]
+    )
+}
+"#;
+
+    let state = session
+        .load_from_source(source, "tonly")
+        .expect("tonly load_from_source should succeed");
+
+    assert!(
+        state.tensegrity_surfaces.is_empty(),
+        "a Tensegrity StructureInstance (no tensegrity_surfaces() call) must not be extracted as a surface facet; got {} facet(s)",
+        state.tensegrity_surfaces.len()
+    );
+}
+
+// --- build_constraints deterministic ordering ---
+
+/// RED: build_constraints must return ConstraintData sorted by node_id ascending,
+/// regardless of the insertion order of constraint_results.
+///
+/// This test feeds a CheckResult whose constraint_results are in deliberately
+/// non-ascending node_id order ([Zeta#0, Alpha#0, Mid#0]) and asserts the
+/// returned node_ids come out sorted (Alpha#0 < Mid#0 < Zeta#0 lexicographically).
+///
+/// The test is hermetic — it does NOT rely on HashMap-seed variance to produce
+/// the wrong order; scrambled input directly exercises the ordering guarantee.
+/// This is RED today (build_constraints preserves input order) and will be GREEN
+/// after the sort is added in step-2.
+#[test]
+fn build_constraints_sorts_constraints_by_node_id() {
+    use reify_eval::{CheckResult, ConstraintCheckEntry};
+    use reify_core::ConstraintNodeId;
+    use reify_ir::{Satisfaction, ValueMap};
+
+    // Minimal empty CompiledModule — template lookup returns None for all entries,
+    // so expression/parameter_ids default to ("", vec![]).
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("t")).build();
+
+    // Deliberately scrambled order: Zeta, Alpha, Mid
+    // Display: "Zeta#constraint[0]", "Alpha#constraint[0]", "Mid#constraint[0]"
+    // Sorted ascending: "Alpha#constraint[0]" < "Mid#constraint[0]" < "Zeta#constraint[0]"
+    let check = CheckResult {
+        values: ValueMap::new(),
+        constraint_results: vec![
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Zeta", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Alpha", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+            ConstraintCheckEntry {
+                id: ConstraintNodeId::new("Mid", 0),
+                label: None,
+                satisfaction: Satisfaction::Satisfied,
+            },
+        ],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+
+    let result = build_constraints(&compiled, &check);
+
+    assert_eq!(
+        result.len(),
+        3,
+        "build_constraints must return all 3 entries; got: {:?}",
+        result.iter().map(|c| &c.node_id).collect::<Vec<_>>()
+    );
+
+    let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
+    assert_eq!(
+        node_ids,
+        vec!["Alpha#constraint[0]", "Mid#constraint[0]", "Zeta#constraint[0]"],
+        "build_constraints must return ConstraintData in ascending node_id order \
+         regardless of constraint_results insertion order"
     );
 }

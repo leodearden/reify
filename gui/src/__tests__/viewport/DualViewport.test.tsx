@@ -56,7 +56,7 @@ function makeMesh(path: string): MeshData {
 function makeEngineStore(meshPaths: string[] = []) {
   const meshes: Record<string, MeshData> = {};
   for (const p of meshPaths) meshes[p] = makeMesh(p);
-  const [state] = createStore({ meshes, tensegrityWires: [] as any[] });
+  const [state] = createStore({ meshes, tensegrityWires: [] as any[], tensegritySurfaces: [] as any[] });
   return { state };
 }
 
@@ -933,5 +933,55 @@ describe('DualViewport', () => {
     // NaN is rejected — state stays at 0.1 from prior call
     store.setSplitRatio(NaN);
     expect(store.state.splitRatio).toBe(0.1);
+  });
+});
+
+// ── β: tensegritySurfaces threading ──────────────────────────────────────────
+//
+// Verifies that DualViewport threads engineStore.state.tensegritySurfaces to
+// the design-main Viewport as the tensegritySurfaces prop.
+//
+// RED until DualViewport.tsx adds tensegritySurfaces={...} to the design-main
+// Viewport (step-14).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('DualViewport tensegritySurfaces threading (β)', () => {
+  it('design-main Viewport receives tensegritySurfaces from engineStore.state.tensegritySurfaces', async () => {
+    const { DualViewport } = await importDualViewport();
+    const fakeSurface = {
+      entity_path: 'Patch',
+      kind: 'membrane',
+      i0: 0, i1: 1, i2: 2,
+      x0: 0, y0: 0, z0: 0,
+      x1: 1, y1: 0, z1: 0,
+      x2: 0.5, y2: 0.866, z2: 0,
+    };
+    // Build a store that already has the surface so the prop-threading assertion is meaningful.
+    const meshes: Record<string, any> = { 'mesh/A': makeMesh('mesh/A') };
+    const [state] = createStore({
+      meshes,
+      tensegrityWires: [] as any[],
+      tensegritySurfaces: [fakeSurface] as any[],
+    });
+    const engineStore = { state };
+    const defPreviewStore = makeDefPreviewStore();
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => false}
+        designViewportActive={() => true}
+        defName={() => null}
+        onForceExpand={vi.fn()}
+      />
+    ));
+
+    // The design-main Viewport should receive the surfaces array.
+    const designProps = capturedViewportPropsByid['design-main'];
+    expect(designProps).toBeDefined();
+    expect(designProps.tensegritySurfaces).toEqual([fakeSurface]);
   });
 });

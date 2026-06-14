@@ -1,0 +1,62 @@
+// Spatial linkage with oriented Frame3 joint-origin authoring (KIN-OFFSET δ, task 4394).
+//
+// Demonstrates the δ authoring surface: joint origins specified as a
+// frame3(point3(..mm), orient_axis_angle(vec3(..), ..rad)) supply BOTH a translation
+// offset AND an orientation for the joint mount frame, enabling spatial (3D)
+// linkages where link-local frames are not collinear with the world frame.
+//
+// The α (task 4331) translation-pivot (point3/vec3 3rd arg) is the back-compat path.
+// δ extends pivot_to_origin with a Value::Frame arm that lifts the Frame's basis as
+// the origin Transform rotation and the Frame's origin point as the translation.
+//
+// PRD refs:
+//   - docs/prds/v0_6/kinematic-inter-joint-offsets.md task δ
+//   - crates/reify-stdlib/src/joints.rs pivot_to_origin (Value::Frame arm)
+//
+// Hand-computed FK signals (tolerance 1e-12 in e2e test):
+//
+//   t_slider (oriented prismatic, axis=+X, origin=R_z(90°), d=0.5m):
+//     rotation = R_z(90°) = (√2/2, 0, 0, √2/2)
+//     translation = R_z(90°)·(0.5,0,0) = (0, 0.5, 0)
+//     Interpretation: local +X slider appears along world +Y because the mount
+//     frame is rotated 90° about Z.
+//
+//   t_hinge (oriented revolute, axis=+Z, origin=frame3(point3(100mm,0,0), R_x(90°)), θ=π/2):
+//     rotation = R_x(90°)·R_z(90°) = (0.5, 0.5, -0.5, 0.5)  [Hamilton product]
+//     translation = R_x(90°)·(0,0,0) + (0.1,0,0) = (0.1, 0, 0)
+//
+// Acceptance criterion mirror:
+//   crates/reify-eval/tests/joint_origin_offset_e2e.rs::oriented_frame3_linkage_e2e
+//   pins both t_slider and t_hinge to the hand-computed poses above (tol 1e-12).
+structure def SpatialLinkageOriented {
+    // Oriented prismatic: +X axis, 0..1m range, R_z(90°) mount frame at origin.
+    // The frame3 origin is the zero point; the basis R_z(90°) rotates the mount
+    // frame so local +X motion maps to world +Y.
+    let slider = prismatic(
+        vec3(1, 0, 0),
+        0m .. 1m,
+        frame3(
+            point3(0mm, 0mm, 0mm),
+            orient_axis_angle(vec3(0, 0, 1), 1.5707963267948966rad)
+        )
+    )
+
+    // transform_at d=0.5m: R_z(90°)·(0.5,0,0)=(0,0.5,0), rotation=R_z(90°).
+    let t_slider = transform_at(slider, 0.5m)
+
+    // Oriented revolute: +Z axis, 0..π range, mount frame at (100mm,0,0) rotated R_x(90°).
+    // The frame3 origin places the joint 100mm along world +X from the parent.
+    // The basis R_x(90°) tilts the joint's rotation axis into the XZ plane.
+    let hinge = revolute(
+        vec3(0, 0, 1),
+        0rad .. 3.141592653589793rad,
+        frame3(
+            point3(100mm, 0mm, 0mm),
+            orient_axis_angle(vec3(1, 0, 0), 1.5707963267948966rad)
+        )
+    )
+
+    // transform_at θ=π/2: rotation=R_x(90°)·R_z(90°)=(0.5,0.5,-0.5,0.5),
+    // translation=(0.1,0,0) (the 100mm pivot offset, invariant under θ).
+    let t_hinge = transform_at(hinge, 1.5707963267948966rad)
+}

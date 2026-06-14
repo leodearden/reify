@@ -91,7 +91,7 @@ fn fn_call_content_hash_matches_compiler() {
         "sin",
         &qualified_name,
         vec![literal(Value::Real(0.5))],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     assert_eq!(
@@ -178,7 +178,7 @@ fn fn_call_multi_arg_content_hash_matches_compiler() {
         "atan2",
         &qualified_name,
         vec![literal(Value::Real(0.5)), literal(Value::Real(1.5))],
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
 
     assert_eq!(

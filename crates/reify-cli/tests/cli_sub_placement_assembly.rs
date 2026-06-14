@@ -50,14 +50,12 @@ fn build_sub_placement_assembly_three_product_solids_aux_excluded() {
 
     // (d) Exactly 3 product solids in the STEP (arm + motor + shaft).
     //     Aux fixture must be absent (default_visible==false → excluded from export).
-    let step_bytes =
-        std::fs::read(&result.output_path).expect("failed to read exported STEP file");
+    let step_bytes = std::fs::read(&result.output_path).expect("failed to read exported STEP file");
     let step_str = String::from_utf8(step_bytes).expect("STEP output must be valid UTF-8");
 
     let solid_count = step_str.matches("MANIFOLD_SOLID_BREP(").count();
     assert_eq!(
-        solid_count,
-        3,
+        solid_count, 3,
         "exported STEP must contain exactly 3 product solids (aux fixture excluded);\n\
          got {solid_count} MANIFOLD_SOLID_BREP entities.\n\
          (4 → aux not excluded; 2 or 1 → motor/shaft not exported at composed coords)"

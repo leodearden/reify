@@ -161,7 +161,7 @@ pub fn manufacturing_purpose(purpose_name: &str, purpose_tol: f64) -> CompiledPu
 /// precedent used elsewhere in this file.
 pub fn my_design_template_with_subs(subs: &[(&str, &str)]) -> TopologyTemplate {
     let mut builder =
-        TopologyTemplateBuilder::new("MyDesign").param("MyDesign", "thickness", Type::Real, None);
+        TopologyTemplateBuilder::new("MyDesign").param("MyDesign", "thickness", Type::dimensionless_scalar(), None);
     for (name, kind) in subs {
         builder = builder.sub_component(*name, *kind, Vec::new());
     }
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(cell.id, ValueCellId::new("MyDesign", "thickness"));
         assert_eq!(
             cell.cell_type,
-            Type::Real,
+            Type::dimensionless_scalar(),
             "thickness param type must be Real"
         );
         assert!(cell.default_expr.is_none(), "thickness has no default");

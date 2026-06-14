@@ -527,7 +527,7 @@ purpose check(subject : Widget) {
 /// (b) `collection.kind` is the marker variant
 ///     `CompiledExprKind::PurposeReflectiveAggregation { param_name: "part",
 ///     query_kind: <member> }` (task-2289),
-/// (c) `collection.result_type == Type::List(Box::new(Type::Real))` —
+/// (c) `collection.result_type == Type::List(Box::new(Type::dimensionless_scalar()))` —
 ///     the compile-time placeholder element type is unchanged; activation
 ///     refines it from looked-up cell types.
 ///
@@ -563,7 +563,7 @@ purpose check_part(part : Structure) {{
 
     // (b) and (c): constraint is a Quantifier whose collection is the new
     // PurposeReflectiveAggregation placeholder variant with
-    // result_type == Type::List(Box::new(Type::Real)).
+    // result_type == Type::List(Box::new(Type::dimensionless_scalar())).
     assert_eq!(
         module.compiled_purposes.len(),
         1,
@@ -578,7 +578,7 @@ purpose check_part(part : Structure) {{
             // (c) collection result_type must be List<Real> at compile time
             assert_eq!(
                 collection.result_type,
-                Type::List(Box::new(Type::Real)),
+                Type::List(Box::new(Type::dimensionless_scalar())),
                 "expected collection result_type to be List<Real> for member '{}', got {:?}",
                 member,
                 collection.result_type
@@ -664,7 +664,7 @@ fn compile_purpose_reflective_material_params_compiles_as_placeholder() {
 /// (a) no "member access not yet supported" diagnostic is emitted;
 /// (b) `constraints[0].expr` is a `BinOp(Gt, left, _)` where `left` is a
 ///     `ValueRef(id)` with `id.entity == "lightweight"` (purpose name, pre-remap)
-///     and `id.member == "mass"`, and `left.result_type == Type::Real`;
+///     and `id.member == "mass"`, and `left.result_type == Type::dimensionless_scalar()`;
 /// (c) `objective` is `Some(Minimize(expr))` where `expr.kind` is
 ///     `ValueRef(id)` with `id.entity == "lightweight"` and `id.member == "mass"`.
 ///
@@ -729,8 +729,8 @@ purpose lightweight(subject : Structure) {
                     );
                     assert_eq!(
                         left.result_type,
-                        Type::Real,
-                        "expected result_type == Type::Real for subject.mass, got {:?}",
+                        Type::dimensionless_scalar(),
+                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
                         left.result_type
                     );
                 }
@@ -970,8 +970,8 @@ purpose check(subject : Widget) {
                     );
                     assert_eq!(
                         left.result_type,
-                        Type::Real,
-                        "result_type must be Type::Real (compile-time fallback), got {:?}",
+                        Type::dimensionless_scalar(),
+                        "result_type must be Type::dimensionless_scalar() (compile-time fallback), got {:?}",
                         left.result_type
                     );
                 }
@@ -1230,7 +1230,7 @@ purpose check(subject : Drone) {
 /// per-param `{purpose}::{param}` entity stamp on member refs.
 ///
 /// Pins: `subject.mass` in a single-param purpose compiles to
-/// `ValueRef { entity: "lightweight::subject", member: "mass", result_type: Type::Real }`.
+/// `ValueRef { entity: "lightweight::subject", member: "mass", result_type: Type::dimensionless_scalar() }`.
 /// This is the pre-remap form; `activate_purpose` rewrites the entity stamp to the
 /// actual entity_ref at eval time via `expr.remap_entity("lightweight::subject", entity_ref)`.
 ///
@@ -1298,8 +1298,8 @@ purpose lightweight(subject : Structure) {
                     );
                     assert_eq!(
                         left.result_type,
-                        Type::Real,
-                        "expected result_type == Type::Real for subject.mass, got {:?}",
+                        Type::dimensionless_scalar(),
+                        "expected result_type == Type::dimensionless_scalar() for subject.mass, got {:?}",
                         left.result_type
                     );
                 }

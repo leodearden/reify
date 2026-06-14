@@ -91,24 +91,116 @@ use super::*;
 /// pre-pass (entity.rs:~531) and `register_guarded_names` (guards.rs:~183).
 /// Formerly also referenced via `is_solid_geometry_param` — that wrapper was
 /// retired in GHR-γ (task 3605).
+///
+/// Returns `true` if `expr` is syntactically a selector-producing expression:
+/// - A direct call to one of the 7 predicate/all selector constructors
+///   (`faces`, `edges`, `faces_by_normal`, `faces_by_area`, `edges_by_length`,
+///   `edges_at_height`, `edges_parallel_to`) or the Named-leaf constructors
+///   (`face`, `edge`, `solid_body`, added by task 4119 δ).
+/// - A nested selector composition (`union`/`intersect`/`difference`) whose
+///   operands are themselves selector exprs (recursive).
+///
+/// IMPORTANT: does NOT include `split`, `adjacent_faces`, or `shared_edges` —
+/// those produce `Type::List(Geometry)`, not a composable `Value::Selector`.
+/// Called by `is_geometry_let` to detect when `union`/`difference` operands
+/// are selector-valued and thus MUST NOT route to the CSG path.
+///
+/// # Ident operands and the `known_selector_lets` accumulator
+///
+/// `known_selector_lets` is the incremental set of let names whose values have
+/// already been classified as selector expressions in the current pre-pass walk.
+/// An `ExprKind::Ident(name)` arm returns `true` iff `name` is present in that
+/// set, enabling all-ident compositions like `let u = union(top, big)` (where
+/// `top`/`big` are themselves selector-typed lets) to be correctly identified.
+///
+/// The flip is **gated on membership**: a genuinely-unknown ident (not in
+/// `known_selector_lets`) returns `false`, preserving the CSG default for
+/// idents that have not been classified as selector lets.
+///
+/// Promoted to `pub(crate)` so `entity.rs` and `guards.rs` can reuse this
+/// function as the selector-let classifier when populating `known_selector_lets`
+/// (avoids a duplicate detector that could drift from the composition-check
+/// logic). (task 4527)
+pub(crate) fn is_selector_expr(
+    expr: &reify_ast::Expr,
+    functions: &[CompiledFunction],
+    known_selector_lets: &HashSet<&str>,
+) -> bool {
+    match &expr.kind {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => {
+            let name = name.as_str();
+            let args = args.as_slice();
+
+            // User-defined functions shadow any builtin: if a function with this name
+            // is in scope, the call is not guaranteed to produce a Selector.
+            if functions.iter().any(|f| f.name == name) {
+                return false;
+            }
+
+            match name {
+                // ── 7 predicate/all selector constructors (task 4118 γ) ─────────────
+                "faces" | "edges" | "faces_by_normal" | "faces_by_area" | "edges_by_length"
+                | "edges_at_height" | "edges_parallel_to" => true,
+                // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
+                "face" | "edge" | "solid_body" => true,
+                // ── Selector composition (recursive) ────────────────────────────────
+                // "union" and "difference" are also CSG names, so we recurse to check
+                // that at least one operand is itself a selector expr before committing.
+                // "intersect" is not a geometry function (never reached CSG path), but
+                // we still validate that its operands look like selectors for clarity.
+                "union" | "intersect" | "difference" => {
+                    args.iter().any(|arg| is_selector_expr(arg, functions, known_selector_lets))
+                }
+                _ => false,
+            }
+        }
+        // Ident operands bound to already-classified selector lets (task 4527).
+        // Only names present in `known_selector_lets` return true — genuinely-unknown
+        // idents default to false (preserving CSG routing for unknown idents).
+        reify_ast::ExprKind::Ident(name) => known_selector_lets.contains(name.as_str()),
+        _ => false,
+    }
+}
+
 pub(crate) fn is_geometry_let(
     expr: &reify_ast::Expr,
     functions: &[CompiledFunction],
     known_geometry_lets: &HashSet<&str>,
+    known_selector_lets: &HashSet<&str>,
 ) -> bool {
     match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => {
+            // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
+            // 2-ary geometry) from the kinematic
+            // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
+            // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
+            // form is not a geometry let — it routes through eval-time
+            // dispatch where the kinematic arm resolves it. Other arities
+            // still flow into compile_geometry_call's sweep arm and get
+            // its strict "expects exactly 2 arguments" diagnostic.
+            let is_kinematic_sweep = name == "sweep" && args.len() == 4;
+            // Task 4119 δ: disambiguate CSG `union`/`difference` (geometry boolean
+            // ops) from selector-composition `union`/`intersect`/`difference`
+            // (selector algebra combinators). When ANY operand is syntactically a
+            // selector-producing expression the call routes to the value-typing path
+            // where E_SELECTOR_KIND_MISMATCH is checked. Mirrors the sweep-arity
+            // guard above.
+            // NOTE: "intersect" (selector combinator) ≠ "intersection" (CSG); they
+            // are distinct names. "intersect" is never a geometry function so it
+            // cannot reach this arm — but including it in the guard keeps this list
+            // in sync with `units.rs`'s selector_composition_result_type (which
+            // handles "union"|"intersect"|"difference"). "intersection" is the CSG
+            // name and is intentionally absent: a call like `intersection(faces(b),…)`
+            // is a misuse of the CSG op, not a selector composition; routing it to
+            // is_geometry_function gives the user a geometry-type error rather than
+            // a silent Undef via the selector path.
+            let is_selector_composition =
+                matches!(name.as_str(), "union" | "intersect" | "difference")
+                    && args.iter().any(|a| is_selector_expr(a, functions, known_selector_lets));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
-                // Disambiguate the CSG `sweep(profile, path) -> Solid` (docs §3,
-                // 2-ary geometry) from the kinematic
-                // `sweep(mechanism, joint, range, steps) -> List<Snapshot>`
-                // (docs §13.4, 4-ary eval-time builtin) by arity. The 4-arg
-                // form is not a geometry let — it routes through eval-time
-                // dispatch where the kinematic arm resolves it. Other arities
-                // still flow into compile_geometry_call's sweep arm and get
-                // its strict "expects exactly 2 arguments" diagnostic.
-                && !(name == "sweep" && args.len() == 4)
+                && !is_kinematic_sweep
+                && !is_selector_composition
         }
         // No `!functions.iter().any(...)` guard needed: `known_geometry_lets` is
         // populated only from let-binding names (never function names), and an Ident
@@ -121,13 +213,13 @@ pub(crate) fn is_geometry_let(
             else_branch,
             ..
         } => {
-            is_geometry_let(then_branch, functions, known_geometry_lets)
-                || is_geometry_let(else_branch, functions, known_geometry_lets)
+            is_geometry_let(then_branch, functions, known_geometry_lets, known_selector_lets)
+                || is_geometry_let(else_branch, functions, known_geometry_lets, known_selector_lets)
         }
         // Match — see rustdoc above for rationale (task 3418).
         reify_ast::ExprKind::Match { arms, .. } => arms
             .iter()
-            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets)),
+            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets, known_selector_lets)),
         // Future branching/wrapping ExprKinds (e.g. pipe expressions,
         // try/else-style fallbacks) extend here with the same
         // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
@@ -143,9 +235,10 @@ pub(crate) fn is_geometry_let(
 /// Boolean ops are excluded — they handle geometry args with their own recursive block.
 fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
-        "translate" | "rotate" | "scale" | "rotate_around" | "circular_pattern"
-        | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric" | "revolve"
-        | "revolve_full" | "shell" | "thicken" | "draft" | "chamfer" | "fillet" => &[0],
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
+        | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
+        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
+        | "fillet" | "fillet_all" | "zone_slab" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -488,10 +581,12 @@ fn merge_branches(
         reify_ast::ExprKind::FunctionCall {
             name: name_a,
             args: args_a,
+            ..
         },
         reify_ast::ExprKind::FunctionCall {
             name: name_b,
             args: args_b,
+            ..
         },
     ) = (&a_eff.kind, &b_eff.kind)
         && name_a == name_b
@@ -506,10 +601,12 @@ fn merge_branches(
             .zip(args_b.iter())
             .map(|(x, y)| merge_branches(cond, x, y, functions, outer_span))
             .collect();
+        let n = merged_args.len();
         return reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name_a.clone(),
                 args: merged_args,
+                arg_names: vec![None; n],
             },
             span: a_eff.span,
         };
@@ -838,7 +935,7 @@ pub(crate) fn compile_geometry_call(
     }
 
     let (name, args) = match &expr.kind {
-        reify_ast::ExprKind::FunctionCall { name, args } => (name.as_str(), args),
+        reify_ast::ExprKind::FunctionCall { name, args, .. } => (name.as_str(), args),
         _ => return None,
     };
 
@@ -1007,10 +1104,10 @@ pub(crate) fn compile_geometry_call(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
-                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::Real),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::Real);
+            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -1113,6 +1210,59 @@ pub(crate) fn compile_geometry_call(
                 kind: ProfileKind::Circle,
                 args: vec![
                     ("radius".to_string(), compiled_args.into_iter().next().unwrap()),
+                ],
+            }])
+        }
+        // polygon(x1,y1, x2,y2, ...) → CompiledGeometryOp::Profile(Polygon)
+        // Variadic coordinate PAIRS: ≥6 args (3 pts min), must be multiple of 2.
+        "polygon" => {
+            let n = compiled_args.len();
+            if n < 6 || !n.is_multiple_of(2) {
+                push_labeled_arg_count_error(
+                    format!(
+                        "polygon() expects coordinate pairs (at least 6 args for 3 points), got {}",
+                        n
+                    ),
+                    expr.span,
+                    diagnostics,
+                );
+                return None;
+            }
+            let args: Vec<(String, CompiledExpr)> = compiled_args
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{}", i), e))
+                .collect();
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Polygon,
+                args,
+            }])
+        }
+        // ellipse(semi_major, semi_minor) → CompiledGeometryOp::Profile(Ellipse)
+        "ellipse" => {
+            if !check_arg_count_exact("ellipse", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Profile {
+                kind: ProfileKind::Ellipse,
+                args: vec![
+                    ("semi_major".to_string(), it.next().unwrap()),
+                    ("semi_minor".to_string(), it.next().unwrap()),
+                ],
+            }])
+        }
+        // torus(major_radius, minor_radius) — mirrors cylinder's 2-arg lowering.
+        "torus" => {
+            if !check_arg_count_exact("torus", compiled_args.len(), 2, expr.span, diagnostics) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            Some(vec![CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Torus,
+                args: vec![
+                    ("major_radius".to_string(), it.next().unwrap()),
+                    ("minor_radius".to_string(), it.next().unwrap()),
                 ],
             }])
         }
@@ -1440,7 +1590,7 @@ pub(crate) fn compile_geometry_call(
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
             let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::Real);
+                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::dimensionless_scalar());
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -1586,7 +1736,7 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" => compile_transform_op(
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => compile_transform_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1595,9 +1745,10 @@ pub(crate) fn compile_geometry_call(
             sub_ops,
         ),
         // --- Modify extensions ---
-        // All five modifiers take a geometry target as their first argument (correctly
+        // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "draft" | "chamfer" | "fillet" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "fillet" | "fillet_all"
+        | "zone_slab" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -1732,6 +1883,7 @@ mod tests {
         "rotate",
         "scale",
         "rotate_around",
+        "apply_transform",
         "circular_pattern",
         "linear_pattern",
         "mirror",
@@ -1741,9 +1893,12 @@ mod tests {
         "revolve_full",
         "shell",
         "thicken",
+        "offset_solid",
         "draft",
         "chamfer",
         "fillet",
+        "fillet_all",
+        "zone_slab",
         "sweep",
         "sweep_guided",
         "pipe",
@@ -1761,6 +1916,7 @@ mod tests {
         "tube",
         "cone",
         "wedge",
+        "torus",
         "linear_pattern_2d",
         "arbitrary_pattern",
         "line_segment",
@@ -1771,6 +1927,8 @@ mod tests {
         "nurbs",
         "rectangle",
         "circle",
+        "polygon",
+        "ellipse",
     ];
 
     /// Boolean set-operation functions — handled by the early-return path to
@@ -1794,11 +1952,11 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    19
-    /// NO_GEOM_ARG_FUNCTIONS 18  (added rectangle, circle for 2-D profile faces)
+    /// GEOM_ARG_FUNCTIONS    23  (offset_solid, fillet_all, zone_slab, apply_transform)
+    /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 44
+    /// Total                 51
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -1810,7 +1968,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 44;
+    const EXPECTED_DISPATCH_COUNT: usize = 51;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -1915,6 +2073,7 @@ mod tests {
                 kind: reify_ast::ExprKind::FunctionCall {
                     name: name.to_string(),
                     args: vec![],
+                    arg_names: vec![],
                 },
                 span: reify_core::SourceSpan::new(0, 1),
             };
@@ -2389,7 +2548,7 @@ mod tests {
     fn resolve_loft_like_args_debug_asserts_guide_suffix_requires_two_args() {
         let compiled_args = vec![CompiledExpr::literal(
             Value::Real(0.0),
-            reify_core::Type::Real,
+            reify_core::Type::dimensionless_scalar(),
         )];
         let geom_refs: HashMap<usize, GeomRef> = HashMap::new();
         // guide_suffix=true with only 1 arg must panic via debug_assert!
@@ -2416,7 +2575,7 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::Real))
+                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::dimensionless_scalar()))
                 .collect()
         }
 
@@ -2512,6 +2671,7 @@ mod tests {
                     },
                     span: reify_core::SourceSpan::new(0, 1),
                 }],
+                arg_names: vec![None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2571,6 +2731,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2660,6 +2821,7 @@ mod tests {
                         span: reify_core::SourceSpan::new(0, 1),
                     },
                 ],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 10),
         };
@@ -2736,6 +2898,7 @@ mod tests {
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
+                arg_names: vec![None; n],
                 args,
             },
             span: reify_core::SourceSpan::new(0, 1),
@@ -2753,13 +2916,13 @@ mod tests {
 
         let csg_2 = make_call_with_arity("sweep", 2);
         assert!(
-            is_geometry_let(&csg_2, &functions, &known),
+            is_geometry_let(&csg_2, &functions, &known, &HashSet::new()),
             "2-arg sweep (CSG profile/path) must classify as a geometry let"
         );
 
         let kinematic_4 = make_call_with_arity("sweep", 4);
         assert!(
-            !is_geometry_let(&kinematic_4, &functions, &known),
+            !is_geometry_let(&kinematic_4, &functions, &known, &HashSet::new()),
             "4-arg sweep (kinematic mechanism/joint/range/steps) must NOT \
              classify as a geometry let — it routes via eval-time dispatch"
         );
@@ -2769,12 +2932,198 @@ mod tests {
         for n in [0, 1, 3, 5] {
             let other = make_call_with_arity("sweep", n);
             assert!(
-                is_geometry_let(&other, &functions, &known),
+                is_geometry_let(&other, &functions, &known, &HashSet::new()),
                 "{n}-arg sweep must still classify as a geometry let so the \
                  CSG arity diagnostic fires; only the 4-arg kinematic form \
                  falls through"
             );
         }
+    }
+
+    // --- step-1 (task 4119 δ): is_geometry_let selector-call routing ---
+
+    /// `is_geometry_let` must return FALSE for `union`/`difference` when ANY
+    /// operand is a direct selector constructor call (`faces(b)`, `edges(b)`,
+    /// etc.), so those compositions route to the value-typing path (and later
+    /// emit `E_SELECTOR_KIND_MISMATCH` for mixed kinds) rather than the CSG
+    /// `compile_boolean_op` path.
+    ///
+    /// At the same time it must STILL return TRUE for CSG `union`/`difference`
+    /// whose operands are pure geometry (e.g. `box(…)`, `union(box(…), box(…))`).
+    ///
+    /// `intersect` is NOT a geometry function (`GEOMETRY_FUNCTION_NAMES` does
+    /// not include it) so it already routes to the value path regardless.
+    #[test]
+    fn is_geometry_let_selector_operand_excludes_union_difference() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+
+        // --- selector-operand cases (must NOT be geometry lets) ---
+
+        // union(faces(b), edges(b)) — mixed-kind but the operands are selector calls
+        let union_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let edges_b = make_call_with_arity("edges", 1);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, edges_b],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&union_sel, &functions, &known, &HashSet::new()),
+            "union(faces(b), edges(b)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // difference(faces(b), faces_by_normal(b, …)) — same-kind, both selector calls
+        let diff_sel = {
+            let faces_b = make_call_with_arity("faces", 1);
+            let fbn = make_call_with_arity("faces_by_normal", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![faces_b, fbn],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            !is_geometry_let(&diff_sel, &functions, &known, &HashSet::new()),
+            "difference(faces(b), faces_by_normal(b,...)) must NOT be a geometry let — \
+             selector operands divert to the value-typing path"
+        );
+
+        // --- CSG cases (must STILL be geometry lets) ---
+
+        // union(box(…), box(…)) — both operands are geometry constructors
+        let union_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let box2 = make_call_with_arity("box", 3);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "union".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, box2],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&union_csg, &functions, &known, &HashSet::new()),
+            "union(box(…), box(…)) must STILL be a geometry let — CSG path preserved"
+        );
+
+        // difference(box(…), cylinder(…)) — geometry operands
+        let diff_csg = {
+            let box1 = make_call_with_arity("box", 3);
+            let cyl = make_call_with_arity("cylinder", 2);
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "difference".to_string(),
+                    arg_names: vec![None, None],
+                    args: vec![box1, cyl],
+                },
+                span: reify_core::SourceSpan::new(0, 1),
+            }
+        };
+        assert!(
+            is_geometry_let(&diff_csg, &functions, &known, &HashSet::new()),
+            "difference(box(…), cylinder(…)) must STILL be a geometry let — CSG path preserved"
+        );
+    }
+
+    // --- task 4527: Ident operand routing — new behaviour with known_selector_lets ---
+
+    /// Characterises the new `known_selector_lets` accumulator behaviour (task 4527):
+    ///
+    /// - With `known_selector_lets = {"top", "big"}`:
+    ///   `union(top, big)` and `difference(top, big)` → `is_geometry_let` == **false**
+    ///   (selector path: is_selector_expr returns true for each Ident in the set).
+    ///
+    /// - With EMPTY `known_selector_lets`:
+    ///   `union(top, big)` → **true** (unknown idents → CSG default, safety property).
+    ///
+    /// - With `top`/`big` in `known_GEOMETRY_lets` (NOT in known_selector_lets):
+    ///   `union(top, big)` → **true** (CSG preserved for geometry idents).
+    #[test]
+    fn is_geometry_let_all_ident_selector_operands_route_to_selector() {
+        let functions: Vec<CompiledFunction> = vec![];
+
+        // Helper to build an Ident expression.
+        let make_ident = |name: &str| reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(name.to_string()),
+            span: reify_core::SourceSpan::new(0, name.len() as u32),
+        };
+
+        // union(top, big) where both operands are Idents.
+        let union_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "union".to_string(),
+                arg_names: vec![None, None],
+                args: vec![make_ident("top"), make_ident("big")],
+            },
+            span: reify_core::SourceSpan::new(0, 12),
+        };
+        // difference(top, big) — same operand structure.
+        let diff_ident = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "difference".to_string(),
+                arg_names: vec![None, None],
+                args: vec![make_ident("top"), make_ident("big")],
+            },
+            span: reify_core::SourceSpan::new(0, 18),
+        };
+
+        // Case 1 — selector idents in known_selector_lets → selector path (false).
+        let geom_empty: HashSet<&str> = HashSet::new();
+        let mut sel_known: HashSet<&str> = HashSet::new();
+        sel_known.insert("top");
+        sel_known.insert("big");
+        assert!(
+            !is_geometry_let(&union_ident, &functions, &geom_empty, &sel_known),
+            "union(top, big) with top/big in known_selector_lets must route to \
+             selector path (is_geometry_let == false)"
+        );
+        assert!(
+            !is_geometry_let(&diff_ident, &functions, &geom_empty, &sel_known),
+            "difference(top, big) with top/big in known_selector_lets must route \
+             to selector path (is_geometry_let == false)"
+        );
+
+        // Case 2 — empty known_selector_lets → unknown idents default to CSG (true).
+        // Safety property: genuinely-unknown idents must not flip to selector path.
+        let sel_empty: HashSet<&str> = HashSet::new();
+        assert!(
+            is_geometry_let(&union_ident, &functions, &geom_empty, &sel_empty),
+            "union(top, big) with EMPTY known_selector_lets must still be treated \
+             as a geometry let (CSG default) — unknown idents must not flip routing"
+        );
+
+        // Case 3 — same name in BOTH known_geometry_lets AND known_selector_lets:
+        // is_selector_composition is driven by is_selector_expr (which consults
+        // known_selector_lets via the Ident arm), so when top/big are in both sets
+        // is_selector_composition = true → is_geometry_let = false (selector path).
+        // Documents the actual tie-breaking rule: known_selector_lets membership in
+        // the operand controls the union/difference routing, not known_geometry_lets.
+        // In practice a name is never in both sets (they are populated in the else-branch
+        // of each other), but this pins the exact behavior if that invariant were broken.
+        let mut geom_both: HashSet<&str> = HashSet::new();
+        let mut sel_both: HashSet<&str> = HashSet::new();
+        geom_both.insert("top");
+        geom_both.insert("big");
+        sel_both.insert("top");
+        sel_both.insert("big");
+        assert!(
+            !is_geometry_let(&union_ident, &functions, &geom_both, &sel_both),
+            "union(top, big) with top/big in BOTH sets: known_selector_lets membership \
+             drives is_selector_composition → is_geometry_let must be false (selector \
+             path), even when the operand names are also in known_geometry_lets"
+        );
     }
 
     // --- compile_geometry_call: Conditional emits Error (task 3395) ---
@@ -2899,14 +3248,14 @@ mod tests {
             make_call_with_arity("box", 3),
         );
         assert!(
-            is_geometry_let(&box_box, &functions, &known),
+            is_geometry_let(&box_box, &functions, &known, &HashSet::new()),
             "Conditional with two geometry branches must classify as a geometry let"
         );
 
         // (b) Neither branch geometry → false
         let num_num = make_conditional(bool_cond.clone(), num_literal.clone(), num_literal.clone());
         assert!(
-            !is_geometry_let(&num_num, &functions, &known),
+            !is_geometry_let(&num_num, &functions, &known, &HashSet::new()),
             "Conditional with no geometry branches must NOT classify as a geometry let"
         );
 
@@ -2917,7 +3266,7 @@ mod tests {
             num_literal.clone(),
         );
         assert!(
-            is_geometry_let(&box_num, &functions, &known),
+            is_geometry_let(&box_num, &functions, &known, &HashSet::new()),
             "Conditional with one geometry branch must classify as a geometry let"
         );
 
@@ -2933,7 +3282,7 @@ mod tests {
             ),
         );
         assert!(
-            is_geometry_let(&nested, &functions, &known),
+            is_geometry_let(&nested, &functions, &known, &HashSet::new()),
             "Nested Conditional whose inner branch is geometry must classify as a geometry let"
         );
 
@@ -2946,7 +3295,7 @@ mod tests {
         };
         let cond_ident = make_conditional(bool_cond.clone(), ident_g, num_literal.clone());
         assert!(
-            is_geometry_let(&cond_ident, &functions, &known_with_g),
+            is_geometry_let(&cond_ident, &functions, &known_with_g, &HashSet::new()),
             "Conditional with an Ident then-branch referencing a known geometry let must classify as a geometry let"
         );
     }
@@ -3088,7 +3437,7 @@ mod tests {
             ],
         );
         assert!(
-            is_geometry_let(&all_geom, &functions, &known),
+            is_geometry_let(&all_geom, &functions, &known, &HashSet::new()),
             "Match with all geometry arms must classify as a geometry let"
         );
 
@@ -3102,7 +3451,7 @@ mod tests {
             ],
         );
         assert!(
-            !is_geometry_let(&no_geom, &functions, &known),
+            !is_geometry_let(&no_geom, &functions, &known, &HashSet::new()),
             "Match with no geometry arms must NOT classify as a geometry let"
         );
 
@@ -3116,7 +3465,7 @@ mod tests {
             ],
         );
         assert!(
-            is_geometry_let(&one_geom, &functions, &known),
+            is_geometry_let(&one_geom, &functions, &known, &HashSet::new()),
             "Match with one geometry arm must classify as a geometry let"
         );
 
@@ -3127,7 +3476,7 @@ mod tests {
         );
         let outer_match = make_match(discriminant.clone(), vec![num_literal.clone(), inner_match]);
         assert!(
-            is_geometry_let(&outer_match, &functions, &known),
+            is_geometry_let(&outer_match, &functions, &known, &HashSet::new()),
             "Nested Match whose inner arm is geometry must classify as a geometry let"
         );
 
@@ -3140,7 +3489,7 @@ mod tests {
         };
         let match_ident = make_match(discriminant.clone(), vec![ident_g, num_literal.clone()]);
         assert!(
-            is_geometry_let(&match_ident, &functions, &known_with_g),
+            is_geometry_let(&match_ident, &functions, &known_with_g, &HashSet::new()),
             "Match with an Ident arm referencing a known geometry let must classify as a geometry let"
         );
     }
@@ -3180,6 +3529,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
                 args: vec![num(w), num(h), num(d)],
+                arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         }
@@ -3204,7 +3554,7 @@ mod tests {
         let merged = merge_branches(&cond, &a, &b, &functions, outer_span);
 
         let args = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 args
@@ -3375,6 +3725,7 @@ mod tests {
                     make_box_with_values(1.0, 1.0, 1.0),
                     make_box_with_values(1.0, 1.0, 1.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3386,6 +3737,7 @@ mod tests {
                     make_box_with_values(2.0, 2.0, 2.0),
                     make_box_with_values(2.0, 2.0, 2.0),
                 ],
+                arg_names: vec![None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3395,7 +3747,7 @@ mod tests {
 
         // Merged root should be union(...)
         let (name, args) = match &merged.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => (name, args),
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => (name, args),
             other => panic!("expected FunctionCall, got {:?}", other),
         };
         assert_eq!(name, "union");
@@ -3404,7 +3756,7 @@ mod tests {
         // Each sub-arg should be box(C,C,C)
         for (i, sub) in args.iter().enumerate() {
             let sub_args = match &sub.kind {
-                reify_ast::ExprKind::FunctionCall { name, args } => {
+                reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
@@ -3468,7 +3820,7 @@ mod tests {
         );
         let hoisted = result.unwrap();
         match &hoisted.kind {
-            reify_ast::ExprKind::FunctionCall { name, args } => {
+            reify_ast::ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box", "hoisted should be box");
                 assert_eq!(args.len(), 3);
                 for arg in args {
@@ -3536,9 +3888,9 @@ mod tests {
     fn try_hoist_geometry_conditional_returns_none_when_box_is_user_shadowed() {
         // Simulate `fn box(w, h, d) { … }` in user code.
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3546,12 +3898,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_hoist_stub"),
                 },
             },
@@ -3590,9 +3942,9 @@ mod tests {
     #[test]
     fn merge_branches_returns_scalar_conditional_when_box_is_user_shadowed() {
         let params = vec![
-            ("w".to_string(), reify_core::Type::Real),
-            ("h".to_string(), reify_core::Type::Real),
-            ("d".to_string(), reify_core::Type::Real),
+            ("w".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("h".to_string(), reify_core::Type::dimensionless_scalar()),
+            ("d".to_string(), reify_core::Type::dimensionless_scalar()),
         ];
         let box_shadow_fn = CompiledFunction {
             name: "box".to_string(),
@@ -3600,12 +3952,12 @@ mod tests {
             is_pub: false,
             param_defaults: CompiledFunction::no_defaults_for(&params),
             params,
-            return_type: reify_core::Type::Real,
+            return_type: reify_core::Type::dimensionless_scalar(),
             body: CompiledFnBody {
                 let_bindings: vec![],
                 result_expr: CompiledExpr {
                     kind: CompiledExprKind::Literal(Value::Real(0.0)),
-                    result_type: reify_core::Type::Real,
+                    result_type: reify_core::Type::dimensionless_scalar(),
                     content_hash: ContentHash::of_str("box_shadow_merge_stub"),
                 },
             },
@@ -3661,6 +4013,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_box_with_values(1.0, 1.0, 1.0), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -3669,6 +4022,7 @@ mod tests {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "translate".to_string(),
                 args: vec![make_call_with_arity("cylinder", 2), one(), zero(), zero()],
+                arg_names: vec![None, None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),
         };
@@ -4039,6 +4393,205 @@ mod tests {
         assert!(
             !diagnostics.is_empty(),
             "circle with 0 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- polygon() compiler dispatch (task-4161, step-5 RED) ---
+
+    /// `polygon(0mm,0mm, 10mm,0mm, 10mm,10mm)` (6 args — 3 pairs) must compile to
+    /// a single `CompiledGeometryOp::Profile { kind: ProfileKind::Polygon }` with
+    /// positional args named `c0..c5`.
+    ///
+    /// RED until step-6 adds `ProfileKind::Polygon` and the `"polygon"` arm in
+    /// `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_6args_returns_profile_polygon() {
+        let expr = make_call_with_arity("polygon", 6);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("polygon with 6 args should produce ops");
+        assert_eq!(ops.len(), 1, "polygon must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Polygon,
+                    "polygon op must have kind ProfileKind::Polygon"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["c0", "c1", "c2", "c3", "c4", "c5"],
+                    "polygon arg names must be c0..c5 for 6 positional args"
+                );
+            }
+            other => panic!("expected Profile(Polygon), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "polygon with 6 args must emit no diagnostics");
+    }
+
+    /// `polygon(0mm,0mm, 10mm,0mm, 10mm)` (5 args — odd, not multiple of 2) must
+    /// emit an arg-count diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"polygon"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_odd_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("polygon", 5);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "polygon with 5 args (odd) must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "polygon with 5 args (odd) must emit at least one diagnostic"
+        );
+    }
+
+    /// `polygon(0mm,0mm, 10mm,0mm)` (4 args — only 2 pairs, < 3 required) must
+    /// emit an arg-count diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"polygon"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_polygon_too_few_args_emits_diagnostic() {
+        let expr = make_call_with_arity("polygon", 4);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "polygon with 4 args (< 6 = 3 pairs min) must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "polygon with 4 args must emit at least one diagnostic"
+        );
+    }
+
+    // --- ellipse() compiler dispatch (task-4161, step-5 RED) ---
+
+    /// `ellipse(10mm, 5mm)` (2 args) must compile to a single
+    /// `CompiledGeometryOp::Profile { kind: ProfileKind::Ellipse }` with named
+    /// args `semi_major` and `semi_minor`.
+    ///
+    /// RED until step-6 adds `ProfileKind::Ellipse` and the `"ellipse"` arm in
+    /// `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_ellipse_2args_returns_profile_ellipse() {
+        let expr = make_call_with_arity("ellipse", 2);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        let ops = result.expect("ellipse(_, _) should produce ops");
+        assert_eq!(ops.len(), 1, "ellipse must produce exactly 1 op");
+        match &ops[0] {
+            CompiledGeometryOp::Profile { kind, args } => {
+                assert_eq!(
+                    *kind,
+                    ProfileKind::Ellipse,
+                    "ellipse op must have kind ProfileKind::Ellipse"
+                );
+                let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(
+                    names,
+                    vec!["semi_major", "semi_minor"],
+                    "ellipse arg names must be semi_major / semi_minor"
+                );
+            }
+            other => panic!("expected Profile(Ellipse), got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "ellipse(_, _) must emit no diagnostics");
+    }
+
+    /// `ellipse(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
+    ///
+    /// RED until step-6 adds the `"ellipse"` arm in `compile_geometry_call`.
+    #[test]
+    fn compile_geometry_call_ellipse_wrong_arity_emits_diagnostic() {
+        let expr = make_call_with_arity("ellipse", 1);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        let result = compile_geometry_call(
+            &expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+
+        assert!(
+            result.is_none(),
+            "ellipse with 1 arg must return None (arity error)"
+        );
+        assert!(
+            !diagnostics.is_empty(),
+            "ellipse with 1 arg must emit at least one diagnostic"
         );
     }
 }

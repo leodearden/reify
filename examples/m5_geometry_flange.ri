@@ -1,15 +1,12 @@
 // Post-GHR-α (task 3603) spec-shape: `Rigid : Physical` composes geometry +
-// material via struct slots; `moment_of_inertia` is Rigid's own contribution.
+// material via struct slots; moment_of_inertia is auto-derived from geometry
+// as Tensor<2,3,MomentOfInertia> (task 4229 Option A).
 structure def BoltFlange : Rigid {
     param outer_radius : Length = 60mm
     param height : Length = 12mm
     param hole_count : Int = 8
     param bolt_circle_radius : Length = 45mm
     param hole_radius : Length = 4mm
-
-    // Rigid trait requirement (Rigid's own param; Physical's geometry +
-    // material slots are below). Disc OD 120 mm, h 12 mm, mass ≈ 0.86 kg → I_z ≈ 0.002 kg·m²
-    param moment_of_inertia : MomentOfInertia = 0.002 * 1kg * 1m * 1m
 
     // Canonical Material struct — concrete default supplied here, callers may
     // override at instantiation by passing a different `Material(...)` value.
