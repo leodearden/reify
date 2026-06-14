@@ -150,6 +150,29 @@ pub enum MemberDecl {
     /// Some legacy hand-built tests remain in `match_arm_decl_group_compile_tests.rs`
     /// for AST-shape granularity.
     MatchArmDeclGroup(MatchArmDeclGroupDecl),
+    /// A member-level `relate { … }` block: a flat set of geometric relation
+    /// expressions (geometric-relations v0_6, design §4/§5; task δ 4384).
+    ///
+    /// Each relation must type to `Type::Relation`; the compiler enforces this
+    /// with `E_RELATE_EXPECTS_RELATION`. The inline `sub … at … where { }` form
+    /// carries the same flat relation set on `SubDecl.relate_relations` instead
+    /// of producing a separate `MemberDecl::Relate`.
+    Relate(RelateDecl),
+}
+
+/// A `relate { concentric(…)  flush(…) }` member block (task δ 4384).
+///
+/// Holds the relation expressions in source order. Mirrors the bare-expression
+/// shape of `ConstraintDef.predicates` — separation between members is handled
+/// by the grammar (GLR), so no separator token is stored. An empty `relate { }`
+/// lowers to `relations: vec![]`.
+#[derive(Debug, Clone)]
+pub struct RelateDecl {
+    /// The relation expressions, in source order. Each must type to
+    /// `Type::Relation` (compiler enforcement, task δ step-14).
+    pub relations: Vec<Expr>,
+    pub span: SourceSpan,
+    pub content_hash: ContentHash,
 }
 
 /// A `match <discriminant> { Pattern => <member> ... }` declaration block (task 2372).
@@ -343,6 +366,13 @@ pub struct SubDecl {
     /// accepted but semantically invalid — the compiler (T2) must reject it
     /// with a diagnostic (PRD §10).
     pub pose_expr: Option<Expr>,
+    /// Inline relate-block relations from the trailing `at … where { }` form
+    /// (geometric-relations v0_6, design §4/§5; task δ 4384). Empty unless the
+    /// sub carries an inline `where { … }` relate-block after its `at <pose>`
+    /// clause. Carries the SAME flat relation set a member-level `relate { }`
+    /// would (`MemberDecl::Relate`); both homes enforce `Type::Relation`
+    /// identically (`E_RELATE_EXPECTS_RELATION`).
+    pub relate_relations: Vec<Expr>,
     pub span: SourceSpan,
     pub content_hash: ContentHash,
 }

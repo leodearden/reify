@@ -389,6 +389,9 @@ pub(crate) fn compile_guarded_members(
     let guard_ctx = Some(current_guard);
     for member in ast_members {
         match member {
+            // Relate enforcement lives in entity.rs (both homes); no-op in the
+            // guarded-member path for δ (task 4384).
+            reify_ast::MemberDecl::Relate(_) => {}
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope

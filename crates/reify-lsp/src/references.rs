@@ -462,6 +462,11 @@ fn cursor_on_member_segment(members: &[MemberDecl], off: u32, depth: usize) -> b
                 // Discriminant is outer-scope; arm member bodies are recursed below.
                 expr_member_segment_hit(&g.discriminant, off)
             }
+            // A member-level `relate { … }` block's relations are direct-scope
+            // expressions (task δ 4384) — scan each like Chain's elements.
+            MemberDecl::Relate(r) => {
+                r.relations.iter().any(|rel| expr_member_segment_hit(rel, off))
+            }
             // Not walked by `collect_uses` — no tracked binding.
             MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => false,
         };
@@ -712,6 +717,9 @@ fn member_span(member: &MemberDecl) -> Option<SourceSpan> {
         MemberDecl::ForallConnect(f) => Some(f.span),
         MemberDecl::ForallConstraint(f) => Some(f.span),
         MemberDecl::MatchArmDeclGroup(g) => Some(g.span),
+        // A `relate { … }` block is walked by `collect_uses` (its relations carry
+        // tracked uses), so it must be spanned here too (task δ 4384).
+        MemberDecl::Relate(r) => Some(r.span),
         // Not walked by `collect_uses` — no tracked binding or collected use.
         MemberDecl::Fn(_) | MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => None,
     }
@@ -861,6 +869,13 @@ fn collect_uses(members: &[MemberDecl], name: &str, depth: usize, out: &mut Vec<
                     collect_uses(std::slice::from_ref(&*arm.member), name, depth + 1, out);
                 }
             }
+            // A member-level `relate { … }` block: collect uses in each relation
+            // expression (task δ 4384), mirroring Chain's element walk.
+            MemberDecl::Relate(r) => {
+                for rel in &r.relations {
+                    collect_idents_in_expr(rel, name, out);
+                }
+            }
             // See the fn-body note above — intentionally not walked.
             MemberDecl::Fn(_) => {}
             // Type-only / expression-free members: nothing to collect.
@@ -898,6 +913,11 @@ fn collect_uses_in_sub(s: &SubDecl, name: &str, depth: usize, out: &mut Vec<Sour
     }
     if let Some(pose) = &s.pose_expr {
         collect_idents_in_expr(pose, name, out);
+    }
+    // Inline `at … where { … }` relate-block relations (task δ 4384): collect
+    // uses in each, the same as a member-level `relate { }` block.
+    for rel in &s.relate_relations {
+        collect_idents_in_expr(rel, name, out);
     }
     collect_uses_in_where(&s.where_clause, name, out);
     if let Some(body) = &s.body {

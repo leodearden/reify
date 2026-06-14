@@ -200,6 +200,13 @@ fn walk_members(
     }
     for member in members {
         match member {
+            // Relate-block relations are ordinary expressions — walk them so
+            // dot-chain lints apply inside `relate { … }` too (task δ 4384).
+            MemberDecl::Relate(r) => {
+                for rel in &r.relations {
+                    walk_expr(rel, diagnostics);
+                }
+            }
             MemberDecl::Param(p) => {
                 walk_annotations(&p.annotations, diagnostics);
                 if let Some(default) = &p.default {

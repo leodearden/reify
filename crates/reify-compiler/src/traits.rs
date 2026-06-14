@@ -540,6 +540,9 @@ pub(crate) fn compile_purpose(
 
     for member in &purpose_def.members {
         match member {
+            // `relate { }` is not a purpose-body member (δ scope: structures and
+            // subs only); no-op here (task 4384).
+            reify_ast::MemberDecl::Relate(_) => {}
             reify_ast::MemberDecl::Constraint(constraint) => {
                 // Desugar determinacy intrinsics before compiling (task-4197 α).
                 // If the constraint is AllParamsDetermined(X) or AllGeometryDetermined(X)
@@ -975,6 +978,10 @@ pub(crate) fn compile_purpose(
 fn unsupported_purpose_member_info(m: &reify_ast::MemberDecl) -> (String, SourceSpan) {
     use reify_ast::MemberDecl;
     match m {
+        MemberDecl::Relate(r) => (
+            "relate blocks in purpose bodies are not supported".to_string(),
+            r.span,
+        ),
         MemberDecl::Param(p) => (
             "param declarations in purpose bodies are not supported".to_string(),
             p.span,

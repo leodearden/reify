@@ -1773,6 +1773,12 @@ impl<'a> Lowering<'a> {
                 "guarded block",
                 self.lower_guarded_block(child)
             ),
+            "relate_block" => check_and_lower!(
+                self,
+                child,
+                "relate block",
+                self.lower_relate_block(child).map(MemberDecl::Relate)
+            ),
             "associated_type" => self
                 .lower_associated_type(child)
                 .map(MemberDecl::AssociatedType),
@@ -2347,6 +2353,16 @@ impl<'a> Lowering<'a> {
             .child_by_field_name("pose")
             .and_then(|n| self.lower_binding_value(n));
 
+        // Lower the optional inline relate-block from the trailing
+        // `at <pose> where { … }` form (geometric-relations δ, task 4384). The
+        // grammar attaches it as field "relations" → a `sub_relate_block` node
+        // whose `relation_member` children each hold a relation expression.
+        // Empty unless the inline `where { }` block is present.
+        let relate_relations = node
+            .child_by_field_name("relations")
+            .map(|n| self.lower_relation_members(n))
+            .unwrap_or_default();
+
         Some(SubDecl {
             name,
             structure_name,
@@ -2360,9 +2376,40 @@ impl<'a> Lowering<'a> {
             is_aux,
             is_priv: self.has_priv_keyword(node),
             pose_expr,
+            relate_relations,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    /// Lower a `relate_block` CST member (`relate { … }`) into a `RelateDecl`
+    /// (geometric-relations δ, task 4384). The body is `repeat(relation_member)`;
+    /// an empty `relate { }` lowers to a `RelateDecl` with no relations.
+    fn lower_relate_block(&self, node: tree_sitter::Node) -> Option<RelateDecl> {
+        Some(RelateDecl {
+            relations: self.lower_relation_members(node),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower the `relation_member` children of a `relate_block` or
+    /// `sub_relate_block` CST node into their relation expressions, in source
+    /// order (task δ 4384). Each `relation_member` is `field('expr',
+    /// $._expression)`; anonymous and non-lowerable children are skipped. Shared
+    /// by both relate homes so the member-level and inline forms stay identical.
+    fn lower_relation_members(&self, block_node: tree_sitter::Node) -> Vec<Expr> {
+        let mut relations = Vec::new();
+        let mut cursor = block_node.walk();
+        for child in block_node.children(&mut cursor) {
+            if child.kind() == "relation_member"
+                && let Some(expr_node) = child.child_by_field_name("expr")
+                && let Some(expr) = self.lower_expr(expr_node)
+            {
+                relations.push(expr);
+            }
+        }
+        relations
     }
 
     /// Lower a `specialization_body` CST node (`{ repeat(param_assignment | _member) }`)
@@ -3271,6 +3318,7 @@ impl<'a> Lowering<'a> {
             is_aux: false,
             is_priv: false,
             pose_expr: None,
+            relate_relations: Vec::new(),
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -4114,6 +4162,7 @@ mod tests {
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
+                MemberDecl::Relate(_) => "relate".into(),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -4302,6 +4351,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => f.span,
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
+                MemberDecl::Relate(r) => r.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -4436,6 +4486,7 @@ mod tests {
                 }
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
+                MemberDecl::Relate(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -4505,6 +4556,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
+                MemberDecl::Relate(r) => (r.span, r.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -4620,6 +4672,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                MemberDecl::Relate(r) => (r.content_hash, r.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -4641,6 +4694,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                MemberDecl::Relate(r) => (r.content_hash, r.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };

@@ -1361,6 +1361,9 @@ pub(crate) fn compile_entity(
     let mut pending_forall_connect: Vec<&reify_ast::ForallConnectDecl> = Vec::new();
     for member in structure.members {
         match member {
+            // Relate-block enforcement (E_RELATE_EXPECTS_RELATION) is added here
+            // in step-14; no-op for now so the member compiles (task δ 4384).
+            reify_ast::MemberDecl::Relate(_relate) => {}
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
