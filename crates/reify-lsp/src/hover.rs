@@ -67,6 +67,14 @@ pub fn compute_hover_in_context(
             md.push_str(doc);
         }
 
+        // Append the undef cause line when present (PRD ζ §4.4 / invariants S3/S4).
+        // `undef_cause_line` returns None for determined cells (empty trace), Some
+        // for undef cells — including propagated-undef lets (traces to root causes).
+        if let Some(cause_line) = ctx.undef_cause_line(info.decl_name, word) {
+            md.push_str("\n\n");
+            md.push_str(&cause_line);
+        }
+
         return Some(make_hover_markdown(md));
     }
 
@@ -994,6 +1002,68 @@ structure B {
             md.as_deref()
                 .is_none_or(|m| !m.contains("Relation removes")),
             "arity-2 distance DERIVE form must not surface a relation contract, got: {md:?}"
+        );
+    }
+
+    // ── undef-cause hover tests (ζ, PRD §4.4 / S3 / S4 / BT11) ──────────────
+
+    /// (1) Hover over an unbound required param → hover markdown contains the
+    /// cause line appended (contains "because" and "unbound").
+    #[test]
+    fn hover_on_undef_param_appends_cause_set() {
+        // outer_d is a required param with no default → undef/Unbound
+        let source = "structure S {\n    param outer_d: Length\n}";
+        // Line 1: "    param outer_d: Length"
+        // col 10 is the 'o' in 'outer_d'
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for undef param outer_d");
+        assert!(md.contains("param"), "should mention 'param', got: {md}");
+        assert!(md.contains("outer_d"), "should mention 'outer_d', got: {md}");
+        assert!(
+            md.to_lowercase().contains("because"),
+            "undef param hover should contain cause line with 'because', got: {md}"
+        );
+        assert!(
+            md.contains("unbound"),
+            "undef param hover should contain 'unbound', got: {md}"
+        );
+    }
+
+    /// (2) Hover over a determined param (bracket_source width = 80mm) → no cause
+    /// line appended ("because" must NOT appear in the markdown).
+    #[test]
+    fn hover_on_determined_param_appends_no_cause_set() {
+        let source = reify_test_support::bracket_source();
+        // Line 1: "    param width: Length = 80mm"
+        // col 10 is the 'w' in 'width'
+        let position = Position::new(1, 10);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for determined param width");
+        assert!(
+            !md.to_lowercase().contains("because"),
+            "determined param hover must NOT contain 'because', got: {md}"
+        );
+    }
+
+    /// (3) Hover over an undef `let` that propagates an unbound param → the
+    /// hover markdown contains the propagated root cause (the unbound param name).
+    #[test]
+    fn hover_on_undef_let_shows_propagated_root_cause() {
+        // 'thickness' is a let that references the unbound param 'outer_d'
+        let source = "structure S {\n    param outer_d: Length\n    let thickness = outer_d\n}";
+        // Line 2: "    let thickness = outer_d"
+        // col 8 is the 't' in 'thickness'
+        let position = Position::new(2, 8);
+        let md = hover_markdown(source, position)
+            .expect("hover should return info for undef let thickness");
+        assert!(
+            md.to_lowercase().contains("because"),
+            "undef let hover should contain cause line with 'because', got: {md}"
+        );
+        assert!(
+            md.contains("outer_d"),
+            "undef let hover should mention the root cause param 'outer_d', got: {md}"
         );
     }
 }
