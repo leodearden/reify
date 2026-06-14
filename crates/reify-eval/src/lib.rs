@@ -17,6 +17,7 @@ pub mod deps;
 pub mod dirty;
 pub mod undef_tracer;
 pub use undef_tracer::trace_undef_causes;
+pub use undef_tracer::format_undef_causes;
 pub mod dispatcher;
 pub mod engine_fixpoint;
 pub use engine_fixpoint::BuildScheduler;
