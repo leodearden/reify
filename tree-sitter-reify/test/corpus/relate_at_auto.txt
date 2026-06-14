@@ -104,3 +104,46 @@ structure S { sub b : B at auto(seed = self.frame) }
             value: (member_access
               object: (identifier)
               member: (identifier))))))))
+
+================================================================================
+relate_block: member-level block of two relations — relate { concentric(…)  flush(…) }
+================================================================================
+
+structure S {
+  relate {
+    concentric(a, b)
+    flush(c, d)
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (relate_block
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)
+            (identifier))))
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+relate_block: empty block — relate { }
+================================================================================
+
+structure S { relate { } }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (relate_block)))

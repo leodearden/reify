@@ -34,6 +34,7 @@ function commonMembers($) {
     $.sub_declaration,
     $.minimize_declaration,
     $.maximize_declaration,
+    $.relate_block,
     $.guarded_block,
     $.port_declaration,
     $.connect_statement,
@@ -688,6 +689,36 @@ module.exports = grammar({
       field('expr', $._expression),
       optional(field('guard', $.where_clause)),
     ),
+
+    // ── Relate block (member-level) ─────────────────────────
+    // `relate { concentric(a, b)  flush(c, d) }` — a member-level block of
+    // geometric DRIVE relations (geometric-relations v0_6, PRD §1/§4/§7.3;
+    // design §4/§5; task δ 4384).  Each body member is a bare relation
+    // expression; the Relation-vs-Bool routing is enforced at type-check time
+    // (E_RELATE_EXPECTS_RELATION, step-14) — the block is the routing signal,
+    // not a name heuristic.
+    //
+    // `relate` is a PLAIN string token (contextual keyword), mirroring the
+    // proven `default`/`undef`/`unit`/`type` pattern: tree-sitter makes it a lex
+    // candidate ONLY where the parse state admits it (member-start positions via
+    // commonMembers()).  No member alternative begins with a bare identifier, so
+    // `'relate'` and `identifier` are never both valid at one state — everywhere
+    // else (operands, names, args) `relate` keeps lexing as `identifier`.
+    //
+    // Body shape mirrors constraint_def_predicate (repeat of bare expressions):
+    // GLR separates newline- and `;`-separated members with no explicit
+    // separator token.  Empty `relate { }` is admitted (repeat = zero-or-more).
+    relate_block: $ => seq(
+      'relate',
+      '{',
+      repeat($.relation_member),
+      '}',
+    ),
+
+    // A single relation entry inside a `relate { }` block or an inline
+    // `at … where { }` block (step-8).  Named node so the lowering code can
+    // identify it by kind; `expr` is the full relation expression.
+    relation_member: $ => field('expr', $._expression),
 
     // ── Sub ─────────────────────────────────────────────────
     sub_declaration: $ => choice(
