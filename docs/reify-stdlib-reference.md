@@ -660,8 +660,8 @@ Compatibility rules: `In` <-> `Out` (valid), `Bidi` <-> anything (valid), `In` <
 
 ```
 trait MechanicalPort : LocatedPort {
-    param max_load : Force = undef
-    param max_torque : Torque = undef
+    param max_load : Option<Force> = none
+    param max_torque : Option<Torque> = none
 }
 
 trait MatingFace : MechanicalPort {
