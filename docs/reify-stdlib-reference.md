@@ -1280,12 +1280,49 @@ fn undetermined(param_ref) -> Bool
 fn partially_determined(param_ref) -> Bool    // constrained && !determined
 ```
 
-**Utility constraints:**
+**Purpose-body intrinsics (compiler-recognized, valid ONLY inside a `purpose` body):**
 
 ```
-constraint def AllParamsDetermined { ... }      // Compiler intrinsic -- walks all params
-constraint def AllGeometryDetermined { ... }     // Compiler intrinsic -- walks all Geometry-typed params
-constraint def RepresentationWithin { ... }      // Asserts geometry realizations within tolerance
+AllParamsDetermined(subject : Structure)
+// Compiler intrinsic — desugars at compile time to:
+//   forall __p in subject.params: determined(__p)
+// Valid ONLY inside a purpose body; used elsewhere → E_DETERMINACY_INTRINSIC_SCOPE.
+
+AllGeometryDetermined(subject : Structure)
+// Compiler intrinsic — desugars at compile time to:
+//   forall __p in subject.geometric_params: determined(__p)
+// Valid ONLY inside a purpose body; used elsewhere → E_DETERMINACY_INTRINSIC_SCOPE.
+```
+
+Both intrinsics are recognized by the compiler and transformed into reflective `forall`
+quantifiers over the subject's param set at compile time (PRD §8.1).  They are **not**
+ordinary `constraint def` declarations — a `constraint def` cannot take a `Structure`
+entity-ref, and `.params` / `.geometric_params` reflective queries are valid only in
+purpose bodies.
+
+**`RepresentationWithin` — post-realization assertion:**
+
+`RepresentationWithin(subject, bound)` is a structural constraint placed directly in a
+structure body.  It asserts that the **sampled facet-chord deviation** of the realized
+mesh for `subject` does not exceed `bound` (a `Length` value).
+
+Semantics (three-valued, evaluated after `tessellate_realizations`):
+
+- **Satisfied** — maximum sampled facet-chord deviation ≤ `bound`.
+- **Violated** — at least one sampled facet-chord deviation > `bound`.
+- **Indeterminate** — `subject` was not realized (stub build without OCCT, or
+  realization not requested) → never a false `Violated` (C1 graceful degradation).
+
+> **PRD §8.3 caveat — sampled lower bound:** the metric is a sampled lower bound on the
+> true Hausdorff chord error (4 interior sample points per facet).  `Satisfied` means
+> "no sampled point exceeded the bound" — it is **not** an everywhere-within-tolerance
+> guarantee.  Use a finer `#precision` directive to reduce the measurement gap.
+
+```
+structure CheckSpec {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 1mm)  // Violated if sampled deviation > 1mm
+}
 ```
 
 **Example purposes (`std.determinacy.purposes`):**
