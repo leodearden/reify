@@ -696,6 +696,18 @@ pub(crate) fn compile_geometry_op(
                 match eval_named_arg("transform", kind, args, values, functions, meta_map, diagnostics) {
                     Some(v) => match decompose_transform_to_arrays(&v) {
                         Some((rotation, translation)) => {
+                            // NOTE: quaternion unit-length is NOT validated here.
+                            // `decompose_transform_to_arrays` is total and only checks
+                            // structural shape (Orientation variant, Vector translation,
+                            // correct dimension count).  Unit-norm enforcement is
+                            // intentionally delegated to the kernel's `build_trsf`
+                            // (OCCT layer — apply_transform_integration.rs case f).
+                            // A non-unit quaternion that reaches the kernel produces a
+                            // kernel-level `OperationFailed` error, which is surfaced as
+                            // a build diagnostic (not a panic).  This is an accepted
+                            // layering choice: early-reject requires a square-root in
+                            // the eval hot path for every transform, while the kernel
+                            // already must validate for correctness.
                             return Ok(reify_ir::GeometryOp::ApplyTransform {
                                 target: target_id,
                                 rotation,
@@ -6297,6 +6309,64 @@ mod tests {
             diag.message.contains("transform"),
             "diagnostic message must name the 'transform' arg; got: {:?}",
             diag.message
+        );
+    }
+
+    /// A non-unit quaternion (e.g. [2, 0, 0, 0]) must pass through the eval arm
+    /// as `Ok(GeometryOp::ApplyTransform{…})` — the eval seam does NOT validate
+    /// unit-length (see the layering note in the production arm above).
+    ///
+    /// The kernel (`build_trsf` in the OCCT layer) is responsible for rejecting
+    /// non-unit quaternions; it surfaces the rejection as a kernel-level
+    /// `OperationFailed` error, which the eval layer converts to a build diagnostic
+    /// (not a panic).  This test confirms the eval-to-kernel handoff contract:
+    /// eval always passes a structurally-valid Transform through, regardless of
+    /// whether its rotation has unit norm.
+    #[test]
+    fn compile_geometry_op_apply_transform_non_unit_quaternion_passthrough() {
+        // [2, 0, 0, 0] is structurally valid (Orientation variant) but not unit-norm.
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_transform([2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The eval arm must NOT panic and must return Ok — unit-norm is the kernel's job.
+        let geo_op = result.expect("non-unit quaternion must pass through eval arm as Ok");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(99));
+                // Rotation passed through as-is (eval does not normalize).
+                assert!((rotation[0] - 2.0).abs() < 1e-12, "rotation[0] must be 2.0");
+                assert!(rotation[1].abs() < 1e-12);
+                assert!(rotation[2].abs() < 1e-12);
+                assert!(rotation[3].abs() < 1e-12);
+                assert!(translation.iter().all(|&v| v.abs() < 1e-12));
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        // No diagnostic emitted by the eval arm for a structurally-valid Transform.
+        assert!(
+            diagnostics.is_empty(),
+            "eval arm must not emit diagnostics for a structurally-valid (non-unit) Transform; got: {:?}",
+            diagnostics
         );
     }
 
