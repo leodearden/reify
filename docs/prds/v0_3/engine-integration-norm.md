@@ -218,7 +218,7 @@ CN-contract owns §3.4 normatively. This PRD's §3.4 is a listing entry that def
 
 The relationship is hierarchical:
 - **CN-contract** = single-seam contract (the gold-standard exemplar of B+H for one seam).
-- **engine-integration-norm** = cross-seam meta-policy (the umbrella that lists CN as one entry among seven).
+- **engine-integration-norm** = cross-seam meta-policy (the umbrella that lists CN as one entry among the §3 seams).
 
 This PRD does **not** redefine ComputeNode dispatch rules; it cross-references them. Same shape as multi-kernel-phase-3 §6 (which clarifies its relationship to CN-contract).
 
@@ -269,7 +269,7 @@ The norm's two-way boundary: facing PRD authors (does the catalog drive correct 
 | Scenario | Preconditions | Postconditions |
 |---|---|---|
 | **Next kernel-module PRD passes G1 via §5 checklist.** | `/prd` skill `gates.md` references this PRD (§12 task β). | At PRD-resolve for a kernel-module PRD, the conversational walk includes the seam-naming step and surfaces a §3 entry. The PRD's prose names the seam, the call site, the signal. |
-| **PRD introducing a new seam triggers catalog addition.** | A PRD's mechanism doesn't fit §3.1–§3.7. | `/prd` G1 escalates to "add a §3 entry as part of this PRD's resolution"; the PRD's commit pairs the new seam with the catalog update. |
+| **PRD introducing a new seam triggers catalog addition.** | A PRD's mechanism doesn't fit §3.1–§3.8. | `/prd` G1 escalates to "add a §3 entry as part of this PRD's resolution"; the PRD's commit pairs the new seam with the catalog update. |
 | **Grandfather case is recordable.** | A PRD touches existing code that ships an orphan producer. | The PRD's task or follow-up adds `// G-allow:` marker citing §3.N and the future consumer task, instead of being unable to express "deferred but accountable." |
 
 These boundary tests are evaluated at PRD-author time by reading the produced PRD; no automated harness. F-infra (when it lands) will run §8.1 row 1 automatically.
