@@ -1,5 +1,6 @@
 #![allow(clippy::mutable_key_type)]
 //! Temporary diagnostic test - do not commit
+//! Writes debug output to /tmp/reify_envelope_debug.txt
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
@@ -18,29 +19,43 @@ fn diagnose_envelope_issue() {
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     let eval_result = engine.eval(&compiled);
 
+    let mut output = String::new();
+
     let errors: Vec<_> = eval_result.diagnostics.iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    eprintln!("ERRORS: {:?}", errors);
+    output.push_str(&format!("ERRORS: {:?}\n", errors));
+
+    let warnings: Vec<_> = eval_result.diagnostics.iter()
+        .filter(|d| d.severity != Severity::Error)
+        .collect();
+    output.push_str(&format!("WARNINGS/INFO count: {}\n", warnings.len()));
 
     let results_cell = ValueCellId::new("MultiLoadBracket", "results");
     let results_val = eval_result.values.get(&results_cell);
-    eprintln!("RESULTS type: {:?}", results_val.map(std::mem::discriminant));
+    output.push_str(&format!("RESULTS type: {:?}\n", results_val.map(std::mem::discriminant)));
     if let Some(Value::Map(outer)) = results_val {
-        eprintln!("RESULTS outer keys: {:?}", outer.keys().collect::<Vec<_>>());
+        output.push_str(&format!("RESULTS outer keys: {:?}\n", outer.keys().collect::<Vec<_>>()));
         if let Some(Value::Map(inner)) = outer.get(&Value::String("cases".to_string())) {
-            eprintln!("CASES count: {}", inner.len());
+            output.push_str(&format!("CASES count: {}\n", inner.len()));
             for (k, v) in inner {
-                eprintln!("  CASE {:?}: {:?}", k, std::mem::discriminant(v));
+                output.push_str(&format!("  CASE {:?}: {:?}\n", k, std::mem::discriminant(v)));
                 if let Value::StructureInstance(data) = v {
                     let fields: Vec<&String> = data.fields.keys().collect();
-                    eprintln!("    FIELDS: {:?}", fields);
-                    if let Some(Value::Field { source, lambda, .. }) = data.fields.get("stress") {
-                        eprintln!("    STRESS source: {:?}", source);
-                        if let Value::SampledField(sf) = lambda.as_ref() {
-                            eprintln!("    STRESS data.len={} axis_grids={:?}", 
-                                sf.data.len(),
-                                sf.axis_grids.iter().map(|g| g.len()).collect::<Vec<_>>());
+                    output.push_str(&format!("    FIELDS: {:?}\n", fields));
+                    if let Some(stress) = data.fields.get("stress") {
+                        output.push_str(&format!("    STRESS type: {:?}\n", std::mem::discriminant(stress)));
+                        if let Value::Field { source, codomain_type, lambda, .. } = stress {
+                            output.push_str(&format!("    STRESS source: {:?}\n", source));
+                            output.push_str(&format!("    STRESS codomain: {:?}\n", codomain_type));
+                            if let Value::SampledField(sf) = lambda.as_ref() {
+                                output.push_str(&format!("    STRESS data.len={}\n", sf.data.len()));
+                                output.push_str(&format!("    STRESS axis_grids lengths: {:?}\n",
+                                    sf.axis_grids.iter().map(|g| g.len()).collect::<Vec<_>>()));
+                                let grid_count: usize = sf.axis_grids.iter().map(|g| g.len()).product();
+                                output.push_str(&format!("    STRESS grid_count={} data_check={}\n",
+                                    grid_count, sf.data.len() == grid_count * 9));
+                            }
                         }
                     }
                 }
@@ -50,6 +65,14 @@ fn diagnose_envelope_issue() {
 
     let envelope_cell = ValueCellId::new("MultiLoadBracket", "envelope");
     let envelope_val = eval_result.values.get(&envelope_cell);
-    eprintln!("ENVELOPE type: {:?}", envelope_val.map(std::mem::discriminant));
-    panic!("diagnostic complete");
+    output.push_str(&format!("ENVELOPE type: {:?}\n", envelope_val.map(std::mem::discriminant)));
+
+    let peak_stress_cell = ValueCellId::new("MultiLoadBracket", "peak_stress");
+    let peak_stress_val = eval_result.values.get(&peak_stress_cell);
+    output.push_str(&format!("PEAK_STRESS type: {:?}\n", peak_stress_val.map(std::mem::discriminant)));
+
+    // Write to file and fail
+    std::fs::write("/tmp/reify_envelope_debug.txt", &output).expect("failed to write debug file");
+
+    panic!("Diagnostic complete — check /tmp/reify_envelope_debug.txt");
 }
