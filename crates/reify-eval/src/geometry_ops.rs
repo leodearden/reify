@@ -12040,6 +12040,143 @@ mod tests {
         );
     }
 
+    // ── Shell open curated-face eval-arm tests (γ step-3) ──────────────────
+
+    /// (a) Shell with an `open_faces` arg whose expression evaluates to a
+    /// `Value::List` of `Value::GeometryHandle` sub-handles threads the
+    /// canonical face ids (ascending kernel_handle order, deduped) onto
+    /// `GeometryOp::Shell.open_face_handles` and leaves `faces_to_remove`
+    /// empty.  Supplies two handles in REVERSE order so the canonical-sort
+    /// is observable (h7 < h42 → sorted [7, 42]).
+    /// Mirrors `compile_geometry_op_draft_4arg_faces_threads_canonical_handles`.
+    #[test]
+    fn compile_geometry_op_shell_open_curated_faces_threads_canonical_handles() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                (
+                    "open_faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Shell {
+                open_face_handles,
+                faces_to_remove,
+                ..
+            }) => {
+                assert_eq!(
+                    open_face_handles,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "open_face_handles must be canonically sorted (ascending \
+                     kernel_handle id), got {:?}",
+                    open_face_handles
+                );
+                assert!(
+                    faces_to_remove.is_empty(),
+                    "curated shell_open must produce an empty faces_to_remove, \
+                     got {:?}",
+                    faces_to_remove
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Shell) for shell with curated open_faces, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-faces shell_open must NOT emit EmptyEdgeSelection, \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) Dedup + ordering: duplicate and reverse-order open_face handles
+    /// are canonicalized to a sorted, deduped Vec<GeometryHandleId>.
+    /// Mirrors the draft test's reverse-order / dedup case.
+    #[test]
+    fn compile_geometry_op_shell_open_dedup_and_order_canonical() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // h99, h3, h99 (duplicate), h15 in arbitrary order
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Shell,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("thickness".into(), literal_length(0.001)),
+                (
+                    "open_faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(99),
+                        GeometryHandleId(3),
+                        GeometryHandleId(99),
+                        GeometryHandleId(15),
+                    ]),
+                ),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Shell {
+                open_face_handles, ..
+            }) => {
+                assert_eq!(
+                    open_face_handles,
+                    vec![
+                        GeometryHandleId(3),
+                        GeometryHandleId(15),
+                        GeometryHandleId(99)
+                    ],
+                    "deduped+sorted open_face_handles expected [3, 15, 99], \
+                     got {:?}",
+                    open_face_handles
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Shell) for shell_open dedup/order \
+                 test, got {:?}",
+                other
+            ),
+        }
+    }
+
     // ── validate_pattern_count upper-bound tests ──────────────────────────────
 
     #[test]
