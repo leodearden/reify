@@ -127,6 +127,26 @@ fn text<'a>(node: tree_sitter::Node, source: &'a [u8]) -> &'a str {
     std::str::from_utf8(&source[node.start_byte()..node.end_byte()]).unwrap()
 }
 
+/// Read a gate fixture from `test/fixtures/<name>` and return its bytes.
+#[allow(dead_code)]
+fn read_fixture(name: &str) -> Vec<u8> {
+    let path = format!("{}/test/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read fixture {path}: {e}"))
+}
+
+/// Assert a named gate fixture parses with zero ERROR/MISSING nodes.
+#[allow(dead_code)]
+fn assert_fixture_parses_clean(name: &str) {
+    let source = read_fixture(name);
+    let mut parser = make_parser();
+    let tree = parser.parse(&source, None).expect("parse failed");
+    assert!(
+        !tree.root_node().has_error(),
+        "fixture {name} must parse with zero ERROR nodes; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
+
 // ── Regression baselines: bare `auto` / `auto(free)` (GREEN before and after) ──
 
 /// Baseline: bare `auto` at the param-default binding site parses to an
@@ -251,4 +271,89 @@ fn auto_param_multi_component_fix_parses() {
             "every auto_param must expose a `value` field"
         );
     }
+}
+
+// ── step-3 (RED until step-4): `at auto` / `at auto(…)` at the sub pose ───────
+
+/// `sub b : B at auto` — the bare-auto pose-binding — parses so the
+/// sub_declaration's `pose` field child is an `auto_keyword`, NO ERROR. RED:
+/// `auto` is not accepted at the pose (an `_expression`) position on the base
+/// grammar (the external scanner emits AUTO_TOKEN out-of-valid → ERROR).
+#[test]
+fn sub_at_auto_bare_parses() {
+    let source = b"structure S { sub b : B at auto }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+    let pose = sub
+        .child_by_field_name("pose")
+        .expect("sub_declaration must expose a `pose` field for `at auto`");
+    assert_eq!(
+        pose.kind(),
+        "auto_keyword",
+        "`at auto` pose field must be an auto_keyword, got {}",
+        pose.kind()
+    );
+}
+
+/// `sub b : B at auto(free)` — pose field is an auto_keyword carrying the
+/// `modifier` (free) child. RED until step-4.
+#[test]
+fn sub_at_auto_free_parses() {
+    let source = b"structure S { sub b : B at auto(free) }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+    let pose = sub.child_by_field_name("pose").expect("pose field missing");
+    assert_eq!(pose.kind(), "auto_keyword");
+    assert!(
+        pose.child_by_field_name("modifier").is_some(),
+        "`at auto(free)` pose must carry a `modifier` child"
+    );
+}
+
+/// `sub b : B at auto(seed = self.frame)` — pose field is an auto_keyword
+/// carrying an auto_param_list. RED until step-4.
+#[test]
+fn sub_at_auto_seed_parses() {
+    let source = b"structure S { sub b : B at auto(seed = self.frame) }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+    let pose = sub.child_by_field_name("pose").expect("pose field missing");
+    assert_eq!(pose.kind(), "auto_keyword");
+    assert!(
+        find_node_by_kind(pose, "auto_param_list").is_some(),
+        "`at auto(seed = …)` pose must carry an auto_param_list"
+    );
+    let params = find_all_nodes_by_kind(pose, "auto_param");
+    assert_eq!(params.len(), 1);
+    assert_eq!(
+        text(params[0].child_by_field_name("name").unwrap(), source),
+        "seed"
+    );
+}
+
+/// Regression: a concrete `at <expr>` pose (e.g. `at frame3(o, b)`) still parses
+/// to a `pose` field that is NOT an auto_keyword. GREEN before and after step-4.
+#[test]
+fn sub_at_concrete_pose_still_parses() {
+    let source = b"structure S { sub b : B at frame3(o, b) }";
+    let tree = parse_clean(source);
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("sub_declaration not found");
+    let pose = sub.child_by_field_name("pose").expect("pose field missing");
+    assert_ne!(
+        pose.kind(),
+        "auto_keyword",
+        "a concrete `at frame3(...)` pose must NOT lower to auto_keyword"
+    );
+    assert_eq!(pose.kind(), "function_call");
+}
+
+/// Consolidated gate: gr-03-auto-param.ri (only `at auto(...)` forms) parses
+/// with zero ERROR nodes once steps 2 + 4 land. RED until step-4.
+#[test]
+fn gate_gr03_auto_param_fixture_parses_clean() {
+    assert_fixture_parses_clean("gr-03-auto-param.ri");
 }
