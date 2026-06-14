@@ -8,6 +8,7 @@ CLI main() in hermetic golden tests — real subprocess probes are skip-guarded.
 """
 
 import importlib.util
+import io
 import json
 import os
 import shlex
@@ -930,6 +931,225 @@ class TestHarnessExitCode(unittest.TestCase):
             pcc.harness_exit_code(results1),
             pcc.harness_exit_code(results2),
         )
+
+
+# ---------------------------------------------------------------------------
+# step-13 (RED): main(argv) integration + skip-guarded real e2e
+# ---------------------------------------------------------------------------
+
+# Helper: parser.c path for the skip-guard
+_TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parser.c")
+_REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
+_REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
+_REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
+_TS_GRAMMAR_AVAILABLE = os.path.isfile(_TS_GRAMMAR_PARSER)
+
+
+class TestMain(unittest.TestCase):
+    """Tests for main(argv) integration — hermetic + skip-guarded real e2e.
+
+    Most tests FAIL until step-14 implements main() properly (currently a stub
+    that returns 64 for any valid probe-set path).
+    """
+
+    def _run_main_capturing(self, argv, runner=None):
+        """Run main() with stdout/stderr captured.
+
+        Returns (exit_code, stdout_text, stderr_text).
+        If runner is not None, patches pcc.run_probe with it.
+        """
+        buf_out = io.StringIO()
+        buf_err = io.StringIO()
+        with unittest.mock.patch("sys.stdout", buf_out), \
+             unittest.mock.patch("sys.stderr", buf_err):
+            if runner is not None:
+                with unittest.mock.patch.object(pcc, "run_probe", side_effect=runner):
+                    rc = pcc.main(argv)
+            else:
+                rc = pcc.main(argv)
+        return rc, buf_out.getvalue(), buf_err.getvalue()
+
+    def _make_runner(self, by_kind):
+        """Stub runner that dispatches by probe.probe_kind."""
+        def runner(probe: Any) -> Any:
+            exit_code, stdout, stderr = by_kind[probe.probe_kind]
+            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        return runner
+
+    def _all_pass_runner(self):
+        """Runner that causes all three probe kinds in example-probe-set.json to PASS.
+
+        example-probe-set.json probes:
+          grammar: expected present → need exit 0 (PRESENT)
+          check:   expected present, match {exit_code: 1} → need exit 1 (match → PRESENT)
+          ir:      expected absent,  match {stderr_contains: 'EvalError'} → need exit 0 (ABSENT)
+        """
+        return self._make_runner({
+            "grammar": (0, "", ""),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+
+    def _check_fail_runner(self):
+        """Runner that makes the check probe FAIL (reify silent-accept)."""
+        return self._make_runner({
+            "grammar": (0, "", ""),
+            "check":   (0, "All constraints satisfied.", ""),  # exit 0 → no rejection → ABSENT
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+
+    # ── arg / IO errors → 64 ─────────────────────────────────────────────────
+
+    def test_main_no_args_exits_64(self):
+        """main([]) → 64 (usage error, argparse)."""
+        rc, _, _ = self._run_main_capturing([])
+        self.assertEqual(rc, 64)
+
+    def test_main_missing_file_exits_64(self):
+        """main(["/nonexistent/probe-set.json"]) → 64 (IO error reading file)."""
+        rc, _, _ = self._run_main_capturing(["/nonexistent/probe-set.json"])
+        self.assertEqual(rc, 64)
+
+    def test_main_bad_json_exits_64(self):
+        """main([<file with invalid JSON>]) → 64 (parse error)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write("not json at all")
+            tmp = f.name
+        try:
+            rc, _, _ = self._run_main_capturing([tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 64)
+
+    # ── hermetic: exit code matches harness_exit_code ─────────────────────────
+
+    def test_main_all_pass_returns_0(self):
+        """main() over probe set with all-PASS stubs → exit code 0."""
+        rc, _, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertEqual(rc, 0)
+
+    def test_main_with_fail_returns_1(self):
+        """main() with a FAIL result (check silent-accept) → exit code 1."""
+        rc, _, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._check_fail_runner()
+        )
+        self.assertEqual(rc, 1)
+
+    # ── human output: mandatory evidence per probe ────────────────────────────
+
+    def test_main_output_contains_verdict(self):
+        """Human output contains the verdict string for each probe."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertIn(pcc.PASS, out, "output must contain 'PASS' verdict")
+
+    def test_main_output_contains_command(self):
+        """Human output contains the probe command (reify or tree-sitter)."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        has_cmd = "reify" in out or "tree-sitter" in out
+        self.assertTrue(has_cmd, "output must show the probe command")
+
+    def test_main_output_contains_exit_code_evidence(self):
+        """Human output contains the captured exit code for each probe."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        # Exit codes 0 and 1 appear in stdout evidence
+        self.assertTrue("0" in out or "1" in out, "output must include exit codes")
+
+    def test_main_output_contains_capability(self):
+        """Human output contains each probe's capability name."""
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertIn("arrow-type", out, "output must include probe capability names")
+
+    # ── --json output ─────────────────────────────────────────────────────────
+
+    def test_main_json_is_parseable(self):
+        """main() --json emits parseable JSON to stdout."""
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        try:
+            json.loads(out)
+        except json.JSONDecodeError as e:
+            self.fail(f"--json output is not valid JSON: {e}\nGot: {out!r}")
+
+    def test_main_json_has_required_fields(self):
+        """--json results carry capability/probe_kind/verdict/command/exit_code/stdout/stderr."""
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        data = json.loads(out)
+        # Accept either a list or {"results": [...]}
+        items = data if isinstance(data, list) else data.get("results", [])
+        self.assertGreater(len(items), 0, "--json must include at least one result")
+        first = items[0]
+        for fld in ("capability", "probe_kind", "verdict", "command",
+                    "exit_code", "stdout", "stderr"):
+            self.assertIn(fld, first, f"--json result must include '{fld}'")
+
+    def test_main_json_verdict_is_string(self):
+        """--json result.verdict is a string."""
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        data = json.loads(out)
+        items = data if isinstance(data, list) else data.get("results", [])
+        self.assertIsInstance(items[0]["verdict"], str)
+
+    # ── skip-guarded real e2e (reify binary) ──────────────────────────────────
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip real check e2e")
+    def test_e2e_revolute_silent_accept_is_fail(self):
+        """Real reify check: silent-accept (§3 4575) probe → FAIL (reify exits 0, stable)."""
+        probe_json = json.dumps({"probes": [{
+            "capability": "arg-vs-param rejection (4575 — should FAIL)",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "expected": {"observation": "present", "match": {"exit_code": 1}},
+        }]})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(probe_json)
+            tmp = f.name
+        try:
+            rc, out, _ = self._run_main_capturing([tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1, "revolute silent-accept → FAIL (exit 1)")
+        self.assertIn(pcc.FAIL, out)
+
+    # ── skip-guarded real e2e (tree-sitter grammar) ───────────────────────────
+
+    @unittest.skipUnless(
+        _TS_GRAMMAR_AVAILABLE,
+        "tree-sitter-reify/src/parser.c not found; skip grammar e2e",
+    )
+    def test_e2e_arrow_type_grammar_is_fail(self):
+        """Real tree-sitter parse: arrow_type.ri with expected present → FAIL (exit 1, stable)."""
+        probe_json = json.dumps({"probes": [{
+            "capability": "arrow-type grammar (3979 — should FAIL)",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {"observation": "present", "match": {}},
+        }]})
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(probe_json)
+            tmp = f.name
+        try:
+            rc, out, _ = self._run_main_capturing([tmp])
+        finally:
+            os.unlink(tmp)
+        # tree-sitter exits 1 for arrow_type.ri (grammar rejects it) → ABSENT
+        # expected present → FAIL
+        self.assertEqual(rc, 1, "arrow_type.ri with expected present → FAIL (exit 1)")
+        self.assertIn(pcc.FAIL, out)
 
 
 if __name__ == "__main__":
