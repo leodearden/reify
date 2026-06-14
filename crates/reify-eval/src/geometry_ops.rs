@@ -3725,7 +3725,7 @@ fn eval_named_leaf_selector_ctor(
 /// indexing (`faces(b)[i]`, filtered == canonical) and single-element
 /// `single(predicate(...))` — filtered position equals the intended element.
 /// Canonical-index recovery for multi-element predicate `[i]` is a follow-up.
-fn resolve_selector_to_list(
+pub(crate) fn resolve_selector_to_list(
     selector_expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
