@@ -761,6 +761,50 @@ mod tests {
         );
     }
 
+    /// When the operand shape is uncurated, `relation_delta_dof` returns `None`
+    /// and the contract renders the count as `?` (the `'?'` fallback path).
+    /// `coincident` over a non-datum operand (`Geometry`) has no codimension in
+    /// the table → `... removes ?`.
+    #[test]
+    fn relation_contract_string_unknown_delta_renders_question_mark() {
+        let args = [arg(Type::Geometry), arg(Type::Geometry)];
+        // Precondition: this shape genuinely has no curated ΔDOF.
+        assert_eq!(
+            relation_delta_dof("coincident", &args),
+            None,
+            "coincident(Geometry, Geometry) must be uncurated for this test to exercise '?'"
+        );
+        let contract = relation_contract_string("coincident", &args);
+        assert!(
+            contract.ends_with("removes ?"),
+            "uncurated ΔDOF must render the count as '?', got: {contract}"
+        );
+    }
+
+    /// `format_relation_arg_ty` collapses the dimensional suffix of `Point`/`Frame`
+    /// operands to the bare datum name (a `Point3<Length>` renders as `Point`, a
+    /// `Frame(3)` as `Frame`) — they do not Display short on their own. The metric
+    /// slot still renders by its dimension name.
+    #[test]
+    fn relation_contract_string_collapses_point_and_frame_suffix() {
+        // distance(Point, Point, Length): Point operands collapse to bare "Point".
+        let dist = [
+            arg(Type::point3(Type::length())),
+            arg(Type::point3(Type::length())),
+            arg(Type::length()),
+        ];
+        assert_eq!(
+            relation_contract_string("distance", &dist),
+            "distance(Point,Point,Length) -> Relation removes 1"
+        );
+        // coincident(Frame, Frame): Frame operands collapse to bare "Frame".
+        let frames = [arg(Type::Frame(3)), arg(Type::Frame(3))];
+        assert_eq!(
+            relation_contract_string("coincident", &frames),
+            "coincident(Frame,Frame) -> Relation removes 6"
+        );
+    }
+
     // ── Policing layers: check_relation_arg_types (step-5 RED / step-6 GREEN) ─
     //
     // A pure side-effect on `diagnostics` mirroring
@@ -966,5 +1010,84 @@ mod tests {
         let mut diags = Vec::new();
         check_relation_arg_types("volume", &[arg(Type::Geometry)], span(), &mut diags);
         assert!(diags.is_empty(), "unrecognized name must be a no-op, got: {diags:?}");
+    }
+
+    // ── relation_contract_for_call: the LSP-facing traversal ─────────────────
+    //
+    // `relation_contract_for_call` is the compiler-side walk backing reify-lsp's
+    // hover signal: it scopes to the enclosing decl, traverses each value cell's
+    // (and guarded-group member's) compiled expr tree pre-order, and renders the
+    // contract for the first relation `FunctionCall` — with the arity-2
+    // `angle`/`distance` DERIVE forms excluded via `relation_fn_result_type`.
+    // The pure-function tests above never reach this control flow, so these cases
+    // exercise it directly over a real `CompiledModule`.
+
+    /// Compile `source` through the crate's OWN stdlib entry points. NOTE: this
+    /// must NOT go through `reify_test_support::compile_source_with_stdlib` — the
+    /// crate's `[dev-dependencies]` self-pull (`reify-compiler { features =
+    /// ["test-support"] }`) puts two `reify_compiler` instances in the unit-test
+    /// graph, and that helper returns the *external* instance's `CompiledModule`,
+    /// which would not unify with `crate::CompiledModule` here (E0308). Building
+    /// via `crate::parse_with_stdlib` + `crate::compile_with_stdlib` keeps the
+    /// module in the internal instance so `relation_contract_for_call` accepts it.
+    fn compile_module(source: &str) -> crate::CompiledModule {
+        let parsed = crate::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
+        crate::compile_with_stdlib(&parsed)
+    }
+
+    /// A relation call in a value cell is found and its contract rendered, both
+    /// when scoped to the enclosing decl and when searching every template.
+    #[test]
+    fn relation_contract_for_call_finds_relation_in_value_cell() {
+        let module = compile_module(
+            "structure S {\n    param a : Axis\n    param b : Axis\n    let r = concentric(a, b)\n}",
+        );
+        let expected = Some("concentric(Axis,Axis) -> Relation removes 4".to_string());
+        assert_eq!(
+            relation_contract_for_call(&module, "concentric", Some("S")),
+            expected,
+            "must find the concentric call in S's value cell and render its contract"
+        );
+        // `None` enclosing_decl searches every template and finds the same call.
+        assert_eq!(
+            relation_contract_for_call(&module, "concentric", None),
+            expected,
+            "unscoped search must also find the concentric call"
+        );
+    }
+
+    /// The arity-2 `distance(p1, p2)` DERIVE form is a geometry query, not a
+    /// relation: `relation_fn_result_type` returns `None` for it, so the
+    /// traversal's relation filter excludes it and the contract is `None`.
+    #[test]
+    fn relation_contract_for_call_excludes_arity2_distance() {
+        let module = compile_module(
+            "structure S {\n    param p1 : Point3<Length>\n    param p2 : Point3<Length>\n    \
+             let d = distance(p1, p2)\n}",
+        );
+        assert_eq!(
+            relation_contract_for_call(&module, "distance", Some("S")),
+            None,
+            "arity-2 distance(p1, p2) is a geometry query — must be excluded from hover"
+        );
+    }
+
+    /// `enclosing_decl` scopes the search: a call living in `S` is invisible when
+    /// the search is scoped to a sibling template `T` that does not contain it.
+    #[test]
+    fn relation_contract_for_call_scopes_to_enclosing_decl() {
+        let module = compile_module(
+            "structure S {\n    param a : Axis\n    param b : Axis\n    let r = concentric(a, b)\n}\n\
+             structure T {\n    param x : Axis\n}",
+        );
+        assert_eq!(
+            relation_contract_for_call(&module, "concentric", Some("T")),
+            None,
+            "concentric lives in S — scoping the search to T must find nothing"
+        );
+        assert!(
+            relation_contract_for_call(&module, "concentric", Some("S")).is_some(),
+            "scoping the search to S must still find the concentric call"
+        );
     }
 }
