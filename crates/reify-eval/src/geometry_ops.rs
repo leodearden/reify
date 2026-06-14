@@ -908,7 +908,27 @@ pub(crate) fn compile_geometry_op(
                                     }
                                 }
                                 let resolved = canonical_subhandle_ids(raw_ids);
-                                // Empty-selection guard added in step-6 (γ).
+                                // ANTI-ZERO-FACES: a present selector that
+                                // resolves to ZERO faces must NEVER silently
+                                // fall through to the all-faces path (the
+                                // task-3295 fake-done trap, γ step-6).
+                                // Emit a blocking E_EMPTY_SELECTION and Err.
+                                if resolved.is_empty() {
+                                    diagnostics.push(
+                                        Diagnostic::error(
+                                            "shell_open(solid, thickness, open_faces): \
+                                             face selector resolved to zero faces — \
+                                             refusing to silently shell all faces",
+                                        )
+                                        .with_code(
+                                            reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                        ),
+                                    );
+                                    return Err(
+                                        "shell_open: face selector resolved to zero faces"
+                                            .to_string(),
+                                    );
+                                }
                                 return Ok(reify_ir::GeometryOp::Shell {
                                     target: target_id,
                                     thickness,
