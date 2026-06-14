@@ -26,7 +26,7 @@
 //! `relation_signatures.rs` / `joint_signatures.rs` convention).
 
 use crate::relation_signatures::relation_delta_dof_kinds;
-use reify_core::{DimensionVector, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// A rotational/translational DOF split. `rot + trans` is the total DOF count.
@@ -110,6 +110,76 @@ pub(crate) fn declared_kinds(declared: &[Type]) -> (DofKinds, Vec<Type>) {
         }
     }
     (DofKinds::new(rot, trans), unclassified)
+}
+
+/// Render a `DofKinds` as the human-readable declared-DOF phrase used in the
+/// mismatch message: `(1, 0)` → "declared 1 rotational free DOF", `(1, 1)` →
+/// "declared 1 rotational + 1 translational free DOF", `(0, 0)` → "declared no
+/// free DOF".
+fn describe_declared(d: DofKinds) -> String {
+    match (d.rot, d.trans) {
+        (0, 0) => "declared no free DOF".to_string(),
+        (r, 0) => format!("declared {r} rotational free DOF"),
+        (0, t) => format!("declared {t} translational free DOF"),
+        (r, t) => format!("declared {r} rotational + {t} translational free DOF"),
+    }
+}
+
+/// Compare a joint's declared free DOF against the body's geometric residual by
+/// exact-integer COUNT and KIND. Returns `None` when they match exactly
+/// (`declared == residual`), or `Some(diagnostic)` coded
+/// [`DiagnosticCode::JointDofMismatch`] (`Severity::Error`) describing the
+/// disagreement and a geometric remedy.
+///
+/// The remedy names the residual freedoms the declaration fails to cover: an
+/// unmatched translational residual suggests `declare travel: Length`; an
+/// unmatched rotational residual suggests `declare angle: Angle`. When the
+/// declaration over-specifies (more declared freedom than the body leaves), the
+/// remedy is to add a constraint or drop a declared DOF.
+///
+/// Pure-integer — there is no tolerance (PRD §12 G6 numeric-floor is N/A). An
+/// empty body has residual `(3, 3)`, so it can never match a sane declaration
+/// and falls out here as a mismatch (no bespoke empty-body code needed).
+pub(crate) fn check_joint_dof(
+    joint_name: &str,
+    declared: DofKinds,
+    residual: DofKinds,
+    span: SourceSpan,
+) -> Option<Diagnostic> {
+    if declared == residual {
+        return None;
+    }
+
+    // Remedy hints: name the residual freedoms the declaration leaves uncovered.
+    let mut hints: Vec<&str> = Vec::new();
+    if residual.rot > declared.rot {
+        hints.push("angle: Angle");
+    }
+    if residual.trans > declared.trans {
+        hints.push("travel: Length");
+    }
+    let remedy = if hints.is_empty() {
+        "add a constraint to the body or drop a declared DOF".to_string()
+    } else {
+        format!("add a constraint or declare {}", hints.join(" and "))
+    };
+
+    let msg = format!(
+        "joint `{joint_name}`: {declared_desc}, but the relation leaves {rr} rot + {rt} trans; \
+         {remedy}",
+        declared_desc = describe_declared(declared),
+        rr = residual.rot,
+        rt = residual.trans,
+    );
+    let label = format!(
+        "declared ({}, {}) but the body's residual is ({}, {})",
+        declared.rot, declared.trans, residual.rot, residual.trans
+    );
+    Some(
+        Diagnostic::error(msg)
+            .with_code(DiagnosticCode::JointDofMismatch)
+            .with_label(DiagnosticLabel::new(span, label)),
+    )
 }
 
 #[cfg(test)]
