@@ -918,6 +918,7 @@ pub(crate) fn compile_geometry_op(
                         target: target_id,
                         thickness,
                         faces_to_remove,
+                        open_face_handles: vec![],
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {

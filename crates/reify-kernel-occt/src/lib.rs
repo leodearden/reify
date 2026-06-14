@@ -2440,6 +2440,7 @@ impl OcctKernel {
                 target,
                 thickness,
                 faces_to_remove,
+                open_face_handles: _open_face_handles,
             } => {
                 let shape = self.get_shape(*target)?;
                 let th = extract_f64(thickness)?;
@@ -6225,6 +6226,7 @@ mod tests {
                 target: box_h.id,
                 thickness: Value::Real(1.0),
                 faces_to_remove: vec![0],
+                open_face_handles: vec![],
             })
             .unwrap();
         let vol = kernel.query(&GeometryQuery::Volume(shell_h.id)).unwrap();
