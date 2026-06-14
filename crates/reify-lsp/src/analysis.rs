@@ -59,6 +59,16 @@ pub struct AnalysisContext {
     pub parsed: Arc<ParsedModule>,
     pub compiled: CompiledModule,
     pub check_result: CheckResult,
+    /// Retained post-`check` engine with `set_capture_undef_causes(true)` enabled.
+    ///
+    /// Retained so that `undef_cause_line` can call `trace_undef_causes` on demand
+    /// without a second `eval` pass — `check` already ran `eval` and populated the
+    /// snapshot + `last_undef_causes` side-map (PRD ζ design decision §3).
+    ///
+    /// Send-safe: the server's hover handler creates `ctx` after its last `.await`
+    /// and never holds it across a suspend point (server.rs:268-284); Engine is
+    /// composed of `Send+Sync` parts (ConstraintChecker + kernels).
+    engine: reify_eval::Engine,
 }
 
 impl AnalysisContext {
@@ -87,12 +97,20 @@ impl AnalysisContext {
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
+        // and last_undef_causes side-map are populated by the eval pass that
+        // `check` calls internally.  Capture is additive (PRD A1 transparency):
+        // check_result.values, determinacy, and constraint outcomes are
+        // byte-identical whether or not capture is on — all existing tests
+        // continue to pass.
+        engine.set_capture_undef_causes(true);
         let check_result = engine.check(&compiled);
 
         Self {
             parsed,
             compiled,
             check_result,
+            engine,
         }
     }
 
@@ -292,6 +310,22 @@ impl AnalysisContext {
             Declaration::Purpose(p) => Some(p.name.as_str()),
             _ => None,
         })
+    }
+
+    /// Return a cause-set line for an undef member, or `None` when determined.
+    ///
+    /// Traces the complete set of root [`reify_ir::UndefCause`]s for the cell
+    /// `(entity, member)` using the retained post-`check` engine (which ran with
+    /// `set_capture_undef_causes(true)`).  Formats them via the shared
+    /// [`reify_eval::format_undef_causes`] and wraps the body as
+    /// `"undef because: <body>"` — the LSP-specific framing (PRD §11 Q5 "surfaces wrap").
+    ///
+    /// Returns `None` when the cause set is empty (cell is determined, or the
+    /// cell id is not part of the module).
+    pub fn undef_cause_line(&self, entity: &str, member: &str) -> Option<String> {
+        let id = ValueCellId::new(entity, member);
+        let causes = self.engine.trace_undef_causes(&id);
+        reify_eval::format_undef_causes(&causes).map(|body| format!("undef because: {body}"))
     }
 
     /// Surface the ΔDOF contract for a geometric-relation builtin call named
@@ -2487,6 +2521,43 @@ fn area(w: Length) -> Length { w }"#;
             source.find("beta"),
         );
         assert!(span.is_empty(), "fallback span must be empty");
+    }
+
+    // ── undef_cause_line tests ─────────────────────────────────────────────────
+
+    /// (a) An unbound required param → undef_cause_line returns Some(line) that
+    /// contains "because", the member name, and "unbound".
+    #[test]
+    fn undef_cause_line_unbound_param_returns_cause() {
+        let source = "structure S {\n    param outer_d: Length\n}";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let line = ctx
+            .undef_cause_line("S", "outer_d")
+            .expect("unbound param should have a cause line");
+        assert!(
+            line.to_lowercase().contains("because"),
+            "cause line should contain 'because', got: {line:?}"
+        );
+        assert!(
+            line.contains("outer_d"),
+            "cause line should contain the member name 'outer_d', got: {line:?}"
+        );
+        assert!(
+            line.contains("unbound"),
+            "cause line should contain 'unbound', got: {line:?}"
+        );
+    }
+
+    /// (b) A determined param (bracket_source width = 80mm) → undef_cause_line returns None.
+    #[test]
+    fn undef_cause_line_determined_param_returns_none() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let line = ctx.undef_cause_line("Bracket", "width");
+        assert!(
+            line.is_none(),
+            "determined param should return None, got: {line:?}"
+        );
     }
 
 }
