@@ -2496,4 +2496,110 @@ mod tests {
             "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
         );
     }
+
+    // ── task 4235 ζ: type_carries_dim_param + overload dim-param wildcard ─────
+
+    /// Helper: ScalarParam shorthand.
+    fn sp(name: &str) -> Type {
+        Type::ScalarParam(name.to_string())
+    }
+
+    /// `type_carries_dim_param(ScalarParam("Q"))` must return true.
+    ///
+    /// RED until step-6: the function does not exist (compile error).
+    #[test]
+    fn type_carries_dim_param_bare_scalar_param_is_true() {
+        assert!(
+            type_carries_dim_param(&sp("Q")),
+            "ScalarParam should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Vector3<ScalarParam("Q")>)` must return true
+    /// (dim-param in the quantity slot).
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_vector3_quantity_is_true() {
+        let vec3_q = Type::Vector { n: 3, quantity: Box::new(sp("Q")) };
+        assert!(
+            type_carries_dim_param(&vec3_q),
+            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Scalar{LENGTH})` must return false.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_concrete_scalar_is_false() {
+        assert!(
+            !type_carries_dim_param(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(TypeParam("T"))` must return false — a type-param
+    /// is not a dimension-param.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_type_param_is_false() {
+        assert!(
+            !type_carries_dim_param(&tp("T")),
+            "TypeParam should NOT carry a dim-param"
+        );
+    }
+
+    /// Overload wildcard for dim-param: `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
+    /// called with `(Scalar{LENGTH}, Real)` must resolve to Resolved.
+    ///
+    /// RED until step-6: the wildcard predicate only checks type_carries_type_param,
+    /// which returns false for ScalarParam → NoMatch.
+    #[test]
+    fn overload_selects_generic_candidate_with_scalar_param() {
+        let scale_q = make_generic_fn(
+            "scale_q",
+            vec![("x", sp("Q")), ("k", Type::dimensionless_scalar())],
+            &["Q"],
+            sp("Q"),
+        );
+        let fns = vec![scale_q];
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_q",
+                    &[Type::Scalar { dimension: DimensionVector::LENGTH }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic scale_q<Q> should resolve against (Scalar{{LENGTH}}, Real)"
+        );
+    }
+
+    /// INV-6 regression: a non-generic all-concrete fn still resolves only on
+    /// exact match — adding the dim-param wildcard must not break this.
+    ///
+    /// GREEN before step-6 too (the non-generic branch is unaffected).
+    #[test]
+    fn overload_non_generic_concrete_fn_still_requires_exact_match() {
+        let concrete = make_fn(
+            "scale_concrete",
+            vec![("x", Type::Scalar { dimension: DimensionVector::LENGTH }), ("k", Type::dimensionless_scalar())],
+        );
+        let fns = vec![concrete];
+        // Calling with (MASS, Real) must NOT resolve — only (LENGTH, Real) is exact.
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_concrete",
+                    &[Type::Scalar { dimension: DimensionVector::MASS }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::NoMatch(_)
+            ),
+            "concrete fn must NOT resolve for wrong dimension arg — exact match only"
+        );
+    }
 }
