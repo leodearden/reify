@@ -762,9 +762,13 @@ module.exports = grammar({
     ),
 
     // The DOF specification following `with`.
-    // Step-2 (single form): exactly one joint_dof_field.
-    // Extended to the braced record form in step-4.
-    joint_dof: $ => $.joint_dof_field,
+    // Single form: `with angle: Angle in 0deg..120deg` — bare joint_dof_field.
+    // Record form: `with { angle: Angle, travel: Length }` — braced, comma-separated.
+    // The braced arm mirrors enum_variant's named-field payload grammar.
+    joint_dof: $ => choice(
+      $.joint_dof_field,
+      seq('{', $.joint_dof_field, repeat(seq(',', $.joint_dof_field)), optional(','), '}'),
+    ),
 
     // A single DOF field: `name: TypeExpr` with an optional `in <range>` clause.
     // `'in'` is a contextual keyword here — valid only at this parse position.
