@@ -357,3 +357,76 @@ fn sub_at_concrete_pose_still_parses() {
 fn gate_gr03_auto_param_fixture_parses_clean() {
     assert_fixture_parses_clean("gr-03-auto-param.ri");
 }
+
+// ── step-5 (RED until step-6): member-level `relate { }` block ────────────────
+
+/// A member-level `relate { concentric(a, b)  flush(c, d) }` block (inside
+/// `structure S { … }`) parses to a `relate_block` node carrying two
+/// `relation_member` children, each whose `expr` field is the relation call,
+/// with NO ERROR. RED: `relate` is not a keyword/member on the base grammar, so
+/// the block ERRORs.
+#[test]
+fn relate_block_two_relations_parses() {
+    let source = b"structure S { relate { concentric(a, b)  flush(c, d) } }";
+    let tree = parse_clean(source);
+    let root = tree.root_node();
+
+    let block = find_node_by_kind(root, "relate_block")
+        .expect("relate_block not found for member-level `relate { }`");
+    let members = find_all_nodes_by_kind(block, "relation_member");
+    assert_eq!(
+        members.len(),
+        2,
+        "expected exactly 2 relation_member children, got {}",
+        members.len()
+    );
+    for m in &members {
+        let expr = m
+            .child_by_field_name("expr")
+            .expect("relation_member must expose an `expr` field");
+        assert_eq!(
+            expr.kind(),
+            "function_call",
+            "relation_member expr must be a function_call, got {}",
+            expr.kind()
+        );
+    }
+    // first relation is `concentric(...)`, second is `flush(...)`
+    assert_eq!(
+        text(
+            members[0].child_by_field_name("expr").unwrap().child_by_field_name("name").unwrap(),
+            source
+        ),
+        "concentric"
+    );
+    assert_eq!(
+        text(
+            members[1].child_by_field_name("expr").unwrap().child_by_field_name("name").unwrap(),
+            source
+        ),
+        "flush"
+    );
+}
+
+/// An empty `relate { }` block also parses to a `relate_block` node with zero
+/// `relation_member` children, NO ERROR. RED until step-6.
+#[test]
+fn relate_block_empty_parses() {
+    let source = b"structure S { relate { } }";
+    let tree = parse_clean(source);
+    let block = find_node_by_kind(tree.root_node(), "relate_block")
+        .expect("empty `relate { }` must parse to a relate_block");
+    assert_eq!(
+        find_all_nodes_by_kind(block, "relation_member").len(),
+        0,
+        "empty `relate {{ }}` must carry zero relation_member children"
+    );
+}
+
+/// Consolidated gate: gr-01-at-auto-relate.ri (needs `at auto` from step-4 AND
+/// the member-level `relate { }` block) parses with zero ERROR nodes once
+/// step-6 lands. RED until step-6.
+#[test]
+fn gate_gr01_at_auto_relate_fixture_parses_clean() {
+    assert_fixture_parses_clean("gr-01-at-auto-relate.ri");
+}
