@@ -866,6 +866,81 @@ pub(crate) fn compile_geometry_op(
                 }),
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
+                    // Is a curated face selector present?  Presence of an
+                    // "open_faces" named arg distinguishes the 3-arg
+                    // `shell_open(solid, thickness, open_faces)` form from
+                    // the legacy numeric `shell(solid, thickness)` form.
+                    // Mirror the Draft arm's faces-selector branch exactly
+                    // (geometry_ops.rs:947-1054).
+                    let open_faces_expr =
+                        args.iter().find(|(n, _)| n == "open_faces").map(|(_, e)| e);
+                    if let Some(expr) = open_faces_expr {
+                        let faces_val = reify_expr::eval_expr(
+                            expr,
+                            &eval_ctx_with_meta(values, functions, meta_map),
+                        );
+                        match &faces_val {
+                            reify_ir::Value::List(elems) => {
+                                // Extract each sub-handle's kernel_handle,
+                                // ERRORING on any element that is NOT a
+                                // Geometry sub-handle — mirroring the Draft
+                                // arm's reject-non-handle strictness (do NOT
+                                // filter_map; a partially-malformed selector
+                                // must surface an error rather than silently
+                                // shelling only the surviving subset).
+                                let mut raw_ids: Vec<GeometryHandleId> =
+                                    Vec::with_capacity(elems.len());
+                                for (i, e) in elems.iter().enumerate() {
+                                    match e {
+                                        reify_ir::Value::GeometryHandle {
+                                            kernel_handle,
+                                            ..
+                                        } => raw_ids.push(*kernel_handle),
+                                        other => {
+                                            return Err(format!(
+                                                "shell_open(solid, thickness, open_faces): \
+                                                 face selector element [{}] is not a Geometry \
+                                                 sub-handle (got {:?}) — the open_faces \
+                                                 selector must be a List of face handles",
+                                                i, other
+                                            ));
+                                        }
+                                    }
+                                }
+                                let resolved = canonical_subhandle_ids(raw_ids);
+                                // Empty-selection guard added in step-6 (γ).
+                                return Ok(reify_ir::GeometryOp::Shell {
+                                    target: target_id,
+                                    thickness,
+                                    faces_to_remove: vec![],
+                                    open_face_handles: resolved,
+                                });
+                            }
+                            // The selector did not resolve to a List — on
+                            // the legacy P2 pipeline it resolves to Undef
+                            // (the faces selector resolves in P4, after
+                            // this P2 arm). This is NOT an empty selection,
+                            // so do NOT emit E_EMPTY_SELECTION.
+                            //
+                            // The message is deliberately USER-ACTIONABLE:
+                            // names the 3-arg shell_open call form and
+                            // points at the η/ε tasks (4360/4358).
+                            other => {
+                                return Err(format!(
+                                    "shell_open(solid, thickness, open_faces): curated \
+                                     face selection is not yet available on the current \
+                                     build pipeline — the face selector cannot be resolved \
+                                     at the point this shell_open runs. Use numeric \
+                                     shell(solid, thickness, face_N) to remove specific \
+                                     faces by index, or wait for curated face selection \
+                                     (engine-unified-build-dag tasks 4360/4358). \
+                                     [face selector evaluated to {:?}]",
+                                    other
+                                ));
+                            }
+                        }
+                    }
+                    // No open_faces arg → legacy numeric face_* path.
                     // Collect face indices from face_0, face_1, ...
                     // Non-numeric values (String, Bool, List, etc.) are skipped with a diagnostic.
                     // Non-finite (NaN, ±Infinity) and negative numeric values are also skipped.
