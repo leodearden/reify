@@ -28,6 +28,7 @@
 //! - Under OCCT: `#precision(0.1mm)` sphere deviation ≪ `1mm` bound → Satisfied → exit 0.
 //! - Without OCCT: realization cannot run → `achieved_repr_tol` map stays empty →
 //!   Indeterminate (C1 graceful degradation) → exit 0.
+//!
 //! Both modes satisfy the gate invariants: `exit 0` AND stdout does NOT contain "VIOLATED".
 
 mod common;
