@@ -78,6 +78,72 @@ UNPROVABLE = "UNPROVABLE"
 _VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
 _VALID_OBSERVATIONS = frozenset({"present", "absent"})
 
+# Sentinel injected into stderr by run_probe() when the probe binary is not found
+# (FileNotFoundError).  observe() checks for this sentinel before kind-specific
+# logic so all probe kinds classify missing-binary as _HARNESS_ERROR.
+_BINARY_NOT_FOUND_SENTINEL = "[HARNESS ERROR: binary not found]"
+
+
+# ---------------------------------------------------------------------------
+# Binary resolution helpers
+# ---------------------------------------------------------------------------
+
+def _find_repo_root() -> str:
+    """Locate the reify repo root by walking up from this script.
+
+    Returns the first ancestor directory that contains 'Cargo.toml' (the
+    workspace manifest) or a '.git' directory.  Falls back to the parent
+    of the scripts/ directory if neither is found within a reasonable depth.
+    """
+    # scripts/ lives one level below the repo root
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.dirname(scripts_dir)
+
+    cur = candidate
+    for _ in range(6):
+        if os.path.exists(os.path.join(cur, "Cargo.toml")):
+            return cur
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+
+    return candidate  # best-effort fallback
+
+
+def _resolve_reify_bin(repo_root: Optional[str] = None) -> str:
+    """Resolve the reify binary path.
+
+    Resolution order:
+        1. REIFY_BIN environment variable (if set and non-empty)
+        2. <repo_root>/target/release/reify   (pre-built release)
+        3. <repo_root>/target/debug/reify     (debug build)
+        4. "reify"                             (from PATH)
+    """
+    env_bin = os.environ.get("REIFY_BIN")
+    if env_bin:
+        return env_bin
+
+    root = repo_root or _find_repo_root()
+    for rel in ("target/release/reify", "target/debug/reify"):
+        candidate = os.path.join(root, rel)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return "reify"  # fallback: expect it on PATH
+
+
+def _resolve_tree_sitter_bin() -> str:
+    """Resolve the tree-sitter binary path.
+
+    Resolution order:
+        1. TREE_SITTER_BIN environment variable (if set and non-empty)
+        2. "tree-sitter"                        (from PATH)
+    """
+    return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -246,6 +312,12 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
     Returns:
         PRESENT, ABSENT, INDETERMINATE, or _HARNESS_ERROR.
     """
+    # Universal harness-error check: binary not found (any probe kind).
+    # run_probe() injects _BINARY_NOT_FOUND_SENTINEL into stderr on FileNotFoundError
+    # so all kinds surface missing binaries as _HARNESS_ERROR, not as ABSENT/FAIL.
+    if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
+        return _HARNESS_ERROR
+
     if probe_kind == "grammar":
         combined = run.stdout + run.stderr
         if run.exit_code == 0:
@@ -332,10 +404,10 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     fixture = probe.fixture
 
     if probe.probe_kind == "grammar":
-        ts_bin = os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+        ts_bin = _resolve_tree_sitter_bin()
         return [ts_bin, "parse", "--quiet", fixture]
 
-    reify_bin = os.environ.get("REIFY_BIN", "reify")
+    reify_bin = _resolve_reify_bin(repo_root=repo_root)
 
     if probe.probe_kind == "check":
         return [reify_bin, "check", fixture]
@@ -345,6 +417,60 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
 
     # Should not reach here after load_probe_set validation, but be defensive.
     raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# run_probe() — the real subprocess runner
+# ---------------------------------------------------------------------------
+
+def run_probe(probe: Probe) -> ProbeRun:
+    """Run a probe command in a subprocess and return captured output.
+
+    Command construction delegates to build_command().  Grammar probes run
+    with CWD = <repo_root>/tree-sitter-reify/ so that the tree-sitter parser
+    can locate its grammar (src/parser.c must already be generated).
+
+    FileNotFoundError (missing binary) is caught and represented as a ProbeRun
+    with _BINARY_NOT_FOUND_SENTINEL in stderr and exit_code=127.  observe()
+    detects this sentinel and returns _HARNESS_ERROR for any probe kind.
+
+    Args:
+        probe: The Probe to run.
+
+    Returns:
+        A ProbeRun with exit_code, stdout, and stderr from the subprocess.
+        On FileNotFoundError, the sentinel is embedded in stderr so that
+        observe() can classify it as a harness error.
+    """
+    repo_root = _find_repo_root()
+    cmd = build_command(probe, repo_root=repo_root)
+
+    # Grammar probes must run with CWD inside tree-sitter-reify/ so that
+    # `tree-sitter parse` can resolve the reify grammar (the grammar dir
+    # contains the package.json that points tree-sitter at the grammar).
+    cwd: Optional[str] = None
+    if probe.probe_kind == "grammar":
+        cwd = os.path.join(repo_root, "tree-sitter-reify")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+        return ProbeRun(
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    except FileNotFoundError as exc:
+        # Binary not found: signal to observe() via the sentinel in stderr.
+        return ProbeRun(
+            exit_code=127,
+            stdout="",
+            stderr=f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +491,7 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
         observation, and verdict.
     """
     if runner is None:
-        # Default: the real subprocess runner (implemented in step-10).
-        runner = run_probe  # type: ignore[name-defined]  # noqa: F821
+        runner = run_probe
 
     # Build the command argv for this probe (used for display/evidence).
     cmd = build_command(probe)
