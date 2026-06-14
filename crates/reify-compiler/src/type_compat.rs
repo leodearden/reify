@@ -368,6 +368,12 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
 /// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
 /// variant forces a compile-time decision here, in lock-step with the sibling
 /// `unify` / `substitute_type_params` walks.
+///
+/// See also [`type_carries_dim_param`] for the sibling predicate that covers
+/// dimension-kinded parameters (`Type::ScalarParam`). The two predicates are
+/// kept separate because dimension params are a distinct kind (D7) — they are
+/// NOT substituted by type-param logic. The overload-resolution wildcard ORs
+/// them together at two sites.
 pub(crate) fn type_carries_type_param(t: &Type) -> bool {
     match t {
         // The type-parameter leaf itself.
@@ -425,6 +431,82 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
         // `type_carries_dim_param` — not by type-param substitution.
         | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Whether `t` (or any type nested within it) carries a dimension-kinded
+/// parameter (`Type::ScalarParam`).
+///
+/// This is the sibling of [`type_carries_type_param`] for dimension params.
+/// It uses the SAME constructor recursion (List/Set/Keyed/Option/Complex/Range;
+/// Map; Field; Function params+return; Point/Vector/Tensor/Matrix quantity;
+/// Union) and returns `true` at the `ScalarParam(_)` leaf, `false` at all
+/// other leaves.
+///
+/// The match is intentionally exhaustive (no `_` wildcard) so that a new
+/// `Type` variant forces a compile-time decision here, in lock-step with
+/// `type_carries_type_param`, `unify`, and `substitute_type_params`.
+///
+/// Wired into the generic-candidate wildcard in `resolve_function_overload`
+/// and `try_default_padding` (OR'd with `type_carries_type_param`) so that
+/// a `Scalar<Q>` parameter is recognised as a generic wildcard slot (task 4235
+/// ζ / D8).
+pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // All remaining leaves carry no `ScalarParam`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Type-param leaf: carries no *dimension* param.
+        | Type::TypeParam(_)
         | Type::Error => false,
     }
 }
@@ -692,7 +774,9 @@ pub(crate) fn resolve_function_overload<'a>(
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
                         type_carries_trait_object(param_ty)
-                            || (is_generic && type_carries_type_param(param_ty))
+                            || (is_generic
+                                && (type_carries_type_param(param_ty)
+                                    || type_carries_dim_param(param_ty)))
                             || type_carries_type_param(arg_ty)
                             || param_ty == arg_ty
                     })
@@ -1033,7 +1117,9 @@ pub(crate) fn try_default_padding<'a>(
             .zip(arg_types[..provided].iter())
             .all(|((_, param_ty), arg_ty)| {
                 type_carries_trait_object(param_ty)
-                    || (is_generic && type_carries_type_param(param_ty))
+                    || (is_generic
+                        && (type_carries_type_param(param_ty)
+                            || type_carries_dim_param(param_ty)))
                     || type_carries_type_param(arg_ty)
                     || param_ty == arg_ty
             });
