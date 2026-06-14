@@ -352,6 +352,18 @@ pub enum DiagnosticCode {
     /// from the same dispatch path; downstream tooling that wants to surface
     /// these as harder failures can filter by code at the consumer side.
     FieldSampledInvalidConfig,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: points must form a uniformly-spaced 1-D regular grid (<reason>)"`.
+    ///
+    /// Emitted when the `points` argument to `from_samples(points, values, method)` is not
+    /// a valid 1-D regular grid. Reasons include: non-scalar elements (e.g. Point2/Point3),
+    /// length mismatch between points and values, fewer than 2 points, non-positive or
+    /// non-uniform spacing. The builtin returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_FIELD_SAMPLES_NOT_GRID`. Severity is `Error`
+    /// (unlike the sibling `W_FIELD_SAMPLED_INVALID_CONFIG` which is a Warning).
+    FieldSamplesNotGrid,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -392,6 +404,20 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
     InterpolationDeferred,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: interpolation method '<variant>' is not supported by from_samples \
+    ///  (supported: Linear, NearestNeighbor, Cubic)"`.
+    ///
+    /// Emitted when the `method` argument to `from_samples(points, values, method)` is a
+    /// `Value::Enum { type_name: "InterpolationMethod", .. }` variant that `from_samples`
+    /// does not support. Currently fires for `"RBF"` and `"Kriging"` (and any
+    /// unrecognized variant). These are HARD errors in `from_samples` — unlike
+    /// `interp::resolve_method`, which falls back to Linear with a Warning. The builtin
+    /// returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_INTERP_METHOD_UNSUPPORTED`. Severity is `Error`.
+    InterpMethodUnsupported,
     /// Origin: `crates/reify-compiler/src/expr.rs` (binary-op `Add`/`Sub` site and
     ///          range-bounds site), via `crates/reify-compiler/src/type_compat::format_dimension_mismatch_diagnostic`.
     /// Canonical message form: `"dimension mismatch in {op}: {left} vs {right}"`.
@@ -2878,6 +2904,63 @@ mod tests {
     fn diagnostic_code_field_sampled_invalid_config_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::FieldSampledInvalidConfig).unwrap();
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
+    }
+
+    // --- FieldSamplesNotGrid tests (task 4221 — E_FIELD_SAMPLES_NOT_GRID) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSamplesNotGrid` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::FieldSamplesNotGrid)`.
+    /// Pins the error-severity contract for E_FIELD_SAMPLES_NOT_GRID.
+    #[test]
+    fn field_samples_not_grid_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("not a 1-D regular grid").with_code(DiagnosticCode::FieldSamplesNotGrid);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSamplesNotGrid));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSamplesNotGrid`
+    /// serializes as `"FieldSamplesNotGrid"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_samples_not_grid_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSamplesNotGrid).unwrap();
+        assert_eq!(s, "\"FieldSamplesNotGrid\"");
+    }
+
+    // --- InterpMethodUnsupported tests (task 4221 — E_INTERP_METHOD_UNSUPPORTED) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::InterpMethodUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::InterpMethodUnsupported)`.
+    /// Pins the error-severity contract for E_INTERP_METHOD_UNSUPPORTED.
+    #[test]
+    fn interp_method_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("interpolation method 'RBF' is not supported by from_samples")
+            .with_code(DiagnosticCode::InterpMethodUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::InterpMethodUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::InterpMethodUnsupported`
+    /// serializes as `"InterpMethodUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_interp_method_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::InterpMethodUnsupported).unwrap();
+        assert_eq!(s, "\"InterpMethodUnsupported\"");
     }
 
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
