@@ -276,6 +276,51 @@ structure def UseBeam {
     );
 }
 
+/// (b′) Bad disambiguator, conformed-but-non-declaring trait:
+/// `Beam::(HasOther::Material)` where `Beam` conforms to BOTH `HasOther` and
+/// `HasMaterial`, but only `HasMaterial` declares `type Material`. This pins the
+/// SECOND error branch of the `Some(t)` disambiguator arm — the qualifier IS a
+/// bound of `Beam` (so the 'does not conform' branch is skipped) yet does NOT
+/// declare the member — distinct from `bad_disambiguator_nonconforming_trait_diagnoses`
+/// above (where the qualifier is not conformed at all). Must yield a 'does not
+/// declare associated type' diagnostic naming the qualifier trait and the member,
+/// and must NOT be reported as `AmbiguousAssocType`.
+///
+/// Without this test a regression that swapped or dropped the branch-2 diagnostic
+/// (e.g. folded it into the 'does not conform' message, or mis-routed it through
+/// the ambiguity path) would go uncaught.
+#[test]
+fn disambiguator_conformed_trait_lacking_member_diagnoses() {
+    let source = r#"
+structure Steel {}
+trait HasMaterial { type Material }
+trait HasOther { type Other }
+structure def Beam : HasMaterial + HasOther {
+    type Material = Steel
+    type Other = Steel
+}
+structure def UseBeam {
+    param m : Beam::(HasOther::Material)
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    assert!(
+        !any_diag_has_code(&errors, DiagnosticCode::AmbiguousAssocType),
+        "a conformed-but-non-declaring qualifier must NOT be reported as ambiguous; got: {:?}",
+        errors
+    );
+    assert!(
+        any_diag_mentions(&errors, "does not declare associated type")
+            && any_diag_mentions(&errors, "HasOther")
+            && any_diag_mentions(&errors, "Material"),
+        "expected a 'does not declare associated type' diagnostic naming the qualifier \
+         trait `HasOther` and the member `Material`; got: {:?}",
+        errors
+    );
+}
+
 /// (c) Type-parameter base: `T::Material` at a definition site, where `T` is an
 /// unbound type parameter. Must yield a clear 'type parameter' diagnostic (no
 /// concrete `StructureRef` exists at definition time) and must not panic.
