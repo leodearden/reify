@@ -2153,12 +2153,16 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
 /// # Contract (full — diagnostics added in steps 6 and 8)
 ///
 /// - `points` and `values` must be `Value::List` of scalar elements
-///   (Real/Int) of equal length >= 2.
-/// - Points must form a uniformly-spaced 1-D grid. Non-uniform spacing
-///   pushes `DiagnosticCode::FieldSamplesNotGrid` (step-6) and returns Undef.
+///   (Real/Int/Scalar) of equal length >= 2. Scalar (dimensioned) values are
+///   accepted via `Value::as_f64()` (SI-unwrapped), consistent with how
+///   `sampled::sample_at_point` accepts Scalar coordinates.
+/// - Points must be finite (no NaN/Inf) and form a uniformly-spaced 1-D grid.
+///   Non-finite or non-uniform spacing pushes
+///   `DiagnosticCode::FieldSamplesNotGrid` (step-6) and returns Undef.
 /// - `method` must be a `Value::Enum { type_name: "InterpolationMethod", .. }`.
 ///   Linear/NearestNeighbor/Cubic → `InterpolationKind`;
 ///   RBF/Kriging → `DiagnosticCode::InterpMethodUnsupported` (step-8), returns Undef.
+///   An enum with the wrong `type_name` returns Undef silently (guarded upstream).
 /// - Returns `Value::Field { source: Sampled, lambda: Arc(Value::SampledField(sf)) }`.
 ///
 /// Marked `#[inline(never)]` for the same stack-frame rationale as `eval_fn_field`.
@@ -2188,8 +2192,7 @@ fn eval_from_samples(
         _ => {
             push_eval_error(
                 ctx,
-                "from_samples: points must form a uniformly-spaced 1-D regular grid \
-                 (values argument is not a List)",
+                "from_samples: values argument is invalid (not a List)",
                 DiagnosticCode::FieldSamplesNotGrid,
             );
             return Value::Undef;
@@ -2216,26 +2219,29 @@ fn eval_from_samples(
         return Value::Undef;
     }
 
-    // ── 3. Convert to f64 (scalars only — 1-D Regular grid) ─────────────────
-    let pt_f64: Vec<f64> = match pts.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
+    // ── 3. Convert to f64 — Real/Int/Scalar all accepted via Value::as_f64() ─
+    // Value::as_f64() is the canonical numeric extractor (reify-ir/value.rs:1141)
+    // and handles Value::Scalar { si_value, .. } consistently with how
+    // sampled::sample_at_point extracts coordinates (scalar_si in sampled.rs:272).
+    let pt_f64: Vec<f64> = match pts.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
             push_eval_error(
                 ctx,
                 "from_samples: points must form a uniformly-spaced 1-D regular grid \
-                 (only scalar (Real/Int) point elements are supported; \
+                 (only scalar (Real/Int/Scalar) point elements are supported; \
                   N-D point types are deferred to a follow-up)",
                 DiagnosticCode::FieldSamplesNotGrid,
             );
             return Value::Undef;
         }
     };
-    let val_f64: Vec<f64> = match vals.iter().map(scalar_to_f64).collect::<Option<Vec<_>>>() {
+    let val_f64: Vec<f64> = match vals.iter().map(|v| v.as_f64()).collect::<Option<Vec<_>>>() {
         Some(v) => v,
         None => {
             push_eval_error(
                 ctx,
-                "from_samples: points must form a uniformly-spaced 1-D regular grid \
+                "from_samples: values argument is invalid \
                  (non-scalar value elements are not supported)",
                 DiagnosticCode::FieldSamplesNotGrid,
             );
@@ -2244,6 +2250,19 @@ fn eval_from_samples(
     };
 
     // ── 4. Uniform spacing check ─────────────────────────────────────────────
+    // Guard against NaN/Inf point values first: if any point is non-finite,
+    // the spacing arithmetic below silently produces NaN (which passes both
+    // `step <= 0.0` and `rel_err > 1e-6` comparisons due to NaN semantics),
+    // causing a SampledField with NaN bounds/spacing rather than a clean error.
+    if pt_f64.iter().any(|x| !x.is_finite()) {
+        push_eval_error(
+            ctx,
+            "from_samples: points must form a uniformly-spaced 1-D regular grid \
+             (non-finite point values (NaN/Inf) are not supported)",
+            DiagnosticCode::FieldSamplesNotGrid,
+        );
+        return Value::Undef;
+    }
     let step = pt_f64[1] - pt_f64[0];
     if step <= 0.0 {
         push_eval_error(
@@ -2269,28 +2288,36 @@ fn eval_from_samples(
     }
 
     // ── 5. Map InterpolationMethod variant → InterpolationKind ──────────────
+    // The type_name guard enforces the stated contract: only
+    // `Value::Enum { type_name: "InterpolationMethod", .. }` is accepted.
+    // An enum with a different type_name (wrong-type argument) falls through to
+    // the wildcard and returns Undef silently — upstream type-checking has
+    // already been violated, so a silent Undef is appropriate (no misleading
+    // InterpMethodUnsupported message for a mistyped argument).
     let interp = match method {
-        Value::Enum { variant, .. } => match variant.as_str() {
-            "Linear" => InterpolationKind::Linear,
-            "NearestNeighbor" => InterpolationKind::NearestNeighbor,
-            "Cubic" => InterpolationKind::Cubic,
-            other => {
-                // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED.
-                // This is a HARD error in from_samples — unlike interp::resolve_method
-                // which falls back to Linear + W_INTERPOLATION_DEFERRED for sampled{}
-                // fields. from_samples is a new surface with no back-compat obligation.
-                push_eval_error(
-                    ctx,
-                    &format!(
-                        "from_samples: interpolation method '{}' is not supported by \
-                         from_samples (supported: Linear, NearestNeighbor, Cubic)",
-                        other
-                    ),
-                    DiagnosticCode::InterpMethodUnsupported,
-                );
-                return Value::Undef;
+        Value::Enum { type_name, variant } if type_name == "InterpolationMethod" => {
+            match variant.as_str() {
+                "Linear" => InterpolationKind::Linear,
+                "NearestNeighbor" => InterpolationKind::NearestNeighbor,
+                "Cubic" => InterpolationKind::Cubic,
+                other => {
+                    // RBF/Kriging/unknown: E_INTERP_METHOD_UNSUPPORTED.
+                    // This is a HARD error in from_samples — unlike interp::resolve_method
+                    // which falls back to Linear + W_INTERPOLATION_DEFERRED for sampled{}
+                    // fields. from_samples is a new surface with no back-compat obligation.
+                    push_eval_error(
+                        ctx,
+                        &format!(
+                            "from_samples: interpolation method '{}' is not supported by \
+                             from_samples (supported: Linear, NearestNeighbor, Cubic)",
+                            other
+                        ),
+                        DiagnosticCode::InterpMethodUnsupported,
+                    );
+                    return Value::Undef;
+                }
             }
-        },
+        }
         _ => return Value::Undef,
     };
 
@@ -2331,17 +2358,6 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
     if let Some(sink) = ctx.diagnostics {
         sink.borrow_mut()
             .push(Diagnostic::error(msg).with_code(code));
-    }
-}
-
-/// Convert a scalar `Value` (Real or Int) to `f64`. Returns `None` for
-/// non-scalar values (e.g. Point2, Point3, String).
-#[inline]
-fn scalar_to_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Real(x) => Some(*x),
-        Value::Int(n) => Some(*n as f64),
-        _ => None,
     }
 }
 
