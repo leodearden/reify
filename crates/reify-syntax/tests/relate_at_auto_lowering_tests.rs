@@ -166,3 +166,85 @@ fn at_non_auto_expr_pose_lowers_normally() {
         kind
     );
 }
+
+// ── step-11 (RED until step-12): relate-block lowering ───────────────────────
+//
+//   - member-level `relate { … }`           → MemberDecl::Relate(RelateDecl)
+//   - inline `sub … at … where { … }`       → SubDecl.relate_relations
+//
+// Both homes carry the SAME flat relation set (design §4). RED because
+// MemberDecl::Relate / RelateDecl and the SubDecl.relate_relations field do not
+// exist yet and the relate-block CST is not lowered.
+
+/// Parse `source`, return a clone of the first `MemberDecl::Relate(RelateDecl)`
+/// from the first declaration (which must be a `Structure`).
+fn first_relate(source: &str) -> RelateDecl {
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        module.errors.is_empty(),
+        "expected no parse errors: {:?}",
+        module.errors
+    );
+    let structure = match &module.declarations[0] {
+        Declaration::Structure(s) => s,
+        other => panic!("expected Structure, got {:?}", other),
+    };
+    structure
+        .members
+        .iter()
+        .find_map(|m| match m {
+            MemberDecl::Relate(r) => Some(r.clone()),
+            _ => None,
+        })
+        .expect("expected a MemberDecl::Relate member")
+}
+
+/// The function name of a relation expression (panics if it is not a call).
+fn relation_fn_name(expr: &Expr) -> &str {
+    match &expr.kind {
+        ExprKind::FunctionCall { name, .. } => name.as_str(),
+        other => panic!("expected a FunctionCall relation, got {:?}", other),
+    }
+}
+
+/// A member-level `relate { concentric(a, b)  flush(c, d) }` block lowers to a
+/// `MemberDecl::Relate(RelateDecl)` holding the two relation expressions in
+/// source order.
+#[test]
+fn member_level_relate_block_lowers_two_relations_in_order() {
+    let relate = first_relate("structure S { relate { concentric(a, b)  flush(c, d) } }");
+    assert_eq!(
+        relate.relations.len(),
+        2,
+        "expected 2 relations, got {:?}",
+        relate.relations
+    );
+    assert_eq!(relation_fn_name(&relate.relations[0]), "concentric");
+    assert_eq!(relation_fn_name(&relate.relations[1]), "flush");
+}
+
+/// An empty `relate { }` lowers to a `RelateDecl` with no relations.
+#[test]
+fn empty_member_level_relate_block_lowers_to_empty_relations() {
+    let relate = first_relate("structure S { relate { } }");
+    assert!(
+        relate.relations.is_empty(),
+        "expected empty relations, got {:?}",
+        relate.relations
+    );
+}
+
+/// The inline `sub b : B at auto where { concentric(a, b) }` form lowers its
+/// relation onto the new `SubDecl.relate_relations` field (the other relate
+/// home), NOT as a separate `MemberDecl::Relate`.
+#[test]
+fn inline_at_where_relate_block_lowers_onto_sub_relate_relations() {
+    let sub = first_sub("structure S { sub b : B at auto where { concentric(a, b) } }");
+    assert_eq!(
+        sub.relate_relations.len(),
+        1,
+        "expected 1 inline relation, got {:?}",
+        sub.relate_relations
+    );
+    assert_eq!(relation_fn_name(&sub.relate_relations[0]), "concentric");
+}
