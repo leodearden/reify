@@ -899,4 +899,47 @@ structure B {
             "in-context hover must match the wrapper output"
         );
     }
+
+    // --- relation ΔDOF contract hover (geometric-relations γ, task 4383) ---
+
+    /// Hovering a relation call surfaces its ΔDOF contract. `offset(pa, pb, 5mm)`
+    /// over two `Plane` operands + a `Length` metric must produce the exact
+    /// signature `offset(Plane,Plane,Length) -> Relation removes 3` — the
+    /// user-observable hover signal (the metric operand renders by its dimension
+    /// name, `Length`, not `Scalar[m]`).
+    ///
+    /// RED: hover has no relation branch yet — `offset` is not a member,
+    /// structure, user fn, or keyword, so hover falls through every branch to
+    /// `None` and `hover_markdown` returns `None`.
+    #[test]
+    fn hover_on_offset_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param pa: Plane\n    param pb: Plane\n    let r = offset(pa, pb, 5mm)\n}";
+        // 'offset' on line 3 starts at column 12 ("    let r = " = 12 chars).
+        let position = Position::new(3, 14); // on 'offset'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for an offset relation call");
+        assert!(
+            md.contains("offset(Plane,Plane,Length) -> Relation removes 3"),
+            "hover should surface the offset ΔDOF contract, got: {md}"
+        );
+    }
+
+    /// `concentric(a, b)` over two `Axis` operands removes 4 DOF (a coincident
+    /// axis). Hover must surface `-> Relation removes 4`.
+    #[test]
+    fn hover_on_concentric_relation_shows_delta_dof_contract() {
+        let source = "structure S {\n    param a: Axis\n    param b: Axis\n    let r = concentric(a, b)\n}";
+        // 'concentric' on line 3 starts at column 12.
+        let position = Position::new(3, 15); // on 'concentric'
+        let md = hover_markdown(source, position)
+            .expect("hover should return the ΔDOF contract for a concentric relation call");
+        assert!(
+            md.contains("concentric"),
+            "hover should name the relation, got: {md}"
+        );
+        assert!(
+            md.contains("-> Relation removes 4"),
+            "hover should surface the concentric ΔDOF (removes 4), got: {md}"
+        );
+    }
 }
