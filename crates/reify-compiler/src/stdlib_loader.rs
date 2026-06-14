@@ -217,6 +217,22 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.kinematic",
             include_str!("../stdlib/kinematic.ri").to_owned(),
         ),
+        // `std.joints` defines the standard kinematic joint set (revolute /
+        // prismatic / cylindrical / planar / spherical / ball) as `joint … with`
+        // declarations over the relation vocabulary (geometric-joints γ, task
+        // 4397). References only built-in relations (concentric / on / coincident
+        // / flush / perpendicular) and built-in datum types (Axis / Plane /
+        // Point3 / Orientation / Angle / Length) — declares NO `import`, so
+        // the topo-sort remains the identity permutation. Placement after
+        // std.kinematic keeps joint definitions organisationally co-located
+        // with the kinematic module; there is no formal dependency.
+        // `load_stdlib`'s panic-on-Error permanently enforces "all self-checks
+        // pass" at prelude build: if any joint body mismatches its declared DOF
+        // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
+        (
+            "std.joints",
+            include_str!("../stdlib/joints.ri").to_owned(),
+        ),
         // `std.dynamics` depends on `std.units` (Mass / Length / Time),
         // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
         // and `std.kinematic` (Mechanism / Snapshot nominal types used in
