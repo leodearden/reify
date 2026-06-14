@@ -346,7 +346,13 @@ fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
 fn sphere(radius: Length) -> Solid
 fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
-fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+
+// Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
+// fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+
+// Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
+// see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
+// fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
 ```
 
 **2D shapes:**
@@ -367,7 +373,9 @@ fn helix(radius: Length, pitch: Length, height: Length) -> Curve
 fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
-fn nurbs_surface(/* NURBS surface parameters */) -> Surface
+
+// Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
+// fn nurbs_surface(/* NURBS surface parameters */) -> Surface
 ```
 
 ### 3.3 `std.geometry.compound`
