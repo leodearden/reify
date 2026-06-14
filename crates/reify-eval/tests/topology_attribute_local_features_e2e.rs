@@ -32,7 +32,7 @@
 //! - Total with propagation: 44
 
 use reify_core::ModulePath;
-use reify_ir::ExportFormat;
+use reify_ir::{ExportFormat, Role};
 
 /// Run a source string through parse → compile → Engine::build and return
 /// the engine. Returns `None` if OCCT is not available.
@@ -103,6 +103,13 @@ fn build_local_features_source(source: &str) -> Option<reify_eval::Engine> {
 /// no-op → table.len() == 26. With the arm (GREEN), propagation adds 6
 /// face_modified + 12 face_generated entries → table.len() == 44 > 26.
 ///
+/// A second, stronger assertion checks that the count of entries with
+/// `Role::Side` exceeds the box's 6 (`Role::Side` faces). Propagation copies
+/// the parent box face's `Role::Side` to each face_modified result entry, so
+/// the GREEN count is 12 (6 box + 6 result). This assertion survives if OCCT
+/// reports a different number of face_generated entries across versions, while
+/// still proving that face attribute inheritance actually ran.
+///
 /// Note: `mod_history` is empty for all fillet entries because OCCT reports
 /// exactly 1 generated face per edge for a clean box fillet — no multi-child
 /// parent edges → no splits (see module-level doc for the full derivation).
@@ -126,6 +133,22 @@ fn fillet_feeds_mod_history() {
          got only {} entries — propagation may not have run",
         table.len()
     );
+
+    // Stronger assertion: result faces must inherit Role::Side from their box parents.
+    // Without propagation (RED): 6 Role::Side entries (box's 6 faces only).
+    // With propagation (GREEN): ≥12 Role::Side entries (6 box + 6 face_modified inheriting Side).
+    let side_count = table
+        .iter()
+        .filter(|(_id, attr)| attr.role == Role::Side)
+        .count();
+    assert!(
+        side_count > 6,
+        "expected >6 entries with Role::Side after fillet propagation \
+         (box primitive seeding: 6; fillet face_modified adds ≥6 more inheriting Role::Side \
+         from parent box faces); got {} — \
+         face attribute inheritance may not have run",
+        side_count
+    );
 }
 
 /// `chamfer(box(10mm, 10mm, 10mm), 1mm)` — all-edges chamfer.
@@ -134,7 +157,10 @@ fn fillet_feeds_mod_history() {
 /// routes the Chamfer op through `chamfer_with_history` and that propagation
 /// adds result entries to the topology attribute table.
 ///
-/// Same RED/GREEN discriminator: table.len() > 26 proves propagation ran.
+/// Two assertions (same rationale as `fillet_feeds_mod_history`):
+/// - `table.len() > 26`: RED/GREEN discriminator for propagation running at all.
+/// - `count(Role::Side) > 6`: confirms face attribute inheritance ran (chamfer
+///   face_modified entries carry inherited `Role::Side` from the box parents).
 #[test]
 fn chamfer_feeds_mod_history() {
     let source = r#"structure S {
@@ -154,5 +180,21 @@ fn chamfer_feeds_mod_history() {
          after chamfer propagation (face_modified + face_generated adds 18 result entries); \
          got only {} entries — propagation may not have run",
         table.len()
+    );
+
+    // Stronger assertion: result faces must inherit Role::Side from their box parents.
+    // Without propagation (RED): 6 Role::Side entries (box's 6 faces only).
+    // With propagation (GREEN): ≥12 Role::Side entries (6 box + 6 face_modified inheriting Side).
+    let side_count = table
+        .iter()
+        .filter(|(_id, attr)| attr.role == Role::Side)
+        .count();
+    assert!(
+        side_count > 6,
+        "expected >6 entries with Role::Side after chamfer propagation \
+         (box primitive seeding: 6; chamfer face_modified adds ≥6 more inheriting Role::Side \
+         from parent box faces); got {} — \
+         face attribute inheritance may not have run",
+        side_count
     );
 }
