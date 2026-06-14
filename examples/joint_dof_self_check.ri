@@ -1,0 +1,32 @@
+// joint_dof_self_check.ri — geometric-joints β (task 4396) CI example.
+//
+// Demonstrates the definition-time DOF self-check (the §7.1 self-checking law):
+// a `joint NAME(datums) with <declared free DOF> = <relation body>` declaration
+// asserts, before any solve, that its DECLARED free DOF matches the GEOMETRIC
+// RESIDUAL its relation body leaves — by COUNT and by KIND. Both joints below
+// MATCH, so this file compiles clean (zero E_JOINT_DOF_MISMATCH).
+//
+// PRD ref: docs/prds/v0_6/geometric-joints.md §7.1 (self-checking law, B1/B4).
+//
+// NOTE: this is a MUST-PASS example — examples_smoke compiles every examples/*.ri
+// with zero Error diagnostics, so it carries only CLEAN joints. The FAIL modes —
+// B2 (count mismatch) and B3 (kind mismatch) — cannot share a must-pass file;
+// they live as negative cases in
+// crates/reify-compiler/tests/joint_dof_self_check_tests.rs.
+//
+// Vocabulary note: the relations are the REAL landed vocab — concentric(Axis,
+// Axis) removes 4 DOF (2 rotational + 2 translational), on(Point, Plane) removes
+// 1 translational — never the PRD-illustrative `coaxial` (not a landed relation).
+
+// B1 — a REVOLUTE pair (single DOF form):
+//   concentric(a, b)  removes (2 rot, 2 trans)  →  residual (1 rot, 1 trans)
+//   on(p, stop)       removes (0 rot, 1 trans)  →  residual (1 rot, 0 trans)
+// One rotational freedom remains, declared `angle: Angle` over a 0°–120° travel
+// range. Declared (1 rot, 0 trans) == residual (1 rot, 0 trans) → CLEAN.
+joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }
+
+// B4 — a CYLINDRICAL pair (record DOF form):
+//   concentric(a, b)  removes (2 rot, 2 trans)  →  residual (1 rot, 1 trans)
+// One rotational + one translational freedom remain, declared as the record
+// `{ angle: Angle, travel: Length }`. Declared (1, 1) == residual (1, 1) → CLEAN.
+joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)

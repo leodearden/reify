@@ -31,6 +31,7 @@ mod guards;
 mod ice;
 mod list_helpers;
 mod joint_signatures;
+mod joint_self_check;
 mod builtin_signatures;
 mod math_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`

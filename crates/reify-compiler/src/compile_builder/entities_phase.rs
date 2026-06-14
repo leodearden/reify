@@ -24,7 +24,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledFunction, EnumDef};
 
 use crate::CompiledModule;
@@ -40,7 +40,9 @@ use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
 };
-use crate::type_resolution::TypeAliasRegistry;
+use crate::expr::compile_expr;
+use crate::scope::CompilationScope;
+use crate::type_resolution::{resolve_type_expr_with_aliases, TypeAliasRegistry};
 use reify_core::ValueCellId;
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
@@ -228,11 +230,195 @@ pub(crate) fn phase_entities(
                 ctx.diagnostics
                     .push(crate::diagnostics::default_not_yet_wired_warning(d));
             }
-            reify_ast::Declaration::Joint(_) => {
-                // Grammar producer only (task α 4395). Entity build + self-check
-                // (DOF count/kind, E_JOINT_DOF_MISMATCH, validate_range, body
-                // Type::Relation enforcement) are deferred to task β.
+            reify_ast::Declaration::Joint(joint) => {
+                // geometric-joints β (task 4396): run the definition-time DOF
+                // self-check (§7.1). Disjoint `ctx` field borrows — the three
+                // shared (`alias_registry`, `resolution_enums`,
+                // `resolution_functions`) and the exclusive `diagnostics` — are
+                // distinct fields, so the borrow checker accepts them together.
+                compile_joint_self_check(
+                    joint,
+                    &structure_names,
+                    trait_names,
+                    &ctx.alias_registry,
+                    &ctx.resolution_enums,
+                    &ctx.resolution_functions,
+                    &mut ctx.diagnostics,
+                );
             }
+        }
+    }
+}
+
+/// Run the definition-time DOF self-check for a
+/// `joint NAME(datums) with <declared free DOF> = <relation body>` declaration
+/// (geometric-joints β, task 4396, PRD §7.1).
+///
+/// Steps, mirroring `compile_function`'s scope-build + the δ relate-block
+/// Relation check:
+///   1. Build a [`CompilationScope`] from the datum params — resolve each
+///      `FnParam.type_expr` and register `name → Type`. An unresolved datum
+///      type registers as `Type::Error` (the resolver already queued the
+///      root-cause diagnostic) so no second diagnostic piles on.
+///   2. Compile each body member against that scope and enforce the
+///      body-must-be-`Type::Relation` invariant, reusing
+///      `E_RELATE_EXPECTS_RELATION` for a non-Relation member (`Type::Error`
+///      skipped — anti-cascade, exactly like `check_relate_relations`). The
+///      compiled members feed the residual.
+///   3. Resolve each `JointDofField.type_expr` (`Angle` → `Scalar<ANGLE>`,
+///      `Length` → `Scalar<LENGTH>`, `Orientation` → `Orientation(n)`).
+///   4. Compare the body's geometric residual against the declared free DOF by
+///      exact-integer COUNT and KIND via [`crate::joint_self_check`]; push any
+///      returned `E_JOINT_DOF_MISMATCH` diagnostic.
+///
+/// An empty body removes no DOF, so its residual is the full nominal (3, 3),
+/// which cannot match any sane declaration — caught here as a mismatch (the α
+/// empty-`{ }`-body lowering case), with no bespoke empty-body code.
+fn compile_joint_self_check(
+    joint: &reify_ast::JointDef,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    enum_defs: &[EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    // Type-param names in scope (e.g. `joint j<T>(...)`); empty for the common
+    // monomorphic joint. Threaded into the resolver so a datum/DOF type that
+    // names a joint type-param resolves rather than erroring.
+    let type_param_names: HashSet<String> =
+        joint.type_params.iter().map(|tp| tp.name.clone()).collect();
+
+    // (1) Build the datum-param scope.
+    let mut scope = CompilationScope::new(&joint.name);
+    for param in &joint.params {
+        let ty = resolve_type_expr_with_aliases(
+            &param.type_expr,
+            &type_param_names,
+            alias_registry,
+            diagnostics,
+            structure_names,
+            trait_names,
+        )
+        .unwrap_or(Type::Error);
+        scope.register(&param.name, ty);
+    }
+
+    // (2) Compile each body member; enforce Type::Relation (PRD §7.1).
+    let mut compiled_body: Vec<CompiledExpr> = Vec::with_capacity(joint.body.len());
+    for member in &joint.body {
+        let compiled = compile_expr(member, &scope, enum_defs, functions, diagnostics);
+        if compiled.result_type != Type::Relation && compiled.result_type != Type::Error {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint body member has type {}, expected Relation",
+                    compiled.result_type
+                ))
+                .with_code(DiagnosticCode::RelateExpectsRelation)
+                .with_label(DiagnosticLabel::new(member.span, "expected Relation")),
+            );
+        }
+        compiled_body.push(compiled);
+    }
+
+    // (3) Resolve each declared DOF field type.
+    let declared_types: Vec<Type> = joint
+        .dof
+        .iter()
+        .map(|f| {
+            resolve_type_expr_with_aliases(
+                &f.type_expr,
+                &type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )
+            .unwrap_or(Type::Error)
+        })
+        .collect();
+
+    // (3b) DOF `in <range>` dimensional consistency (PRD §7.1; the compile-time
+    // analog of the runtime `validate_range` dimensional guard). For each Scalar
+    // DOF (`Angle`/`Length`) carrying an `in <range>` bound, compile the range
+    // against the param scope and require its element dimension to equal the
+    // declared DOF's. Orientation DOFs (no scalar range) and absent ranges are
+    // skipped. Indexed against `declared_types` so each field is paired with its
+    // already-resolved type.
+    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+        let Type::Scalar { dimension: dof_dim } = declared_ty else {
+            continue; // non-Scalar DOF (Orientation / unresolved Error) — no scalar range
+        };
+        let Some(range_expr) = &field.range else {
+            continue; // no `in <range>` clause to validate
+        };
+        let compiled_range = compile_expr(range_expr, &scope, enum_defs, functions, diagnostics);
+        // The range element type is the bound type; require its dimension to
+        // match the DOF. A non-`Range<Scalar>` (e.g. Type::Error from an
+        // already-diagnosed range) is skipped — anti-cascade.
+        if let Type::Range(inner) = &compiled_range.result_type
+            && let Type::Scalar { dimension: range_dim } = inner.as_ref()
+            && range_dim != dof_dim
+        {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint `{}` DOF `{}`: the `in` range must match the declared DOF \
+                     dimension `{}`, but the range bounds are `{}`",
+                    joint.name, field.name, declared_ty, inner
+                ))
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    range_expr.span,
+                    "range dimension does not match the declared DOF",
+                )),
+            );
+        }
+    }
+
+    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). Two gradualism gates
+    // stand in front of it; either leaves the residual comparison unable to
+    // substantiate a verdict, so it is skipped rather than emit a spurious
+    // `E_JOINT_DOF_MISMATCH`:
+    //
+    //   (a) a declared DOF field whose resolved type has no geometric kind
+    //       (neither Angle, Length, nor Orientation) — surfaced here, per-field,
+    //       with a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
+    //       since its `(0, 0)` contribution would otherwise emit a confusing
+    //       `E_JOINT_DOF_MISMATCH` that never names the real problem. A
+    //       `Type::Error` DOF (already diagnosed by the resolver) gates the
+    //       verdict too, but draws no second diagnostic (anti-cascade).
+    //   (b) a body relation whose DOF COUNT is curated but whose rot/trans split
+    //       is not (e.g. `tangent`): `residual_kinds` omits it, INFLATING the
+    //       residual above the true geometry, so the verdict could fire
+    //       spuriously (see `joint_self_check::body_has_undecidable_kind_split`).
+    let mut skip_verdict = false;
+    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+        if *declared_ty == Type::Error {
+            skip_verdict = true; // resolver already diagnosed — no second diagnostic
+        } else if crate::joint_self_check::dof_kind_of(declared_ty).is_none() {
+            skip_verdict = true;
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "joint `{}` DOF `{}`: type `{}` is not a valid joint DOF kind \
+                     (expected Angle, Length, or Orientation)",
+                    joint.name, field.name, declared_ty
+                ))
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
+            );
+        }
+    }
+    if crate::joint_self_check::body_has_undecidable_kind_split(&compiled_body) {
+        skip_verdict = true;
+    }
+
+    if !skip_verdict {
+        let residual = crate::joint_self_check::residual_kinds(&compiled_body);
+        let declared = crate::joint_self_check::declared_kinds(&declared_types);
+        if let Some(diag) =
+            crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
+        {
+            diagnostics.push(diag);
         }
     }
 }
