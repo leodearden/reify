@@ -183,7 +183,7 @@ fn format_relation_arg_ty(ty: &Type) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_core::Type;
+    use reify_core::{DiagnosticCode, SourceSpan, Type};
     use reify_ir::{CompiledExpr, Value};
 
     /// Independent fixture — the 9 pure relation names. Deliberately does NOT
@@ -418,5 +418,212 @@ mod tests {
             relation_contract_string("offset", &offset),
             "offset(Plane,Plane,Length) -> Relation removes 3"
         );
+    }
+
+    // ── Policing layers: check_relation_arg_types (step-5 RED / step-6 GREEN) ─
+    //
+    // A pure side-effect on `diagnostics` mirroring
+    // `builtin_signatures::check_builtin_arg_types`: the three §3.2 policing
+    // layers (unit / kind-projection / curation) plus PRD decision-6 gradualism.
+    // RED here: `check_relation_arg_types` does not exist yet, so this module
+    // fails to compile — the joint_signatures.rs RED convention.
+
+    /// A span for the call site under test (offsets are irrelevant to the checks).
+    fn span() -> SourceSpan {
+        SourceSpan::new(0, 10)
+    }
+
+    // (a) UNIT layer — the metric slot's dimension (θ:Angle, δ:Length, §3.2(a)).
+
+    /// `angle(Axis, Axis, Length)` — the metric must be an `Angle`; a `Length`
+    /// metric is a B10 unit error (`ArgTypeMismatch` naming "Angle"). The `Axis`
+    /// operands lift to `Direction`, so the metric mismatch is the ONLY diagnostic.
+    #[test]
+    fn check_unit_angle_with_length_metric_is_mismatch() {
+        let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::length())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("Angle"),
+            "B10 message must name the expected dimension 'Angle': {}",
+            diags[0].message
+        );
+    }
+
+    /// `distance(Point, Point, Angle)` — the metric must be a `Length`; an `Angle`
+    /// metric is a B10 unit error naming "Length". `Point` operands are valid for
+    /// distance, so the metric mismatch is the only diagnostic.
+    #[test]
+    fn check_unit_distance_with_angle_metric_is_mismatch() {
+        let pt = || arg(Type::point3(Type::length()));
+        let args = [pt(), pt(), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("distance", &args, span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
+        assert!(
+            diags[0].message.contains("Length"),
+            "B10 message must name the expected dimension 'Length': {}",
+            diags[0].message
+        );
+    }
+
+    /// `angle(Axis, Axis, Angle)` — correct metric dimension, operands lift to
+    /// `Direction` → no diagnostics.
+    #[test]
+    fn check_unit_angle_with_correct_metric_is_clean() {
+        let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert!(diags.is_empty(), "correct angle call must be clean, got: {diags:?}");
+    }
+
+    // (b) KIND/PROJECTION layer — operands must project to the named datum,
+    //     "implicit projection iff unique" (§3.2(b)/§3.3, reuses β codes).
+
+    /// `angle(Point, Point, Angle)` — a `Point` has no `Direction` projection, so
+    /// the operand fails to lift: B9 `DatumProjectionUnavailable`. Exactly one
+    /// projection diagnostic (anti-cascade: stop at the first failing operand).
+    #[test]
+    fn check_projection_angle_on_points_is_unavailable() {
+        let pt = || arg(Type::point3(Type::length()));
+        let args = [pt(), pt(), arg(Type::angle())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("angle", &args, span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DatumProjectionUnavailable));
+    }
+
+    /// `parallel(Frame, Frame)` — a bare directional projection on a `Frame` is
+    /// ambiguous (could be any basis axis): `DatumProjectionAmbiguous`. The code is
+    /// the stable contract; the message suggests the disambiguating `.x/.y/.z`.
+    #[test]
+    fn check_projection_parallel_on_frames_is_ambiguous() {
+        let args = [arg(Type::Frame(3)), arg(Type::Frame(3))];
+        let mut diags = Vec::new();
+        check_relation_arg_types("parallel", &args, span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DatumProjectionAmbiguous));
+    }
+
+    /// Operands that already are (or lift uniquely to) the named datum are clean:
+    /// `angle`(Axis→Direction), `flush`(Plane same-kind), `concentric`(Axis same-kind).
+    #[test]
+    fn check_projection_clean_when_operands_lift() {
+        // angle: Axis → Direction via .dir
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[arg(Type::Axis), arg(Type::Axis), arg(Type::angle())],
+            span(),
+            &mut d1,
+        );
+        assert!(d1.is_empty(), "angle(Axis,Axis,Angle) must be clean, got: {d1:?}");
+
+        // flush: Plane same-kind
+        let mut d2 = Vec::new();
+        check_relation_arg_types("flush", &[arg(Type::Plane), arg(Type::Plane)], span(), &mut d2);
+        assert!(d2.is_empty(), "flush(Plane,Plane) must be clean, got: {d2:?}");
+
+        // concentric: Axis same-kind
+        let mut d3 = Vec::new();
+        check_relation_arg_types(
+            "concentric",
+            &[arg(Type::Axis), arg(Type::Axis)],
+            span(),
+            &mut d3,
+        );
+        assert!(d3.is_empty(), "concentric(Axis,Axis) must be clean, got: {d3:?}");
+    }
+
+    // (c) CURATION layer — only unconditionally-well-defined signatures ship
+    //     (§3.2(c)): there is no bare plane-to-plane `distance`; use `offset`.
+
+    /// `distance(Plane, Plane, Length)` — there is no bare plane-to-plane distance;
+    /// the well-defined relation is `offset`. A `Plane` operand on `distance` emits
+    /// a single kind diagnostic hinting "use offset". (`offset` itself bundles its
+    /// own parallelism precondition.)
+    #[test]
+    fn check_curation_distance_on_planes_hints_use_offset() {
+        let args = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("distance", &args, span(), &mut diags);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert!(
+            diags[0].message.contains("offset"),
+            "curation diagnostic must hint 'use offset': {}",
+            diags[0].message
+        );
+    }
+
+    /// `offset(Plane, Plane, Length)` — the curated plane-separation relation: clean.
+    #[test]
+    fn check_curation_offset_on_planes_is_clean() {
+        let args = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
+        let mut diags = Vec::new();
+        check_relation_arg_types("offset", &args, span(), &mut diags);
+        assert!(diags.is_empty(), "offset(Plane,Plane,Length) must be clean, got: {diags:?}");
+    }
+
+    // GRADUALISM (PRD decision-6) — poison/unresolved args pass silently.
+
+    /// A `Type::Error` (poison) or `Type::TypeParam` (unresolved) operand or metric
+    /// suppresses the relevant relation arg diagnostic (anti-cascade gradualism),
+    /// mirroring `check_builtin_arg_types`.
+    #[test]
+    fn check_gradualism_error_and_type_param_pass_silently() {
+        // metric poison: angle metric = Error → unit check skipped (operands lift OK).
+        let mut d1 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[arg(Type::Axis), arg(Type::Axis), arg(Type::Error)],
+            span(),
+            &mut d1,
+        );
+        assert!(d1.is_empty(), "Error metric must be skipped, got: {d1:?}");
+
+        // operand poison: angle operands = Error → projection check skipped.
+        let mut d2 = Vec::new();
+        check_relation_arg_types(
+            "angle",
+            &[arg(Type::Error), arg(Type::Error), arg(Type::angle())],
+            span(),
+            &mut d2,
+        );
+        assert!(d2.is_empty(), "Error operands must be skipped, got: {d2:?}");
+
+        // unresolved type params everywhere → all checks skipped.
+        let mut d3 = Vec::new();
+        let tp = || arg(Type::TypeParam("T".to_string()));
+        check_relation_arg_types("distance", &[tp(), tp(), tp()], span(), &mut d3);
+        assert!(d3.is_empty(), "TypeParam args must be skipped, got: {d3:?}");
+    }
+
+    // Arity-gating + unknown-name no-ops — the checker must not fire spuriously.
+
+    /// The shared verbs `angle`/`distance` are policed ONLY in their arity-3 DRIVE
+    /// form. The arity-2 DERIVE forms are geometry queries, so the relation checker
+    /// must be a no-op for them — otherwise a valid `angle(p1, p2)` query would
+    /// draw a spurious projection diagnostic. (Pure relation names have no arity gate.)
+    #[test]
+    fn check_arity2_shared_verbs_are_noop() {
+        let pts = [arg(Type::point3(Type::length())), arg(Type::point3(Type::length()))];
+        let mut d1 = Vec::new();
+        check_relation_arg_types("angle", &pts, span(), &mut d1);
+        assert!(d1.is_empty(), "arity-2 angle must not be policed as a relation, got: {d1:?}");
+
+        let mut d2 = Vec::new();
+        check_relation_arg_types("distance", &pts, span(), &mut d2);
+        assert!(d2.is_empty(), "arity-2 distance must not be policed as a relation, got: {d2:?}");
+    }
+
+    /// An unrecognized / sibling-family name draws no relation diagnostics.
+    #[test]
+    fn check_unrecognized_name_is_noop() {
+        let mut diags = Vec::new();
+        check_relation_arg_types("volume", &[arg(Type::Geometry)], span(), &mut diags);
+        assert!(diags.is_empty(), "unrecognized name must be a no-op, got: {diags:?}");
     }
 }
