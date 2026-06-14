@@ -178,3 +178,67 @@ fn ci_example_compiles_clean() {
         "examples/joint_dof_self_check.ri must emit zero E_JOINT_DOF_MISMATCH",
     );
 }
+
+// ── DOF `in <range>` dimensional consistency ─────────────────────────────────
+
+/// The error-severity range/DOF dimension-mismatch diagnostics — β's `in <range>`
+/// dimensional consistency check (the compile-time analog of the runtime
+/// `validate_range` dimensional guard). Coded `ArgTypeMismatch`, message names
+/// the `range`.
+fn range_dim_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+                && d.message.contains("range")
+        })
+        .collect()
+}
+
+/// A `with angle: Angle in 0mm..10mm` DOF declares an ANGLE freedom but bounds
+/// its travel with a LENGTH range — a dimensional contradiction the §7.1 range
+/// check must reject (the compile-time analog of the runtime `validate_range`
+/// dimensional guard). Exactly one range-dimension error; the DOF COUNT/KIND
+/// itself is fine (residual (1,0) == declared (1,0)), so no `JointDofMismatch`.
+///
+/// RED: β does not yet validate the range, so the mismatch emits nothing.
+#[test]
+fn range_dimension_mismatch_angle_dof_length_range() {
+    let module = compile_source_with_stdlib(
+        "joint r(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) \
+         with angle: Angle in 0mm..10mm = { concentric(a, b)  on(p, stop) }",
+    );
+    let errs = range_dim_errors(&module);
+    assert_eq!(
+        errs.len(),
+        1,
+        "an `angle: Angle` DOF bounded by a `0mm..10mm` (Length) range must draw exactly one \
+         range-dimension error.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
+    // The COUNT/KIND law is satisfied — only the range dimension is wrong.
+    assert!(
+        joint_dof_errors(&module).is_empty(),
+        "the range-dimension mismatch must NOT also draw a JointDofMismatch (residual matches): {:#?}",
+        joint_dof_errors(&module)
+    );
+}
+
+/// CONTROL: the same joint with a dimensionally-matching `in 0deg..120deg`
+/// (Angle) range over the `angle: Angle` DOF draws NO range-dimension error.
+/// Holds both before and after step-16 (this is B1 with an explicit range).
+#[test]
+fn range_dimension_match_angle_dof_angle_range_is_clean() {
+    let module = compile_source_with_stdlib(
+        "joint r(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) \
+         with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }",
+    );
+    assert!(
+        range_dim_errors(&module).is_empty(),
+        "a dimensionally-matching `0deg..120deg` range over an `angle: Angle` DOF must NOT draw \
+         a range-dimension error, got: {:#?}",
+        range_dim_errors(&module)
+    );
+}
