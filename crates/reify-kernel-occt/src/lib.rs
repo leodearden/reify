@@ -7237,8 +7237,13 @@ mod tests {
     fn make_torus_ffi_produces_correct_volume() {
         // Pappus' theorem: a torus with major radius R and minor radius r has
         // analytic volume V = 2π²·R·r². With R=20, r=5 → V = 2π²·20·25.
-        // BRepPrimAPI_MakeTorus produces the exact analytic solid, so the same
-        // 0.02 tolerance the revolve approximation meets is comfortably achievable.
+        // BRepPrimAPI_MakeTorus builds a genuine Geom_ToroidalSurface, so
+        // query_volume takes OCCT's analytic BRepGProp::VolumeProperties path
+        // (not the mesh fallback, which only triggers when VolumeProperties
+        // returns 0 for surfaces of revolution). The result is exact to f64
+        // rounding — measured rel_err ≈ 1.8e-16 — so a 1e-9 tolerance pins the
+        // major/minor radius wiring tightly while leaving ~7 orders of margin
+        // above the machine-epsilon floor for cross-platform variance.
         if !crate::OCCT_AVAILABLE {
             return;
         }
@@ -7247,8 +7252,8 @@ mod tests {
         let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
         let rel_err = (vol - expected).abs() / expected;
         assert!(
-            rel_err < 0.02,
-            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:.4})",
+            rel_err < 1e-9,
+            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:e})",
             expected,
             vol,
             rel_err
@@ -7258,7 +7263,10 @@ mod tests {
     #[test]
     fn torus_execute_volume() {
         // OcctKernel::execute(&GeometryOp::Torus{..}) → exact analytic torus.
-        // V = 2π²·R·r² for R=20, r=5.
+        // V = 2π²·R·r² for R=20, r=5. The kernel's Volume query routes through
+        // the same analytic VolumeProperties path as the FFI test, so the
+        // result is machine-exact (measured rel_err ≈ 1.8e-16); a 1e-9 tolerance
+        // pins the radius wiring with ample margin above the f64 floor.
         if !crate::OCCT_AVAILABLE {
             return;
         }
@@ -7270,7 +7278,7 @@ mod tests {
             })
             .expect("Torus execute should succeed");
         let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
-        assert_volume_near(&mut kernel, handle.id, expected, 0.02, "torus");
+        assert_volume_near(&mut kernel, handle.id, expected, 1e-9, "torus");
     }
 
     #[test]
@@ -7287,13 +7295,18 @@ mod tests {
 
     #[test]
     fn torus_nonfinite_or_zero_radius_returns_error() {
-        // Zero and NaN radii are each rejected by validate_positive_finite,
-        // before the FFI is reached.
+        // Zero, negative, NaN, and +Inf radii are each rejected by
+        // validate_positive_finite (which requires `is_finite() && > 0.0`),
+        // before the FFI is reached — for both the major and minor radius.
         let cases: &[(f64, f64, &str)] = &[
             (0.0, 5.0, "major=0"),
             (20.0, 0.0, "minor=0"),
+            (-1.0, 5.0, "major<0"),
+            (20.0, -1.0, "minor<0"),
             (f64::NAN, 5.0, "major=NaN"),
             (20.0, f64::NAN, "minor=NaN"),
+            (f64::INFINITY, 5.0, "major=+Inf"),
+            (20.0, f64::INFINITY, "minor=+Inf"),
         ];
         for (major, minor, label) in cases {
             let mut kernel = OcctKernel::new();
