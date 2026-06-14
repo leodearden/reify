@@ -2324,6 +2324,37 @@ pub enum DiagnosticCode {
     /// `docs/prds/v0_6/geometric-relations.md` §9 ε).
     FeatureDatumAmbiguous,
 
+    // ── Geometric-joints diagnostics (task 4396 β) ───────────────────────
+
+    /// Origin: `crates/reify-compiler/src/joint_self_check.rs` (the
+    /// definition-time DOF self-check, geometric-joints β).
+    ///
+    /// Emitted as `Severity::Error` at *definition time* (before any solve) when
+    /// a `joint NAME(datums) with <declared free DOF> = <relation body>`
+    /// definition's declared free DOF does NOT match the body's geometric
+    /// residual — by COUNT or by KIND. A mechanism nominally has 6 spatial DOF
+    /// (3 rotational + 3 translational, PRD §7.1.2); each body relation removes a
+    /// curated `(rot, trans)` codimension split, leaving a residual
+    /// `(3 − Σrot, 3 − Σtrans)`. The declared DOF fields contribute their own
+    /// kinds (`Angle` → rotational, `Length` → translational, `Orientation` → 3
+    /// rotational). The law is exact-integer equality of the two `(rot, trans)`
+    /// pairs — no tolerance (design §7.1; PRD §12 G6 numeric-floor is N/A).
+    ///
+    /// Canonical message form:
+    /// `"declared <Nr> rotational [+ <Nt> translational] free DOF, but the
+    /// relation leaves <Rr> rot + <Rt> trans; add a constraint or declare
+    /// <field>: <Type>"` — naming the count and/or kind disagreement and a
+    /// geometric remedy (add a constraint to remove a residual freedom, or
+    /// declare the missing DOF field with its `Angle`/`Length`/`Orientation`
+    /// type). An empty body (residual `(3, 3)`) cannot equal any sane declared
+    /// multiset, so it surfaces here naturally rather than via a bespoke
+    /// empty-body code.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_JOINT_DOF_MISMATCH`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-joints.md` §7.1).
+    JointDofMismatch,
+
     // ── FEA failure-mode diagnostics (task 2929) ─────────────────────────
     //
     // Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
