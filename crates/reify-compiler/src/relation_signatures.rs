@@ -31,6 +31,155 @@
 //! through to the geometry-query arm. The pure family stays disjoint from every
 //! sibling family (pinned by the `units.rs` disjointness test).
 
+use reify_core::Type;
+use reify_ir::CompiledExpr;
+
+/// The complete set of **pure** geometric-relation builtin names recognised by
+/// the compiler. Single source of truth — imported into the `units.rs` test
+/// module to pin disjointness from all sibling families (mirrors
+/// `JOINT_TYPED_FN_NAMES` / `MATH_CONSTRUCTION_NAMES`).
+///
+/// **9 names**:
+/// - **Primitives** (5): `coincident` (datum-coincidence), `on` (incidence),
+///   `parallel`, `antiparallel`, `perpendicular` (orientation).
+/// - **Named compounds** (4): `concentric`, `flush`, `offset`, `tangent`.
+///
+/// `angle` and `distance` are deliberately EXCLUDED — they are arity-gated
+/// shared verbs whose arity-2 forms belong to `units.rs` `GEOMETRY_QUERY_NAMES`;
+/// only their arity-3 DRIVE forms are relations (handled in
+/// [`relation_fn_result_type`] / [`relation_delta_dof`]).
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const RELATION_FN_NAMES: &[&str] = &[
+    // Primitives (5).
+    "coincident",
+    "on",
+    "parallel",
+    "antiparallel",
+    "perpendicular",
+    // Named compounds (4).
+    "concentric",
+    "flush",
+    "offset",
+    "tangent",
+];
+
+/// Is `name` a **pure** relation builtin? Name-only classification — a
+/// `.contains` over the single-source-of-truth slice [`RELATION_FN_NAMES`].
+/// Case-sensitive. Excludes the arity-gated shared verbs `angle`/`distance`.
+pub(crate) fn is_relation_typed_fn(name: &str) -> bool {
+    RELATION_FN_NAMES.contains(&name)
+}
+
+/// Arg-aware result-type resolver for the relation vocabulary. Returns
+/// `Some(Type::Relation)` for every pure relation name (regardless of operand
+/// shape) and for the arity-3 DRIVE forms of `angle`/`distance`; `None`
+/// otherwise — including the arity-2 `angle`/`distance` DERIVE forms, which then
+/// fall through to the geometry-query arm in `expr.rs` (mirrors the arg-aware
+/// `selector_composition_result_type` fall-through idiom).
+pub(crate) fn relation_fn_result_type(name: &str, args: &[CompiledExpr]) -> Option<Type> {
+    if RELATION_FN_NAMES.contains(&name) {
+        return Some(Type::Relation);
+    }
+    // Shared-verb DRIVE forms: arity-3 `angle`/`distance` are relations; the
+    // arity-2 DERIVE forms fall through (None) to geometry-query.
+    if matches!(name, "angle" | "distance") && args.len() == 3 {
+        return Some(Type::Relation);
+    }
+    None
+}
+
+/// The ΔDOF (degrees of freedom removed) a relation publishes — the exact
+/// codimension of its constraint manifold, NOT a tolerance (design §3.1/§3.4;
+/// PRD §12 confirms the G6 numeric-floor branch does not fire). Returns `None`
+/// for names/operand shapes outside the curated vocabulary.
+///
+/// The integers are first-principles codimension counts:
+/// - `coincident(D, D)` removes `codim(D)`: a `Direction` pins 2 angular DOF; a
+///   `Point` pins 3 translational DOF; a `Plane` pins 1 translation + 2 tilt =
+///   3; an `Axis` pins 2 translation + 2 tilt = 4; a `Frame` pins all 6.
+/// - `on(Point, host)` removes `3 − dim(host)` (the point keeps `dim(host)`
+///   freedoms sliding within the host): `Plane`(dim 2)→1, `Axis`(dim 1)→2,
+///   `Point`(dim 0)→3.
+/// - Metric primitives `angle`/`distance` (arity-3 DRIVE form) each pin 1 scalar.
+/// - Orientation primitives: `parallel`/`antiparallel` pin 2 angular DOF;
+///   `perpendicular` pins 1.
+/// - Named compounds publish their summed-body nominal codim: `concentric` = a
+///   coincident axis (4); `flush` = a coincident plane (3); `offset` = parallel
+///   (2) + on (1) = 3; `tangent` = 2.
+pub(crate) fn relation_delta_dof(name: &str, args: &[CompiledExpr]) -> Option<u32> {
+    let arg_ty = |i: usize| args.get(i).map(|a: &CompiledExpr| &a.result_type);
+    match name {
+        // coincident(D, D): codim of the datum kind D.
+        "coincident" => match arg_ty(0)? {
+            Type::Direction => Some(2),
+            Type::Point { .. } => Some(3),
+            Type::Plane => Some(3),
+            Type::Axis => Some(4),
+            Type::Frame(_) => Some(6),
+            _ => None,
+        },
+        // on(Point, host) = 3 − dim(host).
+        "on" => match arg_ty(1)? {
+            Type::Plane => Some(1),
+            Type::Axis => Some(2),
+            Type::Point { .. } => Some(3),
+            _ => None,
+        },
+        // Metric primitives — only the arity-3 DRIVE form removes a DOF.
+        "angle" | "distance" => {
+            if args.len() == 3 {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        // Orientation primitives.
+        "parallel" | "antiparallel" => Some(2),
+        "perpendicular" => Some(1),
+        // Named compounds (nominal summed-body codim).
+        "concentric" => Some(4),
+        "flush" => Some(3),
+        "offset" => Some(3),
+        "tangent" => Some(2),
+        _ => None,
+    }
+}
+
+/// The ΔDOF contract string surfaced by `reify-lsp` hover:
+/// `name(ArgTys) -> Relation removes N`. The metric operand is rendered by its
+/// dimension name (`Length`/`Angle`), not `Scalar[m]`, to match the §4 signature
+/// vocabulary. If the ΔDOF is unknown (uncurated operand shape) the count is
+/// rendered as `?`.
+pub(crate) fn relation_contract_string(name: &str, args: &[CompiledExpr]) -> String {
+    let arg_tys: Vec<String> = args
+        .iter()
+        .map(|a| format_relation_arg_ty(&a.result_type))
+        .collect();
+    let removes = relation_delta_dof(name, args)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    format!(
+        "{}({}) -> Relation removes {}",
+        name,
+        arg_tys.join(","),
+        removes
+    )
+}
+
+/// Render an operand type for the contract string: a metric scalar by its
+/// dimension name (`Length`/`Angle`), datum kinds by their short name
+/// (`Point`/`Frame` collapse the dimensional suffix; `Plane`/`Axis`/`Direction`
+/// already Display short).
+fn format_relation_arg_ty(ty: &Type) -> String {
+    match ty {
+        Type::Scalar { dimension } => dimension.canonical_name().unwrap_or("Real").to_string(),
+        Type::Point { .. } => "Point".to_string(),
+        Type::Frame(_) => "Frame".to_string(),
+        other => format!("{}", other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
