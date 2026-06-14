@@ -32,8 +32,8 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::{BuildResult, BuildScheduler, Engine};
-use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Value};
-use reify_test_support::{MockGeometryKernel, compile_source};
+use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Satisfaction, Value};
+use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
 
 /// Compile `source`, build it on a FRESH engine under the given `scheduler`
 /// with the supplied `kernel`, and return the full [`BuildResult`]
@@ -63,6 +63,25 @@ pub fn build_with_kernel(
 /// or diagnostics and need no canned query replies.
 pub fn build_under(source: &str, scheduler: BuildScheduler) -> BuildResult {
     build_with_kernel(source, scheduler, Box::new(MockGeometryKernel::new()))
+}
+
+/// Like [`build_with_kernel`] but compiles `source` through the stdlib prelude
+/// ([`compile_source_with_stdlib`]) so prelude names — DFM builtins
+/// (`fits_build_volume`), geometry types (`Solid` / `Geometry`), and user
+/// `constraint def`s — resolve. The geometry-backed constraint tests
+/// (steps 7/9/11) need this because `fits_build_volume` lives in the std.process
+/// prelude, whereas the curated-fillet test (step 5) uses only core geometry
+/// builtins (`box` / `edges_at_height` / `fillet`) and so uses the no-stdlib
+/// [`build_with_kernel`].
+pub fn build_with_kernel_stdlib(
+    source: &str,
+    scheduler: BuildScheduler,
+    kernel: Box<dyn GeometryKernel>,
+) -> BuildResult {
+    let compiled = compile_source_with_stdlib(source);
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(scheduler);
+    engine.build(&compiled, ExportFormat::Step)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,4 +181,131 @@ fn unified_dag_curated_fillet_resolves_edges_in_loop() {
         ),
         _ => unreachable!("filtered to Fillet above"),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7 (RED): C7 retirement — post-geometry constraint re-check folds an
+// INLINE geometry-query constraint to a DEFINITE verdict under UnifiedDag.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A geometry-backed constraint written in the INLINE geometry-query form — the
+/// `bounding_box(...)` leaves live directly inside the constraint predicate
+/// (`fits_build_volume(bounding_box(part), bounding_box(envelope))`), NOT a
+/// let-bound `let v = volume(part)` scalar — over two solids realized in the
+/// SAME scope (single structure; the cross-sub `proc.build_volume` capstone is
+/// step-9).
+///
+/// Under `UnifiedDag`, ε's Constraint executor (step-8) folds those inline
+/// `bounding_box(...)` leaves against the live kernel + the realization-produced
+/// `named_steps` BEFORE the kernel-less `SimpleConstraintChecker` runs, so the
+/// constraint reaches a DEFINITE `Satisfaction` (`Satisfied`/`Violated`).
+///
+/// Contrast `LegacyMultiPass`: the Task 4229 post-realization re-check
+/// (engine_build.rs) only re-evaluates constraints kernel-lessly against the
+/// completed `values` map. A *let-bound* geometry cell would already be hydrated
+/// by `post_process_geometry_queries` and so would fold — but an INLINE
+/// `bounding_box(part)` leaf inside the constraint predicate has no value cell to
+/// hydrate, so it stays `Undef` → `Indeterminate` (the intended, documented
+/// `reify check` / build divergence per the ε design decision on check()).
+///
+/// RED until step-8: under `UnifiedDag` today the `constraint_results` still come
+/// from the 4229 kernel-less re-check (ε has not yet added the Constraint
+/// executor), so the inline leaf is unresolved → `Indeterminate` and the DEFINITE
+/// assertion below fails.
+#[test]
+fn unified_dag_inline_geometry_constraint_is_definite_not_frozen() {
+    // `FitsEnvelope` is a user `constraint def` whose predicate is the INLINE
+    // geometry-query form (mirrors std.process `FitsBuildVolume`, but over two
+    // same-scope `Solid` params instead of a cross-sub `proc.build_volume`, so
+    // no cross-sub resolution is exercised here). `Widget` realizes both solids
+    // and applies the constraint, so it lands in `constraint_results`.
+    let source = r#"
+constraint def FitsEnvelope {
+    param part     : Solid
+    param envelope : Solid
+    fits_build_volume(bounding_box(part), bounding_box(envelope))
+}
+
+structure Widget {
+    let part     = box(10mm, 10mm, 10mm)
+    let envelope = box(100mm, 100mm, 100mm)
+    constraint FitsEnvelope(part: part, envelope: envelope)
+}
+"#;
+
+    // Declaration-order realization: `part` → handle 1, `envelope` → handle 2
+    // (the MockGeometryKernel allocates ids 1,2,… across `execute()` calls —
+    // same "first box → handle 1" convention as the step-5 curated-fillet test).
+    // Both bboxes are valid, so `fits_build_volume` is decidable EITHER WAY: the
+    // test asserts DEFINITE (Satisfied OR Violated), NOT a specific polarity, so
+    // it is robust to the realization order of the two solids.
+    let part = GeometryHandleId(1);
+    let envelope = GeometryHandleId(2);
+    // Axis-aligned bbox JSON wire reply (SI metres), mirroring the bbox replies
+    // in `geometry_ops.rs`'s `rewrite_geometry_queries_folds_function_call_args`
+    // unit test.
+    let bbox = |hi: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
+              \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
+        ))
+    };
+    // A fresh kernel per build (each `build()` takes ownership of its kernel).
+    let make_kernel = || {
+        MockGeometryKernel::new()
+            .with_bbox_result(part, bbox(0.01))
+            .with_bbox_result(envelope, bbox(0.10))
+    };
+
+    let unified =
+        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
+    let legacy =
+        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+
+    let unified_sat = fits_envelope_satisfaction(&unified);
+    let legacy_sat = fits_envelope_satisfaction(&legacy);
+
+    // RED until step-8: UnifiedDag must fold the inline geometry-query leaves to
+    // a DEFINITE verdict (un-freezing the C7 pre-geometry constraint_results).
+    assert_ne!(
+        unified_sat,
+        Satisfaction::Indeterminate,
+        "UnifiedDag must fold the inline geometry-query constraint to a DEFINITE \
+         verdict (Satisfied/Violated), not the frozen kernel-less Indeterminate \
+         (legacy_sat={legacy_sat:?}); constraint_results={:?}, diagnostics={:?}",
+        unified.constraint_results,
+        unified.diagnostics,
+    );
+
+    // Documented divergence: the LegacyMultiPass / `reify check` kernel-less
+    // re-check cannot fold the inline leaf → Indeterminate.
+    assert_eq!(
+        legacy_sat,
+        Satisfaction::Indeterminate,
+        "LegacyMultiPass leaves the inline geometry-query leaf unresolved \
+         (kernel-less 4229 re-check) → Indeterminate; constraint_results={:?}",
+        legacy.constraint_results,
+    );
+}
+
+/// Locate the single `FitsEnvelope` constraint entry's satisfaction in a
+/// [`BuildResult`], matching on the constraint-def label prefix (the checker
+/// labels a `constraint def` instantiation `"FitsEnvelope#0[0]"`). Panics with
+/// the full constraint list if no such entry is present.
+fn fits_envelope_satisfaction(result: &BuildResult) -> Satisfaction {
+    result
+        .constraint_results
+        .iter()
+        .find(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsEnvelope"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a FitsEnvelope constraint result, got: {:?}",
+                result.constraint_results
+            )
+        })
+        .satisfaction
 }
