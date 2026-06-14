@@ -11,7 +11,7 @@
 // 2026-05-30, esc-2929-40 option B).  The `span: Option<SourceSpan>` parameter
 // is kept for future-proofing: the label is only attached when `span` is `Some`.
 
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_solver_elastic::FeaFailure;
 
 /// Map a `FeaFailure` to a `reify_core::Diagnostic`.
