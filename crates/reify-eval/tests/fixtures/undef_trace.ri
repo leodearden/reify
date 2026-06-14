@@ -1,0 +1,24 @@
+// Fixture for task 4322 (PRD undef-self-describing β): all-causes DAG walk.
+//
+// UndefTrace exercises:
+//   - a, b  : Unbound       (required params, no default)
+//   - u     : UserUndef     (param u: Length = undef)
+//   - x     : Unbound       (required param, no default)
+//   - r = a + b + u         : propagated (B3 multi-root: trace(r) = {Unbound a, Unbound b, UserUndef u})
+//   - y = x                 : propagated (BT3 chain: trace(z) = {Unbound x})
+//   - z = y                 : propagated (BT3 chain: trace(z) = {Unbound x})
+//
+// Chain collapse (BT3): z ← y ← x; only x has an origin; trace(z) = [Unbound x].
+// Multi-root (B3): r = a + b + u; trace(r) = [Unbound a, Unbound b, UserUndef u] (sorted by cell id).
+//
+// All cells Length-typed for dimensional consistency.
+// Compiles clean under compile_source_with_stdlib (no Error diagnostics).
+structure UndefTrace {
+    param a: Length
+    param b: Length
+    param u: Length = undef
+    param x: Length
+    let r = a + b + u
+    let y = x
+    let z = y
+}

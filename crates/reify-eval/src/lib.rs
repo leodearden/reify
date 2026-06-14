@@ -13,6 +13,8 @@ pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeRe
 pub mod demand;
 pub mod deps;
 pub mod dirty;
+pub mod undef_tracer;
+pub use undef_tracer::trace_undef_causes;
 pub mod dispatcher;
 pub mod engine_fixpoint;
 pub use engine_fixpoint::BuildScheduler;
