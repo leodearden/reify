@@ -756,30 +756,31 @@ mod tests {
         }
     }
 
-    /// Assert that the `CASES` table in `single_geom_target_kinds()` contains exactly one entry
-    /// per `ModifyKind` variant — i.e., that the set of variants in the table has the same
-    /// cardinality as `ModifyKind::VARIANT_COUNT`.
-    ///
-    /// ## Gap this closes
-    ///
-    /// The two existing exhaustiveness tripwires in `single_geom_target_kinds()` protect against
-    /// *missing* entries but not against *duplicate-with-omission* edits:
-    ///
-    /// 1. **Compile-time count assert** (`geometry_modify.rs` — the `const _: () = assert!(
-    ///    CASES.len() == ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES`
-    ///    declaration): fires at `cargo check` if the table length drifts from the variant count,
-    ///    but passes for any table of exactly 5 rows — including one with two `Chamfer` rows and
-    ///    zero `Draft` rows.
-    ///
-    /// 2. **No-wildcard sentinel closure** (`geometry_modify.rs` — the `let _ = |k: ModifyKind|
-    ///    match k { ModifyKind::Chamfer | ... => () }` below `CASES`): fails to compile when a
-    ///    new variant is added without updating the closure, but only enumerates variants; it does
-    ///    not cross-check the `CASES` rows against that enumeration.
-    ///
-    /// Neither tripwire catches a routine table edit that silently swaps one variant for a
-    /// duplicate. This test closes that gap by collecting the `ModifyKind` keys from `CASES` into
-    /// a `HashSet` and asserting the set's length equals `ModifyKind::VARIANT_COUNT`. A
-    /// duplicate row shrinks the set size below the count, failing the assertion.
+    // Assert that the `CASES` table in `single_geom_target_kinds()` contains exactly one entry
+    // per `ModifyKind` variant — i.e., that the set of variants in the table has the same
+    // cardinality as `ModifyKind::VARIANT_COUNT`.
+    //
+    // ## Gap this closes
+    //
+    // The two existing exhaustiveness tripwires in `single_geom_target_kinds()` protect against
+    // *missing* entries but not against *duplicate-with-omission* edits:
+    //
+    // 1. **Compile-time count assert** (`geometry_modify.rs` — the `const _: () = assert!(
+    //    CASES.len() == ModifyKind::VARIANT_COUNT, ...)` immediately after the `CASES`
+    //    declaration): fires at `cargo check` if the table length drifts from the variant count,
+    //    but passes for any table of exactly 5 rows — including one with two `Chamfer` rows and
+    //    zero `Draft` rows.
+    //
+    // 2. **No-wildcard sentinel closure** (`geometry_modify.rs` — the `let _ = |k: ModifyKind|
+    //    match k { ModifyKind::Chamfer | ... => () }` below `CASES`): fails to compile when a
+    //    new variant is added without updating the closure, but only enumerates variants; it does
+    //    not cross-check the `CASES` rows against that enumeration.
+    //
+    // Neither tripwire catches a routine table edit that silently swaps one variant for a
+    // duplicate. This test closes that gap by collecting the `ModifyKind` keys from `CASES` into
+    // a `HashSet` and asserting the set's length equals `ModifyKind::VARIANT_COUNT`. A
+    // duplicate row shrinks the set size below the count, failing the assertion.
+    // (See `single_geom_target_kinds_cases_table_unique_variant_set` below.)
     // ── δ: draft arity dispatch tests ──────────────────────────────────────────
 
     /// 4-arg `draft(solid, faces, angle, plane)` is recognised by `compile_modify_op`

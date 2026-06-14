@@ -272,14 +272,14 @@ fn offset_solid_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn draft_arg_count_diagnostic_has_span_label() {
-    // draft() expects 3 arguments — passing 1 should produce a labeled diagnostic
+    // draft() expects 3 or 4 arguments — passing 1 should produce a labeled diagnostic
     assert_arg_count_label(
         r#"
             structure S {
                 let d = draft(box(10mm, 10mm, 10mm))
             }
         "#,
-        "draft() expects 3 arguments",
+        "draft() expects 3 or 4 arguments",
     );
 }
 
