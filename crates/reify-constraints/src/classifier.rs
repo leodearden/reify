@@ -38,12 +38,32 @@ impl DomainFlags {
 }
 
 /// Known geometry-related function qualified name prefixes.
+///
+/// The trailing `matches!` arm names individual geometry builtins that do not
+/// share the `std::geo::` / `std::geometry::` prefixes. It includes the
+/// geometric-relation vocabulary (geometric-relations γ, task 4383): a relation
+/// is a DOF-removal directive over geometry, so a relation call classifies as
+/// `Geometric` exactly like the geometry queries. `std::parallel`/`std::tangent`
+/// were already present (they are also relation names); the remaining seven
+/// (`coincident`/`on`/`antiparallel`/`perpendicular`/`concentric`/`flush`/`offset`)
+/// are added here. `std::distance`/`std::angle` already route via this arm and
+/// the `starts_with` prefixes, so the arity-3 DRIVE forms route too.
 fn is_geometry_qualified_name(qualified_name: &str) -> bool {
     qualified_name.starts_with("std::geo::")
         || qualified_name.starts_with("std::geometry::")
         || matches!(
             qualified_name,
-            "std::distance" | "std::angle_between" | "std::parallel" | "std::tangent"
+            "std::distance"
+                | "std::angle_between"
+                | "std::parallel"
+                | "std::tangent"
+                | "std::concentric"
+                | "std::flush"
+                | "std::offset"
+                | "std::coincident"
+                | "std::perpendicular"
+                | "std::antiparallel"
+                | "std::on"
         )
 }
 

@@ -1471,6 +1471,12 @@ mod tests {
     // of truth in `crate::analysis_signatures`, imported here to pin
     // disjointness from all sibling families.
     use crate::analysis_signatures::ANALYSIS_FN_NAMES;
+    // Geometric-relation vocabulary (geometric-relations γ, task 4383) — single
+    // source of truth in `crate::relation_signatures`, imported here to pin the
+    // PURE relation family disjoint from every sibling family. The shared-verb
+    // names `angle`/`distance` are deliberately NOT in this slice (they stay in
+    // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
+    use crate::relation_signatures::RELATION_FN_NAMES;
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
