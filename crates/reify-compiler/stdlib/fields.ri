@@ -26,7 +26,9 @@
 //   restrict             — intercepting builtin; no `.ri` fn body (codomain unchanged)
 //   constant_field       — `.ri` fn body below (task 4223 ε): pub fn constant_field<D,C>
 //   fn_field             — intercepting builtin; wraps a lambda as Field{Analytical}
-//   from_samples         — intercepting builtin; no `.ri` fn body yet
+//   from_samples         — intercepting builtin; no `.ri` fn body (eval arm in reify-expr/src/lib.rs)
+//                          accepts (points: List<Real>, values: List<Real>, method: InterpolationMethod)
+//                          → Field<Real,Real>.  InterpolationMethod enum declared below (task γ).
 //
 //   NOTE (post-4220): a `pub fn` CAN now return a Field via fn_field. The prior
 //   restriction ("Field not constructible in a pub fn body") was lifted when
@@ -50,6 +52,41 @@
 // constant_field/compose; through<T> is a stable exemplar that remains here.
 
 pub fn through<T>(x: T) -> T { x }
+
+// ── InterpolationMethod enum (task 4221 γ — PRD §D3/D5) ─────────────────────
+//
+// Selects the interpolation algorithm used by `from_samples` (the γ-phase
+// intercepting builtin that constructs a Regular1D SampledField from explicit
+// sample points).
+//
+// Variant → InterpolationKind mapping (reify-expr eval_from_samples):
+//   Linear         → InterpolationKind::Linear         (supported)
+//   NearestNeighbor→ InterpolationKind::NearestNeighbor (supported)
+//   Cubic          → InterpolationKind::Cubic           (supported)
+//   RBF            → eval-time E_INTERP_METHOD_UNSUPPORTED (hard error in from_samples)
+//   Kriging        → eval-time E_INTERP_METHOD_UNSUPPORTED (hard error in from_samples)
+//
+// Note: RBF/Kriging diverge from `interp::resolve_method`'s
+// deferred-to-Linear fallback (W_INTERPOLATION_DEFERRED) used for
+// `sampled{}` config fields. from_samples is a new surface with no
+// back-compat obligation: it fails fast on unsupported methods.
+//
+// Prelude resolution: this enum is declared in std.fields (a registered
+// prelude module, stdlib_loader.rs:297). `enums_phase::flatten_prelude_enum_defs`
+// flattens it into the prelude `enum_defs`, so `InterpolationMethod.Linear`
+// resolves from any user file without an explicit import — same mechanism
+// as `InfillPattern` (fdm.ri) and `SignalKind` (ports).
+//
+// The `#no_prelude` directive at the top of this file only suppresses what
+// fields.ri ITSELF sees during its own compilation (pre_pass.rs:45-57); it
+// does NOT remove fields.ri's own declarations from the exported prelude.
+pub enum InterpolationMethod {
+    Linear,
+    NearestNeighbor,
+    Cubic,
+    RBF,
+    Kriging,
+}
 
 // ── compose<A,B,C> (task 4224 ζ — PRD §1 + §9 ζ) ────────────────────────────
 //
