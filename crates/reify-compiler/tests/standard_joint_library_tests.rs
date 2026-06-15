@@ -82,9 +82,26 @@ fn standard_joint_library_compiles_clean() {
 //
 // These tests are GREEN from the moment the β self-check machinery is wired
 // (pre-landed, task 4396). Creating joints.ri (step-2) does not affect them.
+//
+// NOTE — intentional overlap with joint_dof_self_check_tests.rs (task 4396):
+// `revolute_joint_definition_is_self_check_clean` overlaps B1 there
+// (`b1_revolute_concentric_plus_on_is_clean`) and
+// `cylindrical_joint_definition_is_self_check_clean` overlaps B4
+// (`b4_cylindrical_record_is_clean`). The distinction is the `in <range>`
+// clause added here: the β tests pin count/kind without a range bound;
+// these pin that count/kind passes unchanged when a dimensionally-typed
+// `in <range>` is present, which IS the form shipped in joints.ri. They
+// act as regression-guards that the range annotation does not perturb the
+// self-check signal (the β `range_dimension_match_angle_dof_angle_range_is_clean`
+// control pins range-dimension acceptance; these pin the full combined form).
 
 /// revolute: concentric(a,b)=(2rot,2trans) + on(p,stop)=(0rot,1trans)
 /// → Σ=(2,3) → residual(1rot,0trans) = angle:Angle ✓
+///
+/// Overlaps `b1_revolute_concentric_plus_on_is_clean` in
+/// `joint_dof_self_check_tests.rs` (β, task 4396). The extra coverage here is
+/// the `in 0deg..120deg` range clause, which is present in the shipped
+/// joints.ri and absent from the β control.
 #[test]
 fn revolute_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -118,6 +135,10 @@ fn prismatic_joint_definition_is_self_check_clean() {
 
 /// cylindrical: concentric(a,b)=(2rot,2trans) → Σ=(2,2) → residual(1rot,1trans)
 /// = { angle:Angle, travel:Length } = (1,1) ✓
+///
+/// Overlaps `b4_cylindrical_record_is_clean` in `joint_dof_self_check_tests.rs`
+/// (β, task 4396). The extra coverage here is the `in 0deg..360deg` /
+/// `in 0mm..50mm` range bounds present in the shipped joints.ri.
 #[test]
 fn cylindrical_joint_definition_is_self_check_clean() {
     let module = compile_source_with_stdlib(
@@ -241,6 +262,40 @@ fn gear_in_relate_block_draws_relate_expects_relation() {
          a `relate {{ }}` block containing it must emit E_RELATE_EXPECTS_RELATION.\n\
          All diagnostics: {:#?}",
         module.diagnostics
+    );
+}
+
+/// B8 constructor-health companion — `couple(a, b)` as a bare `let` binding
+/// (outside any `relate { }` body) must compile without Error-severity
+/// diagnostics. This confirms the coupling constructor path is healthy and that
+/// the `RelateExpectsRelation` errors drawn above are specifically because
+/// `couple()` types to `StructureRef("Coupling")` (not `Type::Relation`) — NOT
+/// because the constructor fails to resolve for some unrelated reason.
+///
+/// Joint constructors return a fixed `StructureRef` regardless of argument
+/// types (no arg-type enforcement for joint builtins at compile time, §13). So
+/// `couple(a, b)` with `a: Axis, b: Axis` is a valid expression that the
+/// compiler accepts, typing it to `Coupling` without error.
+///
+/// Without this companion, a future arity/scope regression that breaks
+/// `couple` resolution could cause a *different* error whose type is still not
+/// `Type::Relation`, firing `RelateExpectsRelation` for the wrong reason and
+/// masking the regression in the B8 tests above.
+#[test]
+fn couple_constructor_outside_relate_is_healthy() {
+    let module = compile_source_with_stdlib(
+        "structure S {\n    param a : Axis\n    param b : Axis\n    \
+         let c = couple(a, b)\n}",
+    );
+    let errors: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "couple(a, b) as a bare `let` binding must compile without Error diagnostics \
+         (the constructor is healthy and returns Coupling outside relate); got: {errors:#?}",
     );
 }
 
