@@ -3,9 +3,9 @@
 //!
 //! Signal assertions (real Engine::eval path, not synthetic snapshot construction):
 //! - BT5: `x = a + sqrt(neg)` with `a` unbound ⇒ tracer returns BOTH
-//!         `a:Unbound` AND a sqrt-domain `OpContractFailed` via the side-map.
+//!   `a:Unbound` AND a sqrt-domain `OpContractFailed` via the side-map.
 //! - BT6: `y = sqrt(a)` with `a` unbound ⇒ tracer returns ONLY `a:Unbound`;
-//!         NO false `OpContractFailed` (undef-arg short-circuit fires before builtin).
+//!   NO false `OpContractFailed` (undef-arg short-circuit fires before builtin).
 //! - Determined control: `ok = sqrt(neg + 5.0)` ⇒ `undef_causes().get(ok)` is None.
 //! - G3/transparency: capture OFF ⇒ byte-identical (Value, DeterminacyState) per cell
 //!   AND empty undef_causes().
