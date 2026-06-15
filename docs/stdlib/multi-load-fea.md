@@ -250,3 +250,49 @@ The v0.4+ non-linear solver result types (plasticity, contact, large-deformation
 All referenced base cases must share identical Sampled-field grid metadata (grid kind, axis lengths, bounds, spacing). If grids differ — for example because two cases used different `mesh_size` overrides — `linear_combine` returns `Undef`. Actionable diagnostics for this mismatch are deferred to PRD task #10.
 
 See §4 for the per-case `mesh_size` / `element_order` option interaction and the full compatibility matrix.
+
+---
+
+## 4. Per-case options compatibility matrix
+
+`LoadCase.options : Option<ElasticOptions> = none` lets individual cases override solver knobs. `none` (the default) inherits the shared `options` argument passed to `solve_load_cases`.
+
+| Option override | Per-case OK? | Effect on envelope / superposition |
+|---|---|---|
+| `cg_tolerance` | ✓ yes | Per-case independent; envelope and superposition unaffected |
+| `max_iter` | ✓ yes | Per-case independent; envelope and superposition unaffected |
+| `threads` | ✓ yes | Per-case independent; envelope and superposition unaffected |
+| `#deterministic` | ✓ yes | Per-case independent; envelope and superposition unaffected |
+| `mesh_size` | ⚠ allowed but disables superposition | Different DOF layout per case; `linear_combine` returns `Undef` (diagnostic deferred to PRD task #10) if base meshes differ |
+| `element_order` | ⚠ allowed but disables superposition | Different DOF layout per case; `linear_combine` returns `Undef` if base meshes differ |
+
+*(Reproduced from [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md) lines 107-110.)*
+
+**Practical guidance:** keep `mesh_size` and `element_order` identical across all cases (or leave them as `none` to inherit the shared options) unless you have a specific reason to vary element fidelity per case. Mixing mesh sizes is valid for running a coarse sanity-check case alongside fine-mesh production cases, but rules out `linear_combine` across those cases.
+
+**Example — per-case `cg_tolerance` override (safe, envelope and superposition unaffected):**
+
+```
+let tight_case = LoadCase(
+    name:     "fine_check",
+    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0])],
+    supports: [mount],
+    options:  some(ElasticOptions(cg_tolerance: 1e-10, shell_force: ShellForce.Off)),
+)
+// fine_check contributes to envelope_von_mises and linear_combine as normal.
+```
+
+**Example — per-case `mesh_size` override (disables superposition for that pair):**
+
+```
+let coarse_case = LoadCase(
+    name:     "coarse_sanity",
+    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0])],
+    supports: [mount],
+    options:  some(ElasticOptions(mesh_size: 0.02, shell_force: ShellForce.Off)),
+)
+// linear_combine(results, ...) returns Undef because coarse_sanity's grid
+// metadata differs from the other cases (different DOF layout).
+// envelope_von_mises also returns Undef for the same reason.
+// Inspect coarse_sanity independently via result_for(results, "coarse_sanity").
+```
