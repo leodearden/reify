@@ -6,9 +6,16 @@
 //!
 //! # Guard
 //!
-//! All tests early-return (eprintln + return) when
+//! All tests early-return (`eprintln!` + `return`) when
 //! `!reify_kernel_occt::OCCT_AVAILABLE`, mirroring the γ harness in
-//! `process_dfm_measure.rs`.
+//! `process_dfm_measure.rs`.  A CI run on a host without the OCCT kernel
+//! therefore shows all three tests as "passed" but having made no assertions.
+//! **Compile coverage for the example file in that environment is provided by
+//! `crates/reify-compiler/tests/examples_smoke.rs`**, which discovers
+//! `examples/**/*.ri` automatically and gates on Error-severity compile
+//! diagnostics — no OCCT kernel required.  The integration assertions here
+//! (build + check + diagnostic multiset) are deliberately OCCT-gated because
+//! they depend on realized solid geometry.
 //!
 //! # Diagnostic multiset expected from the example file
 //!
