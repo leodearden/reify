@@ -951,6 +951,30 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 mod tests {
     use super::*;
 
+    /// θ (#4560) ASSESS NO-decision: candidate softer vocabularies reviewed against
+    /// the live corpus on 2026-06-15 and **rejected** as detector markers because each
+    /// is dominated by legitimate technical usage — recognising them would replicate the
+    /// P2/P5 alert-fatigue failure that PRD §6.2 exists to prevent.
+    ///
+    /// The authoritative per-vocabulary evidence table (occurrence counts, measured FP
+    /// rates, dominant benign classes) and §13-Q1 reassessment resolutions are in
+    /// `docs/prds/reify-audit-ptodo-detector.md` §14 — that is the single source of
+    /// record.  Summary: `XXX`/`placeholder`/`stub` ≈100% FP; `"not yet implemented"`
+    /// ≈89% FP; `"for now"`/`"workaround"` high FP.
+    ///
+    /// This const is the in-code witness that the non-recognition is deliberate, not an
+    /// oversight.  Mirrors [`PHANTOM_PHRASES`] / [`BLOCKER_PROSE`] / [`ALLOWLIST_PREFIXES`]
+    /// in form; test-scoped so no dead-code lint (the structural lane intentionally never
+    /// consults this slice).
+    const ASSESSED_REJECTED_VOCAB: &[&str] = &[
+        "not yet implemented",
+        "for now",
+        "workaround",
+        "XXX",
+        "placeholder",
+        "stub",
+    ];
+
     /// Test-only derivation of the structural lane: [`scan_file`] filtered to its
     /// [`LineClass::Structural`] entries (the `Cited` markers — β's domain — drop
     /// out), yielding one `(line_no, kind, text)` per structurally-offending line.
@@ -1549,5 +1573,83 @@ mod tests {
         assert_eq!(fold_whitespace("    "), "");
         assert_eq!(fold_whitespace("\t\n "), "");
         assert_eq!(fold_whitespace(""), "");
+    }
+
+    // -------------------------------------------------------------------
+    // θ (#4560) assess-NO regression guard — softer vocabularies
+    // -------------------------------------------------------------------
+
+    /// Regression guard for the task θ (#4560) ASSESS NO-decision: every
+    /// vocabulary in [`ASSESSED_REJECTED_VOCAB`] must remain silent when
+    /// embedded in a benign line that carries **no** TODO/FIXME/HACK marker,
+    /// no `todo!()`/`unimplemented!()` macro, and no `#[ignore]` attribute.
+    ///
+    /// A future contributor who adds one of these vocabularies as a recognised
+    /// marker will see this test fail, prompting them to revisit the θ evidence
+    /// and update the PRD §14 record before proceeding.
+    #[test]
+    fn softer_vocabularies_remain_unrecognised() {
+        // Each vocabulary embedded in an innocent comment — no TODO/FIXME/HACK
+        // / todo!() / unimplemented!() / #[ignore] present.  scan_file must
+        // return an empty vec for both Rust and non-Rust contexts.
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let rust_line = format!("// this uses {vocab} in a comment");
+            assert_eq!(
+                scan_file(&rust_line, true),
+                vec![],
+                "vocab {:?} must not trigger the detector in a Rust comment",
+                vocab,
+            );
+            let non_rust_line = format!("# {vocab} mentioned here");
+            assert_eq!(
+                scan_file(&non_rust_line, false),
+                vec![],
+                "vocab {:?} must not trigger the detector in a non-Rust comment",
+                vocab,
+            );
+        }
+
+        // Also check each vocab in a *marker-like* position — the first word after `//`,
+        // mirroring the TODO/FIXME/HACK syntax.  This catches a narrower regression where
+        // a vocab is wired into the marker position but not yet into the generic comment
+        // path (the loop above).
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let marker_like = format!("// {vocab}: some description");
+            assert_eq!(
+                scan_file(&marker_like, true),
+                vec![],
+                "vocab {:?} in marker-like position must not trigger the detector",
+                vocab,
+            );
+        }
+
+        // Concrete real-corpus benign forms that must also stay silent.
+
+        // (a) mktemp XXXXXX template — the dominant "XXX" corpus class (~100% FP).
+        //     Shell context (is_rust=false).
+        let mktemp_line = "TMPDIR=$(mktemp -d /tmp/reify-XXXXXX)";
+        assert_eq!(
+            scan_file(mktemp_line, false),
+            vec![],
+            "mktemp XXXXXX template line must not trigger the detector",
+        );
+
+        // (b) Doc-comment with "ephemeral placeholder" — the dominant "placeholder"
+        //     corpus class (type-system/UI vocabulary, ~100% FP).  Rust context.
+        let placeholder_line = "/// Uses an ephemeral placeholder for the auto-generated type param.";
+        assert_eq!(
+            scan_file(placeholder_line, true),
+            vec![],
+            "doc-comment with 'placeholder' must not trigger the detector",
+        );
+
+        // (c) Doc-comment with "in stub mode" — the dominant "stub" corpus class
+        //     (stub-mode architectural concept, ~100% FP).  Rust context.
+        let stub_mode_line = "/// Returns `None` in stub mode (OCCT/OpenVDB absent builds).";
+        assert_eq!(
+            scan_file(stub_mode_line, true),
+            vec![],
+            "doc-comment with 'stub mode' must not trigger the detector",
+        );
     }
 }
