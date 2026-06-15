@@ -230,6 +230,19 @@ assert "NO 'cargo nextest run' line carries the broken cargo-config form --confi
         [ -z \"\$bad\" ]
     "
 
+# Regression guard: no live (non-comment) invocation of the workspace-compiling
+# nextest show-config command in this script — that command enumerates test
+# binaries and forces a full workspace compile on cold cache, blowing
+# run_all.sh's 20-min budget (esc-4607-213). Tests 10-11 parse the generated
+# config file directly (compile-free). The needle is split to prevent self-match.
+assert "no live nextest show-config invocation in this script (compile-free Tests 10-11)" \
+    bash -c "
+        _SELF='${BASH_SOURCE[0]}'
+        _NEEDLE=\"cargo nextest show\"\"-config\"
+        bad=\$(grep -F \"\$_NEEDLE\" \"\$_SELF\" | grep -v '^[[:space:]]*#' || true)
+        [ -z \"\$bad\" ]
+    "
+
 # Test 10 (behavioral gold, default): gen-nextest-config.sh with
 # REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file that makes
 # 'cargo nextest show-config test-groups' report 'group: occt (max threads = 24)'.
