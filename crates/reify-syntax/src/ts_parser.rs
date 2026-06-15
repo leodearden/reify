@@ -798,6 +798,32 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Bounded error-recovery fallback for a baseless `qualified_type` node.
+    ///
+    /// Returns a flat `Named` over the whole-node text with empty `type_args`.
+    /// This intentionally does NOT call `lower_type_expr_node`: a baseless
+    /// `qualified_type` node has `kind == "qualified_type"`, which would dispatch
+    /// back to `lower_qualified_type`, find no base again, and recurse without
+    /// bound — causing a stack overflow in release builds (where `debug_assert!`
+    /// is compiled out).  The bounded whole-node-text placeholder is structurally
+    /// wrong but safe; it restores the pre-4601 fallback shape.
+    ///
+    /// Empirically unreachable from well-formed source: a missing base before `::`
+    /// causes tree-sitter to emit an `(ERROR …)` node, and a recoverable-missing
+    /// base is inserted as a zero-width `identifier` (so `child_by_field_name("base")`
+    /// returns `Some(missing)` and the `Some` arm fires instead).  This helper
+    /// exists as a defensive guard aligned with the file's no-stack-overflow norm
+    /// (see the iterative `first_error_or_missing_descendant` walk, ts_parser.rs:84-133).
+    fn qualified_type_recovery_base(&self, node: tree_sitter::Node) -> TypeExpr {
+        TypeExpr {
+            kind: TypeExprKind::Named {
+                name: self.node_text(node).to_string(),
+                type_args: vec![],
+            },
+            span: self.span(node),
+        }
+    }
+
     /// Lower a `qualified_type` CST node to a `TypeExpr`.
     ///
     /// Handles four grammar forms (task 4601 α widened the base to
@@ -811,25 +837,28 @@ impl<'a> Lowering<'a> {
     /// - FORK-G applied: `Coupling<Prismatic>::(HasMotion::MotionValue)`
     ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: Some("HasMotion"), member: "MotionValue" }`
     ///
-    /// The base is lowered via `lower_type_expr_node`, which dispatches
+    /// The base is lowered via `lower_type_expr_node` in the `Some` arm only
+    /// (i.e., only when the `base` field is actually present), which dispatches
     /// `parameterized_type → lower_parameterized_type` (carrying `type_args`) and
     /// falls through `identifier → Named { name, type_args: [] }` — so bare/type-param
     /// bases are byte-identical to the pre-4601 output.
     ///
-    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function emits the
-    /// unresolved AST node only.
+    /// The `None` arm (tree-sitter error-recovery; empirically unreachable from
+    /// well-formed source) calls `qualified_type_recovery_base` — a bounded
+    /// whole-node-text placeholder — instead of `lower_type_expr_node`, which
+    /// would dispatch back to this function and recurse without bound.
+    ///
+    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function
+    /// emits the unresolved AST node only.
     fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
         // `base` field: either a bare identifier (e.g. "Beam", "T") or a
-        // parameterized_type (e.g. `Coupling<Prismatic>`).  Lowered via
-        // `lower_type_expr_node` so the applied-base's type_args are preserved.
+        // parameterized_type (e.g. `Coupling<Prismatic>`).
         //
-        // Under well-formed input the `base` field is always present.  Under
-        // tree-sitter error recovery it may be absent; rather than silently
-        // substituting the whole-node text (which would produce a structurally-
-        // valid but semantically wrong QualifiedAssoc), we log a debug warning so
-        // the malformed input is visible in debug builds.
-        let base_node = match node.child_by_field_name("base") {
-            Some(n) => n,
+        // `lower_type_expr_node` is called ONLY in the `Some` arm (base field
+        // actually present) — calling it in the `None` arm would re-dispatch
+        // this `qualified_type` node and recurse infinitely in release builds.
+        let base = match node.child_by_field_name("base") {
+            Some(base_node) => Box::new(self.lower_type_expr_node(base_node)),
             None => {
                 debug_assert!(
                     false,
@@ -838,10 +867,9 @@ impl<'a> Lowering<'a> {
                     node.kind(),
                     node.range(),
                 );
-                node
+                Box::new(self.qualified_type_recovery_base(node))
             }
         };
-        let base = Box::new(self.lower_type_expr_node(base_node));
 
         // `trait` field: present only for the disambiguated form `(Trait::Member)`.
         let trait_name = node
