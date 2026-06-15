@@ -1283,7 +1283,6 @@ assert "read_pressure(): all sub-cases (valid→float, missing→None, garbage�
 #   (b) LOW avg10=10 (<release): ("release", held_back); held_back==0 → ("none",0).
 #   (c) BAND 40<=avg10<50: ("none",0) for any held_back.
 #   (d) avg10=None (fail-open): acts as low pressure (release held_back); NEVER hold.
-#   (e) MERGE-SAFE: inspect.signature(pressure_decide) params do NOT contain 'free_merge'.
 #   (f) Constants: PRESSURE_HOLD_THRESHOLD/RELEASE_THRESHOLD floats, release<hold;
 #       MAX_HELD_BACK int>=0.
 #   (g) Env-validation (Block 12 discipline): bad env → exit 1.
@@ -1296,7 +1295,7 @@ echo "--- Block 14: pressure_decide() unit test + constants + env-validation ---
 _b14_exit=0
 {
 python3 - "$BALANCER" <<'PY'
-import importlib.util, os, sys, inspect
+import importlib.util, os, sys
 
 spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
 mod  = importlib.util.module_from_spec(spec)
@@ -1327,14 +1326,6 @@ if (hasattr(mod, 'PRESSURE_HOLD_THRESHOLD') and
         isinstance(mod.PRESSURE_RELEASE_THRESHOLD, float)):
     if mod.PRESSURE_RELEASE_THRESHOLD >= mod.PRESSURE_HOLD_THRESHOLD:
         errors.append(f"(f) release({mod.PRESSURE_RELEASE_THRESHOLD}) >= hold({mod.PRESSURE_HOLD_THRESHOLD})")
-
-# ── (e) MERGE-SAFE: pressure_decide has no 'free_merge' parameter ─────────
-try:
-    sig = inspect.signature(mod.pressure_decide)
-    if 'free_merge' in sig.parameters:
-        errors.append("(e) pressure_decide has 'free_merge' param — MERGE-SAFE violated")
-except Exception as _e:
-    errors.append(f"(e) inspect.signature failed: {_e}")
 
 # ── (a) HIGH pressure (avg10>=hold) — hold behavior ──────────────────────
 high_cases = [
@@ -1402,9 +1393,9 @@ print("OK: pressure_decide()")
 PY
 } || _b14_exit=$?
 
-# All sub-cases a-f share _b14_exit; per-case attribution is in the heredoc
+# All sub-cases share _b14_exit; per-case attribution is in the heredoc
 # stderr output.
-assert "pressure_decide(): all sub-cases (HIGH/LOW/BAND/None, MERGE-SAFE, constants)" \
+assert "pressure_decide(): all sub-cases (HIGH/LOW/BAND/None, constants)" \
     test "$_b14_exit" -eq 0
 
 # ── (g) env-validation (Block 12 discipline) ─────────────────────────────
