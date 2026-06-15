@@ -10,7 +10,7 @@ Per-finding action ladder. Apply this logic to each `Finding` in the parsed JSON
 |----------|--------|------|------------|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` | `category="risk_identified"`, `summary="[P<n>] task <id>: <finding.summary>"`, `detail=<json-snippet of finding.evidence>` |
 | **Medium** | File deferred follow-up task (with dedupe) | `mcp__fused-memory__submit_task` | `planning_mode=True` (synchronous, curator-bypassing); see §2 for title template and metadata |
-| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **PTODO findings are always Medium** — see §2 for PTODO title template. |
+| **Low** | Log into per-run JSON only | _(none)_ | No side effects; `action_taken: "logged"`. **PDEAD, PUNTESTED, and PLAYER findings are always Low** — they are never escalated, never auto-filed, and never promoted to Medium. **PTODO findings are severity-split (task η, #4559):** `untracked`/`orphaned`/`bare-ignore` → High (escalate); `malformed-cite`/`phantom-tracking`/`unknown-id` → Medium (file task); `task-cites-deleted-path` → Medium (advisory, file task). See §2 for PTODO title template and per-kind routing. |
 
 ### High severity — escalation details
 
@@ -70,9 +70,12 @@ mcp__fused-memory__submit_task(
 
 P5 findings never reach Medium in the periodic sweep context, so no Medium title template is needed for P5. (In the D-1 pre-done hook context P5 findings exit non-zero, but that context does not go through this skill's severity routing.)
 
-**PTODO title template:** Substitute `<kind>` with the violation taxonomy kind from `finding.summary` (e.g. `untracked`, `malformed-cite`, `orphaned`, `bare-ignore`, `unknown-id`, `phantom-tracking`, `task-cites-deleted-path`). Substitute `<path>` with the primary file path from `finding.evidence`. Substitute `<id>` with `finding.task_id`. For `orphaned` violations include the dead task id in the title: `Track orphaned cite (#<dead> at <path> in task <id>)`. All PTODO violation kinds emit Medium today; a future task may flip `untracked`/`orphaned`/`bare-ignore` to High.
+**PTODO title template:** Substitute `<kind>` with the violation taxonomy kind from `finding.summary` (e.g. `untracked`, `malformed-cite`, `orphaned`, `bare-ignore`, `unknown-id`, `phantom-tracking`, `task-cites-deleted-path`). Substitute `<path>` with the primary file path from `finding.evidence`. Substitute `<id>` with `finding.task_id`. For `orphaned` violations include the dead task id in the title: `Track orphaned cite (#<dead> at <path> in task <id>)`.
 
-**PTODO taxonomy note:** PTODO is deterministic (grep + read-only sqlite; no jcodemunch) and runs in the default sweep. Its findings are always Medium — file a deferred follow-up task per §1 using the PTODO title template above.
+**PTODO taxonomy note (post-η, task #4559):** PTODO is deterministic (grep + read-only sqlite; no jcodemunch) and runs in the default sweep. Severity is split by kind:
+- `untracked` / `orphaned` / `bare-ignore` → **High** → escalate per the High row above. These emit a non-zero exit code (= High count) and hard-fail the `tests/infra` verify step. The structural High kinds (untracked/bare-ignore) fire everywhere; `orphaned` (liveness) fires only where tasks.db exists.
+- `malformed-cite` / `phantom-tracking` / `unknown-id` → **Medium** → file deferred follow-up task per §1. `unknown-id` stays Medium because a DB-sync race (freshly-filed cite not yet in tasks.db) must not hard-fail verify.
+- `task-cites-deleted-path` → **Medium** (advisory) → file deferred follow-up task per §1.
 
 **PDEAD / PUNTESTED / PLAYER severity note:** These three advisory patterns pin `Severity::Low` in the detector implementation and are **never promoted** to Medium or High. No Medium title template exists for them — they always route to the Low/logged path (`action_taken: "logged"`) with no follow-up task filed and no escalation triggered. This is intentional: jcodemunch's Rust accuracy is unproven, so these detectors are advisory/log-only pending validation.
 
