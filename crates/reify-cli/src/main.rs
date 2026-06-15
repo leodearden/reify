@@ -3002,6 +3002,71 @@ structure def Plain {
 }
 
 #[cfg(test)]
+mod dfm_rule_gate_tests {
+    use super::module_has_dfm_rule;
+
+    /// Non-OCCT routing gate test: `module_has_dfm_rule` must detect a
+    /// `DFMRule` conformer template in real compiled IR, and must return
+    /// `false` for a plain module without one.
+    ///
+    /// Always-running (no OCCT guard) so a regression in template-level
+    /// recognition fails CI independently of OCCT availability: in stub mode
+    /// `cmd_check` exits 0 regardless of which path it took, so the
+    /// OCCT-gated CLI test alone could not catch broken routing.
+    ///
+    /// Uses `parse_and_compile_with_stdlib` because `DFMRule`, `DFMSeverity`,
+    /// `Adding`, and `Process` are stdlib-prelude entities (std.process).
+    #[test]
+    fn module_has_dfm_rule_detects_conformer_vs_plain() {
+        // DFM module: a `structure def OverhangRule : DFMRule {...}` conformer
+        // — must be detected (returns `true`) so that `cmd_check` routes
+        // through the kernel-backed build(Step)-before-check path that populates
+        // `realization_handles` for `measure_dfm_rules`.
+        let dfm_source = r#"
+import std.process
+
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+structure def OverhangRule : DFMRule {
+    param rule_name  : String      = "overhang-check"
+    param severity   : DFMSeverity = DFMSeverity.Warning
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}
+"#;
+        let compiled_dfm = reify_test_support::parse_and_compile_with_stdlib(dfm_source);
+        assert!(
+            module_has_dfm_rule(&compiled_dfm),
+            "module with a DFMRule conformer (OverhangRule : DFMRule) should be \
+             detected (routing gate must return true)"
+        );
+
+        // Plain module: no DFMRule conformer anywhere — must NOT be detected
+        // (returns `false`) so that `cmd_check` keeps the existing lightweight
+        // `Engine::new(None)+check()` path (C2).
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_dfm_rule(&compiled_plain),
+            "module without any DFMRule conformer must NOT be detected \
+             (routing gate must return false — C2 path preserved)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
