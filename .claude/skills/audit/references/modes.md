@@ -34,7 +34,7 @@ reify-audit \
 { "window": "14d" }
 ```
 
-**Detectors run:** P1, P2, P5 (all three, no `--pattern` restriction).
+**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, no `--pattern` restriction).
 
 ---
 
@@ -62,7 +62,7 @@ reify-audit \
 { "task": "<id>" }
 ```
 
-**Detectors run:** P1, P2, P5 (all three, no `--pattern` restriction).
+**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, no `--pattern` restriction).
 
 ---
 
@@ -88,20 +88,20 @@ reify-audit \
 { "window": "<iso-date>..now" }
 ```
 
-**Detectors run:** P1, P2, P5 (all three, unless `--pattern` also supplied — see §6).
+**Detectors run:** P1, P2, P5, PTODO (all four default-sweep detectors, unless `--pattern` also supplied — see §6).
 
 ---
 
-## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER`)
+## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER`)
 
-**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5` or `/audit --pattern PDEAD`.
+**When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, or `/audit --pattern PDEAD`.
 
 **Argv produced** (after `$SNAPSHOT` is materialized per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
   --since <14d-ago-iso> \
-  --pattern <P1|P2|P5|PDEAD|PUNTESTED|PLAYER> \
+  --pattern <P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER> \
   --tasks-file "$SNAPSHOT" \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
@@ -113,6 +113,7 @@ reify-audit \
 
 ```json
 { "patterns": ["P1"] }        // or ["P2"] or ["P5"]
+{ "patterns": ["PTODO"] }     // TODO-tracking invariant (default-sweep, deterministic)
 { "patterns": ["PDEAD"] }     // advisory: dead code
 { "patterns": ["PUNTESTED"] } // advisory: untested symbols
 { "patterns": ["PLAYER"] }    // advisory: layer/import-boundary violations
@@ -120,12 +121,20 @@ reify-audit \
 
 **Detectors run:** The named detector only.
 
+### PTODO — notes
+
+PTODO (`--pattern PTODO`) is **part of the no-`--pattern` default all-detector sweep** (P1/P2/P5/PTODO) — this section documents its explicit invocation. It is distinct from the opt-in advisory P-* patterns below.
+
+- **Severity:** All PTODO violation kinds emit **Severity Medium** → file a deferred follow-up task per `references/severity-routing.md` PTODO row.
+- **Implementation:** Deterministic grep + read-only sqlite; **no jcodemunch/LLM/MCP**. Unaffected by jcodemunch outages. Only its liveness lane degrades gracefully when `tasks.db` is absent (one stderr breadcrumb; structural lane still runs). See `references/cli-invocation.md` §4.1 PTODO note.
+- **Exit-neutrality:** PTODO emits Medium only; exit code = High-severity count, so a PTODO-only run always exits 0 on a clean tree.
+
 ### Advisory P-* patterns (PDEAD / PUNTESTED / PLAYER) — notes
 
-These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (which runs P1/P2/P5). They fire only when named explicitly via `--pattern`.
+These three patterns are **opt-in only** — they are NOT part of the default all-detector sweep (which runs P1/P2/P5/PTODO). They fire only when named explicitly via `--pattern`.
 
 - **Severity:** All three emit Severity Low — log-only, advisory, **never auto-filed** as a follow-up task. See `references/severity-routing.md` for routing details.
-- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require `jcodemunch-serve` to be running. When the serve is unreachable, they degrade to **zero findings** (same fail-soft path as P1; P2/P5 are unaffected — NOT exit 125). See `references/cli-invocation.md` §4.1 for the fail-soft behaviour and `--jcodemunch-url` flag.
+- **Serve dependency:** PDEAD, PUNTESTED, and PLAYER all require `jcodemunch-serve` to be running. When the serve is unreachable, they degrade to **zero findings** (same fail-soft path as P1; P2/P5/PTODO are unaffected — NOT exit 125). See `references/cli-invocation.md` §4.1 for the fail-soft behaviour and `--jcodemunch-url` flag.
 - **Activation:** For serve startup instructions see `docs/architecture-audit/jcodemunch-serve-activation.md`.
 
 ---
@@ -160,6 +169,7 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 |---|---|
 | `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only |
 | `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
+| `--since <date> --pattern PTODO` | Window sweep from `<date>`, PTODO only (Medium; deterministic, no jcodemunch) |
 | `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
 | `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
 | `--format markdown` | Adds markdown output to **any** of the above |
