@@ -307,10 +307,15 @@ fn b5_oracle_outside_oracles_agree() {
 //     [0] RepresentationWithin(subject, 1mm) over fine sphere at #precision(0.1mm)
 //         → Satisfied under OCCT / Indeterminate in stub mode
 //
-// Constraint labels (ConstraintNodeId format: "Entity#constraint[N]"):
-//   scalar_label = "GdtPassWeave#constraint[0]"
-//   geo_label    = "GdtPassWeave#constraint[1]"
-//   rw_label     = "WeaveSphereCheck#constraint[0]"
+// Constraint labels (ConstraintInstDecl format + ConstraintNodeId Display):
+//   scalar_label = "Conforms#0[0]"    (first  `constraint Conforms(...)` → Conforms#0[0])
+//   geo_label    = "Conforms#1[0]"    (second `constraint Conforms(...)` → Conforms#1[0])
+//   rw_label     = "WeaveSphereCheck#constraint[0]"  (ConstraintNodeId Display)
+//
+// Note: `constraint Conforms(...)` is a ConstraintInstDecl whose label follows
+// the pattern "{name}#{instance_idx}[{predicate_idx}]" (entity.rs ~4175).
+// `constraint RepresentationWithin(...)` is intercepted engine-side and the
+// resulting entry uses the ConstraintNodeId Display form.
 //
 // Under OCCT: scalar=OK, geometric=VIOLATED, RW=OK; exit non-zero;
 //   "Some constraints violated."; exactly one "VIOLATED".
@@ -330,9 +335,20 @@ fn b9_pass_ordering_and_weave() {
     let path = common::example_path("tolerancing/gdt_pass_weave.ri");
     let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
-    // Constraint labels (ConstraintNodeId format: "Entity#constraint[N]").
-    let scalar_label = "GdtPassWeave#constraint[0]";
-    let geo_label    = "GdtPassWeave#constraint[1]";
+    // Constraint labels for `constraint Conforms(...)` instantiations follow
+    // the ConstraintInstDecl format "{name}#{instance_idx}[{predicate_idx}]"
+    // (entity.rs expand_constraint_inst, line ~4175).
+    // Two separate `constraint Conforms(...)` calls → Conforms#0[0] and
+    // Conforms#1[0] (instance_idx increments per Conforms instantiation).
+    // `constraint RepresentationWithin(...)` uses the ConstraintNodeId Display
+    // form ("Entity#constraint[N]") because it is intercepted engine-side by
+    // dispatch_constraints / eval_representation_within with a fresh entry
+    // whose label comes from the compiled constraint's label.as_deref() — and
+    // as a ConstraintInstDecl it would produce "RepresentationWithin#0[0]",
+    // but the WeaveSphereCheck structure has one RepresentationWithin in its
+    // template so the ConstraintNodeId Display is "WeaveSphereCheck#constraint[0]".
+    let scalar_label = "Conforms#0[0]";
+    let geo_label    = "Conforms#1[0]";
     let rw_label     = "WeaveSphereCheck#constraint[0]";
 
     // The three labels must appear in stdout.
