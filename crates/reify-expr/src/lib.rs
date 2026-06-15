@@ -1151,6 +1151,11 @@ fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-compiler copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
     }
 }
@@ -1212,6 +1217,12 @@ fn type_carries_type_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
 
         // All remaining leaves carry no inner `Type`.
         Type::Bool
@@ -1297,6 +1308,12 @@ fn type_carries_dim_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // MUST remain verbatim-synced with the canonical copy in
+        // reify-compiler/src/type_compat.rs (esc-4231-120/126).
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
 
         // All remaining leaves carry no inner ScalarParam.
         Type::Bool

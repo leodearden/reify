@@ -344,6 +344,11 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
     }
 }
@@ -407,6 +412,10 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
 
         // All remaining leaves carry no inner `Type`.
         Type::Bool
@@ -487,6 +496,10 @@ pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
 
         // All remaining leaves carry no `ScalarParam`.
         Type::Bool
@@ -653,6 +666,23 @@ pub(crate) fn unify(
             Ok(())
         }
 
+        // task 4602 β: Applied — same name + same arity → element-wise unify args.
+        (
+            Type::Applied { name: dn, args: da },
+            Type::Applied { name: an, args: aa },
+        ) if dn == an && da.len() == aa.len() => {
+            for (d, a) in da.iter().zip(aa.iter()) {
+                unify(d, a, subst)?;
+            }
+            Ok(())
+        }
+
+        // task 4602 β: Projection — same member → unify bases.
+        (
+            Type::Projection { base: db, member: dm },
+            Type::Projection { base: ab, member: am },
+        ) if dm == am => unify(db, ab, subst),
+
         // Conservative fallthrough — listed explicitly with NO `_` wildcard so
         // a future `Type` variant forces a compile-time decision here, in
         // lock-step with `type_carries_type_param` and the exhaustive
@@ -678,7 +708,10 @@ pub(crate) fn unify(
         | (Type::Vector { .. }, _)
         | (Type::Tensor { .. }, _)
         | (Type::Matrix { .. }, _)
-        | (Type::Union(_), _) => Ok(()),
+        | (Type::Union(_), _)
+        // task 4602 β: Applied/Projection structural mismatches → no binding.
+        | (Type::Applied { .. }, _)
+        | (Type::Projection { .. }, _) => Ok(()),
 
         // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
         // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing

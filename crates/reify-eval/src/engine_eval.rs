@@ -112,6 +112,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // sub lowers to a `SubComponentDecl` and is never held in a value cell;
         // no `Value::Keyed` exists. γ may revisit if it introduces a Value form.
         Type::Keyed(_) => false,
+        // Assoc-type projection (task 4602 β): compile-time only — non-concrete
+        // until base is resolved by normalize_type (leaf δ); no runtime form.
+        Type::Projection { .. } => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
@@ -150,6 +153,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
+        // Generic-applied type (task 4602 β): phantom args — runtime cell holds
+        // a Value::StructureInstance identified by name (args erased at eval).
+        | Type::Applied { .. }
         | Type::Error => true,
     }
 }

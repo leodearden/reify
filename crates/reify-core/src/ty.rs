@@ -250,6 +250,29 @@ pub enum Type {
     /// coincidence. Admitted by `is_representable_cell_type` alongside
     /// `StructureRef`/`TraitObject`.
     Relation,
+    /// Generic structure applied to type arguments (e.g. `Coupling<Prismatic>`).
+    ///
+    /// **INVARIANT:** constructed only with `!args.is_empty()`; a zero-arg
+    /// reference stays `StructureRef(name)` — one canonical form per arity.
+    ///
+    /// **Phantom args:** the type arguments are compile-time only and are
+    /// erased before evaluation. A runtime cell whose declared type is
+    /// `Applied{"Coupling", [Prismatic]}` holds an ordinary
+    /// `Value::StructureInstance` identified by name; the args carry no runtime
+    /// payload. Derived `Eq`/`Hash` is structural:
+    /// `Applied{"C", [Prismatic]} != Applied{"C", [Revolute]}`.
+    ///
+    /// Introduced in task 4602 β (type-args/proj substrate).
+    Applied { name: String, args: Vec<Type> },
+    /// Assoc-type projection: `base::member` held until `base` is concrete.
+    ///
+    /// `base` is one of `TypeParam`, `Applied`, or `StructureRef`. The
+    /// projection is compile-time only — non-representable as a value cell
+    /// (`is_representable_cell_type` returns `false`). Reduction to the
+    /// concrete assoc-type is deferred to `normalize_type` (leaf δ).
+    ///
+    /// Introduced in task 4602 β (type-args/proj substrate).
+    Projection { base: Box<Type>, member: String },
 }
 
 impl Type {
@@ -382,6 +405,26 @@ impl Type {
             m,
             n,
             quantity: Box::new(quantity),
+        }
+    }
+
+    /// Shorthand for a generic structure applied to type arguments.
+    ///
+    /// INVARIANT: `args` must be non-empty; zero-arg stays `StructureRef(name)`.
+    pub fn applied(name: impl Into<String>, args: Vec<Type>) -> Self {
+        Type::Applied {
+            name: name.into(),
+            args,
+        }
+    }
+
+    /// Shorthand for an assoc-type projection `base::member`.
+    ///
+    /// `base` is typically a `TypeParam`, `Applied`, or `StructureRef`.
+    pub fn projection(base: Type, member: impl Into<String>) -> Self {
+        Type::Projection {
+            base: Box::new(base),
+            member: member.into(),
         }
     }
 
@@ -521,6 +564,16 @@ impl std::fmt::Display for Type {
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),
+            Type::Applied { name, args } => write!(
+                f,
+                "{}<{}>",
+                name,
+                args.iter()
+                    .map(|a| format!("{}", a))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Type::Projection { base, member } => write!(f, "{}::{}", base, member),
         }
     }
 }

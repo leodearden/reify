@@ -1575,6 +1575,19 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // task 4602 β: Applied — recurse/rebuild args (β = recurse-only; no
+        // projection reduction — that is δ/normalize_type).
+        Type::Applied { name, args } => Type::Applied {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_type_params(a, subst)).collect(),
+        },
+        // task 4602 β: Projection — recurse/rebuild base (β = recurse-only; no
+        // reduction — normalize_type/δ handles that).
+        Type::Projection { base, member } => Type::Projection {
+            base: Box::new(substitute_type_params(base, subst)),
+            member: member.clone(),
+        },
+
         // Dimension-param scalar: substitute when bound (mirrors the TypeParam
         // arm above), else pass through unchanged. Nested dim-params inside
         // Vector/Point/Tensor/Matrix quantity slots substitute for free via the

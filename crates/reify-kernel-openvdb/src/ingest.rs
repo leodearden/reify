@@ -860,6 +860,9 @@ fn format_type_repr(t: &Type) -> String {
         Type::ScalarParam(_) => "ScalarParam",
         Type::Error => "Error",
         Type::Union(_) => "Union",
+        // task 4602 β: new variants; payload dropped per format_type_repr contract.
+        Type::Applied { .. } => "Applied",
+        Type::Projection { .. } => "Projection",
     }
     .to_string()
 }
