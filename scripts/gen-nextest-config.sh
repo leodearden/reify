@@ -99,7 +99,7 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
             _memtotal_kb="$(grep '^MemTotal:' /proc/meminfo | awk '{print $2}' || true)"
             case "${_memtotal_kb:-}" in
                 (''|*[!0-9]*) ;;
-                (*)           _memtotal_gib=$(( _memtotal_kb / 1048576 )) ;;
+                (*)           _memtotal_gib=$(( 10#${_memtotal_kb} / 1048576 )) ;;
             esac
         fi
 
@@ -109,7 +109,13 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
             cap="$_nproc"
         fi
         if [ -n "$_memtotal_gib" ] && [ "$_memtotal_gib" -gt 0 ]; then
-            _ram_bound=$(( _memtotal_gib / gib_per_thread ))
+            # Force base-10 arithmetic: leading-zero env values (e.g. 08) would be
+            # interpreted as invalid octal by $(( )) and abort under set -e.
+            _ram_bound=$(( 10#${_memtotal_gib} / 10#${gib_per_thread} ))
+            # Clamp to minimum 1: floor(MemTotal / GIB_PER_THREAD) = 0 when the host
+            # has less RAM than a single OCCT thread's budget (e.g. a small container).
+            # nextest rejects max-threads = 0 as an invalid test-group config.
+            if [ "$_ram_bound" -lt 1 ]; then _ram_bound=1; fi
             if [ "$_ram_bound" -lt "$cap" ]; then
                 cap="$_ram_bound"
             fi
