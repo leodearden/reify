@@ -1168,7 +1168,21 @@ build_plan() {
             # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
             # Timeout is 10m (distinct from the 20m wall) so the plan-shape test can assert
             # the pre-step is not the walled run_all.sh line.
+            #
+            # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
+            # Rationale: (1) DF_VERIFY_ROLE=merge is exempt from all gates anyway;
+            # (2) sccache makes this a no-op when warm; (3) this plan line emits in the
+            # infra block — after all main Rust compile phases — so it does not race with
+            # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
+            # admission-control invariant is for task×compile contention during the
+            # main psi-gate/slot region, which this small pre-build does not enter.
             add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-audit; fi"
+            # Positive assertion: if the Cargo.toml exists but the pre-build did not
+            # produce the binary, abort loudly rather than silently degrading to SKIP.
+            # Guards against the pre-step being removed or reordered without updating
+            # the REIFY_AUDIT_NO_COLD_BUILD backstop below.  Only fires if the
+            # pre-step is present (Cargo.toml guard matches) but produces no output.
+            add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi"
             # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
             # freshness guard to skip rather than cold-build if somehow the pre-step
             # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).

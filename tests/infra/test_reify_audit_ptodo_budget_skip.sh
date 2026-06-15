@@ -97,9 +97,14 @@ echo "--- Assertions ---"
 assert "test_reify_audit_ptodo.sh exits 0 (graceful SKIP) under REIFY_AUDIT_NO_COLD_BUILD=1" \
     bash -c "[ '$BS_EXIT' -eq 0 ]"
 
-# (2) Combined output must contain a skip message.
-assert "output contains a skip message (e.g. 'skip' or 'SKIP')" \
-    bash -c "grep -qi 'skip' '$BS_OUTPUT_FILE'"
+# (2) Combined output must contain the specific budget-safe skip message emitted
+#     by test_reify_audit_ptodo.sh when rc==75 (impl-ptodo-skip step, line ~70).
+#     Use a fixed-string match to pin the assertion to the exact code path and
+#     prevent an unrelated tool-absent skip (e.g. comm/sort not on PATH → "skipping")
+#     from producing a false-green while the REIFY_AUDIT_NO_COLD_BUILD logic was
+#     never exercised.
+assert "output contains the budget-safe skip message (REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe))" \
+    bash -c "grep -qF 'REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)' '$BS_OUTPUT_FILE'"
 
 # (3) Shim cargo must NOT have been invoked — marker file must be absent.
 #     A present marker proves a cold build was attempted, violating the budget-safe contract.
