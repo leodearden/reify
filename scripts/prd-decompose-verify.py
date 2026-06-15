@@ -285,11 +285,188 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
 
 
 # ---------------------------------------------------------------------------
-# main() stub — returns 64 (EX_USAGE) until fully implemented
+# _parse_premises_file() — read premises JSON and return list of Premise
+# ---------------------------------------------------------------------------
+
+def _parse_premises_file(path: str) -> List[Premise]:
+    """Read a premises JSON file and return a list of Premise objects.
+
+    Premises file format:
+        {
+            "premises": [
+                {
+                    "text": "...",
+                    "assertion_kind": "rejection|parses|resolves|produces|ir",
+                    "fixture": "...",
+                    "match": {...},
+                    "capability": "..."   // optional
+                }
+            ]
+        }
+
+    Raises:
+        OSError: if the file cannot be read.
+        ValueError: if the JSON is invalid or missing required fields.
+    """
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"premises file {path!r} is not valid JSON: {e}") from e
+
+    if not isinstance(data, dict) or "premises" not in data:
+        raise ValueError(
+            f"premises file {path!r} must be an object with a top-level 'premises' key"
+        )
+
+    premises = []
+    for i, rec in enumerate(data["premises"]):
+        if not isinstance(rec, dict):
+            raise ValueError(f"premises[{i}] must be an object (dict)")
+        for field_name in ("text", "assertion_kind", "fixture"):
+            if field_name not in rec:
+                raise ValueError(f"premises[{i}] is missing required field {field_name!r}")
+        premises.append(Premise(
+            text=rec["text"],
+            assertion_kind=rec["assertion_kind"],
+            fixture=rec["fixture"],
+            match=rec.get("match", {}),
+            capability=rec.get("capability"),
+        ))
+    return premises
+
+
+# ---------------------------------------------------------------------------
+# _parse_results_file() — read synthesize input JSON
+# ---------------------------------------------------------------------------
+
+def _parse_results_file(path: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Read a results JSON file and return a role_results dict.
+
+    Results file format:
+        {
+            "prover": [...α result records...],
+            "adversary": [...α result records...]
+        }
+
+    Both keys are optional (default to empty list).
+
+    Raises:
+        OSError: if the file cannot be read.
+        ValueError: if the JSON is invalid.
+    """
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"results file {path!r} is not valid JSON: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError(f"results file {path!r} must be a JSON object")
+
+    return {
+        "prover": data.get("prover", []),
+        "adversary": data.get("adversary", []),
+    }
+
+
+# ---------------------------------------------------------------------------
+# main() — CLI entry-point with bind / synthesize subcommands
 # ---------------------------------------------------------------------------
 
 def main(argv: List[str]) -> int:
-    """CLI entry-point.  Returns 64 (EX_USAGE) until subcommands are implemented."""
+    """CLI entry-point.  Returns an exit code (0/1/64).
+
+    Usage:
+        prd-decompose-verify.py bind      <premises.json>
+        prd-decompose-verify.py synthesize <results.json>
+
+    Subcommands:
+        bind        Read {"premises":[...]} from premises.json, emit α probe-set
+                    JSON to stdout.  Exit 0 on success, 64 on usage/IO/parse error.
+
+        synthesize  Read {"prover":[...], "adversary":[...]} result records from
+                    results.json, emit BatchVerdict JSON to stdout.
+                    Exit 0 if nothing blocks, 1 if blocks, 64 on error.
+
+    Exit codes:
+        0   success (bind: OK; synthesize: all pass)
+        1   synthesize: at least one probe blocks
+        64  usage / argument / IO / parse error  (sysexits EX_USAGE)
+    """
+    parser = argparse.ArgumentParser(
+        prog="prd-decompose-verify.py",
+        description="Deterministic harness for γ decompose-phase verification.",
+    )
+    sub = parser.add_subparsers(dest="subcmd")
+
+    # bind subcommand
+    bind_p = sub.add_parser("bind", help="Bind premises to an α probe-set JSON.")
+    bind_p.add_argument("premises", metavar="PREMISES_JSON",
+                        help="Path to a {premises:[...]} JSON file.")
+
+    # synthesize subcommand
+    syn_p = sub.add_parser("synthesize",
+                            help="Synthesize α result records into a BatchVerdict.")
+    syn_p.add_argument("results", metavar="RESULTS_JSON",
+                       help="Path to a {prover:[...], adversary:[...]} results JSON file.")
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 64
+        return 0 if code == 0 else 64
+
+    if args.subcmd is None:
+        sys.stderr.write("error: a subcommand is required: bind | synthesize\n")
+        parser.print_help(sys.stderr)
+        return 64
+
+    # ── bind ──────────────────────────────────────────────────────────────────
+    if args.subcmd == "bind":
+        try:
+            premises = _parse_premises_file(args.premises)
+        except OSError as exc:
+            sys.stderr.write(f"error: cannot read premises file: {exc}\n")
+            return 64
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 64
+
+        try:
+            probe_set = bind_premises(premises)
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 64
+
+        sys.stdout.write(json.dumps(probe_set, indent=4))
+        sys.stdout.write("\n")
+        return 0
+
+    # ── synthesize ────────────────────────────────────────────────────────────
+    if args.subcmd == "synthesize":
+        try:
+            role_results = _parse_results_file(args.results)
+        except OSError as exc:
+            sys.stderr.write(f"error: cannot read results file: {exc}\n")
+            return 64
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 64
+
+        bv = synthesize_batch(role_results)
+
+        output = {
+            "blocks": bv.blocks,
+            "blocking": bv.blocking,
+            "report": bv.report,
+        }
+        sys.stdout.write(json.dumps(output, indent=2))
+        sys.stdout.write("\n")
+        return 1 if bv.blocks else 0
+
+    # Should not reach here
+    sys.stderr.write(f"error: unknown subcommand {args.subcmd!r}\n")
     return 64
 
 
