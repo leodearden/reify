@@ -46,8 +46,9 @@
 # USAGE
 # -----
 #   source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
-#   reify_audit_guard "$BIN" refuse "$REPO_ROOT"   # fail-closed (predone wrapper)
-#   reify_audit_guard "$BIN" rebuild "$REPO_ROOT"  # self-heal (audit skill)
+#   reify_audit_guard "$BIN" refuse "$REPO_ROOT"          # fail-closed (predone wrapper)
+#   reify_audit_guard "$BIN" rebuild "$REPO_ROOT"         # self-heal (audit skill)
+#   reify_audit_guard "$BIN" rebuild-budget-safe "$REPO"  # budget-safe skip (verify.sh)
 #
 # CONSUMER POLICY
 # ----------------
@@ -55,6 +56,12 @@
 #   installs are loud and operators are forced to reinstall.
 # - /audit skill: REBUILD mode — `cargo build --release -q -p reify-audit`
 #   self-heals the release binary instead of refusing.
+# - verify.sh run_all.sh line: REBUILD-BUDGET-SAFE mode — when
+#   REIFY_AUDIT_NO_COLD_BUILD=1, returns 75 (EX_TEMPFAIL skip sentinel) instead
+#   of invoking `cargo build`.  The caller maps 75 → graceful SKIP (exit 0).
+#   When REIFY_AUDIT_NO_COLD_BUILD is unset/0, falls through to the rebuild path.
+#   Exit 75 is the codebase's established transient/backpressure sentinel (psi_gate,
+#   test_semaphore_acquire) so the orchestrator already understands this signal.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AUDIT_FRESHNESS_SH_SOURCED:-}" = "1" ]; then
@@ -142,6 +149,19 @@ reify_audit_guard() {
     local epoch btime
     epoch=$(reify_audit_crate_commit_epoch "$repo_root")
     btime=$(portable_mtime "$bin" 2>/dev/null) || btime="<unreadable>"
+
+    if [ "$mode" = "rebuild-budget-safe" ]; then
+        # Budget-safe variant of rebuild: when REIFY_AUDIT_NO_COLD_BUILD=1, skip
+        # the cold build entirely and return 75 (EX_TEMPFAIL skip sentinel).
+        # The caller (test_reify_audit_ptodo.sh) maps 75 → graceful SKIP (exit 0).
+        # When REIFY_AUDIT_NO_COLD_BUILD is unset or 0, fall through to the normal
+        # rebuild path by reassigning mode.
+        if [ "${REIFY_AUDIT_NO_COLD_BUILD:-0}" = "1" ]; then
+            echo "reify-audit: binary absent/stale and REIFY_AUDIT_NO_COLD_BUILD=1 -- skipping cold build (budget-safe)" >&2
+            return 75
+        fi
+        mode="rebuild"
+    fi
 
     if [ "$mode" = "rebuild" ]; then
         # Attempt to self-heal the release binary.
