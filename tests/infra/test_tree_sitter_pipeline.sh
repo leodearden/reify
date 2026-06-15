@@ -360,5 +360,54 @@ test_hooks_include_generation() {
     fi
 }
 
+test_timeout_guard_skips_on_exit_124() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
+    # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
+    # as a deterministic stub for exit 124.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" timeout 0.1 sleep 5 || rc=$?
+    if [ "$rc" -ne 2 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 2 (SKIP) on exit 124, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_fails_on_other_exit() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 1
+    # (hard FAIL) when the command exits with a non-zero, non-124 code. Uses
+    # `false` (exit 1) as stub; output suppressed so the helper's diagnostic
+    # chatter does not pollute a passing run.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" false >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 1 (FAIL) on exit 1, got $rc"
+        return 1
+    fi
+}
+
+test_timeout_guard_passes_on_exit_0() {
+    # Regression guard: confirms run_guarded_cargo_check returns tri-state 0
+    # (SUCCESS) when the command exits 0, meaning the caller continues to the
+    # parser.c assertions. Uses `true` (exit 0) as stub.
+    local out rc
+    out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$out'")
+    rc=0
+    run_guarded_cargo_check "$out" true || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: expected run_guarded_cargo_check to return 0 (SUCCESS) on exit 0, got $rc"
+        return 1
+    fi
+}
+
 # --- Main ---
 run_tests
