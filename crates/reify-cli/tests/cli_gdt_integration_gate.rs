@@ -141,3 +141,152 @@ fn b4_scalar_check_green_no_eta_intercept() {
          stderr: {stderr}"
     );
 }
+
+// ── B5 — Query oracle vs boolean oracle cross-check (OCCT-gated) ─────────────
+//
+// B5 cross-checks that `max_deviation(actual, nominal)` (query oracle) and
+// `volume(difference(actual, zone))` (boolean oracle) produce AGREEING verdicts
+// on two constructed fixtures:
+//   • gdt_oracle_inside.ri  — actual translated 0.05mm, zone = box(10.2mm³) → INSIDE
+//   • gdt_oracle_outside.ri — actual translated 0.5mm,  zone = box(10.2mm³) → OUTSIDE
+//
+// box() is centered at origin (corner = (−w/2, −h/2, −d/2) in OCCT), so
+// box(10.2mm,10.2mm,10.2mm) directly contains box(10mm,10mm,10mm)±0.1mm
+// without an extra translate.
+//
+// Oracle agreement derivation (analytic — not tuned):
+//   inside:  d=0.05mm, t=0.1mm → dev = 0.05mm < t → query=INSIDE;
+//            actual fully in zone → empty OCCT Cut → pokeout ≈ 0.0 m³ < FLOOR
+//   outside: d=0.5mm,  t=0.1mm → dev = 0.5mm > t  → query=OUTSIDE;
+//            poke = (d−t)·face_area = 0.4mm·(10mm)² ≈ 4e-8 m³ ≫ FLOOR
+//   FLOOR = 1e-9 m³ gives ~40× separation margin (G6: floor-bounded, NOT tuned).
+//
+// Stub mode (no OCCT): geometry cells are Undef → skip oracle assertions.
+// The file-integrity assert (exit 0, no "Error:") is unconditional.
+// RED until step-3 creates the fixture files.
+
+/// B5 (inside): `reify eval examples/tolerancing/gdt_oracle_inside.ri` —
+/// actual shifted 0.05 mm (d < t = 0.1mm) — both oracles say INSIDE.
+///
+/// Query oracle: `dev = max_deviation(actual, nominal)` < 1e-4 m (= 0.1mm).
+/// Boolean oracle: `pokeout = volume(difference(actual, zone))` < 1e-9 m³.
+///
+/// RED until step-3 creates `examples/tolerancing/gdt_oracle_inside.ri`.
+#[test]
+fn b5_oracle_inside_oracles_agree() {
+    let path = common::example_path("tolerancing/gdt_oracle_inside.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    // Unconditional: fixture must be parseable (exit 0, no Error diagnostics).
+    // RED phase: file missing → eval exits non-zero → this assertion fails.
+    assert!(
+        status.success(),
+        "B5 inside: reify eval gdt_oracle_inside.ri must exit 0 \
+         (fixture missing → RED until step-3 creates it).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("Error:")),
+        "B5 inside: stderr must not contain 'Error:' diagnostics.\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "B5 inside: skipping oracle assertions — OCCT unavailable \
+             (dev/pokeout cells are Undef without kernel)"
+        );
+        return;
+    }
+
+    // OCCT path: parse both oracle cells and assert oracle agreement.
+    let dev_m = parse_scalar_cell(&stdout, "dev")
+        .unwrap_or_else(|| panic!("B5 inside: could not parse 'dev' cell.\nstdout: {stdout}"));
+    let pokeout_m3 = parse_scalar_cell(&stdout, "pokeout")
+        .unwrap_or_else(|| panic!("B5 inside: could not parse 'pokeout' cell.\nstdout: {stdout}"));
+
+    // Zone half-width: t = 0.1mm = 1e-4 m.  d = 0.05mm → dev < t → INSIDE.
+    let verdict_query = dev_m < 1e-4_f64;
+    // FLOOR = 1e-9 m³.  Inside: empty OCCT Cut → pokeout ≈ 0.0 < FLOOR → INSIDE.
+    const BOOL_FLOOR_M3: f64 = 1e-9;
+    let verdict_bool = pokeout_m3 < BOOL_FLOOR_M3;
+
+    assert!(
+        verdict_query,
+        "B5 inside: query oracle must say INSIDE \
+         (dev = {dev_m:.6e} m should be < 1e-4 m zone; d=0.05mm, t=0.1mm)."
+    );
+    assert!(
+        verdict_bool,
+        "B5 inside: boolean oracle must say INSIDE \
+         (pokeout = {pokeout_m3:.6e} m³ should be < 1e-9 m³ FLOOR; \
+         actual fully within zone → empty OCCT Cut → ≈0 m³)."
+    );
+    assert_eq!(
+        verdict_query, verdict_bool,
+        "B5 inside: query and boolean oracles must AGREE (both INSIDE). \
+         dev = {dev_m:.6e} m, pokeout = {pokeout_m3:.6e} m³."
+    );
+}
+
+/// B5 (outside): `reify eval examples/tolerancing/gdt_oracle_outside.ri` —
+/// actual shifted 0.5 mm (d > t = 0.1mm) — both oracles say OUTSIDE.
+///
+/// Query oracle: `dev = max_deviation(actual, nominal)` ≥ 1e-4 m (not inside).
+/// Boolean oracle: `pokeout = volume(difference(actual, zone))` ≥ 1e-9 m³.
+///
+/// Expected outside poke-out: (d − t) · face_area = 0.4mm · (10mm)² ≈ 4e-8 m³
+/// (~40× FLOOR margin — analytic, G6 floor-bounded inequality, not tuned).
+///
+/// RED until step-3 creates `examples/tolerancing/gdt_oracle_outside.ri`.
+#[test]
+fn b5_oracle_outside_oracles_agree() {
+    let path = common::example_path("tolerancing/gdt_oracle_outside.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "B5 outside: reify eval gdt_oracle_outside.ri must exit 0 \
+         (fixture missing → RED until step-3 creates it).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.lines().any(|l| l.starts_with("Error:")),
+        "B5 outside: stderr must not contain 'Error:' diagnostics.\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "B5 outside: skipping oracle assertions — OCCT unavailable \
+             (dev/pokeout cells are Undef without kernel)"
+        );
+        return;
+    }
+
+    let dev_m = parse_scalar_cell(&stdout, "dev")
+        .unwrap_or_else(|| panic!("B5 outside: could not parse 'dev' cell.\nstdout: {stdout}"));
+    let pokeout_m3 = parse_scalar_cell(&stdout, "pokeout")
+        .unwrap_or_else(|| panic!("B5 outside: could not parse 'pokeout' cell.\nstdout: {stdout}"));
+
+    // d = 0.5mm > t = 0.1mm → dev > t → query says OUTSIDE (not inside).
+    let verdict_query = dev_m < 1e-4_f64; // false → OUTSIDE
+    // Poke-out ≈ 4e-8 m³ ≫ 1e-9 m³ FLOOR → bool says OUTSIDE (not inside).
+    const BOOL_FLOOR_M3: f64 = 1e-9;
+    let verdict_bool = pokeout_m3 < BOOL_FLOOR_M3; // false → OUTSIDE
+
+    assert!(
+        !verdict_query,
+        "B5 outside: query oracle must say OUTSIDE \
+         (dev = {dev_m:.6e} m should be ≥ 1e-4 m zone; d=0.5mm, t=0.1mm)."
+    );
+    assert!(
+        !verdict_bool,
+        "B5 outside: boolean oracle must say OUTSIDE \
+         (pokeout = {pokeout_m3:.6e} m³ should be ≥ 1e-9 m³ FLOOR; \
+         poke-out ≈ (0.5−0.1)mm·(10mm)² ≈ 4e-8 m³)."
+    );
+    assert_eq!(
+        verdict_query, verdict_bool,
+        "B5 outside: query and boolean oracles must AGREE (both OUTSIDE). \
+         dev = {dev_m:.6e} m, pokeout = {pokeout_m3:.6e} m³."
+    );
+}
