@@ -132,6 +132,14 @@ pub(crate) fn joint_ctor_result_type(name: &str, _args: &[CompiledExpr]) -> Type
 
         // ── Coupling constructors (4) ─────────────────────────────────────────
         // couple / gear / screw / rack_and_pinion all produce a Coupling value.
+        //
+        // B8 boundary (geometric-joints γ, task 4397): `Type::StructureRef("Coupling")`
+        // ≠ `Type::Relation` — this is exactly what makes `check_relate_relations`
+        // (entity.rs) reject couplings in a `relate { }` body with
+        // `DiagnosticCode::RelateExpectsRelation`. Couplings are algebraic
+        // scalar-side ratios (v_child = ratio · v_parent + offset), NOT SE(3)
+        // coincidence relations, and are deliberately absent from RELATION_FN_NAMES.
+        // Cross-reference: `crates/reify-compiler/stdlib/joints.ri` B8 section.
         "couple" | "gear" | "screw" | "rack_and_pinion" => {
             Type::StructureRef("Coupling".to_string())
         }
