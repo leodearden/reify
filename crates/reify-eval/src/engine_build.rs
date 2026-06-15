@@ -3069,7 +3069,14 @@ impl Engine {
                     .as_deref()
                     .and_then(|name| self.geometry_kernels.get(name))
                 {
-                    Some(kernel) => kernel.export(handle_id, export_format, &mut bytes),
+                    Some(kernel) => kernel.export_with_options(
+                        handle_id,
+                        export_format,
+                        &reify_ir::ExportOptions {
+                            step_schema: spec.step_schema,
+                        },
+                        &mut bytes,
+                    ),
                     None => Err(reify_ir::ExportError::FormatError(
                         "no default geometry kernel registered".to_string(),
                     )),
@@ -7080,6 +7087,23 @@ mod tests {
         exported: std::sync::Arc<
             std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
         >,
+        /// Per-call `(handle, format, step_schema)` recorded by
+        /// `export_with_options` — proves the DSL `version` reached the kernel
+        /// as a [`reify_ir::StepSchema`].
+        exported_options: std::sync::Arc<
+            std::sync::Mutex<
+                Vec<(
+                    reify_ir::GeometryHandleId,
+                    reify_ir::ExportFormat,
+                    reify_ir::StepSchema,
+                )>,
+            >,
+        >,
+        /// Warnings `export_with_options` returns. The live OCCT AP242 fallback
+        /// can't be triggered in-build (this build supports AP242DIS), so the
+        /// `W_STEP_AP242_FALLBACK` diagnostic wiring is exercised by injecting
+        /// [`reify_ir::ExportWarning::StepAp242Fallback`] here. Default empty.
+        warnings_to_return: Vec<reify_ir::ExportWarning>,
     }
 
     impl reify_ir::GeometryKernel for ExportRecordingKernel {
@@ -7109,6 +7133,26 @@ mod tests {
         ) -> Result<(), reify_ir::ExportError> {
             self.exported.lock().unwrap().push((handle, format));
             self.inner.export(handle, format, writer)
+        }
+
+        fn export_with_options(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            options: &reify_ir::ExportOptions,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<Vec<reify_ir::ExportWarning>, reify_ir::ExportError> {
+            // Record the schema the driver threaded from the DSL `version`, then
+            // delegate to `export` (which records (handle, format) for the prior
+            // δ tests and writes bytes via the inner mock). Return the
+            // configured warnings so the W_STEP_AP242_FALLBACK diagnostic wiring
+            // can be exercised without a live OCCT AP242 rejection.
+            self.exported_options
+                .lock()
+                .unwrap()
+                .push((handle, format, options.step_schema));
+            self.export(handle, format, writer)?;
+            Ok(self.warnings_to_return.clone())
         }
 
         fn tessellate(
@@ -7160,6 +7204,8 @@ mod tests {
             inner: reify_test_support::mocks::MockGeometryKernel::new(),
             executed: Arc::clone(&executed),
             exported: Arc::clone(&exported),
+            exported_options: Arc::new(Mutex::new(Vec::new())),
+            warnings_to_return: Vec::new(),
         };
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
@@ -7329,6 +7375,8 @@ mod tests {
             inner: reify_test_support::mocks::MockGeometryKernel::new(),
             executed: Arc::clone(&executed),
             exported: Arc::clone(&exported),
+            exported_options: Arc::new(Mutex::new(Vec::new())),
+            warnings_to_return: Vec::new(),
         };
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
@@ -7416,6 +7464,8 @@ mod tests {
             inner: reify_test_support::mocks::MockGeometryKernel::new(),
             executed: Arc::clone(&executed),
             exported: Arc::clone(&exported),
+            exported_options: Arc::new(Mutex::new(Vec::new())),
+            warnings_to_return: Vec::new(),
         };
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
