@@ -1706,6 +1706,73 @@ pub enum ExportFormat {
     ThreeMF,
 }
 
+/// Kernel-neutral STEP application protocol (schema) for STEP export.
+///
+/// Mirrors the DSL `STEPVersion` enum (`stdlib/io.ri`): a declared
+/// `STEPOutput.version` selects which STEP schema the writer emits. This
+/// type is kernel-agnostic — `as_str()` yields the DSL variant names
+/// (`"AP203"` / `"AP214"` / `"AP242"`), NOT any kernel-private token. The
+/// OCCT-specific `write.step.schema` token mapping (AP214→`AP214DIS`,
+/// AP242→`AP242DIS`) and the honest AP242→AP214 degradation live next to
+/// the kernel that owns them, in `occt_wrapper.cpp` — never here, so the
+/// IR crate stays free of OCCT implementation details.
+///
+/// The default is [`StepSchema::Ap214`], matching `STEPOutput.version`'s
+/// DSL default, so an absent `version` writes exactly what OCCT writes
+/// today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StepSchema {
+    /// AP203 — Configuration Controlled 3D Design (OCCT EXPRESS schema
+    /// `CONFIG_CONTROL_DESIGN`).
+    Ap203,
+    /// AP214 — Automotive Design (OCCT EXPRESS schema `AUTOMOTIVE_DESIGN`).
+    /// The default schema.
+    #[default]
+    Ap214,
+    /// AP242 — Managed Model-Based 3D Engineering. Best-effort: the OCCT
+    /// writer requests it and, if the linked build rejects it, degrades to
+    /// AP214 while raising [`ExportWarning::StepAp242Fallback`].
+    Ap242,
+}
+
+impl StepSchema {
+    /// The kernel-neutral string for this schema — the DSL `STEPVersion`
+    /// variant name (`"AP203"` / `"AP214"` / `"AP242"`). This is NOT the
+    /// OCCT `write.step.schema` token; the kernel maps it to its own token.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StepSchema::Ap203 => "AP203",
+            StepSchema::Ap214 => "AP214",
+            StepSchema::Ap242 => "AP242",
+        }
+    }
+}
+
+/// Per-export options threaded into [`GeometryKernel::export_with_options`].
+///
+/// Currently carries only the STEP schema; other formats ignore it. Kept as
+/// a struct (rather than passing `StepSchema` directly) so future per-export
+/// knobs can be added without churning the trait signature again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExportOptions {
+    /// The STEP application protocol to write. Ignored by non-STEP exports.
+    pub step_schema: StepSchema,
+}
+
+/// A kernel-neutral, non-fatal warning raised during export.
+///
+/// The kernel layer (reify-ir / reify-kernel-occt) raises these; the
+/// reify-eval driver owns translating them into user-facing diagnostics
+/// (mirroring how `I_DISPLAY_OUTPUT_DEFERRED` is composed in the driver,
+/// not the kernel). Keeping the warning neutral keeps the kernel free of
+/// any dependency on reify-eval's `Diagnostic` type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportWarning {
+    /// AP242 was requested but the linked kernel rejected it; the export
+    /// degraded to AP214 (honest degradation, not a silent lie).
+    StepAp242Fallback,
+}
+
 /// Tessellated mesh for visualization.
 #[derive(Debug, Clone)]
 pub struct Mesh {
