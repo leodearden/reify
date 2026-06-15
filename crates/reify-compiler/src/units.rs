@@ -230,6 +230,13 @@ pub const GEOMETRY_TOPOLOGY_SELECTOR_NAMES: &[&str] = &[
     "face",
     "edge",
     "solid_body",
+    // Task 4536 — `mid_surface(body) -> Selector(Face)`. Builds a kind-typed
+    // `LeafQuery::ByRole(Role::MidSurfaceFace)` leaf whose resolution filters the
+    // realized body's TopologyAttributeTable for the shell-extract mid-surface
+    // faces. Joins the topology-selector family (mirrors `faces`) so it routes
+    // through topology_selector_result_type → ResolveSelector coercion and is
+    // excluded from CSG geometry-let routing by `is_selector_expr` in geometry.rs.
+    "mid_surface",
 ];
 
 pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
@@ -301,6 +308,10 @@ pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Ty
         "face" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "edge" => Type::Selector(reify_core::ty::SelectorKind::Edge),
         "solid_body" => Type::Selector(reify_core::ty::SelectorKind::Body),
+        // Task 4536 — `mid_surface(body)` is a Face-kind selector (like `faces`).
+        // Resolution returns the shell-extract MidSurfaceFace handles; the compiler
+        // bridges Selector → List<Geometry> via a ResolveSelector coercion node.
+        "mid_surface" => Type::Selector(reify_core::ty::SelectorKind::Face),
         "center_of_mass" => Type::point3(Type::length()),
         "moment_of_inertia" => Type::tensor(
             2,
