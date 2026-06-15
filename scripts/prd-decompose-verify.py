@@ -141,6 +141,58 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# bind_premises() — list of Premise → α probe-set dict
+# ---------------------------------------------------------------------------
+
+def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
+    """Bind a list of Premise records to an α committed-probe-set dict.
+
+    Maps each premise through premise_to_probe and assembles the result into
+    the α probe-set format accepted by pcc.load_probe_set:
+        {"probes": [probe_dict, ...]}
+
+    Negative-assertion enforcement:
+        A `rejection` premise with an empty fixture string is a gap — a
+        rejection assertion with no probe target would silently pass, masking
+        the missing check.  Such a premise raises ValueError.
+
+    Validation:
+        The assembled probe-set is validated by pcc.load_probe_set so any
+        binding error (unknown probe_kind, missing observation) surfaces here
+        rather than at probe-run time.
+
+    Args:
+        premises: List of Premise records (may be empty → empty probe-set).
+
+    Returns:
+        A dict {"probes": [...]}.  Round-trips through pcc.load_probe_set.
+
+    Raises:
+        ValueError: if a rejection premise has an empty fixture path, or if
+                    the assembled probe dict is rejected by α's validation.
+    """
+    probes = []
+    for premise in premises:
+        # Negative-assertion mandate: a rejection with no fixture is a gap.
+        if premise.assertion_kind == "rejection" and not premise.fixture.strip():
+            raise ValueError(
+                f"rejection premise {premise.text!r} has no fixture path — "
+                "a rejection assertion with no probe target is a gap, not a pass"
+            )
+
+        probe = premise_to_probe(premise)
+        probes.append(probe)
+
+    probe_set = {"probes": probes}
+
+    # Validate through α so binding errors surface here, not at probe-run time.
+    if probes:
+        pcc.load_probe_set(json.dumps(probe_set))  # raises ValueError on invalid shape
+
+    return probe_set
+
+
+# ---------------------------------------------------------------------------
 # main() stub — returns 64 (EX_USAGE) until fully implemented
 # ---------------------------------------------------------------------------
 
