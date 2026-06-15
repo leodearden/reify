@@ -527,8 +527,8 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // Two constraint kinds need live kernel state, and a single module may
-        // carry BOTH:
+        // Three constraint kinds need live kernel state, and a single module may
+        // carry any combination:
         //   * RepresentationWithin (task-4199 γ) — needs
         //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
         //     populate `achieved_repr_tol`, which `dispatch_constraints` reads.
@@ -537,6 +537,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
         //     `realization_handles` (a `MaxDeviation` query is BRepOnly; only
         //     `build()` — not `tessellate_realizations` — populates that map),
         //     which `measure_gdt_conformance` reads.
+        //   * DFMRule (task-4600, γ/4408) — also needs
+        //     `build(ExportFormat::Step)` to populate `realization_handles`.
+        //     `measure_dfm_rules` (engine_constraints.rs) reads
+        //     `self.realization_handles` to assign each rule's `subject_handle`;
+        //     without `build()` the handle is None and the rule is silently
+        //     skipped.  C1 (no OCCT → None-kernel → build realizes nothing →
+        //     measure_dfm_rules C1 guard fires → no output, exit 0).
+        //     C2 (modules without DFMRule see has_dfm_rule=false →
+        //     byte-identical to their previous path).
         //
         // amend (reviewer suggestion: robustness_routing) — these were
         // previously two mutually-exclusive `else if` arms with geometric
@@ -554,27 +563,33 @@ fn cmd_check(args: &[String]) -> ExitCode {
         //
         // C1 graceful degradation: with no OCCT kernel,
         // `with_registered_kernel` returns a None-kernel engine → build /
-        // tessellate realize nothing → both kinds yield Indeterminate (never a
-        // false Violated) → exit 0.
+        // tessellate realize nothing → all three kinds yield Indeterminate or
+        // are skipped (never a false Violated or false W_DFM_OVERHANG) → exit 0.
         //
-        // When the module has NEITHER kind, keep the existing
+        // When the module has NONE of the three kinds, keep the existing
         // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
-        let result = if has_geometric_conforms || has_representation_within {
+        let has_dfm_rule = module_has_dfm_rule(&compiled);
+        let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
             }
-            if has_geometric_conforms {
+            if has_geometric_conforms || has_dfm_rule {
                 // Realize live B-rep handles into `realization_handles`. The
                 // build result is discarded; only its handle-population side
                 // effect matters. Run BEFORE `tessellate_realizations` —
                 // `build()` clears+repopulates `realization_handles` but does
                 // not touch `achieved_repr_tol`, so the tessellate pass below
                 // leaves these handles intact.
+                //
+                // DFMRule (has_dfm_rule): `measure_dfm_rules` reads
+                // `realization_handles` to set each rule's `subject_handle`
+                // and skips rules where the handle is None — the same
+                // precondition as geometric Conforms.
                 let _ = engine.build(&compiled, ExportFormat::Step);
             }
             if has_representation_within {
@@ -583,9 +598,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 engine.tessellate_realizations(&compiled);
             }
             // `check()` runs `measure_gdt_conformance` (overrides the matching
-            // scalar `Conforms` entry with the measured verdict) and
-            // `dispatch_constraints`' RepresentationWithin interception — each
-            // reads the map its side effect populated.
+            // scalar `Conforms` entry with the measured verdict),
+            // `dispatch_constraints`' RepresentationWithin interception, and
+            // `measure_dfm_rules` (emits W_DFM_OVERHANG / E_DFM_OVERHANG
+            // diagnostics) — each reads the map its side effect populated.
             engine.check(&compiled)
         } else {
             // Existing lightweight path: no kernel, no tessellation (C2).
