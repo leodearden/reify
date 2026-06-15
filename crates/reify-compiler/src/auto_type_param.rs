@@ -851,8 +851,17 @@ pub(crate) fn filter_feasible_candidates_seeded(
             } else {
                 reify_ir::ValueMap::new()
             };
-        // Merge template literal-param defaults (disjoint entity prefix; no collision).
+        // Merge template literal-param defaults.  Template keys use the template
+        // entity name as prefix; candidate keys use param_member — disjoint by
+        // construction.  The assert enforces this invariant in debug builds,
+        // matching the candidate-merge asserts at sites 2 and 3.
         for (k, v) in template_seed.iter() {
+            debug_assert!(
+                !candidate_values.contains(k),
+                "template-seed merge (site 1): key {k:?} already in candidate_values; \
+                 template entity name collides with param_member — \
+                 disjoint-prefix invariant violated",
+            );
             candidate_values.insert(k.clone(), v.clone());
         }
 
@@ -941,17 +950,9 @@ pub fn seed_candidate_value_map(
     param_member: &str,
 ) -> reify_ir::ValueMap {
     use reify_core::ValueCellId;
-    use reify_ir::{CompiledExprKind, ValueMap};
-
-    let mut map = ValueMap::new();
-    for cell in &candidate_template.value_cells {
-        if let Some(expr) = &cell.default_expr
-            && let CompiledExprKind::Literal(v) = &expr.kind
-        {
-            map.insert(ValueCellId::new(param_member, &cell.id.member), v.clone());
-        }
-    }
-    map
+    seed_literal_cells(candidate_template, |cell| {
+        ValueCellId::new(param_member, &cell.id.member)
+    })
 }
 
 /// Seed a [`reify_ir::ValueMap`] from the parameterized template's own
@@ -973,6 +974,20 @@ pub fn seed_candidate_value_map(
 pub fn seed_template_literal_params(
     template: &crate::types::TopologyTemplate,
 ) -> reify_ir::ValueMap {
+    seed_literal_cells(template, |cell| cell.id.clone())
+}
+
+/// Private literal-extraction helper shared by [`seed_candidate_value_map`] and
+/// [`seed_template_literal_params`].
+///
+/// Iterates `template.value_cells`, matches cells whose `default_expr` is a
+/// `CompiledExprKind::Literal`, and inserts each into the returned map keyed by
+/// `key_fn(cell)`.  Factored out so the literal-extraction predicate is defined
+/// exactly once and cannot drift independently across the two public callers.
+fn seed_literal_cells(
+    template: &crate::types::TopologyTemplate,
+    key_fn: impl Fn(&crate::ValueCellDecl) -> reify_core::ValueCellId,
+) -> reify_ir::ValueMap {
     use reify_ir::{CompiledExprKind, ValueMap};
 
     let mut map = ValueMap::new();
@@ -980,7 +995,7 @@ pub fn seed_template_literal_params(
         if let Some(expr) = &cell.default_expr
             && let CompiledExprKind::Literal(v) = &expr.kind
         {
-            map.insert(cell.id.clone(), v.clone());
+            map.insert(key_fn(cell), v.clone());
         }
     }
     map
@@ -1566,8 +1581,15 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         }
         // Merge template's own literal-param defaults (task 4599). Template
         // keys use the template entity name as prefix, candidate keys use
-        // param_member — disjoint, no collision with the debug_assert! above.
+        // param_member — disjoint.  The assert enforces this in debug builds,
+        // matching the candidate-merge assert above.
         for (k, v) in seed_template_literal_params(parameterized_template).iter() {
+            debug_assert!(
+                !full_value_map.contains(k),
+                "joint-recheck merge (site 3): key {k:?} already in full_value_map; \
+                 template entity name collides with param_member — \
+                 disjoint-prefix invariant violated",
+            );
             full_value_map.insert(k.clone(), v.clone());
         }
 
@@ -2643,6 +2665,12 @@ fn dfs_search(
             {
                 let seeded = seed_candidate_value_map(candidate_template, member);
                 for (k, v) in seeded.iter() {
+                    debug_assert!(
+                        !leaf_values.contains(k),
+                        "dfs_search leaf merge (site 2): key {k:?} already present; \
+                         candidate param_member collides with the template entity name or a \
+                         prior candidate param_member — disjoint-prefix invariant violated",
+                    );
                     leaf_values.insert(k.clone(), v.clone());
                 }
             }
