@@ -309,3 +309,145 @@ fn fits_envelope_satisfaction(result: &BuildResult) -> Satisfaction {
         })
         .satisfaction
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-9 (RED): cross-sub capstone — the 4275 `let proc = FdmPrinter()` form.
+// bounding_box(proc.build_volume) must fold to a DEFINITE verdict under UnifiedDag.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The 4275 cross-sub form: a `let proc = FdmPrinter()` structure instance whose
+/// `Adding`-trait `build_volume` geometry member is referenced inside a
+/// geometry-backed constraint via the stdlib `FitsBuildVolume` def
+/// (`fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))`).
+///
+/// IMPORTANT — the COMPILED shape (verified structurally): `proc.build_volume`
+/// does NOT lower to a `self.<sub>.<member>` `CrossSubGeometryRef`. A
+/// `let proc = FdmPrinter()` binding is a value cell of type
+/// `StructureRef("FdmPrinter")` (it is NOT a `sub` component — a `sub` cannot be
+/// passed as a constraint arg: `constraint FitsBuildVolume(proc: proc, …)` over a
+/// `sub proc` fails to compile with "unresolved name: proc"). So the member
+/// access compiles to:
+///   `IndexAccess { object: ValueRef(SmallPart.proc):StructureRef("FdmPrinter"),
+///                  index: Literal("build_volume") }`.
+/// This is the original Fix-2 / design-decision-#4 member-access-on-StructureRef
+/// shape — DISTINCT from the `CrossSubGeometryRef` shape step-4 handled (the
+/// esc-4358-124 "no IndexAccess" correction applied only to the `self.`/`sub`
+/// form, not this `let`-bound-instance form).
+///
+/// Under `UnifiedDag`, ε's Constraint executor (step-8) must fold BOTH inline
+/// geometry-query leaves: `bounding_box(part)` (same-scope, already resolved at
+/// step-7) AND `bounding_box(proc.build_volume)` (cross-`let`). The latter
+/// resolves only once step-10 makes the executor (a) recognise the `IndexAccess`
+/// member-access shape in `resolve_geometry_handle_arg` and (b) seed the child
+/// `FdmPrinter` realization's `build_volume` handle under the composed
+/// `"proc.build_volume"` key. With both leaves folded,
+/// `fits_build_volume(bbox, bbox)` reaches a DEFINITE verdict.
+///
+/// RED until step-10: today the `IndexAccess` leaf is unresolvable
+/// (`resolve_geometry_handle_arg` matches only `ValueRef`/`CrossSubGeometryRef`),
+/// so it folds to `Undef` → the whole predicate is `Undef` → `Indeterminate`.
+///
+/// The verdict POLARITY depends on the realization order of the two boxes
+/// (whichever handle the kernel hands to `build_volume` vs `part`), so the test
+/// asserts DEFINITE (Satisfied OR Violated), never a fixed polarity — the
+/// OCCT verdict-FLIP e2e (`dfm_fits_build_volume_4275_e2e`) is η's, per PRD §8.
+#[test]
+fn unified_dag_cross_sub_build_volume_constraint_is_definite() {
+    // `FdmPrinter` MUST be declared before `SmallPart` (declaration order is
+    // topological for the cross-`let` snapshot seeding — same forward-ref
+    // limitation as `cross_sub_geometry_e2e.rs`).
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+
+structure SmallPart {
+    let proc = FdmPrinter()
+    let part = box(50mm, 50mm, 50mm)
+    constraint FitsBuildVolume(proc: proc, part: part)
+}
+"#;
+
+    // The two boxes realize as kernel handles 1,2,… across `execute()` calls
+    // (FdmPrinter.build_volume then SmallPart.part, in declaration order). The
+    // fold dispatches `bounding_box` against the ACTUAL realized handles read
+    // back from `named_steps`, so we only need every realized handle to carry a
+    // valid bbox reply. A few extra handles are seeded as a safety margin against
+    // any prelude realization shifting the allocation. Both bboxes valid ⇒
+    // `fits_build_volume` is decidable either way ⇒ DEFINITE.
+    let bbox = |hi: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
+              \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
+        ))
+    };
+    let make_kernel = || {
+        let mut k = MockGeometryKernel::new();
+        for i in 1..=4u64 {
+            k = k.with_bbox_result(GeometryHandleId(i), bbox(if i == 1 { 0.20 } else { 0.05 }));
+        }
+        k
+    };
+
+    let unified =
+        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
+    let legacy =
+        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(make_kernel()));
+
+    let unified_sat = fits_build_volume_satisfaction(&unified);
+    let legacy_sat = fits_build_volume_satisfaction(&legacy);
+
+    // RED until step-10: the cross-`let` IndexAccess leaf
+    // `bounding_box(proc.build_volume)` must fold to a DEFINITE verdict under
+    // UnifiedDag (proving Fix-1 args recursion + the IndexAccess member-access
+    // resolve + the cross-`let` snapshot seed composed end-to-end).
+    assert_ne!(
+        unified_sat,
+        Satisfaction::Indeterminate,
+        "UnifiedDag must fold the cross-`let` bounding_box(proc.build_volume) leaf to a \
+         DEFINITE verdict (Satisfied/Violated), not Indeterminate (legacy_sat={legacy_sat:?}); \
+         constraint_results={:?}, diagnostics={:?}",
+        unified.constraint_results,
+        unified.diagnostics,
+    );
+
+    // Documented divergence: the kernel-less LegacyMultiPass / `reify check`
+    // re-check leaves the inline cross-`let` geometry-query leaf unresolved →
+    // Indeterminate (same divergence as step-7's same-scope inline form).
+    assert_eq!(
+        legacy_sat,
+        Satisfaction::Indeterminate,
+        "LegacyMultiPass leaves the inline cross-`let` geometry-query leaf unresolved \
+         → Indeterminate; constraint_results={:?}",
+        legacy.constraint_results,
+    );
+}
+
+/// Locate the single `FitsBuildVolume` constraint entry's satisfaction in a
+/// [`BuildResult`] (the stdlib def's instantiation is labelled
+/// `"FitsBuildVolume#0[0]"`). Mirrors [`fits_envelope_satisfaction`]. Panics with
+/// the full constraint list if no such entry is present.
+fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
+    result
+        .constraint_results
+        .iter()
+        .find(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsBuildVolume"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a FitsBuildVolume constraint result, got: {:?}",
+                result.constraint_results
+            )
+        })
+        .satisfaction
+}
