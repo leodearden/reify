@@ -418,4 +418,45 @@ assert "gen-nextest-config.sh NPROC=16/MEM=16/GPT=4: [test-groups] occt max-thre
         [ \"\$val\" = \"4\" ]
     "
 
+# ---------------------------------------------------------------------------
+# Tests 15a–15b (task 4621 amendment): HARD_CAP knob and /proc/meminfo branch.
+#
+# 15a exercises the REIFY_OCCT_NEXTEST_HARD_CAP parse path (gen-nextest-config.sh:59-62).
+#    With NPROC=32 and MEM=999 the CPU/RAM terms don't bind, so the HARD_CAP is
+#    the sole active ceiling.  A regression in that parse would silently produce 24.
+# 15b omits REIFY_OCCT_MEMTOTAL_GIB so the /proc/meminfo MemTotal parse runs
+#    (gen-nextest-config.sh:97-104).  The assertion is a range check [1..nproc=32]
+#    rather than an exact value so it stays deterministic across hosts:
+#    — if /proc/meminfo is readable, the RAM term participates (cap ≤ 32).
+#    — if /proc/meminfo is absent (non-Linux), the RAM term is skipped → cap = 24.
+#    Both outcomes satisfy the range assertion; the key correctness property is
+#    that the result is at least 1 (the clamp added for suggestion 1) and at most
+#    nproc=32.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 15a–15b (task 4621 amendment): HARD_CAP override and /proc/meminfo branch ---"
+
+# Test 15a: REIFY_OCCT_NEXTEST_HARD_CAP=12 with NPROC=32/MEM=999
+#   min(12, 32, floor(999/2)=499) = 12 (custom HARD_CAP binds).
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_HARD_CAP=12/NPROC=32/MEM=999: [test-groups] occt max-threads = 12 (HARD_CAP override)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_HARD_CAP=12 REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=999 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"12\" ]
+    "
+
+# Test 15b: omit REIFY_OCCT_MEMTOTAL_GIB → /proc/meminfo branch or RAM-term-skip.
+#   cap must be a positive integer ≤ nproc=32 on any host.
+assert "gen-nextest-config.sh NPROC=32, no REIFY_OCCT_MEMTOTAL_GIB: cap in [1..32] via /proc/meminfo (or RAM term skipped)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS env -u REIFY_OCCT_MEMTOTAL_GIB \
+              env -u REIFY_OCCT_NEXTEST_HARD_CAP bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ] && [ \"\$val\" -le 32 ]
+    "
+
 test_summary
