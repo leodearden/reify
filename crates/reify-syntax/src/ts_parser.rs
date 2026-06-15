@@ -6518,4 +6518,59 @@ mod tests {
             other => panic!("expected InterpolatedString, got {:?}", other),
         }
     }
+
+    /// Robustness guard: `qualified_type_recovery_base` must return a flat,
+    /// bounded `Named` over the whole-node text — NOT dispatch back through
+    /// `lower_type_expr_node` — so that the error-recovery (`None`) arm of
+    /// `lower_qualified_type` does not recurse into itself and overflow the
+    /// stack in release builds.
+    ///
+    /// The source is valid (the `qualified_type` node is real); we pass that
+    /// real node to `qualified_type_recovery_base` to exercise the helper on
+    /// a concrete CST node without needing an unreachable baseless node.
+    #[test]
+    fn qualified_type_recovery_base_is_bounded_named() {
+        let source = "structure def S { param m : Coupling<Prismatic>::MotionValue }";
+
+        // Parse with the raw tree-sitter API to get the CST directly.
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        let tree = ts_parser
+            .parse(source, None)
+            .expect("parse returned None");
+        let root = tree.root_node();
+
+        // Walk the CST to locate the qualified_type node (reuses the helper
+        // already defined in this test module at line 5764).
+        let qnode = find_node_by_kind(root, "qualified_type")
+            .expect("expected a qualified_type node in the CST");
+
+        // Build the lowering context.
+        let lowering = Lowering::new(source);
+
+        // Call the recovery helper directly.  Asserting a flat Named over the
+        // whole-node text (not a QualifiedAssoc) is the discriminating signal
+        // that the helper does NOT re-dispatch through lower_type_expr_node.
+        let result = lowering.qualified_type_recovery_base(qnode);
+
+        match result.kind {
+            TypeExprKind::Named { name, type_args } => {
+                assert_eq!(
+                    name, "Coupling<Prismatic>::MotionValue",
+                    "recovery base must be the raw whole-node text"
+                );
+                assert!(
+                    type_args.is_empty(),
+                    "recovery base must have empty type_args (no parsing), got: {:?}",
+                    type_args
+                );
+            }
+            other => panic!(
+                "expected TypeExprKind::Named (bounded flat recovery), got {:?}",
+                other
+            ),
+        }
+    }
 }
