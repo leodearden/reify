@@ -108,3 +108,71 @@ A thin-body advisory (aspect ratio ≫ 10) fires at `Warning` severity — not `
 |---|---|---|
 | `case_names` | `(MultiCaseResult) -> List<String>` | Keys in lexicographic order. Deterministic. |
 | `result_for` | `(MultiCaseResult, String) -> ElasticResult` | Returns `Undef` on a missing key (silent-Undef; actionable diagnostics deferred to PRD task #10). |
+
+---
+
+## 2. Envelope construction
+
+The envelope across N cases answers: *at each point in the body, what is the worst-case value of some scalar under any load?*
+
+### Convenience helpers (reach for these first)
+
+| Helper | Return type | What it envelopes |
+|---|---|---|
+| `envelope_von_mises(results)` | `Field<Point3, Pressure>` | Per-point max von Mises stress across all cases |
+| `envelope_max_principal(results)` | `Field<Point3, Pressure>` | Per-point max (most-tensile) principal stress across all cases |
+| `envelope_displacement_magnitude(results)` | `Field<Point3, Length>` | Per-point max displacement vector magnitude across all cases |
+
+All three share the same silent-Undef contract: shape failures (mismatched Sampled-grid metadata across cases, wrong arity, non-`MultiCaseResult` argument) collapse to `Undef` rather than raising a diagnostic. Actionable diagnostics are deferred to PRD task #10.
+
+**Round-trip properties:**
+
+| Helper | Identity |
+|---|---|
+| `envelope_von_mises` | `result[P] == max over cases of von_mises(cases[name].stress[P])` |
+| `envelope_max_principal` | `result[P] == max over cases of max_eigenvalue(cases[name].stress[P])` |
+| `envelope_displacement_magnitude` | `result[P] == max over cases of \|cases[name].displacement[P]\|` |
+
+### Compositional primitives (reach for these for any other scalar field)
+
+```
+envelope_max(fields : Map<String, Field<Point3, T>>) -> Field<Point3, T>  // T : Ordered
+envelope_min(fields : Map<String, Field<Point3, T>>) -> Field<Point3, T>  // T : Ordered
+```
+
+`envelope_max` and `envelope_min` reduce a named-field map to a point-wise maximum or minimum across the case axis. Compose them with any per-case scalar projection to envelope a custom quantity:
+
+```
+// Example: per-point max of a scalar derived from each case's displacement field
+let disp_fields = map{
+    "operating" => displacement_magnitude_field(result_for(results, "operating")),
+    "overload"  => displacement_magnitude_field(result_for(results, "overload")),
+    "transport" => displacement_magnitude_field(result_for(results, "transport")),
+}
+let worst_disp = envelope_max(disp_fields)
+```
+
+**When to reach for which:**
+
+- Use the three **convenience helpers** (`envelope_von_mises`, `envelope_max_principal`, `envelope_displacement_magnitude`) for the common projections — they are shorter and pre-validated against the `MultiCaseResult` shape.
+- Use `envelope_max` / `envelope_min` for any **other scalar field** derived from per-case `ElasticResult` data; the helpers are one-liners over these primitives.
+
+**Shared-grid-metadata contract:** all per-case fields passed to envelope primitives must share identical Sampled-grid metadata (grid kind, axis lengths, bounds, spacing, `domain_type`, `codomain_type`). This is the same contract as `linear_combine`. Mismatched grids collapse to `Undef`.
+
+### `worst_case` — find the governing case name
+
+```
+worst_case(results : MultiCaseResult, scalar_fn : (ElasticResult) -> Field<Point3, T>) -> String
+```
+
+Returns the name of the case whose `scalar_fn`-derived field has the largest global maximum. Tie-break: lexicographic-min on the case name (first-seen in BTreeMap alphabetical iteration order, same discipline as `envelope_reduce`).
+
+**Identity-lambda caveat (task #3007):** the current Reify lambda parameter-type syntax accepts only bare named types resolvable by `resolve_type_name`. Untyped lambda params default to `Type::Real`, so `|e| e["displacement"]` is rejected by the type checker ("cannot index into non-collection type 'Real'"). Until richer lambda parameter-type syntax lands, callers must pre-bind the desired scalar field and pass the identity lambda `|f| f`:
+
+```
+// Current idiom: the identity lambda; worst_case applies it per case
+// (intercepted in reify-expr::eval_expr, which has EvalContext).
+let critical_case = worst_case(results, |r| r)
+```
+
+This idiom is exercised in [`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`](../../crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs).
