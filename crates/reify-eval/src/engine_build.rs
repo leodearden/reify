@@ -7339,6 +7339,86 @@ mod tests {
         );
     }
 
+    /// step-11 (ε / task 4288, RED): when the kernel reports an AP242→AP214
+    /// fallback (`ExportWarning::StepAp242Fallback`), the driver surfaces it as
+    /// exactly one warning-severity diagnostic carrying the
+    /// `W_STEP_AP242_FALLBACK` code and naming the occurrence — *without*
+    /// dropping the successfully written bytes (a fallback is honest
+    /// degradation, not a failure). The live OCCT AP242 fallback cannot be
+    /// triggered in this build (it supports AP242DIS), so the warning is
+    /// injected via the recording kernel's `warnings_to_return`.
+    ///
+    /// RED until step-12: the driver currently discards the
+    /// `Vec<ExportWarning>` that `export_with_options` returns, so the artifact
+    /// carries no fallback diagnostic.
+    #[test]
+    fn build_outputs_surfaces_ap242_fallback_warning() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub s = STEPOutput(subject: part, version: STEPVersion.AP242, path: "x.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel {
+            inner: reify_test_support::mocks::MockGeometryKernel::new(),
+            executed: Arc::clone(&executed),
+            exported: Arc::clone(&exported),
+            exported_options: Arc::new(Mutex::new(Vec::new())),
+            // Inject the AP242→AP214 fallback the in-build OCCT can't produce.
+            warnings_to_return: vec![reify_ir::ExportWarning::StepAp242Fallback],
+        };
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "exactly one ExportArtifact for the single STEPOutput occurrence, got {}",
+            artifacts.len()
+        );
+        let art = &artifacts[0];
+        assert!(
+            !art.bytes.is_empty(),
+            "a fallback is a WARNING, not a failure: the written bytes must survive"
+        );
+
+        let fallback_diags: Vec<&reify_core::Diagnostic> = art
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("W_STEP_AP242_FALLBACK"))
+            .collect();
+        assert_eq!(
+            fallback_diags.len(),
+            1,
+            "exactly one W_STEP_AP242_FALLBACK diagnostic for the injected fallback, got {}",
+            fallback_diags.len()
+        );
+        assert_eq!(
+            fallback_diags[0].severity,
+            Severity::Warning,
+            "the AP242 fallback must be warning-severity (honest degradation, not an error)"
+        );
+        assert!(
+            fallback_diags[0].message.contains("D.s"),
+            "the diagnostic must name the occurrence (`D.s`); message was: {}",
+            fallback_diags[0].message
+        );
+    }
+
     /// step-09 (RED): `build_outputs` emits one [`crate::ExportArtifact`] per
     /// recognized `Output` occurrence, in declaration order (B6).
     ///
