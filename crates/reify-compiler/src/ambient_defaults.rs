@@ -57,15 +57,22 @@ impl AmbientDefaults {
     /// own map first and falls back to the file level on a miss; a `None`
     /// (file-scope) lookup consults only the file level.
     ///
-    /// STUB (pre-1 scaffolding): always returns `None`. The real innermost-wins
-    /// walk lands in step-2.
     pub(crate) fn resolve(
         &self,
         type_name: &str,
         purpose: Option<&str>,
     ) -> Option<&ResolvedAmbientDefault> {
-        let _ = (type_name, purpose);
-        None
+        // Innermost-wins: from inside a purpose, consult that purpose's own map
+        // first; on a miss (or at file scope) fall back to the file level.
+        if let Some(purpose_name) = purpose
+            && let Some(entry) = self
+                .purpose_level
+                .get(purpose_name)
+                .and_then(|by_type| by_type.get(type_name))
+        {
+            return Some(entry);
+        }
+        self.file_level.get(type_name)
     }
 
     /// Insert a file-level (top-level) default for `type_name`.
