@@ -1,9 +1,9 @@
 # Multi-Load-Case FEA
 
-**Applies to:** Reify v0.3.x
-**Status:** Shipped — all types and functions described here are live as of v0.3.x.
+**Applies to:** Reify v0.4.x
+**Status:** Shipped — all types and functions described here are live as of v0.4.x.
 **Audience:** Users running structural analysis against multiple load scenarios and needing stress envelopes or design-code load combinations.
-**Not a PRD:** For design rationale and decomposition see [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md).
+**Not a PRD:** For design rationale and decomposition see [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md) (multi-load API design) and [`docs/prds/v0_4/fea-result-model.md`](../prds/v0_4/fea-result-model.md) (result-model implementation; the `multi_load_bracket` example is task η of that PRD).
 
 ---
 
@@ -82,6 +82,8 @@ pub fn solve_load_cases(
 ```
 
 The first four parameters (`material`, `length`, `width`, `height`) mirror the opening parameters of `solve_elastic_static` — the same prismatic-geometry bindings thread through unchanged. `cases` is a `List<LoadCase>`; `solve_load_cases` enforces unique names at solve time. `options` is the fallback `ElasticOptions` for any case whose own `options` field is `none`.
+
+**Parameter-name mapping for the example:** the §1 snippet binds `width=80mm`, `height=100mm`, `thickness=6mm` (the bracket's own geometry fields) and passes them positionally to the signature's `length`, `width`, `height` parameters — so `width(80mm)` fills `length`, `height(100mm)` fills `width`, and `thickness(6mm)` fills `height`. The example comment in [`examples/multi_load_bracket.ri`](../../examples/multi_load_bracket.ri) spells this out ("length=width, width=height, height=thickness").
 
 **Current geometry limitation:** the geometry is prismatic (rectangular-box dimensions). The full arbitrary-geometry variant — `solve_load_cases(body, material, cases, options)` where `body` is a CSG solid and loads attach via `body.face()` topology selectors — is deferred to task 2930 (FEA-in-the-loop optimisation, arbitrary-geometry producers not yet wired). For now, callers pass the four dimensional scalars.
 
@@ -257,7 +259,7 @@ See §4 for the per-case `mesh_size` / `element_order` option interaction and th
 | `mesh_size` | ⚠ allowed but disables superposition | Different DOF layout per case; `linear_combine` returns `Undef` (diagnostic deferred to PRD task #10) if base meshes differ |
 | `element_order` | ⚠ allowed but disables superposition | Different DOF layout per case; `linear_combine` returns `Undef` if base meshes differ |
 
-*(Reproduced from [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md) lines 107-110.)*
+*(Adapted from [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md). Note: the PRD's wording for `mesh_size`/`element_order` conflicts — "rejects with diagnostic if base meshes differ" — is aspirational; the shipped v0.3 contract is silent-`Undef` with diagnostics deferred to PRD task #10, as shown in the table above.)*
 
 **Practical guidance:** keep `mesh_size` and `element_order` identical across all cases (or leave them as `none` to inherit the shared options) unless you have a specific reason to vary element fidelity per case. Mixing mesh sizes is valid for running a coarse sanity-check case alongside fine-mesh production cases, but rules out `linear_combine` across those cases.
 
@@ -328,5 +330,5 @@ If `supports` vary between cases (e.g. one pinned case and one fixed-base case),
 - [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md) — PRD with design rationale, resolved decisions, and decomposition.
 - [`docs/fea-cache.md`](../fea-cache.md) — FEA cache key details, `reify cache` subcommand reference, performance caveats.
 - [`examples/multi_load_bracket.ri`](../../examples/multi_load_bracket.ri) — validated end-to-end example: three load cases, stress envelope, LRFD superposition.
-- [`crates/reify-compiler/stdlib/fea_multi_case.ri`](../../crates/reify-compiler/stdlib/fea_multi_case.ri) — authoritative type and function declarations with full doc-comments (lines 40-244 types/accessors; 547-601 `solve_load_cases`).
+- [`crates/reify-compiler/stdlib/fea_multi_case.ri`](../../crates/reify-compiler/stdlib/fea_multi_case.ri) — authoritative type and function declarations with full doc-comments (`structure def LoadCase`, `structure def MultiCaseResult` and its accessors, `pub fn solve_load_cases`, and the `linear_combine` / `envelope_*` / `worst_case` function doc-blocks).
 - [`docs/getting-started.md`](../getting-started.md) — broader introduction to Reify.
