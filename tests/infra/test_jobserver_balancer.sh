@@ -1537,4 +1537,166 @@ assert "suppress_giveback(): (d) avg10=None, held=0 → False (fail-open)" \
 assert "suppress_giveback(): (e) avg10=None, held>0 → True (reservoir suppresses)" \
     test "$_b15_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 16: live-daemon pressure lifecycle (test-16)
+#   Uses pre-1 helpers: write_psi_fixture, read_held_back_file, start_balancer
+#   with PSI fixture arg.  TOKENS=8 (task_baseline=2, merge_baseline=6,
+#   MAX_HELD_BACK=max(1,8//4)=2).
+#
+#   Scenario A: hold → release lifecycle
+#     HIGH-pressure fixture (avg10=99):
+#       (1) held-back file > 0 — pressure stage grabbed task tokens
+#       (2) FIONREAD(merge)==merge_baseline — MERGE NOT STRANGLED
+#       (3) C1: FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS
+#     Switch to LOW-pressure fixture (avg10=0.00):
+#       (4) held-back→0 and task refills to task_baseline
+#
+#   Scenario B: give-back suppression
+#     HIGH pressure + drained task pool:
+#       (5) FIONREAD(merge) stays above EPSILON (C4 m2t blocked)
+#
+#   RED: no pressure stage in main() → state file never written → (1) times out;
+#        m2t fires freely under HIGH pressure → merge drops to EPSILON → (5) fails.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 16: pressure lifecycle (hold→release + give-back suppression) ---"
+
+_b16_TOKENS=8
+_b16_psi_fixture="$(mktemp /tmp/test-b16-psi-XXXXXX)"
+_b16_held_back_file="$(mktemp /tmp/test-b16-held-back-XXXXXX)"
+_b16_TASK_BL=$(( _b16_TOKENS / 4 ))           # max(1,8//4)=2
+_b16_MERGE_BL=$(( _b16_TOKENS - _b16_TASK_BL ))  # 6
+
+_b16_EPSILON=$(python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.EPSILON)
+PY
+)
+
+# ── Scenario A: hold → release lifecycle ─────────────────────────────────
+echo ""
+echo "  Scenario A: hold → release"
+
+write_psi_fixture "$_b16_psi_fixture" "99.00"
+_cleanup_balancer
+
+export REIFY_JOBSERVER_HELD_BACK_FILE="$_b16_held_back_file"
+start_balancer "$_b16_TOKENS" 0.02 "$_b16_psi_fixture"
+unset REIFY_JOBSERVER_HELD_BACK_FILE
+wait_for_seed 10 || true
+
+# (1) Poll until held-back file > 0 (pressure stage actively holding tokens)
+_b16a_nonzero=0
+_b16a_t0=$(date +%s)
+while true; do
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    [ "$_b16a_hb" -gt 0 ] && { _b16a_nonzero=1; break; }
+    [ $(( $(date +%s) - _b16a_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Scenario A: (1) held-back > 0 under HIGH pressure (pressure stage active)" \
+    test "$_b16a_nonzero" -eq 1
+
+# (2) FIONREAD(merge)==merge_baseline — MERGE NOT STRANGLED
+_b16a_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+assert "Scenario A: (2) FIONREAD(merge)==merge_baseline (MERGE NOT STRANGLED)" \
+    test "$_b16a_m" -eq "$_b16_MERGE_BL"
+
+# (3) C1 extended: FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS
+_b16a_c1=0
+for _b16a_r in 1 2 3; do
+    _b16a_pair=$(fionread_pair "$_MERGE_FIFO" "$_TASK_FIFO")
+    _b16a_mf=$(echo "$_b16a_pair" | awk '{print $1}')
+    _b16a_tf=$(echo "$_b16a_pair" | awk '{print $2}')
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    [ $(( _b16a_mf + _b16a_tf + _b16a_hb )) -eq "$_b16_TOKENS" ] && { _b16a_c1=1; break; }
+    sleep 0.05
+done
+assert "Scenario A: (3) C1 — FIONREAD(merge)+FIONREAD(task)+held_back==TOKENS" \
+    test "$_b16a_c1" -eq 1
+
+# Switch to LOW pressure; (4) poll until held-back→0 and task refills
+write_psi_fixture "$_b16_psi_fixture" "0.00"
+
+_b16a_rel=0
+_b16a_t0=$(date +%s)
+while true; do
+    _b16a_hb=$(read_held_back_file "$_b16_held_back_file")
+    _b16a_tf=$(fionread "$_TASK_FIFO" 2>/dev/null || echo -1)
+    [ "$_b16a_hb" -eq 0 ] && [ "$_b16a_tf" -ge "$_b16_TASK_BL" ] && { _b16a_rel=1; break; }
+    [ $(( $(date +%s) - _b16a_t0 )) -ge 10 ] && break
+    sleep 0.05
+done
+assert "Scenario A: (4) held-back→0 and task refills to baseline after LOW pressure" \
+    test "$_b16a_rel" -eq 1
+
+_cleanup_balancer
+
+# ── Scenario B: give-back suppression under HIGH pressure ─────────────────
+echo ""
+echo "  Scenario B: give-back suppression"
+
+write_psi_fixture "$_b16_psi_fixture" "99.00"
+_cleanup_balancer
+> "$_b16_held_back_file"  # reset held-back file
+
+export REIFY_JOBSERVER_HELD_BACK_FILE="$_b16_held_back_file"
+start_balancer "$_b16_TOKENS" 0.05 "$_b16_psi_fixture"
+unset REIFY_JOBSERVER_HELD_BACK_FILE
+wait_for_seed 10 || true
+
+# Consumer drains+holds task pool.  Under HIGH pressure (GREEN), pressure stage
+# may grab task tokens first (consumer gets 0).  Either way free_task→0.
+_b16b_held_file=$(mktemp /tmp/test-b16b-held-XXXXXX)
+python3 - "$_TASK_FIFO" "$_b16b_held_file" <<'PY' &
+import os, time, sys
+path, count_file = sys.argv[1], sys.argv[2]
+held = 0
+fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+deadline = time.monotonic() + 1.5
+while time.monotonic() < deadline:
+    try:
+        data = os.read(fd, 64); held += len(data)
+    except BlockingIOError:
+        if held > 0: break
+        time.sleep(0.01)
+os.close(fd)
+with open(count_file, 'w') as f: f.write(str(held))
+time.sleep(30)
+PY
+_b16b_consumer_pid=$!
+
+# (5) Wait for consumer drain attempt to finish (file written = drain done)
+_b16b_t0=$(date +%s)
+while [ ! -s "$_b16b_held_file" ]; do
+    [ $(( $(date +%s) - _b16b_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Scenario B: (5a) consumer drain attempt finished (file written)" \
+    test -s "$_b16b_held_file"
+
+# (5b) Poll 1s: assert FIONREAD(merge) NEVER drops to EPSILON.
+#   RED: m2t fires (no suppression) → merge→EPSILON → FAIL.
+#   GREEN: suppress_giveback active → m2t blocked → merge stays at merge_baseline.
+_b16b_supp=1
+_b16b_t0=$(date +%s)
+while true; do
+    _b16b_m=$(fionread "$_MERGE_FIFO" 2>/dev/null || echo -1)
+    [ "$_b16b_m" -le "$_b16_EPSILON" ] && { _b16b_supp=0; break; }
+    [ $(( $(date +%s) - _b16b_t0 )) -ge 1 ] && break
+    sleep 0.05
+done
+assert "Scenario B: (5b) FIONREAD(merge) stays above EPSILON (give-back suppressed)" \
+    test "$_b16b_supp" -eq 1
+
+kill "$_b16b_consumer_pid" 2>/dev/null || true
+wait "$_b16b_consumer_pid" 2>/dev/null || true
+rm -f "$_b16b_held_file"
+_cleanup_balancer
+rm -f "$_b16_psi_fixture" "$_b16_held_back_file"
+
 test_summary
