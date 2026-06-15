@@ -885,11 +885,12 @@ fn full_module_integrity() {
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
 
-    // 3 functions: symmetric_tolerance, limit_tolerance, require_finish (β adds require_finish)
+    // 5 functions: symmetric_tolerance, limit_tolerance, require_finish (β), virtual_condition, resultant_condition (ε)
     assert_eq!(
         module.functions.len(),
-        3,
-        "expected 3 functions (symmetric_tolerance, limit_tolerance, require_finish), got: {:?}",
+        5,
+        "expected 5 functions (symmetric_tolerance, limit_tolerance, require_finish, \
+         virtual_condition, resultant_condition), got: {:?}",
         module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 
@@ -2587,4 +2588,150 @@ structure def Probe {
          got {:?}",
         unbound.expr.kind
     );
+}
+
+// ─── ε-1: virtual_condition / resultant_condition exact scalars ───────────────
+
+/// (ε step-1 RED → step-2 GREEN) virtual_condition and resultant_condition are
+/// absent from stdlib until step-2.
+///
+/// VC/RC are EXTERNAL-feature-of-size GD&T scalars:
+///   virtual_condition(size, tol)   = size.upper_limit + tol   (MMC + Tg)
+///   resultant_condition(size, tol) = size.lower_limit - tol   (LMC - Tg)
+///
+/// For symmetric_tolerance(10mm, 0.05mm):
+///   upper_limit = 10mm + 0.05mm = 10.05mm
+///   lower_limit = 10mm − 0.05mm =  9.95mm
+///
+/// With geometric_tolerance = 0.1mm (from pos.tolerance_value):
+///   VC = 10.05mm + 0.1mm = 10.15mm = 0.01015 m
+///   RC =  9.95mm − 0.1mm =  9.85mm = 0.00985 m
+///
+/// vc_lit proves that a literal `0.1mm` and a `pos.tolerance_value` sourced Length
+/// produce the same result (callout-sourced tol == literal tol).
+///
+/// Signature: `virtual_condition(size: DimensionalTolerance, geometric_tolerance: Length) -> Length`
+/// Caller passes `callout.tolerance_value` to avoid the trait-param dimension-loss
+/// (see design decision: esc-4474 substrate finding #2).
+///
+/// RED: stdlib has no virtual_condition / resultant_condition (compile error);
+///      module.functions.len() == 3, not 5.
+#[test]
+fn virtual_condition_and_resultant_condition_exact_scalars() {
+    // ── (a) Structural: both functions must be in stdlib ──────────────────────
+    let module = load_stdlib_module();
+    let vc_fn = module
+        .functions
+        .iter()
+        .find(|f| f.name == "virtual_condition");
+    assert!(
+        vc_fn.is_some(),
+        "stdlib must contain 'virtual_condition' function; present fns: {:?}",
+        module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+    let rc_fn = module
+        .functions
+        .iter()
+        .find(|f| f.name == "resultant_condition");
+    assert!(
+        rc_fn.is_some(),
+        "stdlib must contain 'resultant_condition' function; present fns: {:?}",
+        module.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+
+    // Both must return Length.
+    assert_eq!(
+        vc_fn.unwrap().return_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "virtual_condition return_type should be Length (Scalar[m]), got {:?}",
+        vc_fn.unwrap().return_type
+    );
+    assert_eq!(
+        rc_fn.unwrap().return_type,
+        Type::Scalar { dimension: DimensionVector::LENGTH },
+        "resultant_condition return_type should be Length (Scalar[m]), got {:?}",
+        rc_fn.unwrap().return_type
+    );
+
+    // ── (b) Eval: exact scalars via kernel-free harness ───────────────────────
+    // symmetric_tolerance(10mm, 0.05mm): upper=10.05mm, lower=9.95mm
+    // pos.tolerance_value = 0.1mm
+    // VC = 10.05mm + 0.1mm = 10.15mm = 0.01015 m
+    // RC =  9.95mm − 0.1mm =  9.85mm = 0.00985 m
+    let source = r#"
+structure def Probe {
+    let sz      = symmetric_tolerance(10mm, 0.05mm)
+    let pos     = Position(tolerance_value: 0.1mm, feature: box(1mm,1mm,1mm), datum_refs: box(1mm,1mm,1mm), material_condition: MaterialCondition.MMC)
+    let vc      = virtual_condition(sz, pos.tolerance_value)
+    let vc_lit  = virtual_condition(sz, 0.1mm)
+    let rc      = resultant_condition(sz, pos.tolerance_value)
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let compile_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        compile_errors.is_empty(),
+        "ε Probe should compile without errors, got: {:?}",
+        compile_errors
+    );
+
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "ε eval errors: {:?}", eval_errors);
+
+    let all_keys: Vec<_> = result
+        .values
+        .iter()
+        .map(|(k, _)| format!("{}.{}", k.entity, k.member))
+        .collect();
+
+    macro_rules! assert_length {
+        ($entity:expr, $member:expr, $expected:expr, $label:literal) => {{
+            let id = ValueCellId::new($entity, $member);
+            let value = result.values.get(&id).unwrap_or_else(|| {
+                panic!(
+                    "ε {}: {}.{} not found; present keys: {:?}",
+                    $label, $entity, $member, all_keys
+                )
+            });
+            match value {
+                Value::Scalar { si_value, dimension } => {
+                    assert_eq!(
+                        *dimension,
+                        DimensionVector::LENGTH,
+                        "ε {}: {}.{} expected LENGTH dimension, got {:?}",
+                        $label, $entity, $member, dimension
+                    );
+                    let rel_err = (si_value - $expected).abs() / $expected;
+                    assert!(
+                        rel_err < 1e-9,
+                        "ε {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
+                        $label, $entity, $member, $expected, si_value, rel_err
+                    );
+                }
+                other => panic!(
+                    "ε {}: {}.{} expected Value::Scalar (LENGTH), got {:?}",
+                    $label, $entity, $member, other
+                ),
+            }
+        }};
+    }
+
+    // virtual_condition(symmetric_tolerance(10mm,0.05mm), 0.1mm):
+    //   = upper_limit + 0.1mm = 10.05mm + 0.1mm = 10.15mm = 0.01015 m
+    assert_length!("Probe", "vc",     0.01015_f64, "virtual_condition(sz, pos.tolerance_value)");
+    // Literal tol: same result as callout-sourced tol
+    assert_length!("Probe", "vc_lit", 0.01015_f64, "virtual_condition(sz, 0.1mm)");
+    // resultant_condition(symmetric_tolerance(10mm,0.05mm), 0.1mm):
+    //   = lower_limit - 0.1mm = 9.95mm - 0.1mm = 9.85mm = 0.00985 m
+    assert_length!("Probe", "rc",     0.00985_f64, "resultant_condition(sz, pos.tolerance_value)");
 }
