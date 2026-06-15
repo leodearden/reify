@@ -69,6 +69,18 @@
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
 #                                  used as the first test-phase plan entry (test/all).
 #
+# Host-relative compile timeout knobs (task 4621):
+#   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for `cargo nextest run` passes.
+#                                  Default 60m (workstation budget, η/4521 × 4.5).
+#   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
+#                                  gui-feature `cargo check -p reify-gui` pass.
+#                                  Default 45m.
+#   REIFY_VERIFY_CHECK_TIMEOUT  — outer timeout for `cargo check --workspace --tests`.
+#                                  Default 30m.
+#   Values validated as ^[0-9]+[smhd]?$; invalid → default + stderr warning.
+#   Unset → identical render on the workstation (no-op). The leo-laptop verify-only
+#   host (16t) may widen these via its dispatch env for per-host-measured budgets.
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
@@ -117,6 +129,43 @@ if [ ! -f "$SCRIPT_DIR/lib_test_semaphore.sh" ]; then
 fi
 # shellcheck source=scripts/lib_test_semaphore.sh
 source "$SCRIPT_DIR/lib_test_semaphore.sh"
+
+# ---------------------------------------------------------------------------
+# Host-relative compile timeout resolver (task 4621)
+# ---------------------------------------------------------------------------
+
+# _resolve_timeout_knob <env_var_name> <default>
+# Validates that the env var value matches ^[0-9]+[smhd]?$ (digits + optional
+# single unit suffix: s/m/h/d).  Returns the env value verbatim if valid, else
+# returns the default and emits a stderr warning (non-empty invalid only).
+# Mirrors the strict-digit idiom in gen-nextest-config.sh / parse_debug_port;
+# adapted to duration values with an optional unit suffix.
+_resolve_timeout_knob() {
+    local _name="$1" _default="$2"
+    local _val="${!_name:-}"
+    # Strip exactly one trailing unit character (if present) to isolate the
+    # digit part.  After stripping, the remainder must be purely digits and
+    # non-empty to be a valid duration.
+    local _core
+    case "$_val" in
+        (*[smhd]) _core="${_val%[smhd]}" ;;  # strip one trailing unit
+        (*)       _core="$_val" ;;
+    esac
+    case "$_core" in
+        (''|*[!0-9]*)
+            [ -n "$_val" ] && printf 'verify.sh: WARNING: invalid %s=%s; using default %s\n' \
+                "$_name" "$_val" "$_default" >&2
+            printf '%s' "$_default"
+            ;;
+        (*) printf '%s' "$_val" ;;
+    esac
+}
+
+# Resolve three compile-budget tiers once at startup.  Defaults match the
+# workstation-measured budgets (unset → identical render, no-op on workstation).
+_VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
+_VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
+_VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
     sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -791,9 +840,9 @@ add_test_passes() {
     # (Test 17 — debug pass, Test 17b — release pass) — keep them in sync.
     for profile in "${PROFILES[@]}"; do
         if [ "$profile" = "release" ]; then
-            rel=" --release"; outer_timeout="60m"
+            rel=" --release"; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
         else
-            rel=""; outer_timeout="60m"
+            rel=""; outer_timeout="${_VERIFY_TEST_TIMEOUT}"
         fi
 
         if [ "$profile" = "release" ]; then
@@ -850,9 +899,9 @@ build_plan() {
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check ${AFFECTED_ALL_FLAGS} --tests"
         else
-            add "timeout --kill-after=60 30m ${CARGO_PRIO}cargo check --workspace --tests"
+            add "timeout --kill-after=60 ${_VERIFY_CHECK_TIMEOUT} ${CARGO_PRIO}cargo check --workspace --tests"
         fi
     fi
 
@@ -933,9 +982,9 @@ build_plan() {
     # lint: clippy over all targets, warnings-as-errors.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$NARROW_ACTIVE" -eq 1 ]; then
-            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy ${AFFECTED_ALL_FLAGS} --all-targets -- -D warnings"
         else
-            add "timeout --kill-after=60 45m ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
+            add "timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo clippy --workspace --all-targets -- -D warnings"
         fi
     fi
 
@@ -955,7 +1004,7 @@ build_plan() {
     # gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk; the stub
     # satisfies the existence check without clobbering a real built sidecar.
     if [ "$DO_LINT" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
-        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 45m ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"
     fi
 
     # Overlap join: wait for the background node lane before infra checks / pole.
