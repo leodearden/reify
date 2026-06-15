@@ -79,6 +79,7 @@ std::unique_ptr<OcctShape> shape_vec_at(const OcctShapeVec& vec, size_t idx);
 struct Point3;
 struct BBox;
 struct TessResult;
+struct ExportStepResult;
 struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
@@ -1387,8 +1388,14 @@ std::unique_ptr<OcctShape> apply_test_placement_for_test(
 
 // --- Export ---
 
-/// Export shape to STEP format, returns the STEP file content as a string.
-rust::String export_step(const OcctShape& shape);
+/// Export shape to STEP format using the kernel-neutral `schema`
+/// (`"AP203"` / `"AP214"` / `"AP242"`). Maps it to the OCCT
+/// `write.step.schema` token (AP203→`AP203`, AP214→`AP214DIS`,
+/// AP242→`AP242DIS`), which is set explicitly on every call so the
+/// process-global static cannot leak a schema between mutex-serialized
+/// exports. For AP242, falls back to AP214DIS if the linked build rejects
+/// the token, reporting it via `ExportStepResult::ap242_fell_back`.
+ExportStepResult export_step(const OcctShape& shape, rust::Str schema);
 
 // --- BRep serialization ---
 

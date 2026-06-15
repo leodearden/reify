@@ -18,8 +18,14 @@ use crate::{
     BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
 use tokio::sync::{mpsc, oneshot};
+
+/// Reply payload for [`OcctRequest::ExportWithOptions`]: the serialized export
+/// bytes paired with any non-fatal export warnings (e.g. an AP242→AP214
+/// fallback), or an [`ExportError`]. Factored into a `type` alias to keep the
+/// `oneshot::Sender<…>` field below under clippy's `type_complexity` threshold.
+type ExportWithOptionsReply = Result<(Vec<u8>, Vec<ExportWarning>), ExportError>;
 
 /// Requests sent from `OcctKernelHandle` to the dedicated kernel thread.
 enum OcctRequest {
@@ -39,6 +45,16 @@ enum OcctRequest {
         handle: GeometryHandleId,
         format: ExportFormat,
         reply: oneshot::Sender<Result<Vec<u8>, ExportError>>,
+    },
+    /// Like `Export`, but threads `ExportOptions` (the STEP schema) and
+    /// replies with both the serialized bytes and any non-fatal export
+    /// warnings (e.g. an AP242→AP214 fallback). The plain `Export` variant is
+    /// left untouched so the heavily-used CLI/GUI export path is unchanged.
+    ExportWithOptions {
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: ExportOptions,
+        reply: oneshot::Sender<ExportWithOptionsReply>,
     },
     Tessellate {
         handle: GeometryHandleId,
@@ -264,6 +280,40 @@ impl OcctKernelHandle {
         writer
             .write_all(&bytes)
             .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
+    /// Export a geometry handle honoring [`ExportOptions`] (the STEP schema),
+    /// writing bytes to `writer` and returning any non-fatal export warnings.
+    ///
+    /// Routes through the new `ExportWithOptions` actor request so the schema
+    /// selection (and any AP242→AP214 fallback) happens on the kernel thread
+    /// alongside the FFI. The kernel serializes to a `Vec<u8>` internally and
+    /// replies with `(bytes, warnings)`; the handle writes the bytes to the
+    /// caller's writer and returns the warnings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        let (bytes, warnings) = self.send_request_blocking(
+            |reply| OcctRequest::ExportWithOptions {
+                handle,
+                format,
+                options: *options,
+                reply,
+            },
+            || ExportError::IoError("kernel thread died".into()),
+        )??;
+        writer
+            .write_all(&bytes)
+            .map_err(|e| ExportError::IoError(e.to_string()))?;
+        Ok(warnings)
     }
 
     /// Run a query against a geometry handle on the kernel thread.
@@ -1013,6 +1063,18 @@ impl OcctKernelHandle {
                         let result = kernel.export(handle, format, &mut buf).map(|()| buf);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::ExportWithOptions {
+                        handle,
+                        format,
+                        options,
+                        reply,
+                    } => {
+                        let mut buf = Vec::new();
+                        let result = kernel
+                            .export_with_options(handle, format, &options, &mut buf)
+                            .map(|warnings| (buf, warnings));
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::Tessellate {
                         handle,
                         tolerance,
@@ -1582,6 +1644,19 @@ impl GeometryKernel for OcctKernelHandle {
         OcctKernelHandle::export(self, handle, format, writer)
     }
 
+    /// Override the trait default with a real channel-routed implementation
+    /// so OCCT actually selects the STEP schema. Delegates to the inherent
+    /// `export_with_options` (which only needs `&self`).
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        OcctKernelHandle::export_with_options(self, handle, format, options, writer)
+    }
+
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
         OcctKernelHandle::tessellate(self, handle, tolerance)
     }
@@ -1811,6 +1886,127 @@ mod tests {
         assert!(
             content.contains("ISO-10303-21"),
             "STEP export should contain ISO-10303-21 header"
+        );
+    }
+
+    /// Real-OCCT schema selection through the new `export_with_options`.
+    ///
+    /// Asserts the declared STEP schema reaches the OCCT writer and is
+    /// observable in the written FILE_SCHEMA. The assertions use the actual
+    /// OCCT EXPRESS schema identifiers (verified against linked OCCT 7.9.3):
+    /// AP203 → `CONFIG_CONTROL_DESIGN`, AP214 → `AUTOMOTIVE_DESIGN`,
+    /// AP242 → a name containing `AP242`. The literal token "AP203" is never
+    /// written by OCCT, so we assert the EXPRESS schema name instead.
+    ///
+    /// All three exports run in one process, so they share the process-global
+    /// `write.step.schema` static — this is exactly the case the per-call
+    /// `Interface_Static::SetCVal` must make deterministic.
+    #[test]
+    fn export_with_options_selects_step_schema() {
+        use reify_ir::{ExportFormat, ExportOptions, StepSchema};
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+
+        // (a) AP203 → CONFIG_CONTROL_DESIGN, never AUTOMOTIVE_DESIGN.
+        let mut buf_203 = Vec::new();
+        let w_203 = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions {
+                    step_schema: StepSchema::Ap203,
+                },
+                &mut buf_203,
+            )
+            .unwrap();
+        let content_203 = String::from_utf8(buf_203).unwrap();
+        assert!(
+            content_203.contains("CONFIG_CONTROL_DESIGN"),
+            "AP203 export must write the CONFIG_CONTROL_DESIGN EXPRESS schema"
+        );
+        assert!(
+            !content_203.contains("AUTOMOTIVE_DESIGN"),
+            "AP203 export must NOT write the AP214 AUTOMOTIVE_DESIGN schema"
+        );
+        assert!(w_203.is_empty(), "AP203 export raises no warnings");
+
+        // (b) default (AP214) → AUTOMOTIVE_DESIGN.
+        let mut buf_def = Vec::new();
+        let w_def = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions::default(),
+                &mut buf_def,
+            )
+            .unwrap();
+        let content_def = String::from_utf8(buf_def).unwrap();
+        assert!(
+            content_def.contains("AUTOMOTIVE_DESIGN"),
+            "default (AP214) export must write the AUTOMOTIVE_DESIGN schema"
+        );
+        assert!(w_def.is_empty());
+
+        // (c) The schema really changed: AP203 and AP214 bytes differ.
+        assert_ne!(
+            content_203, content_def,
+            "AP203 and AP214 exports must differ in their FILE_SCHEMA"
+        );
+
+        // (d) AP242 → schema name contains "AP242". OCCT 7.9.3 supports
+        // AP242DIS, so the happy path succeeds with no fallback warning.
+        let mut buf_242 = Vec::new();
+        let w_242 = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions {
+                    step_schema: StepSchema::Ap242,
+                },
+                &mut buf_242,
+            )
+            .unwrap();
+        let content_242 = String::from_utf8(buf_242).unwrap();
+        assert!(
+            content_242.contains("AP242"),
+            "AP242 export must write a schema name containing AP242"
+        );
+        assert!(
+            w_242.is_empty(),
+            "OCCT 7.9.3 supports AP242DIS — AP242 happy path raises no warning"
+        );
+    }
+
+    /// The plain `export(Step)` path is unchanged by the options plumbing: it
+    /// still writes the ISO-10303-21 header and defaults to the AP214
+    /// AUTOMOTIVE_DESIGN schema (the per-call SetCVal on the default path
+    /// keeps this deterministic even after a prior AP203 export in-process).
+    #[test]
+    fn plain_export_step_still_writes_default_ap214_schema() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mut buf = Vec::new();
+        handle
+            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(
+            content.contains("ISO-10303-21"),
+            "plain export must still write the ISO-10303-21 header"
+        );
+        assert!(
+            content.contains("AUTOMOTIVE_DESIGN"),
+            "plain export must default to the AP214 AUTOMOTIVE_DESIGN schema"
         );
     }
 

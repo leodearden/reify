@@ -3069,32 +3069,62 @@ impl Engine {
                     .as_deref()
                     .and_then(|name| self.geometry_kernels.get(name))
                 {
-                    Some(kernel) => kernel.export(handle_id, export_format, &mut bytes),
+                    Some(kernel) => kernel.export_with_options(
+                        handle_id,
+                        export_format,
+                        &reify_ir::ExportOptions {
+                            step_schema: spec.step_schema,
+                        },
+                        &mut bytes,
+                    ),
                     None => Err(reify_ir::ExportError::FormatError(
                         "no default geometry kernel registered".to_string(),
                     )),
                 };
-                if let Err(e) = export_result {
-                    artifacts.push(crate::ExportArtifact {
-                        path: path.clone(),
-                        format: export_format,
-                        bytes: Vec::new(),
-                        diagnostics: vec![Diagnostic::error(format!(
-                            "Output occurrence `{}.{}` failed to export to {}: {}",
-                            template.name,
-                            sub.name,
-                            path.display(),
-                            e
-                        ))],
-                    });
-                    continue;
-                }
+                let warnings = match export_result {
+                    Ok(warnings) => warnings,
+                    Err(e) => {
+                        artifacts.push(crate::ExportArtifact {
+                            path: path.clone(),
+                            format: export_format,
+                            bytes: Vec::new(),
+                            diagnostics: vec![Diagnostic::error(format!(
+                                "Output occurrence `{}.{}` failed to export to {}: {}",
+                                template.name,
+                                sub.name,
+                                path.display(),
+                                e
+                            ))],
+                        });
+                        continue;
+                    }
+                };
+
+                // Translate each kernel-neutral ExportWarning into a user-facing
+                // warning diagnostic (honest AP242→AP214 degradation, PRD §4.4).
+                // The bytes were written successfully — a fallback is a warning,
+                // not a failure — so they survive on the artifact alongside the
+                // diagnostic.
+                let diagnostics = warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        reify_ir::ExportWarning::StepAp242Fallback => {
+                            Diagnostic::warning(format!(
+                                "{}: STEPOutput occurrence `{}.{}` requested AP242 but the \
+                                 linked OCCT rejected it; wrote AP214 instead",
+                                crate::W_STEP_AP242_FALLBACK,
+                                template.name,
+                                sub.name
+                            ))
+                        }
+                    })
+                    .collect();
 
                 artifacts.push(crate::ExportArtifact {
                     path,
                     format: export_format,
                     bytes,
-                    diagnostics: Vec::new(),
+                    diagnostics,
                 });
             }
         }
@@ -7080,6 +7110,74 @@ mod tests {
         exported: std::sync::Arc<
             std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
         >,
+        /// Per-call `(handle, format, step_schema)` recorded by
+        /// `export_with_options` — proves the DSL `version` reached the kernel
+        /// as a [`reify_ir::StepSchema`].
+        exported_options: std::sync::Arc<
+            std::sync::Mutex<
+                Vec<(
+                    reify_ir::GeometryHandleId,
+                    reify_ir::ExportFormat,
+                    reify_ir::StepSchema,
+                )>,
+            >,
+        >,
+        /// Warnings `export_with_options` returns. The live OCCT AP242 fallback
+        /// can't be triggered in-build (this build supports AP242DIS), so the
+        /// `W_STEP_AP242_FALLBACK` diagnostic wiring is exercised by injecting
+        /// [`reify_ir::ExportWarning::StepAp242Fallback`] here. Default empty.
+        warnings_to_return: Vec<reify_ir::ExportWarning>,
+    }
+
+    impl ExportRecordingKernel {
+        /// Construct a recording kernel sharing the caller's `executed` and
+        /// `exported` capture buffers, with a fresh empty `exported_options`
+        /// log and no injected warnings. New fields acquire their defaults
+        /// here, so adding one no longer ripples across every call site.
+        ///
+        /// Read the per-call `(handle, format, step_schema)` log back via
+        /// [`recorded_options`](Self::recorded_options); inject fallback
+        /// warnings via [`with_warnings`](Self::with_warnings).
+        fn new(
+            executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
+            exported: std::sync::Arc<
+                std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+            >,
+        ) -> Self {
+            Self {
+                inner: reify_test_support::mocks::MockGeometryKernel::new(),
+                executed,
+                exported,
+                exported_options: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                warnings_to_return: Vec::new(),
+            }
+        }
+
+        /// A clone of the shared `exported_options` handle — the per-call
+        /// `(handle, format, step_schema)` records `export_with_options`
+        /// captured. Grab it before the kernel is moved into the `Engine`.
+        fn recorded_options(
+            &self,
+        ) -> std::sync::Arc<
+            std::sync::Mutex<
+                Vec<(
+                    reify_ir::GeometryHandleId,
+                    reify_ir::ExportFormat,
+                    reify_ir::StepSchema,
+                )>,
+            >,
+        > {
+            std::sync::Arc::clone(&self.exported_options)
+        }
+
+        /// Builder: seed the warnings `export_with_options` returns. The live
+        /// OCCT AP242 fallback can't be triggered in-build (this build supports
+        /// AP242DIS), so the `W_STEP_AP242_FALLBACK` diagnostic wiring is
+        /// exercised by injecting [`reify_ir::ExportWarning::StepAp242Fallback`].
+        fn with_warnings(mut self, warnings: Vec<reify_ir::ExportWarning>) -> Self {
+            self.warnings_to_return = warnings;
+            self
+        }
     }
 
     impl reify_ir::GeometryKernel for ExportRecordingKernel {
@@ -7109,6 +7207,26 @@ mod tests {
         ) -> Result<(), reify_ir::ExportError> {
             self.exported.lock().unwrap().push((handle, format));
             self.inner.export(handle, format, writer)
+        }
+
+        fn export_with_options(
+            &self,
+            handle: reify_ir::GeometryHandleId,
+            format: reify_ir::ExportFormat,
+            options: &reify_ir::ExportOptions,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<Vec<reify_ir::ExportWarning>, reify_ir::ExportError> {
+            // Record the schema the driver threaded from the DSL `version`, then
+            // delegate to `export` (which records (handle, format) for the prior
+            // δ tests and writes bytes via the inner mock). Return the
+            // configured warnings so the W_STEP_AP242_FALLBACK diagnostic wiring
+            // can be exercised without a live OCCT AP242 rejection.
+            self.exported_options
+                .lock()
+                .unwrap()
+                .push((handle, format, options.step_schema));
+            self.export(handle, format, writer)?;
+            Ok(self.warnings_to_return.clone())
         }
 
         fn tessellate(
@@ -7156,11 +7274,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
@@ -7212,6 +7326,141 @@ mod tests {
         );
     }
 
+    /// step-09 (ε / task 4288): the `build_outputs` driver threads each
+    /// STEPOutput occurrence's STEP schema — read off its `version` field by
+    /// `extract_output_export_spec` — into the kernel via `export_with_options`,
+    /// proving the DSL `version`, not a hardcoded default, reaches the
+    /// serializer.
+    ///
+    /// `version: STEPVersion.AP203` → the recording kernel observes exactly one
+    /// `export_with_options` call whose recorded `step_schema == Ap203`; a
+    /// STEPOutput with no `version` field defaults to `Ap214` (the DSL default
+    /// `version : STEPVersion = STEPVersion.AP214`).
+    #[test]
+    fn build_outputs_threads_step_version_into_export_options() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        // Run build_outputs on `src` and return the per-call `step_schema`s the
+        // kernel recorded via `export_with_options`, in call order.
+        let run = |src: &str| -> Vec<reify_ir::StepSchema> {
+            let module = parse_and_compile_with_stdlib(src);
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<
+                Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+            > = Arc::new(Mutex::new(Vec::new()));
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+            let exported_options = kernel.recorded_options();
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+            recorded.into_iter().map(|(_, _, schema)| schema).collect()
+        };
+
+        // version: STEPVersion.AP203 → exactly one export_with_options call, Ap203.
+        let ap203 = run(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub s = STEPOutput(subject: part, version: STEPVersion.AP203, path: "p.step")
+}"#,
+        );
+        assert_eq!(
+            ap203,
+            vec![reify_ir::StepSchema::Ap203],
+            "the DSL `version: STEPVersion.AP203` must thread Ap203 into export_with_options"
+        );
+
+        // No `version` field → DSL default Ap214.
+        let default = run(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub d = STEPOutput(subject: part, path: "def.step")
+}"#,
+        );
+        assert_eq!(
+            default,
+            vec![reify_ir::StepSchema::Ap214],
+            "a STEPOutput with no `version` defaults to Ap214 (the DSL default)"
+        );
+    }
+
+    /// step-11 (ε / task 4288): when the kernel reports an AP242→AP214
+    /// fallback (`ExportWarning::StepAp242Fallback`), the driver surfaces it as
+    /// exactly one warning-severity diagnostic carrying the
+    /// `W_STEP_AP242_FALLBACK` code and naming the occurrence — *without*
+    /// dropping the successfully written bytes (a fallback is honest
+    /// degradation, not a failure). The live OCCT AP242 fallback cannot be
+    /// triggered in this build (it supports AP242DIS), so the warning is
+    /// injected via the recording kernel's `warnings_to_return`.
+    #[test]
+    fn build_outputs_surfaces_ap242_fallback_warning() {
+        use reify_core::Severity;
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub s = STEPOutput(subject: part, version: STEPVersion.AP242, path: "x.step")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        // Inject the AP242→AP214 fallback the in-build OCCT can't produce.
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
+            .with_warnings(vec![reify_ir::ExportWarning::StepAp242Fallback]);
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let artifacts = engine.build_outputs(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "exactly one ExportArtifact for the single STEPOutput occurrence, got {}",
+            artifacts.len()
+        );
+        let art = &artifacts[0];
+        assert!(
+            !art.bytes.is_empty(),
+            "a fallback is a WARNING, not a failure: the written bytes must survive"
+        );
+
+        let fallback_diags: Vec<&reify_core::Diagnostic> = art
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("W_STEP_AP242_FALLBACK"))
+            .collect();
+        assert_eq!(
+            fallback_diags.len(),
+            1,
+            "exactly one W_STEP_AP242_FALLBACK diagnostic for the injected fallback, got {}",
+            fallback_diags.len()
+        );
+        assert_eq!(
+            fallback_diags[0].severity,
+            Severity::Warning,
+            "the AP242 fallback must be warning-severity (honest degradation, not an error)"
+        );
+        assert!(
+            fallback_diags[0].message.contains("D.s"),
+            "the diagnostic must name the occurrence (`D.s`); message was: {}",
+            fallback_diags[0].message
+        );
+    }
+
     /// step-09 (RED): `build_outputs` emits one [`crate::ExportArtifact`] per
     /// recognized `Output` occurrence, in declaration order (B6).
     ///
@@ -7244,11 +7493,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
@@ -7331,11 +7576,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),

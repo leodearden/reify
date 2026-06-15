@@ -27,6 +27,17 @@ pub mod ffi {
         normals: Vec<f32>,
     }
 
+    /// STEP export result returned across FFI.
+    ///
+    /// `content` is the STEP file text. `ap242_fell_back` is `true` iff the
+    /// caller requested the `AP242` schema but the linked OCCT build rejected
+    /// it, so the writer degraded to AP214 (honest degradation). For the
+    /// AP203 and AP214 schemas it is always `false`.
+    struct ExportStepResult {
+        content: String,
+        ap242_fell_back: bool,
+    }
+
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
     ///
     /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
@@ -1135,7 +1146,12 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Export ---
-        fn export_step(shape: &OcctShape) -> Result<String>;
+        /// Export `shape` to STEP using the given kernel-neutral `schema`
+        /// (`"AP203"` / `"AP214"` / `"AP242"`, from `StepSchema::as_str()`).
+        /// The C++ side maps it to the OCCT `write.step.schema` token and,
+        /// for AP242, falls back to AP214 if the build rejects it (signalled
+        /// via `ExportStepResult::ap242_fell_back`).
+        fn export_step(shape: &OcctShape, schema: &str) -> Result<ExportStepResult>;
 
         // --- BRep serialization ---
         fn serialize_brep(shape: &OcctShape) -> Result<String>;

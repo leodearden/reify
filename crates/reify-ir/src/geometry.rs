@@ -1706,6 +1706,78 @@ pub enum ExportFormat {
     ThreeMF,
 }
 
+/// Kernel-neutral STEP application protocol (schema) for STEP export.
+///
+/// Mirrors the DSL `STEPVersion` enum (`stdlib/io.ri`): a declared
+/// `STEPOutput.version` selects which STEP schema the writer emits. This
+/// type is kernel-agnostic — `as_str()` yields the DSL variant names
+/// (`"AP203"` / `"AP214"` / `"AP242"`), NOT any kernel-private token. The
+/// OCCT-specific `write.step.schema` token mapping (AP214→`AP214DIS`,
+/// AP242→`AP242DIS`) and the honest AP242→AP214 degradation live next to
+/// the kernel that owns them, in `occt_wrapper.cpp` — never here, so the
+/// IR crate stays free of OCCT implementation details.
+///
+/// The default is [`StepSchema::Ap214`], matching `STEPOutput.version`'s
+/// DSL default, so an absent `version` writes the canonical AP214
+/// `AUTOMOTIVE_DESIGN` schema. The OCCT writer pins this to the `AP214DIS`
+/// token explicitly on every call — including the default path, for
+/// per-call determinism (see `occt_wrapper.cpp`) — rather than inheriting
+/// OCCT's compiled-in default (`AP214CD`, the first-registered enum value).
+/// The FILE_SCHEMA *name* (`AUTOMOTIVE_DESIGN`) is unchanged, but its
+/// version identifier is now deterministic rather than build-dependent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum StepSchema {
+    /// AP203 — Configuration Controlled 3D Design (OCCT EXPRESS schema
+    /// `CONFIG_CONTROL_DESIGN`).
+    Ap203,
+    /// AP214 — Automotive Design (OCCT EXPRESS schema `AUTOMOTIVE_DESIGN`).
+    /// The default schema.
+    #[default]
+    Ap214,
+    /// AP242 — Managed Model-Based 3D Engineering. Best-effort: the OCCT
+    /// writer requests it and, if the linked build rejects it, degrades to
+    /// AP214 while raising [`ExportWarning::StepAp242Fallback`].
+    Ap242,
+}
+
+impl StepSchema {
+    /// The kernel-neutral string for this schema — the DSL `STEPVersion`
+    /// variant name (`"AP203"` / `"AP214"` / `"AP242"`). This is NOT the
+    /// OCCT `write.step.schema` token; the kernel maps it to its own token.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StepSchema::Ap203 => "AP203",
+            StepSchema::Ap214 => "AP214",
+            StepSchema::Ap242 => "AP242",
+        }
+    }
+}
+
+/// Per-export options threaded into [`GeometryKernel::export_with_options`].
+///
+/// Currently carries only the STEP schema; other formats ignore it. Kept as
+/// a struct (rather than passing `StepSchema` directly) so future per-export
+/// knobs can be added without churning the trait signature again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExportOptions {
+    /// The STEP application protocol to write. Ignored by non-STEP exports.
+    pub step_schema: StepSchema,
+}
+
+/// A kernel-neutral, non-fatal warning raised during export.
+///
+/// The kernel layer (reify-ir / reify-kernel-occt) raises these; the
+/// reify-eval driver owns translating them into user-facing diagnostics
+/// (mirroring how `I_DISPLAY_OUTPUT_DEFERRED` is composed in the driver,
+/// not the kernel). Keeping the warning neutral keeps the kernel free of
+/// any dependency on reify-eval's `Diagnostic` type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportWarning {
+    /// AP242 was requested but the linked kernel rejected it; the export
+    /// degraded to AP214 (honest degradation, not a silent lie).
+    StepAp242Fallback,
+}
+
 /// Tessellated mesh for visualization.
 #[derive(Debug, Clone)]
 pub struct Mesh {
@@ -2553,6 +2625,30 @@ pub trait GeometryKernel: Send + Sync {
         format: ExportFormat,
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError>;
+
+    /// Export a handle, honoring per-export [`ExportOptions`] (currently the
+    /// STEP schema), and return any non-fatal [`ExportWarning`]s raised.
+    ///
+    /// The **default** implementation ignores `options` and delegates to
+    /// [`export`](GeometryKernel::export), returning an empty warning vec.
+    /// This keeps every non-STEP and non-OCCT kernel (Manifold, OpenVDB,
+    /// the GUI kernel, mocks and stubs) compiling unchanged — only the OCCT
+    /// kernel, which can actually select a STEP schema, overrides it.
+    ///
+    /// The schema in `options.step_schema` is kernel-neutral
+    /// ([`StepSchema`]); the OCCT override maps it to the OCCT-private
+    /// `write.step.schema` token and is the only path that can raise
+    /// [`ExportWarning::StepAp242Fallback`].
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        let _ = options;
+        self.export(handle, format, writer).map(|()| Vec::new())
+    }
 
     /// Tessellate a handle into a mesh.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
@@ -7859,5 +7955,117 @@ mod tests {
             "MaxDeviation",
             "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
         );
+    }
+
+    // ── Export-options surface (task ε: STEPVersion → schema selection) ──────
+
+    /// Pins the kernel-neutral export-options surface introduced for STEP
+    /// schema selection. `StepSchema` is a kernel-agnostic enum whose
+    /// `as_str()` yields the DSL `STEPVersion` variant names ("AP203" /
+    /// "AP214" / "AP242"); the OCCT-private token mapping (AP214→AP214DIS,
+    /// AP242→AP242DIS) lives in `occt_wrapper.cpp`, NOT here. The default
+    /// schema is AP214, matching the DSL `STEPOutput.version` default.
+    #[test]
+    fn step_schema_default_and_as_str() {
+        // Default schema is AP214 (mirrors STEPOutput.version's DSL default).
+        assert_eq!(StepSchema::default(), StepSchema::Ap214);
+
+        // as_str() yields the DSL variant names (kernel-neutral), NOT the
+        // OCCT-private write.step.schema tokens.
+        assert_eq!(StepSchema::Ap203.as_str(), "AP203");
+        assert_eq!(StepSchema::Ap214.as_str(), "AP214");
+        assert_eq!(StepSchema::Ap242.as_str(), "AP242");
+    }
+
+    /// `ExportOptions` carries per-export knobs; its `Default` selects the
+    /// default STEP schema (AP214), so an absent DSL `version` round-trips to
+    /// the same schema OCCT would write today.
+    #[test]
+    fn export_options_default_is_ap214() {
+        let opts = ExportOptions::default();
+        assert_eq!(opts.step_schema, StepSchema::Ap214);
+    }
+
+    /// `ExportWarning` is the kernel-neutral signal the OCCT writer raises on
+    /// honest AP242→AP214 degradation; the reify-eval driver translates it
+    /// into a user-facing diagnostic. It must be constructible and `Eq`.
+    #[test]
+    fn export_warning_is_constructible_and_eq() {
+        let w = ExportWarning::StepAp242Fallback;
+        assert_eq!(w, ExportWarning::StepAp242Fallback);
+    }
+
+    /// A minimal kernel that only implements the required `export`: it writes
+    /// a deterministic marker so the default `export_with_options` delegation
+    /// can be proven byte-for-byte. It does NOT override
+    /// `export_with_options`, so it exercises the trait DEFAULT.
+    struct EchoExportKernel;
+
+    impl GeometryKernel for EchoExportKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(
+                "not used by this test".into(),
+            ))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            format: ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            // Deterministic, input-dependent bytes so delegation is provable.
+            write!(writer, "EXPORT:{:?}:{}", format, handle.0)
+                .map_err(|e| ExportError::IoError(e.to_string()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(
+                "not used by this test".into(),
+            ))
+        }
+    }
+
+    /// The trait DEFAULT `export_with_options` must delegate to `export`:
+    /// it writes exactly the bytes a plain `export` writes and returns an
+    /// empty `Vec<ExportWarning>` (no kernel knows about options unless it
+    /// overrides the method). This is what keeps every non-OCCT kernel
+    /// (manifold, openvdb, mocks, GUI) compiling unchanged.
+    #[test]
+    fn default_export_with_options_delegates_to_export() {
+        let kernel = EchoExportKernel;
+        let handle = GeometryHandleId(7);
+        let format = ExportFormat::Step;
+
+        // Reference bytes from the plain `export`.
+        let mut expected = Vec::new();
+        kernel.export(handle, format, &mut expected).unwrap();
+
+        // The default `export_with_options` must produce the same bytes and
+        // no warnings, ignoring the supplied options.
+        let mut actual = Vec::new();
+        let warnings = kernel
+            .export_with_options(handle, format, &ExportOptions::default(), &mut actual)
+            .unwrap();
+
+        assert_eq!(actual, expected, "default delegation must write identical bytes");
+        assert!(warnings.is_empty(), "default delegation must return no warnings");
+
+        // A non-default schema is likewise ignored by the default impl.
+        let mut actual_ap203 = Vec::new();
+        let warnings_ap203 = kernel
+            .export_with_options(
+                handle,
+                format,
+                &ExportOptions { step_schema: StepSchema::Ap203 },
+                &mut actual_ap203,
+            )
+            .unwrap();
+        assert_eq!(
+            actual_ap203, expected,
+            "default impl ignores options entirely — bytes are schema-independent"
+        );
+        assert!(warnings_ap203.is_empty());
     }
 }

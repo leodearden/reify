@@ -1016,6 +1016,19 @@ pub struct BuildResult {
 /// touch the out-of-scope `reify-core` crate).
 pub const I_DISPLAY_OUTPUT_DEFERRED: &str = "I_DISPLAY_OUTPUT_DEFERRED";
 
+/// Diagnostic code for the honest AP242→AP214 STEP-schema fallback warning.
+///
+/// A `STEPOutput` occurrence may request `version : STEPVersion = STEPVersion.AP242`
+/// (io-export ε). The STEP writer is best-effort: if the linked OCCT rejects the
+/// AP242 schema it falls back to AP214 and reports it
+/// ([`reify_ir::ExportWarning::StepAp242Fallback`]). `build_outputs` translates
+/// that kernel-neutral warning into a warning-severity [`Diagnostic`] carrying
+/// this code so the user learns the written schema differs from the requested
+/// one — honest degradation, never a silent lie (PRD §4.4). Like
+/// [`I_DISPLAY_OUTPUT_DEFERRED`], the code is embedded in the diagnostic message
+/// so callers can match on it without a typed `reify-core` variant.
+pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
+
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).
 ///
