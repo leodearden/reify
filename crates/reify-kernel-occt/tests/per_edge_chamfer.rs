@@ -128,3 +128,171 @@ fn chamfer_edges_with_history_curated_subset_volume_ordering_and_seam() {
         history.face_modified.len()
     );
 }
+
+/// Asymmetric chamfer setbacks: 1 mm on one adjacent face, 2 mm on the other.
+const D1_M: f64 = 1.0e-3;
+const D2_M: f64 = 2.0e-3;
+
+/// Parse the JSON `Value::String` produced by `BoundingBox` queries into
+/// `(xmin, ymin, zmin, xmax, ymax, zmax)` (mirrors `topology_extract_integration.rs`).
+fn parse_bbox(v: &Value) -> (f64, f64, f64, f64, f64, f64) {
+    let s = match v {
+        Value::String(s) => s,
+        other => panic!("expected Value::String, got {:?}", other),
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
+    let xmin = parsed["xmin"].as_f64().expect("missing xmin");
+    let ymin = parsed["ymin"].as_f64().expect("missing ymin");
+    let zmin = parsed["zmin"].as_f64().expect("missing zmin");
+    let xmax = parsed["xmax"].as_f64().expect("missing xmax");
+    let ymax = parsed["ymax"].as_f64().expect("missing ymax");
+    let zmax = parsed["zmax"].as_f64().expect("missing zmax");
+    (xmin, ymin, zmin, xmax, ymax, zmax)
+}
+
+/// Query a handle's `BoundingBox` and return the parsed extents tuple.
+fn bbox_of(kernel: &OcctKernelHandle, id: GeometryHandleId) -> (f64, f64, f64, f64, f64, f64) {
+    let v = kernel
+        .query(&GeometryQuery::BoundingBox(id))
+        .expect("BoundingBox query should succeed");
+    parse_bbox(&v)
+}
+
+/// Asymmetric per-edge chamfer applies DISTINCT setbacks (d1=1 mm, d2=2 mm) to
+/// the two faces adjacent to each selected edge — `MakeChamfer::Add(d1, d2, E, F)`
+/// puts d1 on the reference face F and d2 on the other. Chamfering the 4 TOP
+/// edges of the box and measuring the resulting face setbacks must reveal the
+/// unordered pair ≈ {1 mm, 2 mm}, proving the 1:2 asymmetry — robustly to which
+/// adjacent face the kernel picks as F (the measurement pool always contains a
+/// ~1 mm value and a ~2 mm value under any reference-face assignment).
+#[test]
+fn chamfer_asymmetric_distinct_setbacks() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+    let kernel = OcctKernelHandle::spawn();
+    let box_id = build_box(&kernel);
+
+    // Top z-plane of the box (orientation-agnostic; we only assume the kernel's
+    // width→x / height→y / depth→z axis mapping, pinned by topology tests).
+    let (_, _, _, _, _, box_zmax) = bbox_of(&kernel, box_id);
+
+    // Flatness / position tolerance: OCCT's BRepBndLib enlarges the bbox by the
+    // shape's stored tolerance (~1e-7), so 1e-6 m comfortably resolves a flat
+    // axis (extent ≈ 0) and a face sitting on the top z-plane.
+    let flat_tol = 1e-6;
+    let pos_tol = 1e-6;
+    // A genuine vertical side face spans most of the 15 mm depth (≈13–14 mm after
+    // its top edge is trimmed); a chamfer bevel face spans only ≈1–2 mm in z.
+    // 5 mm cleanly separates the two classes.
+    let side_min = 5.0e-3;
+
+    // Identify the 4 top edges: horizontal (z-extent ≈ 0) AND sitting on the
+    // top z-plane (distinguishes them from the 4 bottom edges).
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges should succeed on a solid box");
+    let mut top4: Vec<GeometryHandleId> = Vec::new();
+    for e in &edges {
+        let (_, _, zmin, _, _, zmax) = bbox_of(&kernel, *e);
+        if (zmax - zmin).abs() < flat_tol && (zmax - box_zmax).abs() < pos_tol {
+            top4.push(*e);
+        }
+    }
+    assert_eq!(
+        top4.len(),
+        4,
+        "a box has exactly 4 top edges, got {}",
+        top4.len()
+    );
+
+    // Asymmetric chamfer: d1 = 1 mm, d2 = 2 mm on the 4 top edges.
+    let (result_id, _history) = kernel
+        .chamfer_asymmetric_edges_with_history(box_id, D1_M, D2_M, &top4)
+        .expect("asymmetric chamfer should succeed on the 4 top edges of a 20×10×15 box");
+
+    // Measure setbacks from the result faces. Each measurement is one component
+    // of an edge's {d1, d2} split:
+    //   - the shrunken horizontal top face loses 2·(top setback) in x AND in y
+    //     (each of its 4 edges is chamfered) → /2 recovers the top setback;
+    //   - each vertical side face has ONLY its top edge chamfered, so its z-extent
+    //     shrinks by exactly that edge's side setback.
+    // Pooling top-derived and side-derived values guarantees a ~1 mm and a ~2 mm
+    // entry regardless of which face the kernel picks as the reference face.
+    let faces = kernel
+        .extract_faces(result_id)
+        .expect("extract_faces should succeed on the chamfered result");
+    let mut setbacks: Vec<f64> = Vec::new();
+    for f in &faces {
+        let (xmin, ymin, zmin, xmax, ymax, zmax) = bbox_of(&kernel, *f);
+        let dx = xmax - xmin;
+        let dy = ymax - ymin;
+        let dz = zmax - zmin;
+        if dz < flat_tol && (zmax - box_zmax).abs() < pos_tol {
+            // Shrunken top face (horizontal, on the top z-plane).
+            setbacks.push((BOX_W_M - dx) / 2.0);
+            setbacks.push((BOX_H_M - dy) / 2.0);
+        } else if dy < flat_tol && dz > side_min {
+            // y-normal vertical side face: top trimmed → z shrink = side setback.
+            setbacks.push(BOX_D_M - dz);
+        } else if dx < flat_tol && dz > side_min {
+            // x-normal vertical side face: z shrink = side setback.
+            setbacks.push(BOX_D_M - dz);
+        }
+    }
+    assert!(
+        setbacks.len() >= 2,
+        "expected at least two setback measurements (top + sides), got {setbacks:?}"
+    );
+
+    let min = setbacks.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = setbacks.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    // The two distinct setbacks must be ≈ {1 mm, 2 mm} (unordered) within 5%,
+    // and their ratio ≈ 2.0 — proving d1:d2 = 1:2 asymmetry. Exact-by-construction
+    // (OCCT MakeChamfer::Add(d1, d2, E, F)); 5% absorbs only measurement margin.
+    assert!(
+        (min - D1_M).abs() / D1_M < 0.05,
+        "minimum setback must be ≈1 mm: min={min}, setbacks={setbacks:?}"
+    );
+    assert!(
+        (max - D2_M).abs() / D2_M < 0.05,
+        "maximum setback must be ≈2 mm: max={max}, setbacks={setbacks:?}"
+    );
+    assert!(
+        ((max / min) - 2.0).abs() < 0.10,
+        "setback ratio must be ≈2.0: max/min={}, setbacks={setbacks:?}",
+        max / min
+    );
+}
+
+/// A zero (or non-positive) setback must be rejected on BOTH d1 and d2 — the
+/// same finite-positive contract the symmetric path enforces.
+#[test]
+fn chamfer_asymmetric_zero_distance_errors() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+    let kernel = OcctKernelHandle::spawn();
+    let box_id = build_box(&kernel);
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges should succeed on a solid box");
+    let one: Vec<GeometryHandleId> = edges.iter().take(1).copied().collect();
+
+    // d1 = 0 → Err.
+    assert!(
+        kernel
+            .chamfer_asymmetric_edges_with_history(box_id, 0.0, D2_M, &one)
+            .is_err(),
+        "asymmetric chamfer with d1=0 must error (distance must be finite positive)"
+    );
+    // d2 = 0 → Err.
+    assert!(
+        kernel
+            .chamfer_asymmetric_edges_with_history(box_id, D1_M, 0.0, &one)
+            .is_err(),
+        "asymmetric chamfer with d2=0 must error (distance must be finite positive)"
+    );
+}
