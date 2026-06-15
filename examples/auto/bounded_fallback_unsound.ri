@@ -56,8 +56,15 @@
 //     E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE via γ joint-recheck.
 
 // ── Bound trait ──────────────────────────────────────────────────────────────
+//
+// Declares `param thickness : Length` so the bound trait is the sound source
+// of the member's static type (task 4596).  The bound trait must declare any
+// field accessed via `l1.thickness + ...` on unresolved TypeParam receivers;
+// the candidate (LayerA) already satisfies this via conformance.
 
-trait Layer {}
+trait Layer {
+    param thickness : Length
+}
 
 // ── Single Layer candidate ────────────────────────────────────────────────────
 //
