@@ -29,3 +29,4 @@
 # scripts/land.sh    tests/infra/test_land_*.sh
 
 scripts/verify.sh    tests/infra/test_verify_*.sh
+scripts/prd-capability-check.py    tests/infra/test_prd_capability_check.sh
