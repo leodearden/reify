@@ -193,6 +193,98 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# BatchVerdict — output of synthesize_batch
+# ---------------------------------------------------------------------------
+
+# Verdict constants reused from α (imported via pcc above)
+_BLOCKING_VERDICTS = frozenset({"FAIL", "UNPROVABLE", "HARNESS_ERROR"})
+
+
+@dataclass
+class BatchVerdict:
+    """Result of synthesizing Prover + Adversary α result records.
+
+    Fields:
+        blocks    — True iff any FAIL / UNPROVABLE / HARNESS_ERROR was found
+        blocking  — list of capability strings for blocking probes
+        report    — human/machine-readable string embedding captured evidence
+                    (command, exit_code, stdout, stderr) per blocking probe
+    """
+    blocks: bool
+    blocking: List[str]
+    report: str
+
+
+# ---------------------------------------------------------------------------
+# synthesize_batch() — union Prover + Adversary → BatchVerdict
+# ---------------------------------------------------------------------------
+
+def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerdict:
+    """Synthesize Prover + Adversary α result records into a BatchVerdict.
+
+    Consumes α's --json result records (shape:
+        {capability, probe_kind, verdict, command, exit_code, stdout, stderr}
+    ) keyed by role ("prover" / "adversary").
+
+    Union semantics (PRD decision 5):
+        - Block on any FAIL / UNPROVABLE / HARNESS_ERROR from either role.
+        - Adversary can only ADD blocking signals; it never clears a Prover FAIL.
+        - An all-PASS Adversary does NOT clear a Prover FAIL.
+
+    Args:
+        role_results: dict with "prover" and "adversary" keys, each mapping to
+                      a list of α --json result records.  Both keys are optional
+                      (default to empty list).
+
+    Returns:
+        A BatchVerdict with blocks, blocking list, and a report string
+        embedding captured evidence for each blocking probe.
+    """
+    prover_records = role_results.get("prover", [])
+    adversary_records = role_results.get("adversary", [])
+
+    # Union all records; track role for the report.
+    all_records: List[Dict[str, Any]] = []
+    for rec in prover_records:
+        all_records.append(dict(rec, _role="prover"))
+    for rec in adversary_records:
+        all_records.append(dict(rec, _role="adversary"))
+
+    blocking: List[str] = []
+    report_parts: List[str] = []
+
+    for rec in all_records:
+        verdict = rec.get("verdict", "")
+        if verdict in _BLOCKING_VERDICTS:
+            capability = rec.get("capability", "<unknown>")
+            role = rec.get("_role", "unknown")
+            blocking.append(capability)
+
+            # Build evidence block for this blocking probe.
+            cmd_str = " ".join(rec.get("command", []))
+            exit_code = rec.get("exit_code", "?")
+            stdout = rec.get("stdout", "")
+            stderr = rec.get("stderr", "")
+
+            parts = [
+                f"[{verdict}] {capability} (role: {role})",
+                f"  command:   {cmd_str}",
+                f"  exit_code: {exit_code}",
+            ]
+            if stdout:
+                parts.append(f"  stdout:    {stdout}")
+            if stderr:
+                parts.append(f"  stderr:    {stderr}")
+
+            report_parts.append("\n".join(parts))
+
+    blocks = len(blocking) > 0
+    report = "\n\n".join(report_parts) if report_parts else ""
+
+    return BatchVerdict(blocks=blocks, blocking=blocking, report=report)
+
+
+# ---------------------------------------------------------------------------
 # main() stub — returns 64 (EX_USAGE) until fully implemented
 # ---------------------------------------------------------------------------
 
