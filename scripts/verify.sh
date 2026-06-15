@@ -1162,7 +1162,17 @@ build_plan() {
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
-            add "if test -f tests/infra/run_all.sh; then timeout --kill-after=60 20m bash tests/infra/run_all.sh; fi"
+            # task #4624: pre-build reify-audit OUTSIDE the 20m run_all.sh wall.
+            # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
+            # are fresh so the in-wall freshness guard finds them fresh and skips the cold
+            # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
+            # Timeout is 10m (distinct from the 20m wall) so the plan-shape test can assert
+            # the pre-step is not the walled run_all.sh line.
+            add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-audit; fi"
+            # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
+            # freshness guard to skip rather than cold-build if somehow the pre-step
+            # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
+            add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 timeout --kill-after=60 20m bash tests/infra/run_all.sh; fi"
         fi
         if [ "$DO_LINT" -eq 1 ]; then
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
