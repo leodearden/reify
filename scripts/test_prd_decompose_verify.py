@@ -1153,6 +1153,92 @@ console.log(RESULT_MARK + JSON.stringify(result));
         self.assertEqual(len(verdict["leaf_verdicts"]), 1,
                          f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}")
 
+    # ── step-16 RED / step-17 GREEN ───────────────────────────────────────────
+
+    def _honest_contract_source(self) -> str:
+        """Build a Node ESM harness that wraps the .mjs body via AsyncFunction
+        with NO source rewriting beyond stripping the ESM `export` keyword.
+
+        The Workflow harness documentation states the script body is wrapped in
+        an async function and the result taken from its top-level `return` (every
+        Workflow doc example ends `return {...}`). A bare IIFE expression at the
+        end of the body evaluates the inner IIFE but the OUTER AsyncFunction still
+        has no return statement — it resolves to undefined. This test catches that.
+        """
+        globals_setup = self._harness_source().split("// ── execute the .mjs")[0]
+        honest_section = (
+            "// ── honest contract: strip export only, NO return injection ────────────────\n"
+            "import { readFileSync } from \"node:fs\";\n"
+            "const WF_VERDICT_MARK = \"WF_VERDICT_JSON:\";\n"
+            "let src = readFileSync(MJS_PATH, \"utf8\");\n"
+            "// ONLY strip the ESM `export` keyword — do NOT inject any `return` statement.\n"
+            "src = src.replace(\"export const meta\", \"const meta\");\n"
+            "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;\n"
+            "const result = await new AsyncFunction(src)();\n"
+            "// null sentinel: undefined (missing top-level return) renders as null.\n"
+            "console.log(WF_VERDICT_MARK + JSON.stringify(result ?? null));\n"
+        )
+        return globals_setup + honest_section
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_mjs_returns_verdict_under_documented_contract(self):
+        """Workflow contract: .mjs body, wrapped as AsyncFunction with NO source
+        rewriting beyond stripping `export`, must RETURN the aggregate verdict.
+
+        The Workflow tool documentation states the harness wraps the script body in
+        an async function and takes the result from its top-level `return` — every
+        Workflow doc example ends `return {...}`. This test models that exactly: it
+        does NOT inject any `return` statement. If the .mjs body has no top-level
+        `return` (bare IIFE expression), AsyncFunction returns undefined and the
+        {blocks, leaf_verdicts, summary} verdict is silently dropped.
+
+        Against the CURRENT bare-IIFE .mjs, AsyncFunction over the export-stripped
+        body returns undefined (the `await (async function runWorkflow(){...})()`
+        is a bare expression statement in the outer function — no return), so this
+        test FAILS (RED). Passes after step-17 rewrites the .mjs with a top-level
+        `return`.
+        """
+        harness_src = self._honest_contract_source()
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+        )
+        MARK = "WF_VERDICT_JSON:"
+        marker_lines = [ln for ln in result.stdout.splitlines() if ln.startswith(MARK)]
+        self.assertTrue(
+            marker_lines,
+            f"no verdict marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
+        )
+        payload = marker_lines[-1][len(MARK):]
+        self.assertNotEqual(
+            payload, "null",
+            "workflow body returned null/undefined under documented Workflow contract: "
+            "bare IIFE expression doesn't return from the outer AsyncFunction, "
+            "silently dropping the {blocks, leaf_verdicts, summary} verdict",
+        )
+        verdict = json.loads(payload)
+        self.assertIsInstance(verdict, dict,
+                              f"aggregate verdict must be an object; got {verdict!r}")
+        for key in ("blocks", "leaf_verdicts", "summary"):
+            self.assertIn(key, verdict,
+                          f"aggregate verdict missing key '{key}'; keys: {sorted(verdict)}")
+        self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["leaf_verdicts"], list)
+        self.assertIsInstance(verdict["summary"], str)
+        self.assertFalse(verdict["blocks"],
+                         f"mock leaf must not block; verdict: {verdict!r}")
+        self.assertEqual(
+            len(verdict["leaf_verdicts"]), 1,
+            f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
