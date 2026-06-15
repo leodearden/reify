@@ -354,6 +354,10 @@ compile_gate() {
     local THRESHOLD="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
     local MAX_WAIT="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
     local POLL="${REIFY_COMPILE_GATE_POLL:-5}"
+    # Clamp POLL to a sane minimum: sleep 0 (or an invalid value) causes a
+    # tight busy-spin hammering date + _psi_read_avg10 for up to MAX_WAIT=300s.
+    # The 2>/dev/null silently handles non-integer values ([ -ge 1 ] exits non-0).
+    [ "$POLL" -ge 1 ] 2>/dev/null || POLL=1
     local PROC_PATH="${REIFY_COMPILE_GATE_PROC_PATH:-/proc/pressure/cpu}"
 
     # (1) Break-glass bypass — total bypass: no PSI read, no wait
