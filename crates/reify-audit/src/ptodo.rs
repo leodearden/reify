@@ -1452,4 +1452,102 @@ mod tests {
             "crates/reify-solver/src/lib.rs :: unknown-id :: #9999: // TODO(#9999): placeholder",
         );
     }
+
+    /// `phantom-tracking` taxonomy kind (structural lane, `line N:` prefix).
+    #[test]
+    fn fingerprint_phantom_tracking() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-core/src/primitives.rs".to_string(),
+            summary: "phantom-tracking: line 59: // work   tracked separately".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-core/src/primitives.rs :: phantom-tracking :: // work tracked separately",
+        );
+    }
+
+    /// `bare-ignore` taxonomy kind (structural lane, `line N:` prefix).
+    #[test]
+    fn fingerprint_bare_ignore() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/tests/connect_eval.rs".to_string(),
+            summary: "bare-ignore: line 12: #[ignore]".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/tests/connect_eval.rs :: bare-ignore :: #[ignore]",
+        );
+    }
+
+    /// Non-`line ` branch: a summary whose post-kind text does NOT carry a
+    /// `line <digits>: ` prefix is folded and kept verbatim (no stripping).
+    /// (Inverse `task-cites-deleted-path` findings take this branch; they are
+    /// excluded from the source-marker baseline by the convergence test's
+    /// swept-ext gate, but `fingerprint()` must still derive a stable string.)
+    #[test]
+    fn fingerprint_no_line_prefix() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/dispatcher.rs".to_string(),
+            summary: "orphaned: #4592   status=done: x".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/dispatcher.rs :: orphaned :: #4592 status=done: x",
+        );
+    }
+
+    /// Malformed (no-colon) summary: the best-effort branch returns
+    /// `"{path} :: {summary} :: "` with an EMPTY text field. This fingerprint is
+    /// intentionally ill-formed — `baseline_is_well_formed` (tests/ptodo_baseline.rs)
+    /// rejects an empty text field, so such a finding can never silently enter the
+    /// committed baseline. Pinning the contract here documents that boundary.
+    #[test]
+    fn fingerprint_no_colon_summary_yields_empty_text() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "weird summary with no colon".to_string(),
+            evidence: vec![],
+        };
+        let fp = fingerprint(&finding);
+        assert_eq!(fp, "crates/foo/bar.rs :: weird summary with no colon :: ");
+        // The text field (after the second ` :: `) is empty by construction.
+        assert!(fp.ends_with(" :: "), "no-colon branch must leave an empty text field");
+    }
+
+    // -------------------------------------------------------------------
+    // fold_whitespace() — internal whitespace normalization
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn fold_whitespace_folds_internal_runs() {
+        // Mixed internal whitespace (spaces, tab, newline) folds to single spaces.
+        assert_eq!(fold_whitespace("a\t\n  b   c"), "a b c");
+    }
+
+    #[test]
+    fn fold_whitespace_trims_leading_and_trailing() {
+        // Leading whitespace is dropped; trailing whitespace is popped.
+        assert_eq!(fold_whitespace("   abc"), "abc");
+        assert_eq!(fold_whitespace("abc   "), "abc");
+        assert_eq!(fold_whitespace("  abc  "), "abc");
+    }
+
+    #[test]
+    fn fold_whitespace_all_whitespace_and_empty() {
+        // All-whitespace input collapses to the empty string (no trailing space left).
+        assert_eq!(fold_whitespace("    "), "");
+        assert_eq!(fold_whitespace("\t\n "), "");
+        assert_eq!(fold_whitespace(""), "");
+    }
 }
