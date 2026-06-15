@@ -1816,6 +1816,41 @@ mod tests {
         );
     }
 
+    // ── value_type_kind_matches: Applied type (step-1 RED / task 4602 β) ────────
+    // RED until step-2 adds Type::Applied and updates the StructureInstance arm.
+    // Compile failure IS the RED signal.
+
+    /// β: Applied type with the SAME name as the StructureInstance → true
+    /// (phantom args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Coupling".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match Applied with same name (phantom args ignored)"
+        );
+    }
+
+    /// β: Applied type with a DIFFERENT name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Other".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match Applied with different name"
+        );
+    }
+
     // ── value_type_kind_matches: GeometryHandle arm (task 3604 / GHR-β) ────────
 
     /// GeometryHandle against Type::Geometry → true.

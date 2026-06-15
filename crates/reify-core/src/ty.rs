@@ -1990,4 +1990,188 @@ mod tests {
         // No nominal name (not a name-carrying variant).
         assert_eq!(Type::Relation.as_name(), None);
     }
+
+    // ── Applied / Projection tests (step-1 RED / task 4602 β) ────────────────
+    // Type::Applied { name, args } and Type::Projection { base, member } do NOT
+    // exist until step-2. These tests fail to COMPILE until then — compile
+    // failure IS the RED signal, consistent with every prior variant addition
+    // (Type::Tuple/task-3924, Type::AffineMap/task-3958, etc.).
+
+    #[test]
+    fn type_applied_display_single_arg() {
+        assert_eq!(
+            format!(
+                "{}",
+                Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())])
+            ),
+            "Coupling<Prismatic>"
+        );
+    }
+
+    #[test]
+    fn type_applied_display_multi_arg() {
+        assert_eq!(
+            format!(
+                "{}",
+                Type::applied(
+                    "Coupling",
+                    vec![
+                        Type::StructureRef("Prismatic".into()),
+                        Type::StructureRef("Revolute".into()),
+                    ]
+                )
+            ),
+            "Coupling<Prismatic, Revolute>"
+        );
+    }
+
+    #[test]
+    fn type_projection_display_structure_ref_base() {
+        assert_eq!(
+            format!(
+                "{}",
+                Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue")
+            ),
+            "Prismatic::MotionValue"
+        );
+    }
+
+    #[test]
+    fn type_projection_display_type_param_base() {
+        assert_eq!(
+            format!("{}", Type::projection(Type::TypeParam("P".into()), "MotionValue")),
+            "P::MotionValue"
+        );
+    }
+
+    #[test]
+    fn type_projection_display_applied_base() {
+        assert_eq!(
+            format!(
+                "{}",
+                Type::projection(
+                    Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]),
+                    "MotionValue"
+                )
+            ),
+            "Coupling<Prismatic>::MotionValue"
+        );
+    }
+
+    #[test]
+    fn type_applied_factory_eq_variant() {
+        let name = "Coupling".to_string();
+        let args = vec![Type::StructureRef("Prismatic".into())];
+        assert_eq!(
+            Type::applied("Coupling", args.clone()),
+            Type::Applied {
+                name: name.clone(),
+                args: args.clone(),
+            }
+        );
+    }
+
+    #[test]
+    fn type_projection_factory_eq_variant() {
+        let base = Type::StructureRef("Prismatic".into());
+        let member = "MotionValue".to_string();
+        assert_eq!(
+            Type::projection(base.clone(), "MotionValue"),
+            Type::Projection {
+                base: Box::new(base),
+                member,
+            }
+        );
+    }
+
+    #[test]
+    fn type_applied_eq_same() {
+        let a = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let b = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn type_applied_ne_different_args() {
+        let a = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let b = Type::applied("Coupling", vec![Type::StructureRef("Revolute".into())]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn type_applied_ne_different_name() {
+        let a = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let b = Type::applied("Other", vec![Type::StructureRef("Prismatic".into())]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn type_applied_ne_structure_ref() {
+        let a = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let b = Type::StructureRef("Coupling".into());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn type_projection_ne_different_member() {
+        let a = Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue");
+        let b = Type::projection(Type::StructureRef("Prismatic".into()), "Other");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn type_projection_ne_different_base() {
+        let a = Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue");
+        let b = Type::projection(Type::StructureRef("Revolute".into()), "MotionValue");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn type_applied_and_projection_hash_roundtrip() {
+        use std::collections::HashMap;
+
+        let applied = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let applied2 = Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]);
+        let projection =
+            Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue");
+        let projection2 =
+            Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue");
+
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(applied.clone(), "applied");
+        assert_eq!(map.get(&applied2), Some(&"applied"));
+
+        map.insert(projection.clone(), "projection");
+        assert_eq!(map.get(&projection2), Some(&"projection"));
+    }
+
+    #[test]
+    fn type_applied_not_numeric() {
+        assert!(
+            !Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]).is_numeric()
+        );
+    }
+
+    #[test]
+    fn type_projection_not_numeric() {
+        assert!(
+            !Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue").is_numeric()
+        );
+    }
+
+    #[test]
+    fn type_applied_as_name_none() {
+        assert_eq!(
+            Type::applied("Coupling", vec![Type::StructureRef("Prismatic".into())]).as_name(),
+            None
+        );
+    }
+
+    #[test]
+    fn type_projection_as_name_none() {
+        assert_eq!(
+            Type::projection(Type::StructureRef("Prismatic".into()), "MotionValue").as_name(),
+            None
+        );
+    }
 }

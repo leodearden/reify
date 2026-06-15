@@ -5309,6 +5309,38 @@ mod invariant_tests {
              keyed subs lower to SubComponentDecl)"
         );
     }
+
+    // ── Applied / Projection representability (step-1 RED / task 4602 β) ────
+    // RED until step-2 adds Type::Applied and Type::Projection variants.
+    // Compile failure IS the RED signal.
+
+    /// β: Type::Applied is representable — a phantom-args cell at runtime holds
+    /// a `Value::StructureInstance` identified by name, ignoring type args.
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_admits_applied() {
+        assert!(
+            super::is_representable_cell_type(&Type::Applied {
+                name: "Coupling".to_string(),
+                args: vec![Type::StructureRef("Prismatic".to_string())],
+            }),
+            "Type::Applied must be representable (phantom-args cell, β)"
+        );
+    }
+
+    /// β: Type::Projection is NOT representable — compile-time-only assoc-type
+    /// access; no runtime value form exists until the base is concrete (δ).
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_rejects_projection() {
+        assert!(
+            !super::is_representable_cell_type(&Type::Projection {
+                base: Box::new(Type::StructureRef("Prismatic".to_string())),
+                member: "MotionValue".to_string(),
+            }),
+            "Type::Projection must be non-representable (compile-time only, β)"
+        );
+    }
 }
 
 /// GHR-δ §5 lazy revalidation: the classification of a cell's stored `Value`

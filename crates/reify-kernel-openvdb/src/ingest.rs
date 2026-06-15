@@ -1032,5 +1032,20 @@ mod tests {
             }),
             "Matrix"
         );
+        // β (task 4602): Applied and Projection — new variants; RED until step-2.
+        assert_eq!(
+            format_type_repr(&Type::applied(
+                "Coupling",
+                vec![Type::StructureRef("Prismatic".into())]
+            )),
+            "Applied"
+        );
+        assert_eq!(
+            format_type_repr(&Type::projection(
+                Type::StructureRef("Prismatic".into()),
+                "MotionValue"
+            )),
+            "Projection"
+        );
     }
 }
