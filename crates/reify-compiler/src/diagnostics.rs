@@ -62,6 +62,32 @@ pub(crate) fn dup_member_key_error(
     .with_label(DiagnosticLabel::new(first_span, "first defined here"))
 }
 
+/// Build the `E_DUP_AMBIENT_DEFAULT` error for two `default <TypeName> = <expr>`
+/// declarations naming the same type within the same scope (file top-level or a
+/// single `purpose` body).
+///
+/// Two declarations for one type in one scope is an ambiguity (ambient-default-
+/// material task B, DD5 / PRD §7 invariant (ii)); the first declaration is
+/// retained as the table entry. Mirrors [`dup_member_key_error`]: two labels
+/// anchor the duplicate occurrence and the first occurrence. The
+/// `E_DUP_AMBIENT_DEFAULT` mnemonic is embedded in the message text; downstream
+/// tooling matches on [`DiagnosticCode::DuplicateAmbientDefault`].
+pub(crate) fn dup_ambient_default_error(
+    type_name: &str,
+    first_span: SourceSpan,
+    dup_span: SourceSpan,
+) -> Diagnostic {
+    Diagnostic::error(format!(
+        "E_DUP_AMBIENT_DEFAULT: duplicate ambient default for type '{type_name}' in this scope"
+    ))
+    .with_code(DiagnosticCode::DuplicateAmbientDefault)
+    .with_label(DiagnosticLabel::new(
+        dup_span,
+        "duplicate default declared here",
+    ))
+    .with_label(DiagnosticLabel::new(first_span, "first defined here"))
+}
+
 /// Detect duplicate author-assigned keys within one `Keyed<T>` sub-collection.
 ///
 /// Mirrors the duplicate-meta-key / duplicate-port-name pre-pass loop in
