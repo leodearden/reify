@@ -82,17 +82,21 @@ for r in results:
     if v not in allowed:
         errors.append(f"verdict {v!r} for {r['capability']!r} — expected FAIL or UNPROVABLE")
 
-# (d) per task-id presence+verdict checks for the three pure-language cases
-for tid in ("4577", "4437", "4497"):
+# (d) per task-id presence+verdict checks — all 7 expected corpus ids
+for tid in ("3979", "4575", "4577", "4437", "4358", "4497", "4375"):
     if not any(tid in r["capability"] and r["verdict"] in allowed for r in results):
         errors.append(f"no FAIL/UNPROVABLE result found for task-id {tid}")
+
+# (e) completeness: corpus must contain exactly 7 probes — no silent drops or extras
+if len(results) != 7:
+    errors.append(f"expected exactly 7 probe results, got {len(results)}")
 
 if errors:
     for e in errors:
         print(f"GATE_FAIL: {e}")
     sys.exit(1)
 
-print(f"GATE_PASS: {len(results)} probe(s), all FAIL/UNPROVABLE, task-ids 4577/4437/4497 present")
+print(f"GATE_PASS: {len(results)}/7 probe(s), all FAIL/UNPROVABLE, all expected task-ids present")
 PYEOF
 )
 
