@@ -72,12 +72,27 @@ scheduling. If it is dirty, commit/land your changes first, then re-run.
 USAGE
 }
 
-# is_clean ROOT — true if git status shows no uncommitted tracked changes
+# is_clean ROOT
+#   Returns 0 if the tree has no uncommitted tracked changes (clean).
+#   Returns 1 if there are uncommitted tracked changes (dirty).
+#   Returns 2 (and prints an error to stderr) if git itself fails —
+#   a bad path, non-repo, or any other git error.
+#
+#   A git failure MUST NOT be treated as "clean": a misconfigured
+#   ORCH_PROJECT_ROOT would otherwise silently pass the clean-guard and
+#   schedule/exec a restart against an unverified tree, potentially
+#   triggering the crash-loop outage this script exists to prevent.
+#
 # (--untracked-files=no mirrors the orchestrator's dirty-start-guard semantics)
 is_clean() {
     local root="$1"
-    local status_out
-    status_out="$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)"
+    local status_out git_rc=0
+    status_out="$(git -C "$root" status --porcelain --untracked-files=no 2>/dev/null)" || git_rc=$?
+    if [ "$git_rc" -ne 0 ]; then
+        echo "orchestrator-redeploy-restart.sh: ERROR — git status failed for project_root: $root" >&2
+        echo "  Ensure ORCH_PROJECT_ROOT exists and is a git repository." >&2
+        return 2
+    fi
     [ -z "$status_out" ]
 }
 
@@ -102,8 +117,15 @@ done
 
 # ── Schedule mode ─────────────────────────────────────────────────────────────
 if [ "$MODE" = "schedule" ]; then
-    # Preflight: check project_root is clean before scheduling anything
-    if ! is_clean "$ORCH_PROJECT_ROOT"; then
+    # Preflight: check project_root is clean before scheduling anything.
+    # Three outcomes: 0=clean (proceed), 1=dirty (refuse), 2=git error (abort).
+    clean_rc=0
+    is_clean "$ORCH_PROJECT_ROOT" || clean_rc=$?
+    if [ "$clean_rc" -eq 2 ]; then
+        # Error already printed by is_clean (git failed / path not a repo).
+        exit 1
+    fi
+    if [ "$clean_rc" -ne 0 ]; then
         echo "orchestrator-redeploy-restart.sh: ERROR — project_root is dirty." >&2
         echo "  Uncommitted tracked changes detected in: $ORCH_PROJECT_ROOT" >&2
         echo "  The orchestrator's dirty-start guard will refuse to restart with" >&2
@@ -126,15 +148,23 @@ if [ "$MODE" = "schedule" ]; then
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.service" 2>/dev/null || true
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.timer"   2>/dev/null || true
 
-    # Schedule the detached restart as a transient user unit
-    systemd-run \
-        --user \
-        --on-active="$ORCH_RESTART_DELAY" \
-        --unit="$ORCH_TRANSIENT_UNIT" \
-        --collect \
-        --setenv="ORCH_UNIT=$ORCH_UNIT" \
-        --setenv="ORCH_PROJECT_ROOT=$ORCH_PROJECT_ROOT" \
-        "$SELF" --exec-restart
+    # Schedule the detached restart as a transient user unit.
+    # Check systemd-run's exit code: if scheduling fails (e.g. a stale unit the
+    # pre-clean couldn't clear, or systemd --user unavailable), emit an error and
+    # exit non-zero rather than printing a false "scheduled" confirmation.
+    if ! systemd-run \
+            --user \
+            --on-active="$ORCH_RESTART_DELAY" \
+            --unit="$ORCH_TRANSIENT_UNIT" \
+            --collect \
+            --setenv="ORCH_UNIT=$ORCH_UNIT" \
+            --setenv="ORCH_PROJECT_ROOT=$ORCH_PROJECT_ROOT" \
+            "$SELF" --exec-restart; then
+        echo "orchestrator-redeploy-restart.sh: ERROR — systemd-run failed to schedule restart of '$ORCH_UNIT'." >&2
+        echo "  Check that systemd --user is available and the transient unit is not already active:" >&2
+        echo "    systemctl --user status '$ORCH_TRANSIENT_UNIT'" >&2
+        exit 1
+    fi
 
     echo "orchestrator-redeploy-restart.sh: scheduled restart of '$ORCH_UNIT'" >&2
     echo "  Transient unit: $ORCH_TRANSIENT_UNIT" >&2
@@ -145,8 +175,15 @@ fi
 
 # ── Exec mode (--exec-restart, run by the transient unit) ────────────────────
 if [ "$MODE" = "exec" ]; then
-    # Re-check clean at fire time (rare: main could have become dirty since schedule)
-    if ! is_clean "$ORCH_PROJECT_ROOT"; then
+    # Re-check clean at fire time (rare: main could have become dirty since schedule).
+    # Three outcomes: 0=clean (proceed), 1=dirty (leave running), 2=git error (abort).
+    clean_rc=0
+    is_clean "$ORCH_PROJECT_ROOT" || clean_rc=$?
+    if [ "$clean_rc" -eq 2 ]; then
+        # Error already printed by is_clean (git failed / path not a repo).
+        exit 1
+    fi
+    if [ "$clean_rc" -ne 0 ]; then
         echo "orchestrator-redeploy-restart.sh: WARNING — project_root is dirty at fire time." >&2
         echo "  project_root: $ORCH_PROJECT_ROOT" >&2
         echo "  Leaving orchestrator '$ORCH_UNIT' RUNNING to avoid a crash-loop." >&2
@@ -156,10 +193,20 @@ if [ "$MODE" = "exec" ]; then
     fi
 
     echo "orchestrator-redeploy-restart.sh: stopping '$ORCH_UNIT' ..." >&2
-    systemctl --user stop "$ORCH_UNIT"
+    # Stop failure (e.g. unit already stopped after a crash) is non-fatal: warn
+    # and continue so we still attempt the start.
+    if ! systemctl --user stop "$ORCH_UNIT"; then
+        echo "orchestrator-redeploy-restart.sh: WARNING — stop '$ORCH_UNIT' failed (unit may already be stopped)." >&2
+    fi
 
     echo "orchestrator-redeploy-restart.sh: starting '$ORCH_UNIT' ..." >&2
-    systemctl --user start "$ORCH_UNIT"
+    # Start failure is fatal: the orchestrator is now down.  Exit non-zero so the
+    # caller (operator or monitoring) knows the restart did not succeed.
+    if ! systemctl --user start "$ORCH_UNIT"; then
+        echo "orchestrator-redeploy-restart.sh: ERROR — start '$ORCH_UNIT' failed." >&2
+        echo "  The orchestrator may be down. Check: systemctl --user status '$ORCH_UNIT'" >&2
+        exit 1
+    fi
 
     echo "orchestrator-redeploy-restart.sh: '$ORCH_UNIT' restarted successfully." >&2
     exit 0

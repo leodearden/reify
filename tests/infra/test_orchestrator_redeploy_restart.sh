@@ -11,10 +11,13 @@
 #   A — CLI guard: --help, unknown flag
 #   B — SCHEDULE-MODE DIRTY GUARD: exits non-zero, no systemd-run call
 #   C — SCHEDULE-MODE HAPPY PATH: clean repo -> correct systemd-run invocation
+#       (env overrides ORCH_RESTART_DELAY, ORCH_UNIT, ORCH_TRANSIENT_UNIT
+#        are asserted in this block)
 #   D — EXEC-MODE CLEAN: stop THEN start, never restart
 #   E — EXEC-MODE DIRTY: neither stop nor start, exits 0
-#   F — ENV OVERRIDES flow through (ORCH_RESTART_DELAY, ORCH_UNIT,
-#       ORCH_TRANSIENT_UNIT)
+#   F — NON-GIT PROJECT ROOT: git error is NOT treated as clean; aborts non-zero
+#   G — SCHEDULE-MODE SYSTEMD-RUN FAILURE: exits non-zero, no false confirmation
+#   H — EXEC-MODE START FAILURE: stop attempted, exits non-zero, no false success
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -52,17 +55,26 @@ _TMPDIRS+=("$CALLS_FILE")
 
 cat > "$STUB_DIR/systemctl" << 'STUB_EOF'
 #!/usr/bin/env bash
-# Stub: record argv to ORCH_TEST_CALLS_FILE, always succeed
+# Stub: record argv to ORCH_TEST_CALLS_FILE.
+# To simulate a specific subcommand failing, set:
+#   ORCH_TEST_SYSTEMCTL_FAIL_SUBCMD=<subcommand>  (e.g. "start")
+# That subcommand returns 1; all others return 0.
 echo "systemctl $*" >> "${ORCH_TEST_CALLS_FILE:-/dev/null}"
+if [ -n "${ORCH_TEST_SYSTEMCTL_FAIL_SUBCMD:-}" ]; then
+    for _arg in "$@"; do
+        [ "$_arg" = "$ORCH_TEST_SYSTEMCTL_FAIL_SUBCMD" ] && exit 1
+    done
+fi
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/systemctl"
 
 cat > "$STUB_DIR/systemd-run" << 'STUB_EOF'
 #!/usr/bin/env bash
-# Stub: record argv to ORCH_TEST_CALLS_FILE, always succeed
+# Stub: record argv to ORCH_TEST_CALLS_FILE.
+# To simulate failure, set ORCH_TEST_SYSTEMD_RUN_RC to a non-zero exit code.
 echo "systemd-run $*" >> "${ORCH_TEST_CALLS_FILE:-/dev/null}"
-exit 0
+exit "${ORCH_TEST_SYSTEMD_RUN_RC:-0}"
 STUB_EOF
 chmod +x "$STUB_DIR/systemd-run"
 
@@ -270,5 +282,87 @@ assert "E3: exec-mode dirty records NO systemctl start" \
 # Must log a "dirty, skipping" or similar message
 assert "E4: exec-mode dirty logs a warning about dirty project_root" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "dirty|skipping"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — INVALID PROJECT ROOT (non-git directory)
+# is_clean() must NOT treat a git error as "clean" — a misconfigured
+# ORCH_PROJECT_ROOT (non-existent or not a git repo) must hard-abort, not
+# silently pass the clean-guard and schedule/exec a restart.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: non-git project_root (git error treated as abort, not clean) ---"
+
+NON_GIT_DIR="$(mktemp -d /tmp/test-orch-restart-nongit-XXXXXX)"
+_TMPDIRS+=("$NON_GIT_DIR")
+# NON_GIT_DIR is a plain temp directory with no git repo
+
+# F1-F3: schedule mode with non-git project_root
+reset_calls
+ORCH_PROJECT_ROOT="$NON_GIT_DIR" \
+    run_helper
+assert "F1: non-git project_root in schedule mode -> exits non-zero" test "$RC" -ne 0
+assert "F2: non-git project_root emits error about git/project_root (not 'commit/land')" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "ERROR.*project_root|git.*failed"' _ "$OUT"
+assert "F3: non-git project_root in schedule mode schedules NO systemd-run" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+
+# F4-F6: exec mode with non-git project_root
+reset_calls
+ORCH_PROJECT_ROOT="$NON_GIT_DIR" \
+    run_helper --exec-restart
+assert "F4: non-git project_root in exec mode -> exits non-zero" test "$RC" -ne 0
+assert "F5: non-git project_root in exec mode emits error about git/project_root" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "ERROR.*project_root|git.*failed"' _ "$OUT"
+assert "F6: non-git project_root in exec mode does NOT stop or start the service" \
+    bash -c '! grep -q "^systemctl" "$1"' _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — SCHEDULE-MODE SYSTEMD-RUN FAILURE
+# If systemd-run returns non-zero, the script must exit non-zero and NOT print
+# a false "scheduled restart" confirmation.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: schedule-mode systemd-run failure ---"
+
+CLEAN_REPO_G=""
+make_clean_repo CLEAN_REPO_G
+reset_calls
+
+ORCH_PROJECT_ROOT="$CLEAN_REPO_G" \
+ORCH_TEST_SYSTEMD_RUN_RC="1" \
+    run_helper
+assert "G1: systemd-run failure in schedule mode -> exits non-zero" test "$RC" -ne 0
+assert "G2: systemd-run failure emits error message" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "error|fail"' _ "$OUT"
+assert "G3: no false 'scheduled restart' confirmation on systemd-run failure" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "scheduled restart"' _ "$OUT"
+assert "G4: systemd-run WAS called (failure was from its return code, not a pre-guard)" \
+    bash -c 'grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — EXEC-MODE START FAILURE
+# If systemctl start returns non-zero, the script must exit non-zero with an
+# error message; the stop must still have been attempted before the failure.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: exec-mode start failure ---"
+
+CLEAN_REPO_H=""
+make_clean_repo CLEAN_REPO_H
+reset_calls
+
+ORCH_PROJECT_ROOT="$CLEAN_REPO_H" \
+ORCH_UNIT="fail-start-unit.service" \
+ORCH_TEST_SYSTEMCTL_FAIL_SUBCMD="start" \
+    run_helper --exec-restart
+assert "H1: exec-mode start failure -> exits non-zero" test "$RC" -ne 0
+assert "H2: exec-mode start failure emits error message about start" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "ERROR.*start.*fail|start.*failed"' _ "$OUT"
+assert "H3: exec-mode stop was still attempted before start failure" \
+    bash -c 'grep -q "^systemctl --user stop fail-start-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "H4: exec-mode start was attempted (stop failure does not short-circuit it)" \
+    bash -c 'grep -q "^systemctl --user start fail-start-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "H5: no false 'restarted successfully' confirmation on start failure" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "restarted successfully"' _ "$OUT"
 
 test_summary
