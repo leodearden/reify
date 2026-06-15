@@ -110,6 +110,65 @@ PSI_PROC_PATH: str = os.environ.get(
     "REIFY_JOBSERVER_PSI_PROC_PATH", "/proc/pressure/cpu"
 )
 
+# Pressure-reactive hold/release thresholds (hysteresis band).
+# Defaults mirror verify.sh's REIFY_PSI_GATE_THRESHOLD (50 %) so the two
+# admission controls agree on what "overloaded" means.
+# See design decision in plan: "PRESSURE_HOLD_THRESHOLD defaults to 50.0"
+_ph_raw: str = os.environ.get("REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD", "50.0")
+try:
+    PRESSURE_HOLD_THRESHOLD: float = float(_ph_raw)
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD={_ph_raw!r}: {_exc}\n"
+        f"  Set to a float (e.g., 50.0)\n"
+    )
+    sys.exit(1)
+
+_pr_raw: str = os.environ.get("REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD", "40.0")
+try:
+    PRESSURE_RELEASE_THRESHOLD: float = float(_pr_raw)
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD={_pr_raw!r}: {_exc}\n"
+        f"  Set to a float < PRESSURE_HOLD_THRESHOLD={PRESSURE_HOLD_THRESHOLD}\n"
+    )
+    sys.exit(1)
+
+if PRESSURE_RELEASE_THRESHOLD >= PRESSURE_HOLD_THRESHOLD:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD must be < "
+        f"PRESSURE_HOLD_THRESHOLD "
+        f"(got release={PRESSURE_RELEASE_THRESHOLD}, "
+        f"hold={PRESSURE_HOLD_THRESHOLD})\n"
+        f"  Hysteresis band requires release < hold.\n"
+    )
+    sys.exit(1)
+
+# Maximum tokens held in the pressure reservoir.
+# Default: max(1, TOKENS//4) = the task_baseline (=8 at nproc=32), bounding
+# the reservoir to the task pool's own allocation so merge's 24 tokens are
+# never clawed.  Tunable for ε/η runs; set 0 to disable hold-back entirely.
+_mhb_raw: str = os.environ.get(
+    "REIFY_JOBSERVER_MAX_HELD_BACK", str(max(1, TOKENS // 4))
+)
+try:
+    MAX_HELD_BACK: int = int(_mhb_raw)
+    if MAX_HELD_BACK < 0:
+        raise ValueError("must be >= 0")
+except ValueError as _exc:
+    sys.stderr.write(
+        f"ERROR: REIFY_JOBSERVER_MAX_HELD_BACK={_mhb_raw!r}: {_exc}\n"
+        f"  Set to a non-negative integer\n"
+    )
+    sys.exit(1)
+
+# Break-glass: set REIFY_JOBSERVER_PRESSURE_DISABLE=1 to skip the entire
+# pressure stage (mirrors REIFY_PSI_GATE_DISABLE for the verify-gate peer).
+# Useful for ε/η acceptance runs that measure pure allocation without throttle.
+PRESSURE_DISABLE: bool = (
+    os.environ.get("REIFY_JOBSERVER_PRESSURE_DISABLE", "") == "1"
+)
+
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
@@ -153,6 +212,50 @@ def read_pressure(proc_path: str):
         return None  # 'some' line absent in file
     except (OSError, ValueError):
         return None  # unreadable file or malformed float — fail-open
+
+
+def pressure_decide(
+    avg10,
+    hold_threshold: float,
+    release_threshold: float,
+    free_task: int,
+    held_back: int,
+    max_held_back: int,
+) -> tuple:
+    """Pure pressure-control policy: given avg10, return (action, count).
+
+    action ∈ {"hold", "release", "none"}
+    count  = tokens to grab into ("hold") or release from ("release") the
+             reservoir.
+
+    Hysteresis band (prevents threshold-boundary oscillation):
+      avg10 >= hold_threshold   → ("hold", min(free_task, max_held_back - held_back))
+      avg10 <  release_threshold → ("release", held_back)
+      release ≤ avg10 < hold     → ("none", 0)
+      avg10 is None (fail-open)  → treated as low pressure (release if held>0)
+
+    Any computed count == 0 collapses to ("none", 0).
+
+    MERGE-SAFE: no free_merge parameter — pressure only ever touches the TASK
+    pool (enforced by this signature and the call site in main()).
+    """
+    if avg10 is None or avg10 < release_threshold:
+        # fail-open (PSI unreadable) or below release threshold → release reservoir
+        count = held_back
+        if count > 0:
+            return ("release", count)
+        return ("none", 0)
+
+    if avg10 >= hold_threshold:
+        # above hold threshold → grab tokens into reservoir (bounded by headroom)
+        headroom = max_held_back - held_back
+        count = min(free_task, headroom)
+        if count > 0:
+            return ("hold", count)
+        return ("none", 0)
+
+    # Hysteresis band: release_threshold ≤ avg10 < hold_threshold → no action
+    return ("none", 0)
 
 
 def make_fifo(path: str) -> None:
