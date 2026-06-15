@@ -20,22 +20,30 @@
 # (verified on cargo-nextest 0.9.136 via `cargo nextest show-config test-groups`).
 #
 # Cap derivation (when REIFY_OCCT_NEXTEST_MAX_THREADS is not set explicitly):
-#   cap = min(HARD_CAP, nproc[, ram_bound])
+#   cap = min(HARD_CAP, nproc, ram_bound)   [each term skipped if unavailable]
 #
-#   HARD_CAP: REIFY_OCCT_NEXTEST_HARD_CAP (default 24, strict digits-only).
-#   nproc:    REIFY_OCCT_NPROC (testability knob) if valid; else `nproc`;
-#             else `getconf _NPROCESSORS_ONLN`; else CPU term is skipped
-#             (cap = HARD_CAP), preserving today's behavior on hosts without
-#             either tool.
-#   ram_bound: added in a later step (REIFY_OCCT_MEMTOTAL_GIB / /proc/meminfo).
+#   HARD_CAP:  REIFY_OCCT_NEXTEST_HARD_CAP (default 24, strict digits-only).
+#   nproc:     REIFY_OCCT_NPROC (testability knob) if valid; else `nproc`;
+#              else `getconf _NPROCESSORS_ONLN`; else CPU term is skipped
+#              (cap = HARD_CAP), preserving today's behavior on hosts without
+#              either tool.
+#   ram_bound: floor(MemTotalGiB / GIB_PER_THREAD).
+#              GIB_PER_THREAD from REIFY_OCCT_GIB_PER_THREAD (default 2).
+#              MemTotalGiB from REIFY_OCCT_MEMTOTAL_GIB (testability knob);
+#              else parsed from /proc/meminfo (MemTotal kB → GiB); else RAM
+#              term is skipped so non-Linux/unreadable hosts keep CPU-only.
 #
 # Env knobs (all strictly digits-only validated):
 #   REIFY_OCCT_NEXTEST_MAX_THREADS  — explicit override; wins verbatim.
 #   REIFY_OCCT_NEXTEST_HARD_CAP     — upper ceiling (default 24).
 #   REIFY_OCCT_NPROC                — inject CPU count (testability, CI injection).
+#   REIFY_OCCT_MEMTOTAL_GIB         — inject MemTotal in GiB (testability).
+#   REIFY_OCCT_GIB_PER_THREAD       — GiB per OCCT thread (default 2; see
+#                                       docs/notes/multi-process-occt-bench.md).
 #
-# Workstation (32t): min(24,32)=24 — bit-identical to pre-4621 behavior.
-# Laptop (16t):      min(24,16)=16 — avoids 24×2 GiB ≈ 48 GiB OOM risk.
+# Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
+# Laptop (16t, 32 GiB):        min(24,16,16)=16 — avoids 24×2 GiB ≈ 48 GiB OOM.
+# Laptop (16t, 16 GiB):        min(24,16,8)=8.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,10 +82,37 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
             (''|*[!0-9]*) _nproc="" ;;
         esac
 
-        # min(HARD_CAP, nproc) — skip nproc term if unavailable.
+        # GIB_PER_THREAD: GiB consumed per concurrent OCCT thread (default 2).
+        case "${REIFY_OCCT_GIB_PER_THREAD:-}" in
+            (''|*[!0-9]*|0) gib_per_thread=2 ;;   # default; 0 is nonsensical
+            (*)              gib_per_thread="${REIFY_OCCT_GIB_PER_THREAD}" ;;
+        esac
+
+        # MemTotal in GiB: testability-injectable, then /proc/meminfo, else skip.
+        _memtotal_gib=""
+        case "${REIFY_OCCT_MEMTOTAL_GIB:-}" in
+            (''|*[!0-9]*) ;;   # invalid or unset — try /proc/meminfo below
+            (*)           _memtotal_gib="${REIFY_OCCT_MEMTOTAL_GIB}" ;;
+        esac
+        if [ -z "$_memtotal_gib" ] && [ -r /proc/meminfo ]; then
+            # MemTotal is in kB; convert to GiB (floor).
+            _memtotal_kb="$(grep '^MemTotal:' /proc/meminfo | awk '{print $2}' || true)"
+            case "${_memtotal_kb:-}" in
+                (''|*[!0-9]*) ;;
+                (*)           _memtotal_gib=$(( _memtotal_kb / 1048576 )) ;;
+            esac
+        fi
+
+        # min(HARD_CAP, nproc, ram_bound) — skip any term that is unavailable.
         cap="$hard_cap"
         if [ -n "$_nproc" ] && [ "$_nproc" -lt "$cap" ]; then
             cap="$_nproc"
+        fi
+        if [ -n "$_memtotal_gib" ] && [ "$_memtotal_gib" -gt 0 ]; then
+            _ram_bound=$(( _memtotal_gib / gib_per_thread ))
+            if [ "$_ram_bound" -lt "$cap" ]; then
+                cap="$_ram_bound"
+            fi
         fi
         ;;
     (*)

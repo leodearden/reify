@@ -208,3 +208,27 @@ No swap expected under any realistic workload.
 
 **FD headroom:** Unchanged from task 4451 analysis — no meaningful FD pressure at any
 realistic concurrency level.
+
+### Updated by task 4621: host-relative cap default
+
+The nextest `occt` group `max-threads` is now derived as
+`min(HARD_CAP, nproc, floor(MemTotalGiB / GIB_PER_THREAD))` when
+`REIFY_OCCT_NEXTEST_MAX_THREADS` is not set explicitly.
+
+| Env knob | Default | Description |
+|----------|---------|-------------|
+| `REIFY_OCCT_NEXTEST_MAX_THREADS` | (unset) | Explicit override; wins verbatim if set |
+| `REIFY_OCCT_NEXTEST_HARD_CAP` | 24 | Upper ceiling (preserves workstation behavior) |
+| `REIFY_OCCT_GIB_PER_THREAD` | 2 | GiB per concurrent OCCT thread (from §(d) basis: 2 GiB peak RSS) |
+| `REIFY_OCCT_NPROC` | (system nproc) | Testability injection: override detected CPU count |
+| `REIFY_OCCT_MEMTOTAL_GIB` | (/proc/meminfo) | Testability injection: override detected RAM |
+
+**Host profiles** (with GIB_PER_THREAD=2):
+- Workstation (32t, ~125 GiB): min(24, 32, 62) = **24** — bit-identical to pre-4621.
+- Laptop (16t, 32 GiB): min(24, 16, 16) = **16** — removes 48 GiB OOM risk.
+- Laptop (16t, 16 GiB): min(24, 16, 8) = **8**.
+
+The 2 GiB/thread figure is the §(d) task-4503/γ basis above ("~1–2 GiB RSS each").
+Both terms are skipped gracefully when the detection tool is absent (non-Linux, missing
+`nproc`/`getconf`, unreadable `/proc/meminfo`) so the behavior degrades to the HARD_CAP
+only — identical to the pre-4621 flat-24 default.
