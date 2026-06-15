@@ -7,7 +7,8 @@
 //! Walks:
 //!   * `examples/**/*.ri`          — design example files
 //!   * `crates/**/*.ri`            — standalone fixture .ri files
-//!   * `crates/**/*.rs`            — inline .ri fixtures + doc-prose in Rust sources
+//!   * `crates/**/*.rs`            — inline .ri fixtures in Rust sources
+//!                                   (comment/doc-prose lines are excluded — see predicate)
 //!   * `gui/src-tauri/**/*.rs`     — GUI inline DSL test sources
 //!   * `gui/test/**/*.ri`          — GUI fixture files
 //!
@@ -58,6 +59,28 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Strip a trailing `//` line comment from `line`, returning the portion before
+/// the first comment marker.  `://` (URL schemes that may appear in string
+/// literals) are preserved — only `//` not immediately preceded by `:` is
+/// treated as a comment start.
+///
+/// Limitation: `/* … */` block comments are **not** stripped.  No such block
+/// comment with a bare-`Scalar` mention exists in the scanned corpus today.
+fn strip_trailing_line_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Preserve `://` (URL scheme) inside string literals.
+            if i == 0 || bytes[i - 1] != b':' {
+                return &line[..i];
+            }
+        }
+        i += 1;
+    }
+    line
+}
+
 /// Returns `true` when `line` contains a bare `: Scalar` type annotation or a
 /// bare `-> Scalar` return codomain that must be migrated.
 ///
@@ -66,14 +89,20 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 ///     preceded by another `:` (i.e., `::Scalar` Rust enum paths excluded).
 ///   * `-> Scalar([^<a-zA-Z]|$)` — bare return codomain.
 ///
-/// Pure comment lines (trimmed starts with `//`) are always skipped — only
-/// real source / inline-DSL string content is examined.
+/// Pure comment lines (trimmed starts with `//`) are always skipped, and any
+/// trailing line comment is stripped before scanning — only real source /
+/// inline-DSL string content is examined.
 fn line_has_bare_scalar(line: &str) -> bool {
     // Skip pure comment lines — doc-prose mentioning `-> Scalar` or `: Scalar`
     // in comments must not be treated as migration violations.
     if line.trim_start().starts_with("//") {
         return false;
     }
+
+    // Strip any trailing line comment before scanning.  This prevents a
+    // migrated line like `-> Length { } // was -> Scalar` from being falsely
+    // flagged due to the `-> Scalar` mention in the comment.
+    let line = strip_trailing_line_comment(line);
 
     let mut search_start = 0;
     while let Some(rel) = line[search_start..].find("Scalar") {
@@ -140,6 +169,13 @@ fn corpus_has_zero_bare_scalar() {
     // "Scalar" (never reach type resolution, can never be E_BARE_SCALAR violators).
     //   * crates/reify-syntax/tests/ — field_tests.rs:30,64 assert codomain_type.to_string()=="Scalar"
     //   * crates/reify-ast/tests/   — api_surface.rs:70 asserts name=="Scalar"
+    //
+    // Accepted blind spot: the exclusion is directory-level, not file-level.
+    // A new test file added to either directory would also be excluded from the
+    // scan.  This is intentional: every test in reify-syntax/tests/ and
+    // reify-ast/tests/ is parse-only by design — none reach type resolution,
+    // so none can ever be E_BARE_SCALAR (γ) violators.  The carve-out matches
+    // the invariant the directories enforce, not just the two current files.
     let syntax_tests = root.join("crates").join("reify-syntax").join("tests");
     let ast_tests = root.join("crates").join("reify-ast").join("tests");
     files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
@@ -279,5 +315,30 @@ mod predicate_tests {
     fn excludes_comment_line_with_annotation_scalar() {
         // Pure comment lines are skipped even for annotation form
         assert!(!line_has_bare_scalar("    // param x: Scalar = 10mm"));
+    }
+
+    // Trailing-comment stripping — non-comment lines whose trailing `// ...`
+    // mentions a bare Scalar must NOT be flagged (the code itself is migrated).
+    #[test]
+    fn excludes_trailing_comment_with_return_scalar() {
+        assert!(!line_has_bare_scalar(
+            "    field def t : Point3 -> Length {} // was -> Scalar"
+        ));
+    }
+
+    #[test]
+    fn excludes_trailing_comment_with_annotation_scalar() {
+        assert!(!line_has_bare_scalar(
+            "    param width: Length = 10mm // was: Scalar"
+        ));
+    }
+
+    #[test]
+    fn preserves_scalar_before_url_double_slash() {
+        // `://` in a string literal must not be mistaken for a comment start;
+        // bare Scalar appearing later on the same line must still be detected.
+        assert!(line_has_bare_scalar(
+            r#"    let _u = "https://x.com"; let src = "param x: Scalar";"#
+        ));
     }
 }
