@@ -143,6 +143,11 @@ pub(crate) fn is_selector_expr(
                 | "edges_at_height" | "edges_parallel_to" => true,
                 // ── Named-leaf constructors (task 4119 δ) ───────────────────────────
                 "face" | "edge" | "solid_body" => true,
+                // ── Attribute-role selector (task 4536) ─────────────────────────────
+                // mid_surface(body) -> Selector(Face): a single-arg constructor that
+                // builds a LeafQuery::ByRole(MidSurfaceFace) leaf. Classified here so
+                // `let m = mid_surface(b)` routes through the selector path, not CSG.
+                "mid_surface" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
