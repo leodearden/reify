@@ -2621,6 +2621,30 @@ pub trait GeometryKernel: Send + Sync {
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError>;
 
+    /// Export a handle, honoring per-export [`ExportOptions`] (currently the
+    /// STEP schema), and return any non-fatal [`ExportWarning`]s raised.
+    ///
+    /// The **default** implementation ignores `options` and delegates to
+    /// [`export`](GeometryKernel::export), returning an empty warning vec.
+    /// This keeps every non-STEP and non-OCCT kernel (Manifold, OpenVDB,
+    /// the GUI kernel, mocks and stubs) compiling unchanged — only the OCCT
+    /// kernel, which can actually select a STEP schema, overrides it.
+    ///
+    /// The schema in `options.step_schema` is kernel-neutral
+    /// ([`StepSchema`]); the OCCT override maps it to the OCCT-private
+    /// `write.step.schema` token and is the only path that can raise
+    /// [`ExportWarning::StepAp242Fallback`].
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        let _ = options;
+        self.export(handle, format, writer).map(|()| Vec::new())
+    }
+
     /// Tessellate a handle into a mesh.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 
