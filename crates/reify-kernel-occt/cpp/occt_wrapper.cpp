@@ -1726,6 +1726,52 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
     });
 }
 
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
+    const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_edges_with_history", [&]() {
+        if (!std::isfinite(distance) || distance <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: distance must be a finite positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // all-edges path is `chamfer_all_edges`, not this function.
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: edge_indices must be non-empty "
+                "(the all-edges path uses chamfer_all_edges)");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Build the canonical 1-based edge map. TopExp::MapShapes is
+            // deterministic for a given shape, so this matches both
+            // OcctShape::edge_map() (the history parent-index domain) and
+            // get_edges() (which mints the handle order the 0-based
+            // edge_indices reference via the extracted_edges cache).
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                chamfer.Add(distance, TopoDS::Edge(edge_map.FindKey(idx + 1)));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated per-edge selection)");
+            }
+            return chamfer;
+        });
+    });
+}
+
 std::unique_ptr<OcctShape> local_feature_op_history_take_result_shape(
     LocalFeatureOpHistory& history) {
     return std::move(history.result);

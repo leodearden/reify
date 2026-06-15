@@ -656,6 +656,18 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
     const OcctShape& shape, double distance);
 
+/// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance` applied
+/// to ONLY the selected edges, identified by 0-based `edge_indices` into the
+/// canonical `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration (the same order
+/// `get_edges` / `OcctShape::edge_map()` use, so a `GeometryHandleId` resolved
+/// via `extract_edges` maps to the matching index). Materializes the result
+/// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
+/// identically to `make_chamfer_with_history` — the curated path preserves the
+/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// function requires a non-empty `edge_indices`.
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
+    const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
+
 /// Move the result shape out of the local-feature-history wrapper for
 /// registration in the kernel's shape table. Subsequent calls observe
 /// an empty `unique_ptr`.

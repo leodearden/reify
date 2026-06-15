@@ -1665,6 +1665,57 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepFilletAPI_MakeChamfer` to ONLY the selected `edges` of
+    /// `shape_id` (a curated subset) with the given `distance`, returning the
+    /// modified-result handle alongside the per-parent face/edge
+    /// Modified/Generated/Deleted history records.
+    ///
+    /// `distance` must be finite and strictly positive. Result handle is
+    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    ///
+    /// Curated edge-selection seam (task 4185, β). The persistent-naming history
+    /// seam is preserved identically to the all-edges path. An empty `edges`
+    /// slice is rejected — the all-edges path is `chamfer_with_history` /
+    /// `chamfer_all_edges`.
+    pub fn chamfer_edges_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        distance: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        validate_positive_finite(distance, "chamfer distance")?;
+        if edges.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "chamfer_edges_with_history: edge selection must be non-empty \
+                 (the all-edges path is chamfer_with_history / chamfer_all_edges)"
+                    .into(),
+            ));
+        }
+        // Map each selected edge handle → its 0-based position in the parent's
+        // canonical edge enumeration. `extract_edges`, `get_edges`, and
+        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
+        // so the position is exactly the index the kernel-side FFI expects.
+        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "chamfer_edges_with_history: failed to enumerate parent edges of \
+                 {shape_id:?}: {e:?}"
+            ))
+        })?;
+        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
+        for e in edges {
+            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "chamfer_edges_with_history: edge {e:?} does not belong to \
+                     solid {shape_id:?}"
+                ))
+            })?;
+            edge_indices.push(pos as u32);
+        }
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_chamfer_edges_with_history(shape, distance, &edge_indices)
+        })
+    }
+
     /// Extrude `profile` along the +Z direction by `distance` metres via
     /// `BRepPrimAPI_MakePrism`, returning the swept-result handle alongside
     /// the per-parent face/edge Modified/Generated/Deleted history records
