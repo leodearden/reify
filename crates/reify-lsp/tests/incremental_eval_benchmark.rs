@@ -90,7 +90,7 @@ fn content_hash_changes_for_different_source() {
 /// into a full cold-start without any correctness failure.
 /// Ignored in normal CI runs to avoid flakiness — run with `cargo test -- --ignored`.
 #[test]
-#[ignore]
+#[ignore = "timing benchmark; flaky under CI load - run explicitly with --ignored"]
 fn timing_cold_start_vs_incremental_baseline() {
     use std::time::Instant;
 

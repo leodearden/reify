@@ -670,13 +670,13 @@ mod tests {
             &mut self,
             _op: &reify_ir::GeometryOp,
         ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
         fn query(
             &self,
             _q: &reify_ir::GeometryQuery,
         ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
         fn export(
             &self,
@@ -684,14 +684,14 @@ mod tests {
             _format: reify_ir::ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), reify_ir::ExportError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
         fn tessellate(
             &self,
             _handle: reify_ir::GeometryHandleId,
             _tolerance: f64,
         ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
         // densify_grid_to_sampled: inherits default →
         // Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))

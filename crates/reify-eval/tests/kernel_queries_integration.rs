@@ -542,7 +542,7 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
 /// filed (both acceptable per §10 "if profiling warrants"). See task 3626 for
 /// the full rationale.
 #[test]
-#[ignore]
+#[ignore = "profiling harness; run explicitly with --ignored"]
 fn profile_topology_selectors_and_sub_handle_memory() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("[profile] OCCT not available — skipping §10.3/§10.4 profiling");

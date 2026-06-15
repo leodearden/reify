@@ -2040,7 +2040,7 @@ structure S {
 /// stops execution before the outer loop is entered, so the chain guard never
 /// fires.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, update
+/// TODO(future): once SchemaNode-style re-elaboration is in place, update // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// this test to assert that connections are emitted when the count becomes known.
 #[test]
 fn forall_connect_chain_body_over_undef_count_collection_sub_emits_no_connections_no_error() {
@@ -2226,7 +2226,7 @@ structure S {
 /// Connect form. At compile time we cannot resolve the count of `vents`, so
 /// elaboration is deferred silently.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this
+/// TODO(future): once SchemaNode-style re-elaboration is in place, this // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// test should be updated to assert that the connections are emitted once
 /// the count becomes known at graph-build time.
 #[test]

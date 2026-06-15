@@ -353,7 +353,7 @@ fn purpose_activation_simulation_ready() {
 
 /// Full pipeline (read + parse + compile_with_stdlib + eval) should complete in < 15 seconds.
 // Performance benchmark — run explicitly with `cargo test -- --ignored`.
-#[ignore]
+#[ignore = "performance benchmark; run explicitly with --ignored"]
 #[test]
 fn eval_full_pipeline_benchmark() {
     let start = Instant::now();

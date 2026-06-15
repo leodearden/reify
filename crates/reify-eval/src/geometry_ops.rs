@@ -10815,7 +10815,7 @@ mod tests {
         );
     }
 
-    // TODO(tasks 4360/4358): Once engine-unified-build-dag η/ε lands and the
+    // TODO(#4360): Once engine-unified-build-dag η/ε lands and the
     // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
     // resolve on the active pipeline, add an end-to-end .ri-source test that
     // compiles a 4-arg draft, runs it through eval, and asserts the resulting

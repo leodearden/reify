@@ -359,11 +359,11 @@ mod tests {
 
     impl GeometryKernel for DeviationStubKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn export(
@@ -372,11 +372,11 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
-            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation")
+            unimplemented!("DeviationStubKernel only supports measure_mesh_deviation") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn measure_mesh_deviation(&self, handle: GeometryHandleId, mesh: &Mesh) -> Option<f64> {

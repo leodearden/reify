@@ -1589,7 +1589,7 @@ mod tests {
 
     impl GeometryKernel for CountingKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("CountingKernel does not implement execute")
+            unimplemented!("CountingKernel does not implement execute") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -1611,7 +1611,7 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!("CountingKernel does not implement export")
+            unimplemented!("CountingKernel does not implement export") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(
@@ -1874,11 +1874,11 @@ mod tests {
 
     impl GeometryKernel for FixedReplyQueryManyKernel {
         fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            unimplemented!("FixedReplyQueryManyKernel does not implement execute")
+            unimplemented!("FixedReplyQueryManyKernel does not implement execute") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            unimplemented!("FixedReplyQueryManyKernel only supports query_many")
+            unimplemented!("FixedReplyQueryManyKernel only supports query_many") // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn query_many(&self, _queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
@@ -1891,7 +1891,7 @@ mod tests {
             _format: ExportFormat,
             _writer: &mut dyn std::io::Write,
         ) -> Result<(), ExportError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn tessellate(
@@ -1899,7 +1899,7 @@ mod tests {
             _handle: GeometryHandleId,
             _tolerance: f64,
         ) -> Result<Mesh, TessError> {
-            unimplemented!()
+            unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
         }
 
         fn extract_edges(

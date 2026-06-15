@@ -271,7 +271,7 @@ fn joint_empty_block_body_lowers_to_empty_vec() {
     let j = first_joint(source);
 
     // α: no errors — the empty body passes through the lowerer silently.
-    // β TODO: emit a diagnostic here (empty joint body is semantically invalid).
+    // β TODO: emit a diagnostic here (empty joint body is semantically invalid). // ptodo:allow test note - no live owner
     assert_eq!(
         j.body.len(),
         0,

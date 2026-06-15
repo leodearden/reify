@@ -13709,8 +13709,8 @@ mod dispatch_volume_mesh_tests {
     #[allow(dead_code, unreachable_code)]
     fn _surface_pin() {
         // Name both variants — a rename or variant removal breaks compilation.
-        let _: VolumeMeshOutcome = VolumeMeshOutcome::Tet(todo!());
-        let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!());
+        let _: VolumeMeshOutcome = VolumeMeshOutcome::Tet(todo!()); // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!()); // ptodo:allow exhaustiveness/stub arm - not tracked debt
         // Verify the full signature including the new ops/handles slice parameters
         // via function-item to function-pointer coercion.
         type DispatchVolumeMeshFn = fn(
