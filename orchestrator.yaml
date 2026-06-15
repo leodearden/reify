@@ -86,6 +86,24 @@ verify_env:
   # L17-22). Add entries here only to tune; see docs/prds/test-run-concurrency-
   # semaphore.md §5 for the full knob contract.
 
+# Agent inner-loop jobserver wiring (dark_factory:1745). Injects CARGO_MAKEFLAGS
+# into architect/implementer/debugger subprocesses so the cargo build/test/metadata
+# calls the agents run DURING their TDD/plan turns draw from the shared task-pool
+# FIFO instead of each running at private -j(nproc). This is a SECOND oversubscription
+# source, distinct from the verify-phase wiring above: verify_env/verify.sh govern the
+# verify cargo; this governs the AGENT cargo. Without it, ~24 task lanes' uncoordinated
+# inner-loop rustc sustained load 104-137 on this 32-core host and starved agent CLI
+# spawns pre-first-turn (the df:1745 / df:1739 0-turn wedge). JobserverConfig defaults
+# enabled:false, so reify MUST opt in here — the dark-factory task could not edit this
+# reify-owned file (its docstring assumed this block; it had been missing).
+# Graceful degradation: agent_env() guards on `[ -p task_fifo ]` (mirrors verify.sh:431),
+# so when reify-jobserver.service is down the FIFO is absent and agents fall back to the
+# private pool. This therefore does NOT substitute for jobserver+canary durability; it
+# only bounds agent cargo while the pool is healthy.
+jobserver:
+  enabled: true
+  task_fifo: /tmp/reify-jobserver-task  # task-role FIFO; matches verify.sh + scripts/jobserver-balancer.py
+
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
 # Batches line-stackable merge-ready tasks into ONE full-scope merge verify to relieve
