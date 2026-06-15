@@ -2490,6 +2490,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AMBIENT_DEFAULT_TYPE_MISMATCH`
     /// (see `docs/prds/ambient-default-material.md` §7).
     AmbientDefaultTypeMismatch,
+
+    /// Origin: `crates/reify-expr/src/lib.rs` op/builtin contract-failure reason
+    /// sink — γ (task 4323, PRD `docs/prds/v0_6/undef-self-describing.md` §4.3/§8.2).
+    ///
+    /// Emitted when an op or builtin returns `Value::Undef` with **all inputs
+    /// determined** (i.e. this is a genuine domain/contract failure, not a
+    /// propagated undef). Arithmetic and math-builtin domain failures
+    /// (sqrt domain, div/mod-by-zero, pow non-finite, dimension mismatch, Point+Point)
+    /// emit no pre-existing `DiagnosticCode`, so a new generic code is minted.
+    ///
+    /// PRD-prose mnemonic: `E_OP_CONTRACT`.
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self; a single generic code is honest for v1 — finer per-op codes are
+    /// a follow-up. Follows the `SelectorKindMismatch`/`ArgTypeMismatch` minting
+    /// precedent; `DiagnosticCode` is `#[non_exhaustive]` so adding one variant is
+    /// non-breaking for downstream consumers.
+    OpContractViolation,
 }
 
 /// A diagnostic message with location and optional labels.
