@@ -36,6 +36,29 @@ pub struct CompiledTrait {
     pub pragmas: Vec<reify_ast::Pragma>,
 }
 
+impl CompiledTrait {
+    /// Return the (name, Type) pairs for all value-bearing required members.
+    ///
+    /// Only `RequirementKind::Param(ty)` and `RequirementKind::Let(ty)` entries
+    /// are returned; `Sub`, `Fn`, and `AssocType` requirements are excluded
+    /// because they do not produce a scalar/dimensional value that a constraint
+    /// expression can reference.
+    ///
+    /// Used by `compile_entity` to populate `CompilationScope::trait_member_types`
+    /// so the `Type::TypeParam` member-access branch in `expr.rs` (task 4596)
+    /// can resolve the member's declared type from the bound trait's contract.
+    pub(crate) fn value_bearing_members(&self) -> impl Iterator<Item = (&str, &Type)> {
+        self.required_members.iter().filter_map(|req| match &req.kind {
+            RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
+                Some((req.name.as_str(), ty))
+            }
+            RequirementKind::Sub(_)
+            | RequirementKind::Fn(_)
+            | RequirementKind::AssocType(_) => None,
+        })
+    }
+}
+
 /// A required member in a trait — conforming structures must provide this.
 #[derive(Debug, Clone)]
 pub struct TraitRequirement {

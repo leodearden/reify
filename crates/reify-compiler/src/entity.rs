@@ -538,7 +538,8 @@ pub(crate) fn compile_entity(
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
 
-    // Populate trait member index for qualified access resolution.
+    // Populate trait member index for qualified access resolution,
+    // and trait_member_types for TypeParam member-access type resolution (task 4596).
     for (trait_name, compiled_trait) in trait_registry {
         let mut members: HashSet<String> = compiled_trait
             .required_members
@@ -551,6 +552,25 @@ pub(crate) fn compile_entity(
             }
         }
         scope.trait_members.insert(trait_name.clone(), members);
+
+        // Build the (member_name → Type) map for value-bearing required members.
+        // This is the companion to trait_members that carries the declared types,
+        // used by the Type::TypeParam member-access branch in expr.rs (task 4596).
+        let member_types: HashMap<String, Type> = compiled_trait
+            .value_bearing_members()
+            .map(|(name, ty)| (name.to_owned(), ty.clone()))
+            .collect();
+        scope
+            .trait_member_types
+            .insert(trait_name.clone(), member_types);
+    }
+
+    // Populate type_param_bounds so the TypeParam member-access branch (task 4596)
+    // can look up which bound traits a type-param carries.
+    for tp in structure.type_params.iter() {
+        scope
+            .type_param_bounds
+            .insert(tp.name.clone(), tp.bounds.clone());
     }
 
     let mut value_cells = Vec::new();
