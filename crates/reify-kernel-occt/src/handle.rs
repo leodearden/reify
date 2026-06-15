@@ -21,6 +21,12 @@ use crate::{
 use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
 use tokio::sync::{mpsc, oneshot};
 
+/// Reply payload for [`OcctRequest::ExportWithOptions`]: the serialized export
+/// bytes paired with any non-fatal export warnings (e.g. an AP242→AP214
+/// fallback), or an [`ExportError`]. Factored into a `type` alias to keep the
+/// `oneshot::Sender<…>` field below under clippy's `type_complexity` threshold.
+type ExportWithOptionsReply = Result<(Vec<u8>, Vec<ExportWarning>), ExportError>;
+
 /// Requests sent from `OcctKernelHandle` to the dedicated kernel thread.
 enum OcctRequest {
     Execute {
@@ -48,7 +54,7 @@ enum OcctRequest {
         handle: GeometryHandleId,
         format: ExportFormat,
         options: ExportOptions,
-        reply: oneshot::Sender<Result<(Vec<u8>, Vec<ExportWarning>), ExportError>>,
+        reply: oneshot::Sender<ExportWithOptionsReply>,
     },
     Tessellate {
         handle: GeometryHandleId,
