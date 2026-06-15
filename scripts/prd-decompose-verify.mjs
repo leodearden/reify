@@ -91,20 +91,21 @@ const VERDICT_SCHEMA = {
 };
 
 // ---------------------------------------------------------------------------
-// Main workflow body — wrapped in async IIFE so `return` is syntactically valid
-// (top-level `return` is illegal in ESM; `node --check` enforces this).
+// Main workflow body
 //
-// The IIFE is the LAST statement of the module and is left as a BARE EXPRESSION
-// STATEMENT (not bound to a variable). The Workflow harness captures the script's
-// result as the module body's completion value, so the resolved aggregate verdict
-// {blocks, leaf_verdicts, summary} returned by runWorkflow() becomes the script's
-// result. Binding it to a `const` (as a prior revision did) would discard it —
-// a `const` declaration has an empty completion value — silently dropping the
-// whole point of γ. Top-level `return` is not an option here because `node --check`
-// rejects it as illegal in ESM, so completion-value surfacing is the only path.
+// The Workflow harness wraps this script body in an async function and takes
+// the aggregate verdict from its top-level `return` (every Workflow doc example
+// ends `return {...}`). A top-level `return` IS required here — it is how the
+// harness receives the result.
+//
+// IMPORTANT: raw `node --check <file>` and `await import(<file>)` both reject
+// the top-level `return` with SyntaxError: Illegal return statement (valid ESM
+// has no top-level `return`). Syntax and runtime validation must use the wrapped
+// form: strip `export const meta` → `const meta`, wrap the body in an
+// `async function __wf() { ... }`, then node --check / AsyncFunction that.
 // ---------------------------------------------------------------------------
 
-await (async function runWorkflow() {
+const _wfResult = await (async function runWorkflow() {
 
     // `args` is injected by the Workflow harness.
     const leaves = Array.isArray(args) ? args : (args ? [args] : []); // eslint-disable-line no-undef
@@ -293,3 +294,4 @@ If the command fails or stdout is not valid JSON, return:
     };
 
 })();
+return _wfResult;

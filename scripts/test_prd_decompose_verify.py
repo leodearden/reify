@@ -828,16 +828,34 @@ class TestMjsSyntaxValidity(unittest.TestCase):
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs syntax check")
     def test_mjs_node_check_passes(self):
-        """node --check scripts/prd-decompose-verify.mjs exits 0 (valid ESM syntax)."""
-        result = subprocess.run(
-            ["node", "--check", _PDV_MJS],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            result.returncode, 0,
-            f"node --check returned {result.returncode}; stderr: {result.stderr!r}",
-        )
+        """Wrapped-form node --check: export-stripped body wrapped in async function is valid syntax.
+
+        After step-17, the .mjs has a top-level `return` which raw `node --check`
+        rejects with SyntaxError: Illegal return statement (top-level return is not
+        valid ESM). Validate harness-faithful syntax instead: strip `export const
+        meta` → `const meta`, wrap the body in `async function __wf() { ... }`, and
+        node --check that wrapped form. This mirrors the Workflow harness which wraps
+        the script body in an async function before evaluating it.
+        """
+        with open(_PDV_MJS) as fh:
+            src = fh.read()
+        stripped = src.replace("export const meta", "const meta")
+        wrapped = f"async function __wf() {{\n{stripped}\n}}"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".mjs", delete=False) as f:
+            f.write(wrapped)
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                ["node", "--check", tmp_path],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"node --check returned {result.returncode}; stderr: {result.stderr!r}",
+            )
+        finally:
+            os.unlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1028,9 +1046,13 @@ globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }}
 // ── mock: workflow ────────────────────────────────────────────────────────────
 globalThis.workflow = async () => {{}};
 
-// ── execute the .mjs ──────────────────────────────────────────────────────────
+// ── execute the .mjs via AsyncFunction (harness-faithful) ──────────────────────
+import {{ readFileSync }} from "node:fs";
 try {{
-    await import(MJS_PATH);
+    let src = readFileSync(MJS_PATH, "utf8");
+    src = src.replace("export const meta", "const meta");
+    const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+    await new AsyncFunction(src)();
     console.log(SENTINEL);
 }} catch (e) {{
     console.error("IMPORT_FAILED:", e.message);
@@ -1071,32 +1093,22 @@ try {{
     _RESULT_MARK = "WF_RESULT_JSON:"
 
     def _result_capturing_source(self) -> str:
-        """Build a Node ESM harness that captures the .mjs body's COMPLETION VALUE.
+        """Build a Node ESM harness that captures the .mjs body's RETURN VALUE.
 
-        The Workflow harness surfaces a script's result as its body's completion
-        value (top-level `return` is illegal in ESM, so the .mjs leaves its IIFE as
-        a bare trailing expression statement). We faithfully model that capture by
-        reading the .mjs source, stripping the `export` keyword off `export const
-        meta` (so the body is valid inside a function), turning the trailing bare
-        expression into a `return`, and evaluating the whole body as the source of
-        an AsyncFunction whose return value IS the completion value. If the result
-        were instead bound to a dead `const` (the regression this guards against),
-        the captured value would be `undefined` and the shape assertions below fail.
+        The Workflow harness wraps the script body in an async function and takes
+        the result from its top-level `return`. After step-17, the .mjs has a
+        native top-level `return`, so stripping `export const meta` → `const meta`
+        and wrapping in AsyncFunction is sufficient — no return injection needed.
         """
-        # Reuse the same injected-globals mocks (which already declare MJS_PATH),
-        # then capture the completion value.
         globals_setup = self._harness_source().split("// ── execute the .mjs")[0]
         return globals_setup + f"""\
-// ── capture the .mjs body's completion value ──────────────────────────────────
+// ── capture the .mjs body's return value ─────────────────────────────────────
 import {{ readFileSync }} from "node:fs";
 const RESULT_MARK = "{self._RESULT_MARK}";
 let src = readFileSync(MJS_PATH, "utf8");
 // Strip the ESM `export` so the body is legal inside a function.
 src = src.replace("export const meta", "const meta");
-// Turn the trailing bare-expression IIFE into a `return` so AsyncFunction yields
-// the completion value (faithful model of the harness's completion-value capture).
-src = src.replace("\\nawait (async function runWorkflow()",
-                  "\\nreturn await (async function runWorkflow()");
+// The .mjs now has a native top-level `return` (step-17) — no injection needed.
 const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
 const body = new AsyncFunction(src);
 const result = await body();
@@ -1105,13 +1117,13 @@ console.log(RESULT_MARK + JSON.stringify(result));
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
     def test_mjs_surfaces_aggregate_verdict_shape(self):
-        """The .mjs body's completion value is the aggregate verdict, not undefined.
+        """The .mjs body's return value is the aggregate verdict with the right shape.
 
-        Guards the robustness_result_propagation review issue: a prior revision bound
-        the workflow IIFE to a dead `const _workflowResult` that was never returned,
-        so the script resolved to `undefined` and the {blocks, leaf_verdicts, summary}
-        batch verdict — the whole point of γ — was silently dropped. This asserts the
-        completion value is a well-formed aggregate object.
+        Complements test_mjs_returns_verdict_under_documented_contract: that test
+        asserts the return value is NOT undefined; this test additionally asserts
+        the shape (blocks/leaf_verdicts/summary), the mock-leaf count, and the
+        non-blocking outcome. Uses _result_capturing_source() which strips `export`
+        and wraps in AsyncFunction — after step-17, no return injection is needed.
         """
         harness_src = self._result_capturing_source()
         result = subprocess.run(

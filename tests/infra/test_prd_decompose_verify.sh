@@ -89,10 +89,22 @@ else
 fi
 rm -f "$_TMP_FAIL"
 
-# ── node --check (skip-guarded) ───────────────────────────────────────────
+# ── node --check wrapped form (skip-guarded) ─────────────────────────────
+# The .mjs has a top-level `return` (Workflow harness wraps body in AsyncFunction).
+# Raw `node --check` rejects top-level `return` as SyntaxError: Illegal return
+# statement.  Validate harness-faithful syntax: strip `export const meta` →
+# `const meta`, wrap in `async function __wf() { ... }`, then node --check that.
 if command -v node >/dev/null 2>&1; then
-    assert "node --check scripts/prd-decompose-verify.mjs exits 0" \
-        node --check "$REPO_ROOT/scripts/prd-decompose-verify.mjs"
+    _TMP_MJS_WRAPPED="$(mktemp /tmp/pdv_mjs_wrapped_XXXXXX.mjs)"
+    {
+        echo "async function __wf() {"
+        sed 's/export const meta/const meta/' \
+            "$REPO_ROOT/scripts/prd-decompose-verify.mjs"
+        echo "}"
+    } > "$_TMP_MJS_WRAPPED"
+    assert "node --check .mjs (wrapped-form) exits 0" \
+        node --check "$_TMP_MJS_WRAPPED"
+    rm -f "$_TMP_MJS_WRAPPED"
 else
     echo "  SKIP: node not on PATH — skipping .mjs syntax check"
 fi
