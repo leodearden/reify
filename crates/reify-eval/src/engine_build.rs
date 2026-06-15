@@ -7129,6 +7129,57 @@ mod tests {
         warnings_to_return: Vec<reify_ir::ExportWarning>,
     }
 
+    impl ExportRecordingKernel {
+        /// Construct a recording kernel sharing the caller's `executed` and
+        /// `exported` capture buffers, with a fresh empty `exported_options`
+        /// log and no injected warnings. New fields acquire their defaults
+        /// here, so adding one no longer ripples across every call site.
+        ///
+        /// Read the per-call `(handle, format, step_schema)` log back via
+        /// [`recorded_options`](Self::recorded_options); inject fallback
+        /// warnings via [`with_warnings`](Self::with_warnings).
+        fn new(
+            executed: std::sync::Arc<std::sync::Mutex<Vec<reify_ir::GeometryHandleId>>>,
+            exported: std::sync::Arc<
+                std::sync::Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+            >,
+        ) -> Self {
+            Self {
+                inner: reify_test_support::mocks::MockGeometryKernel::new(),
+                executed,
+                exported,
+                exported_options: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                warnings_to_return: Vec::new(),
+            }
+        }
+
+        /// A clone of the shared `exported_options` handle — the per-call
+        /// `(handle, format, step_schema)` records `export_with_options`
+        /// captured. Grab it before the kernel is moved into the `Engine`.
+        fn recorded_options(
+            &self,
+        ) -> std::sync::Arc<
+            std::sync::Mutex<
+                Vec<(
+                    reify_ir::GeometryHandleId,
+                    reify_ir::ExportFormat,
+                    reify_ir::StepSchema,
+                )>,
+            >,
+        > {
+            std::sync::Arc::clone(&self.exported_options)
+        }
+
+        /// Builder: seed the warnings `export_with_options` returns. The live
+        /// OCCT AP242 fallback can't be triggered in-build (this build supports
+        /// AP242DIS), so the `W_STEP_AP242_FALLBACK` diagnostic wiring is
+        /// exercised by injecting [`reify_ir::ExportWarning::StepAp242Fallback`].
+        fn with_warnings(mut self, warnings: Vec<reify_ir::ExportWarning>) -> Self {
+            self.warnings_to_return = warnings;
+            self
+        }
+    }
+
     impl reify_ir::GeometryKernel for ExportRecordingKernel {
         fn execute(
             &mut self,
@@ -7223,13 +7274,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-            exported_options: Arc::new(Mutex::new(Vec::new())),
-            warnings_to_return: Vec::new(),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
@@ -7306,22 +7351,9 @@ mod tests {
             let exported: Arc<
                 Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
             > = Arc::new(Mutex::new(Vec::new()));
-            let exported_options: Arc<
-                Mutex<
-                    Vec<(
-                        reify_ir::GeometryHandleId,
-                        reify_ir::ExportFormat,
-                        reify_ir::StepSchema,
-                    )>,
-                >,
-            > = Arc::new(Mutex::new(Vec::new()));
-            let kernel = ExportRecordingKernel {
-                inner: reify_test_support::mocks::MockGeometryKernel::new(),
-                executed: Arc::clone(&executed),
-                exported: Arc::clone(&exported),
-                exported_options: Arc::clone(&exported_options),
-                warnings_to_return: Vec::new(),
-            };
+            let kernel =
+                ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+            let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
@@ -7384,14 +7416,9 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-            exported_options: Arc::new(Mutex::new(Vec::new())),
-            // Inject the AP242→AP214 fallback the in-build OCCT can't produce.
-            warnings_to_return: vec![reify_ir::ExportWarning::StepAp242Fallback],
-        };
+        // Inject the AP242→AP214 fallback the in-build OCCT can't produce.
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
+            .with_warnings(vec![reify_ir::ExportWarning::StepAp242Fallback]);
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
@@ -7466,13 +7493,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-            exported_options: Arc::new(Mutex::new(Vec::new())),
-            warnings_to_return: Vec::new(),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
@@ -7555,13 +7576,7 @@ mod tests {
             Arc::new(Mutex::new(Vec::new()));
         let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let kernel = ExportRecordingKernel {
-            inner: reify_test_support::mocks::MockGeometryKernel::new(),
-            executed: Arc::clone(&executed),
-            exported: Arc::clone(&exported),
-            exported_options: Arc::new(Mutex::new(Vec::new())),
-            warnings_to_return: Vec::new(),
-        };
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
