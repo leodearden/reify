@@ -82,12 +82,17 @@ for r in results:
     if v not in allowed:
         errors.append(f"verdict {v!r} for {r['capability']!r} — expected FAIL or UNPROVABLE")
 
+# (d) per task-id presence+verdict checks for the three pure-language cases
+for tid in ("4577", "4437", "4497"):
+    if not any(tid in r["capability"] and r["verdict"] in allowed for r in results):
+        errors.append(f"no FAIL/UNPROVABLE result found for task-id {tid}")
+
 if errors:
     for e in errors:
         print(f"GATE_FAIL: {e}")
     sys.exit(1)
 
-print(f"GATE_PASS: {len(results)} probe(s), all FAIL/UNPROVABLE")
+print(f"GATE_PASS: {len(results)} probe(s), all FAIL/UNPROVABLE, task-ids 4577/4437/4497 present")
 PYEOF
 )
 
