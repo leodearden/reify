@@ -180,6 +180,18 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
                 "a rejection assertion with no probe target is a gap, not a pass"
             )
 
+        # Negative-assertion mandate: a rejection with an empty match dict is
+        # satisfied unconditionally (α's match_predicate returns True for {}) —
+        # reify can silently accept and the probe still PASSes.  That is the
+        # exact 4575 silent-accept class this harness exists to catch.
+        if premise.assertion_kind == "rejection" and not premise.match:
+            raise ValueError(
+                f"rejection premise {premise.text!r} has no match constraints — "
+                "an empty match is satisfied unconditionally and cannot detect "
+                "silent-accept (add e.g. match={{\"exit_code\": 1}} or "
+                "match={{\"exit_code\": 1, \"stderr_contains\": \"<diag>\"}})"
+            )
+
         probe = premise_to_probe(premise)
         probes.append(probe)
 
@@ -461,7 +473,7 @@ def main(argv: List[str]) -> int:
             "blocking": bv.blocking,
             "report": bv.report,
         }
-        sys.stdout.write(json.dumps(output, indent=2))
+        sys.stdout.write(json.dumps(output, indent=4))
         sys.stdout.write("\n")
         return 1 if bv.blocks else 0
 

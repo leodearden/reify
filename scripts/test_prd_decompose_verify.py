@@ -372,6 +372,22 @@ class TestBindPremises(unittest.TestCase):
             "Error message must mention 'fixture' for a rejection premise with no fixture path",
         )
 
+    def test_rejection_empty_match_raises(self):
+        """A rejection premise with empty match raises — empty match is satisfied
+        unconditionally (α's match_predicate returns True for {}), so reify can silently
+        accept and the probe still PASSes.  This is the exact 4575 silent-accept class
+        bind_premises exists to catch."""
+        p = pdv.Premise(text="empty match rejection", assertion_kind="rejection",
+                        fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+                        match={}, capability="empty-match")
+        with self.assertRaises(Exception) as ctx:
+            pdv.bind_premises([p])
+        self.assertIn(
+            "match",
+            str(ctx.exception).lower(),
+            "Error message must mention 'match' for a rejection premise with empty match dict",
+        )
+
     # ── (5) empty list → empty probe-set ────────────────────────────────────
 
     def test_empty_premises_gives_empty_probe_set(self):
@@ -563,14 +579,15 @@ class TestSynthesizeBatch(unittest.TestCase):
         self.assertIn("reify", bv.report)
 
     def test_report_contains_exit_code_for_failing_probe(self):
-        """bv.report includes the exit_code for each blocking probe."""
+        """bv.report includes the labelled exit_code line for each blocking probe."""
         role_results = {
             "prover": [self._result("cap-FAIL", "FAIL", exit_code=0, stdout="x")],
             "adversary": [],
         }
         bv = pdv.synthesize_batch(role_results)
-        # exit_code 0 must appear in the report
-        self.assertIn("0", bv.report)
+        # The labelled "exit_code: 0" line must appear so the assertion can't pass
+        # simply because the digit '0' appears elsewhere (e.g. in timestamps or names).
+        self.assertIn("exit_code: 0", bv.report)
 
     def test_report_contains_stdout_for_failing_probe(self):
         """bv.report includes the captured stdout for each blocking probe."""
