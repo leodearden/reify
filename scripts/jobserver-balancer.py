@@ -258,6 +258,30 @@ def pressure_decide(
     return ("none", 0)
 
 
+def suppress_giveback(avg10, release_threshold: float, held_back: int) -> bool:
+    """Return True when C4 merge→task give-back should be suppressed.
+
+    Suppression is active when either condition holds:
+      (1) avg10 >= release_threshold: pressure is still above the release edge,
+          so the controller is in the hold or hysteresis-band phase.  Allowing
+          give-back (m2t) here would refill the task pool from merge, and the
+          pressure stage would immediately claw those tokens back into the
+          reservoir — a back-door merge drain.
+      (2) held_back > 0: the reservoir is non-empty.  Even if pressure just
+          dropped below release_threshold, we must release the reservoir (via
+          the "release" path in pressure_decide) BEFORE re-enabling give-back;
+          otherwise the freshly-donated merge tokens are reclawed before they
+          reach task consumers.
+
+    Fail-open (avg10 is None → PSI unreadable): suppression fires only when the
+    reservoir is non-empty (held_back > 0), matching the principle that an
+    unreadable PSI file must never wedge the build.
+
+    Pure function, no side effects.
+    """
+    return (avg10 is not None and avg10 >= release_threshold) or held_back > 0
+
+
 def make_fifo(path: str) -> None:
     """Remove any stale file/FIFO at path, then create a fresh FIFO."""
     try:
