@@ -430,6 +430,113 @@ structure SmallPart {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// step-11 (RED): auto-constraint guard decline. A geometry-backed constraint
+// whose transitive auto-read closure reaches an `auto` parameter must be DECLINED
+// (not given a bogus definite verdict) — leaving δ's E_EVAL_UNRESOLVED as the
+// sole signal.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A geometry-backed constraint whose transitive auto-read closure reaches an
+/// `auto` parameter: `param w : Length = auto` feeds the realization
+/// `param part : Solid = box(w, …)`, and the constraint `volume(part) <= 1000mm^3`
+/// reads that realization's geometry. δ's `unresolved_diagnostics` guard
+/// (`engine_fixpoint.rs`) fires `E_EVAL_UNRESOLVED` for exactly this class:
+/// `Constraint(Widget#0).realization_reads ∋ Widget#realization[0]`, and that
+/// realization directly reads the auto cell `Widget.w` (so it is in
+/// `realizations_reaching_auto`).
+///
+/// SHAPE NOTE — why `param part : Solid` and NOT `let part = box(…)`: the
+/// constraint→realization edge that δ's guard walks is `geometry_cell`, populated
+/// by `EvaluationGraph::from_templates` ONLY for a value cell whose
+/// `cell_type == Type::Geometry` and whose member name matches the realization's
+/// name (graph.rs `from_templates_populates_realization_geometry_cell`). A
+/// `param … : Solid = box(…)` cell satisfies that (a `Solid` cell IS
+/// `Type::Geometry`); a `let part = box(…)` inferred-type binding leaves
+/// `geometry_cell == None`, so `collect_constraint_realization_reads` finds no
+/// backing realization and the constraint's `realization_reads` stays empty —
+/// δ's guard would NOT fire. The `param : Solid` form is therefore required to
+/// exercise the guard end-to-end through a real `build()`.
+///
+/// Asserts, under `UnifiedDag`:
+///   (a) δ emits a `Severity::Error` / `DiagnosticCode::EvalUnresolved` for the
+///       auto-reaching constraint (the δ contract — must keep firing), AND
+///   (b) the constraint is DECLINED — it does NOT appear in `constraint_results`
+///       as a DEFINITE `Satisfied`/`Violated` verdict.
+///
+/// RED until step-12: today (after step-8's Constraint executor) the executor
+/// folds `volume(part)` against the degenerate `w = auto` realization and runs
+/// the checker anyway, producing a bogus DEFINITE `Violated` verdict that
+/// CONTRADICTS δ's `E_EVAL_UNRESOLVED` decline. step-12 makes the executor consult
+/// the auto-read closure and SKIP such constraints (omitting them from the
+/// driver-computed results → the merge leaves the pre-geometry `Indeterminate`),
+/// so the definite verdict disappears and assertion (b) passes.
+#[test]
+fn unified_dag_auto_reaching_constraint_is_declined() {
+    let source = r#"
+structure Widget {
+    param w    : Length = auto
+    param part : Solid  = box(w, 10mm, 10mm)
+    constraint volume(part) <= 1000mm^3
+}
+"#;
+
+    // `w` is `auto` with NO solver, so `box(w, …)` realizes to a degenerate solid
+    // (handle 1). Seeding a concrete volume reply (125000 mm³ > the 1000 mm³
+    // bound) is what lets the step-8 executor reach a DEFINITE `Violated` — the
+    // bogus verdict step-12 must suppress. Handles 1..=4 are seeded as a safety
+    // margin against any prelude realization shifting the allocation.
+    let make_kernel = || {
+        let mut k = MockGeometryKernel::new();
+        for i in 1..=4u64 {
+            k = k.with_volume_result(GeometryHandleId(i), Value::Real(1.25e-4));
+        }
+        k
+    };
+
+    let unified =
+        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
+
+    // (a) δ's geometry-backed-constraint-on-auto guard must fire.
+    let unresolved: Vec<_> = unified
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Error
+                && d.code == Some(reify_core::DiagnosticCode::EvalUnresolved)
+        })
+        .collect();
+    assert!(
+        !unresolved.is_empty(),
+        "δ must emit a Severity::Error E_EVAL_UNRESOLVED for the auto-reaching constraint; \
+         diagnostics={:?}",
+        unified
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.severity, d.message.clone()))
+            .collect::<Vec<_>>(),
+    );
+
+    // (b) the auto-reaching constraint must be DECLINED — NO definite verdict for
+    // it in constraint_results (it is either omitted or left Indeterminate). RED
+    // today: the step-8 executor yields a bogus definite `Violated`.
+    let bogus_definite = unified.constraint_results.iter().find(|e| {
+        e.id.entity == "Widget"
+            && matches!(
+                e.satisfaction,
+                Satisfaction::Satisfied | Satisfaction::Violated
+            )
+    });
+    assert!(
+        bogus_definite.is_none(),
+        "the auto-reaching constraint must be DECLINED (left Indeterminate / omitted), not \
+         given a bogus definite verdict that contradicts δ's E_EVAL_UNRESOLVED; got {:?}, \
+         constraint_results={:?}",
+        bogus_definite.map(|e| e.satisfaction),
+        unified.constraint_results,
+    );
+}
+
 /// Locate the single `FitsBuildVolume` constraint entry's satisfaction in a
 /// [`BuildResult`] (the stdlib def's instantiation is labelled
 /// `"FitsBuildVolume#0[0]"`). Mirrors [`fits_envelope_satisfaction`]. Panics with
