@@ -499,6 +499,12 @@ pub struct OutputExportSpec {
     /// tolerance is threaded through `build()`'s realization pass, not
     /// re-tessellated per occurrence in v1; ε/γ consume this.
     pub tess_tol: Option<f64>,
+    /// STEP schema selected by the occurrence's `version` field
+    /// (`STEPVersion.AP203/AP214/AP242`), defaulting to
+    /// [`reify_ir::StepSchema::Ap214`] when absent. Only meaningful for a
+    /// `File(Step)` target; the ε driver threads it into the OCCT writer via
+    /// [`reify_ir::ExportOptions`]. Non-STEP targets carry the default.
+    pub step_schema: reify_ir::StepSchema,
 }
 
 /// Read the [`OutputExportSpec`] off a realized Output-occurrence instance
@@ -518,6 +524,10 @@ pub struct OutputExportSpec {
 ///    `path`.
 /// 4. **Resolution** — a `Value::Scalar` `resolution` field with `LENGTH`
 ///    dimension becomes `tess_tol` (its SI value); absent/non-LENGTH → `None`.
+/// 5. **Version** — a `Value::Enum { type_name: "STEPVersion", variant }`
+///    `version` field maps `AP203→Ap203`, `AP214→Ap214`, `AP242→Ap242`;
+///    absent / non-enum / unknown variant → [`reify_ir::StepSchema::Ap214`]
+///    (the DSL default `version : STEPVersion = STEPVersion.AP214`).
 ///
 /// Keying the target on the resolved `format` *value* (not the instance type
 /// name) is robust to user-defined Output occurrences that set
@@ -559,10 +569,24 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
         _ => None,
     };
 
+    // Gate 5: `version` STEPVersion enum → STEP schema; absent/unknown → default.
+    let step_schema = match fields.get("version") {
+        Some(Value::Enum { type_name, variant }) if type_name == "STEPVersion" => {
+            match variant.as_str() {
+                "AP203" => reify_ir::StepSchema::Ap203,
+                "AP214" => reify_ir::StepSchema::Ap214,
+                "AP242" => reify_ir::StepSchema::Ap242,
+                _ => reify_ir::StepSchema::default(),
+            }
+        }
+        _ => reify_ir::StepSchema::default(),
+    };
+
     Some(OutputExportSpec {
         format,
         path,
         tess_tol,
+        step_schema,
     })
 }
 
@@ -1599,6 +1623,7 @@ mod tests {
                 format: OutputTarget::File(reify_ir::ExportFormat::Stl),
                 path: "o.stl".to_string(),
                 tess_tol: Some(2e-4),
+                step_schema: reify_ir::StepSchema::Ap214,
             }),
             "STLOutput → File(Stl), path \"o.stl\", tess_tol 2e-4"
         );
@@ -1617,6 +1642,7 @@ mod tests {
                 format: OutputTarget::File(reify_ir::ExportFormat::Step),
                 path: "o2.step".to_string(),
                 tess_tol: None,
+                step_schema: reify_ir::StepSchema::Ap214,
             }),
             "STEPOutput → File(Step), path \"o2.step\", tess_tol None"
         );
