@@ -86,3 +86,90 @@ impl AmbientDefaults {
             .insert(type_name, entry);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `ResolvedAmbientDefault` whose `span.start` is `tag`, so the
+    /// resolver tests can tell *which* entry (file vs. purpose) was returned
+    /// purely by the returned span — the value/type are placeholders.
+    fn tagged_entry(tag: u32) -> ResolvedAmbientDefault {
+        ResolvedAmbientDefault {
+            value: reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident("placeholder".to_string()),
+                span: SourceSpan::empty(tag),
+            },
+            declared_type: Type::StructureRef("Material".to_string()),
+            span: SourceSpan::empty(tag),
+        }
+    }
+
+    #[test]
+    fn file_level_entry_resolves_at_file_scope() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+
+        let resolved = table
+            .resolve("Material", None)
+            .expect("file-level Material should resolve at file scope");
+        assert_eq!(resolved.span.start, 10);
+    }
+
+    #[test]
+    fn purpose_entry_wins_over_file_entry_innermost() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_entry(20));
+
+        // Innermost-wins: from inside purpose "P", the purpose entry shadows
+        // the file entry.
+        let resolved = table
+            .resolve("Material", Some("P"))
+            .expect("Material should resolve from inside purpose P");
+        assert_eq!(
+            resolved.span.start, 20,
+            "expected the PURPOSE entry (tag 20), not the file entry (tag 10)"
+        );
+    }
+
+    #[test]
+    fn file_scope_ignores_purpose_entry() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_entry(20));
+
+        // At file scope (purpose = None) the purpose-level entry is invisible.
+        let resolved = table
+            .resolve("Material", None)
+            .expect("Material should resolve at file scope");
+        assert_eq!(
+            resolved.span.start, 10,
+            "file scope must return the file entry (tag 10), not purpose P's (tag 20)"
+        );
+    }
+
+    #[test]
+    fn unknown_type_resolves_to_none() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+
+        assert!(table.resolve("Unknown", None).is_none());
+    }
+
+    #[test]
+    fn purpose_without_own_entry_falls_back_to_file_level() {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level("Material".to_string(), tagged_entry(10));
+        table.insert_purpose_level("P".to_string(), "Material".to_string(), tagged_entry(20));
+
+        // Purpose "Q" has no own Material entry → fall back to the file level.
+        let resolved = table
+            .resolve("Material", Some("Q"))
+            .expect("Material should fall back to the file level from purpose Q");
+        assert_eq!(
+            resolved.span.start, 10,
+            "purpose Q has no own entry; must fall back to the file entry (tag 10)"
+        );
+    }
+}
