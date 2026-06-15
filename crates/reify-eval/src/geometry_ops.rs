@@ -5686,34 +5686,61 @@ fn resolve_owner_solid_handle(
 
 /// Resolve a geometry-handle arg to a `GeometryHandleId` via `named_steps`.
 ///
-/// Matches both `CompiledExprKind::ValueRef(id)` and
-/// `CompiledExprKind::CrossSubGeometryRef(id)` — the established OR-pattern
-/// convention (reify-ir/src/expr.rs) — so the cross-sub `proc.build_volume`
-/// arg resolves whether it lowered to a forward-declared scoped `ValueRef` or a
-/// genuine-realization `CrossSubGeometryRef` (task 4358 ε, esc-4358-124).
+/// Matches three structural shapes — never evaluating the arg (the ordering
+/// invariant esc-4358-124: a geometry-query leaf must reduce to a `Literal`
+/// structurally, before any `eval_expr` pass):
 ///
-/// A cross-sub handle carries a scoped `<parent>.<sub>` entity stamp, and
-/// `seed_cross_sub_named_steps` keys it in `named_steps` by the composed
-/// `"<sub>.<member>"` key (engine_build.rs), so a dotted entity looks up that
-/// composed key; a plain same-template ref (dot-free entity) keeps the
-/// bare-member lookup. Returns `None` for any other expr shape or a missing
-/// `named_steps` entry — caller maps to the "unsupported arg shape → fall
-/// through" behaviour.
+/// * `CompiledExprKind::ValueRef(id)` / `CrossSubGeometryRef(id)` — the
+///   established OR-pattern convention (reify-ir/src/expr.rs). The `self.<sub>`
+///   cross-sub `proc.build_volume` arg resolves whether it lowered to a
+///   forward-declared scoped `ValueRef` or a genuine-realization
+///   `CrossSubGeometryRef`. A cross-sub handle carries a scoped
+///   `<parent>.<sub>` entity stamp, and `seed_cross_sub_named_steps` keys it in
+///   `named_steps` by the composed `"<sub>.<member>"` key (engine_build.rs), so
+///   a dotted entity looks up that composed key; a plain same-template ref
+///   (dot-free entity) keeps the bare-member lookup.
+/// * `CompiledExprKind::IndexAccess { object: ValueRef(proc), index:
+///   Literal("build_volume") }` — the cross-`let` structure-instance member
+///   access shape: `let proc = FdmPrinter()` is a `StructureRef`-typed value
+///   cell (NOT a `sub`) whose `.member` projection lowers to `IndexAccess` via
+///   SIR-α field projection (reify-compiler/src/expr.rs). Compose the same
+///   `"<binding>.<member>"` key that the cross-`let` seeding in
+///   `check_constraints_post_geometry` stamps — `<binding>` is the object
+///   ValueRef's bare member (the `proc` binding name), `<member>` is the
+///   string-literal index (task 4358 ε step-10).
+///
+/// Returns `None` for any other expr shape or a missing `named_steps` entry —
+/// caller maps to the "unsupported arg shape → fall through" behaviour.
 fn resolve_geometry_handle_arg(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
 ) -> Option<GeometryHandleId> {
-    let cell_id = match &expr.kind {
+    let key = match &expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id)
-        | reify_ir::CompiledExprKind::CrossSubGeometryRef(id) => id,
+        | reify_ir::CompiledExprKind::CrossSubGeometryRef(id) => {
+            // `rsplit_once('.')` is exactly "if entity contains '.', take the
+            // last segment as the sub name": `Some((_, sub))` ⟺ dotted entity,
+            // `sub` = everything after the final '.'
+            // (== `entity.rsplit('.').next().unwrap()`).
+            match id.entity.rsplit_once('.') {
+                Some((_, sub)) => format!("{}.{}", sub, id.member),
+                None => id.member.clone(),
+            }
+        }
+        reify_ir::CompiledExprKind::IndexAccess { object, index } => {
+            let (reify_ir::CompiledExprKind::ValueRef(obj_id)
+            | reify_ir::CompiledExprKind::CrossSubGeometryRef(obj_id)) = &object.kind
+            else {
+                return None;
+            };
+            let reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(member)) =
+                &index.kind
+            else {
+                return None;
+            };
+            format!("{}.{}", obj_id.member, member)
+        }
         _ => return None,
-    };
-    // `rsplit_once('.')` is exactly "if entity contains '.', take the last
-    // segment as the sub name": `Some((_, sub))` ⟺ dotted entity, `sub` =
-    // everything after the final '.' (== `entity.rsplit('.').next().unwrap()`).
-    let key = match cell_id.entity.rsplit_once('.') {
-        Some((_, sub)) => format!("{}.{}", sub, cell_id.member),
-        None => cell_id.member.clone(),
     };
     named_steps.get(&key).map(|kh| kh.id)
 }

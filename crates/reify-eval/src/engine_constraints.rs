@@ -823,7 +823,6 @@ impl Engine {
 
         let mut constraint_results = Vec::new();
         let mut diagnostics = Vec::new();
-        let empty_steps: HashMap<String, KernelHandle> = HashMap::new();
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);
@@ -836,10 +835,39 @@ impl Engine {
             // name, plus `<sub>.<member>` cross-sub keys seeded by
             // `seed_cross_sub_named_steps`). Absent only if the template realized
             // no geometry — then the fold finds no handles and leaves leaves as
-            // `Undef` (→ Indeterminate), matching the kernel-less path.
-            let named_steps = module_named_steps
+            // `Undef` (→ Indeterminate), matching the kernel-less path. Cloned
+            // (not borrowed) so the cross-`let` seeding below can extend it.
+            let mut named_steps = module_named_steps
                 .get(&template.name)
-                .unwrap_or(&empty_steps);
+                .cloned()
+                .unwrap_or_default();
+
+            // Task 4358 ε step-10: seed cross-`let` structure-instance handles so
+            // an inline `bounding_box(proc.build_volume)` leaf folds. A
+            // `let proc = FdmPrinter()` binding is a `StructureRef`-typed value
+            // cell (NOT a `sub`, so `seed_cross_sub_named_steps` does not cover
+            // it), and its child realizations were snapshotted under
+            // `module_named_steps[<def-name>]` when that template's realization
+            // loop ran. For each such cell, copy the child's `<member> → handle`
+            // entries under the composed `"<binding>.<member>"` key that
+            // `resolve_geometry_handle_arg` reconstructs from the `IndexAccess`
+            // member-access shape. `or_insert` lets a same-template realization
+            // handle win over a cross-`let` seed on key collision. This runs only
+            // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
+            // the realization geometry output stay byte-identical.
+            for cell in &template.value_cells {
+                let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
+                    continue;
+                };
+                let Some(child_steps) = module_named_steps.get(def_name) else {
+                    continue;
+                };
+                for (member, handle) in child_steps {
+                    named_steps
+                        .entry(format!("{}.{}", cell.id.member, member))
+                        .or_insert(*handle);
+                }
+            }
 
             // Fold each active constraint's geometry-query leaves to Literals
             // BEFORE the kernel-less checker runs (ordering invariant above). An
@@ -850,7 +878,7 @@ impl Engine {
                 .map(|c| {
                     crate::geometry_ops::rewrite_geometry_queries(
                         &c.expr,
-                        named_steps,
+                        &named_steps,
                         kernel,
                         &mut diagnostics,
                     )
