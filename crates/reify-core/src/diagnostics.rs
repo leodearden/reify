@@ -4038,6 +4038,40 @@ mod tests {
             "missing `has_location` in JSON must deserialize as true (backward-compat default)"
         );
     }
+
+    // --- OpContractViolation tests (task 4323 — E_OP_CONTRACT) ---
+    // Pairs with the undef-cause sink in `crates/reify-expr/src/lib.rs` (γ push
+    // sites: FunctionCall arm after `eval_builtin`, `eval_binop` after the strict
+    // undef-propagation check) and the `record_op_contract_failures` post-eval
+    // helper in `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::OpContractViolation` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_unresolved_name_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `OpContractViolation` is caught here.
+    ///
+    /// RED: the variant does not exist → compile fail.
+    /// GREEN after step-2 adds it to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_op_contract_violation_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::OpContractViolation);
+        assert_eq!(d.code, Some(DiagnosticCode::OpContractViolation));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::OpContractViolation` serializes
+    /// as `"OpContractViolation"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_op_contract_violation_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
+        assert_eq!(s, "\"OpContractViolation\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
