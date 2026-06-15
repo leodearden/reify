@@ -1,22 +1,30 @@
 //! Baseline ratchet tests for the PTODO detector (task δ, §6.6).
 //!
-//! Two tests:
+//! Tests:
 //!
 //! (A) **`baseline_is_well_formed`** — always-on, hermetic. Reads
 //!   `crates/reify-audit/ptodo-baseline.txt` (resolved via `CARGO_MANIFEST_DIR`
 //!   so it works in any worktree), asserts the file EXISTS, and validates every
-//!   non-empty line against the `path :: kind :: text` grammar.  RED until the
-//!   baseline is generated in step-11; GREEN permanently after.
+//!   non-empty line against the `path :: kind :: text` grammar. The committed
+//!   baseline is intentionally EMPTY — the §6.4 zero-residual-debt end state —
+//!   which this test accepts as well-formed (it asserts existence + grammar, not
+//!   non-emptiness).
+//!
+//! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
+//!   content through the shared `validate_baseline_content` validator, so the
+//!   grammar/taxonomy/sort rules have real coverage that does NOT go inert while
+//!   the committed baseline is empty.
 //!
 //! (B) **`live_findings_are_within_baseline`** — on-demand, `#[ignore]`.
 //!   Runs `ptodo::check` over the real working tree and asserts every live
-//!   fingerprint is a member of the committed baseline set.  Graceful skip if
-//!   the repo root or git is unavailable.  Mirrors the
-//!   `baseline_report_freshness` pattern.
+//!   source-marker fingerprint is a member of the committed baseline set
+//!   (`live ⊆ baseline`).  Graceful skip if the repo root or git is unavailable;
+//!   requires `REIFY_PTODO_TASKS_DB` for the liveness lane (see the test doc).
+//!   Mirrors the `baseline_report_freshness` pattern.
 //!
 //! User-observable signal:
-//!   `cargo test -p reify-audit --test ptodo_baseline`               (A only)
-//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + B)
+//!   `cargo test -p reify-audit --test ptodo_baseline`               (A + A′)
+//!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + A′ + B)
 //!
 //! On (B) failure — regenerate the baseline with the canonical generator
 //! (`src/bin/ptodo-baseline-gen.rs`). It is the SINGLE source of truth: it maps
@@ -66,18 +74,85 @@ const VALID_KINDS: &[&str] =
 // (A) Always-on well-formedness test
 // -----------------------------------------------------------------------
 
-/// Asserts that `ptodo-baseline.txt` exists and every non-empty line is a
-/// well-formed `path :: kind :: text` fingerprint triple.
+/// Validate one `path :: kind :: text` fingerprint line against the §6.6
+/// grammar. Returns `Err(reason)` when the line is ill-formed.
 ///
-/// Checks performed per line:
-/// - Matches the three-field `::` grammar (`path`, `kind`, `text` all non-empty).
-/// - `kind` ∈ the §8.3 taxonomy (untracked / malformed-cite / phantom-tracking /
-///   bare-ignore / orphaned / unknown-id).
-/// - `path` has a swept extension (`is_swept_ext`).
-/// - `path` is NOT allowlisted (`is_allowlisted`).
-/// - Lines are strictly sorted ascending (no duplicates, lexicographic order).
+/// Pure (no I/O) so the rules it encodes are exercised by the `validate_*`
+/// unit tests over synthetic content — independent of whether the committed
+/// `ptodo-baseline.txt` happens to be empty.
+fn check_baseline_line(line: &str) -> Result<(), String> {
+    // Grammar: exactly two ` :: ` separators → three fields.
+    let parts: Vec<&str> = line.splitn(3, " :: ").collect();
+    if parts.len() != 3 {
+        return Err(format!("expected 3 fields separated by ` :: ` but got {}", parts.len()));
+    }
+    let (fp_path, fp_kind, fp_text) = (parts[0], parts[1], parts[2]);
+
+    if fp_path.is_empty() {
+        return Err("empty path field".to_string());
+    }
+    if fp_kind.is_empty() {
+        return Err("empty kind field".to_string());
+    }
+    if fp_text.is_empty() {
+        // The no-colon fingerprint() branch emits exactly this shape; rejecting it
+        // here is what keeps such a finding out of the committed baseline.
+        return Err("empty text field".to_string());
+    }
+    // kind ∈ §8.3 taxonomy.
+    if !VALID_KINDS.contains(&fp_kind) {
+        return Err(format!("unknown kind {fp_kind:?}; valid kinds={VALID_KINDS:?}"));
+    }
+    // path has a swept extension …
+    if !is_swept_ext(fp_path) {
+        return Err(format!("path {fp_path:?} does not have a swept extension"));
+    }
+    // … and is NOT allowlisted (allowlisted paths never produce findings).
+    if is_allowlisted(fp_path) {
+        return Err(format!("path {fp_path:?} is allowlisted — it must not appear in the baseline"));
+    }
+    Ok(())
+}
+
+/// Validate baseline *content* against the full well-formedness contract: every
+/// non-empty line is a well-formed triple (`check_baseline_line`) AND the lines
+/// are strictly sorted ascending (which also forbids duplicates). Returns
+/// `Err(reason)` on the first violation.
 ///
-/// RED until step-11 generates the file; GREEN permanently after.
+/// An EMPTY input is valid — it is the §6.4 zero-residual end state. Because
+/// this is pure, the grammar/taxonomy/sort rules have real, permanent coverage
+/// via the `validate_*` unit tests below, rather than going inert whenever the
+/// committed baseline is empty.
+fn validate_baseline_content(content: &str) -> Result<(), String> {
+    let mut prev: Option<&str> = None;
+    for (lineno, line) in content.lines().enumerate() {
+        let n = lineno + 1;
+        if line.is_empty() {
+            continue;
+        }
+        check_baseline_line(line).map_err(|e| format!("line {n}: {e}; line={line:?}"))?;
+        if let Some(prev) = prev {
+            if line <= prev {
+                return Err(format!(
+                    "line {n}: baseline is not strictly sorted (duplicate or out of order); \
+                     {prev:?} >= {line:?}"
+                ));
+            }
+        }
+        prev = Some(line);
+    }
+    Ok(())
+}
+
+/// Asserts that `ptodo-baseline.txt` EXISTS and is well-formed
+/// (`validate_baseline_content`): every non-empty line is a `path :: kind ::
+/// text` triple with a §8.3-taxonomy `kind` on a swept, non-allowlisted source
+/// `path`, and the lines are strictly sorted ascending with no duplicates.
+///
+/// An empty baseline PASSES — it is the §6.4 "zero residual debt" success state,
+/// not a failure. This test therefore asserts existence + well-formedness, NOT
+/// non-emptiness; the grammar rules themselves stay covered, whether or not the
+/// committed file is empty, by the `validate_*` unit tests below.
 #[test]
 fn baseline_is_well_formed() {
     let path = baseline_path();
@@ -95,56 +170,79 @@ fn baseline_is_well_formed() {
     let content = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
 
-    // The file must end with a single newline (or be empty).
-    // Each non-empty line is one fingerprint triple.
-    let mut prev_line: Option<&str> = None;
-    for (lineno, line) in content.lines().enumerate() {
-        let n = lineno + 1;
-        if line.is_empty() {
-            continue;
-        }
-
-        // (1) Grammar: exactly two ` :: ` separators.
-        let parts: Vec<&str> = line.splitn(3, " :: ").collect();
-        assert_eq!(
-            parts.len(),
-            3,
-            "line {n}: expected 3 fields separated by ` :: ` but got {}; line={line:?}",
-            parts.len()
+    if let Err(e) = validate_baseline_content(&content) {
+        panic!(
+            "ptodo-baseline.txt is malformed: {e}\n\
+             Regenerate it with the canonical generator (see the module doc)."
         );
-        let (fp_path, fp_kind, fp_text) = (parts[0], parts[1], parts[2]);
-
-        assert!(!fp_path.is_empty(), "line {n}: empty path field; line={line:?}");
-        assert!(!fp_kind.is_empty(), "line {n}: empty kind field; line={line:?}");
-        assert!(!fp_text.is_empty(), "line {n}: empty text field; line={line:?}");
-
-        // (2) kind ∈ taxonomy.
-        assert!(
-            VALID_KINDS.contains(&fp_kind),
-            "line {n}: unknown kind {fp_kind:?}; valid kinds={VALID_KINDS:?}; line={line:?}"
-        );
-
-        // (3) path has a swept extension.
-        assert!(
-            is_swept_ext(fp_path),
-            "line {n}: path {fp_path:?} does not have a swept extension; line={line:?}"
-        );
-
-        // (4) path is NOT allowlisted (allowlisted paths never appear in findings).
-        assert!(
-            !is_allowlisted(fp_path),
-            "line {n}: path {fp_path:?} is allowlisted — it must not appear in the baseline; line={line:?}"
-        );
-
-        // (5) Strictly sorted ascending (no duplicates).
-        if let Some(prev) = prev_line {
-            assert!(
-                line > prev,
-                "line {n}: baseline is not strictly sorted; {prev:?} >= {line:?}"
-            );
-        }
-        prev_line = Some(line);
     }
+}
+
+// -----------------------------------------------------------------------
+// (A′) Synthetic-content coverage for the well-formedness rules
+//
+// The committed baseline is legitimately empty (zero residual debt), so
+// `baseline_is_well_formed` alone would leave every grammar/taxonomy/sort rule
+// inert (it would only exercise the `path.exists()` branch). These hermetic
+// unit tests drive crafted content straight through the SAME
+// `validate_baseline_content` validator, so the rules have real coverage that
+// does not depend on what the committed file contains.
+// -----------------------------------------------------------------------
+
+#[test]
+fn validate_accepts_empty_baseline() {
+    // The §6.4 zero-residual end state: an empty (or newline-only) file is valid.
+    assert!(validate_baseline_content("").is_ok());
+    assert!(validate_baseline_content("\n").is_ok());
+}
+
+#[test]
+fn validate_accepts_wellformed_sorted_triples() {
+    let good = "crates/reify-eval/src/dispatcher.rs :: orphaned :: #4592 status=done: x\n\
+                crates/reify-eval/src/engine_eval.rs :: untracked :: // TODO: y\n";
+    assert!(validate_baseline_content(good).is_ok(), "well-formed sorted content must pass");
+}
+
+#[test]
+fn validate_rejects_wrong_field_count() {
+    assert!(validate_baseline_content("crates/x/y.rs :: untracked\n").is_err());
+    assert!(validate_baseline_content("no separators at all\n").is_err());
+}
+
+#[test]
+fn validate_rejects_empty_text_field() {
+    // Exactly the shape the no-colon fingerprint() branch emits — it must be
+    // rejected so such a finding can never silently enter the baseline.
+    assert!(validate_baseline_content("crates/x/y.rs :: untracked :: \n").is_err());
+}
+
+#[test]
+fn validate_rejects_unknown_kind() {
+    assert!(validate_baseline_content("crates/x/y.rs :: bogus-kind :: // TODO: z\n").is_err());
+}
+
+#[test]
+fn validate_rejects_non_swept_extension() {
+    assert!(validate_baseline_content("docs/notes.md :: untracked :: prose\n").is_err());
+}
+
+#[test]
+fn validate_rejects_allowlisted_path() {
+    // crates/reify-audit/ is allowlisted (the detector's own crate self-matches).
+    assert!(
+        validate_baseline_content("crates/reify-audit/src/ptodo.rs :: untracked :: x\n").is_err()
+    );
+}
+
+#[test]
+fn validate_rejects_unsorted_or_duplicate() {
+    let unsorted = "crates/b.rs :: untracked :: x\n\
+                    crates/a.rs :: untracked :: y\n";
+    assert!(validate_baseline_content(unsorted).is_err(), "out-of-order lines must fail");
+
+    let duplicate = "crates/a.rs :: untracked :: x\n\
+                     crates/a.rs :: untracked :: x\n";
+    assert!(validate_baseline_content(duplicate).is_err(), "duplicate lines must fail");
 }
 
 // -----------------------------------------------------------------------
@@ -152,18 +250,37 @@ fn baseline_is_well_formed() {
 // -----------------------------------------------------------------------
 
 /// On-demand: run `ptodo::check` over the real repo and assert every live
-/// fingerprint is ∈ the committed baseline.
+/// source-marker fingerprint is ∈ the committed baseline (a subset check —
+/// `live ⊆ baseline`).
+///
+/// **Task-DB requirement.** `ptodo::check` opens its OWN task DB via
+/// `tasks_db_path(project_root)`, which honors the `REIFY_PTODO_TASKS_DB`
+/// override (it does NOT read `ctx.conn`/`ctx.task_metadata` — those are
+/// P1/P2/P5 inputs the PTODO lanes ignore). For the β liveness lane to run,
+/// point `REIFY_PTODO_TASKS_DB` at the real `tasks.db`:
+///
+/// ```text
+/// REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \
+///   cargo test -p reify-audit --test ptodo_baseline -- --ignored
+/// ```
+///
+/// Without it (e.g. a task worktree whose `.taskmaster/` is untracked) the
+/// liveness lane degrades to STRUCTURAL-only. The subset check stays SOUND
+/// either way: the committed baseline is generated WITH the DB (a superset of
+/// orphaned/unknown-id + structural fingerprints), so a structural-only live
+/// set is still a subset. Liveness convergence is only meaningfully exercised
+/// when the DB is supplied.
 ///
 /// Graceful-skip if:
-/// - The baseline file does not exist (step-11 not yet run).
+/// - The baseline file does not exist (not yet generated).
 /// - `git` is not available (CI environments without a full checkout).
 /// - The repo root cannot be determined.
 ///
-/// On failure: regenerate the baseline per the step-11 command in the module
-/// doc, then re-run this test.
+/// On failure: regenerate the baseline with the canonical generator (see the
+/// module doc), then re-run this test.
 #[ignore = "on-demand convergence check; run via --ignored. Requires a real \
-    repo checkout with git and (for liveness findings) a tasks.db. \
-    Graceful-skip when env is unavailable."]
+    repo checkout with git and, for the liveness lane, REIFY_PTODO_TASKS_DB \
+    pointed at the real tasks.db. Graceful-skip when env is unavailable."]
 #[test]
 fn live_findings_are_within_baseline() {
     // Graceful-skip if baseline not yet generated.
@@ -205,6 +322,13 @@ fn live_findings_are_within_baseline() {
         .collect();
 
     // Run ptodo::check over the real working tree.
+    //
+    // `conn` (in-memory), `jc`, and `task_metadata` are INERT placeholders: the
+    // PTODO lanes read none of them. The β liveness lane opens its own task DB
+    // via `tasks_db_path(project_root)` (honoring REIFY_PTODO_TASKS_DB; see the
+    // test doc), so liveness classification depends on that env var, NOT on this
+    // empty `conn`. With the DB absent the lane degrades to structural-only and
+    // the subset check below still holds against the (superset) baseline.
     use reify_audit::{AuditContext, MockJCodemunchOps, RealGitOps};
     use rusqlite::Connection;
     use std::collections::HashMap;
