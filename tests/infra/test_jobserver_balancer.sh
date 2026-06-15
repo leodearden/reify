@@ -28,6 +28,7 @@ _BALANCER_PID=""
 _MERGE_FIFO=""
 _TASK_FIFO=""
 _FIXTURE_TOKENS=""
+_PSI_FIXTURE=""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # fionread <fifo>
@@ -82,23 +83,76 @@ PY
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# start_balancer <tokens> <poll_interval_seconds>
+# write_psi_fixture <path> <avg10>
+#   Write a kernel-format /proc/pressure/cpu fixture file so the daemon reads
+#   a deterministic pressure value during tests.
+#   Format (matches kernel layout):
+#     some avg10=<avg10> avg60=0.00 avg300=0.00 total=0
+#     full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+# ──────────────────────────────────────────────────────────────────────────────
+write_psi_fixture() {
+    local path="$1"
+    local avg10="$2"
+    printf 'some avg10=%s avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        "$avg10" > "$path"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# read_held_back_file <path>
+#   Read the held-back state file (cat → int, default 0 on error/absence).
+#   Handles: absent file → 0; garbage content → 0; valid integer → value.
+# ──────────────────────────────────────────────────────────────────────────────
+read_held_back_file() {
+    local path="$1"
+    local val
+    val="$(cat "$path" 2>/dev/null || true)"
+    case "$val" in
+        ''|*[!0-9]*) echo 0 ;;
+        *) echo "$val" ;;
+    esac
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# start_balancer <tokens> <poll_interval_seconds> [psi_fixture_path]
 #   Launch the balancer daemon in the background against mktemp FIFOs.
 #   Populates _BALANCER_PID, _MERGE_FIFO, _TASK_FIFO, _FIXTURE_TOKENS.
 #   NEVER uses the live /tmp/reify-jobserver-* paths or systemctl.
+#
+#   psi_fixture_path (optional): path to a PSI fixture file to inject via
+#     REIFY_JOBSERVER_PSI_PROC_PATH.  When ABSENT, a low-pressure fixture
+#     (avg10=0.00) is created automatically and stored in _PSI_FIXTURE so
+#     existing Blocks 4/11 stay pure-C4 regardless of real host CPU pressure
+#     (prevents flake once step-8 wires PSI-reading into the daemon).
+#     When PRESENT, the caller owns the fixture file lifecycle.
 # ──────────────────────────────────────────────────────────────────────────────
 start_balancer() {
     local tokens="${1:-4}"
     local poll="${2:-0.05}"
+    local psi_fixture_arg="${3:-}"
 
     _MERGE_FIFO="$(mktemp -u /tmp/test-balancer-merge-XXXXXX)"
     _TASK_FIFO="$(mktemp -u /tmp/test-balancer-task-XXXXXX)"
     _FIXTURE_TOKENS="$tokens"
 
+    # PSI fixture: auto-create low-pressure fixture if caller didn't supply one.
+    # The env var is ignored by the current daemon (before step-2 implements
+    # read_pressure), so Blocks 4/11 pass unchanged; once step-8 wires real PSI
+    # reading, the fixture keeps them deterministically at avg10=0.00 → no hold.
+    local psi_proc_path
+    if [ -n "$psi_fixture_arg" ]; then
+        psi_proc_path="$psi_fixture_arg"
+        # Caller owns this file; do NOT track in _PSI_FIXTURE for cleanup.
+    else
+        _PSI_FIXTURE="$(mktemp /tmp/test-balancer-psi-XXXXXX)"
+        write_psi_fixture "$_PSI_FIXTURE" "0.00"
+        psi_proc_path="$_PSI_FIXTURE"
+    fi
+
     REIFY_JOBSERVER_MERGE_FIFO="$_MERGE_FIFO" \
     REIFY_JOBSERVER_TASK_FIFO="$_TASK_FIFO" \
     REIFY_JOBSERVER_TOKENS="$tokens" \
     REIFY_JOBSERVER_POLL_INTERVAL="$poll" \
+    REIFY_JOBSERVER_PSI_PROC_PATH="$psi_proc_path" \
         python3 "$BALANCER" &
     _BALANCER_PID=$!
 }
@@ -139,10 +193,12 @@ _cleanup_balancer() {
         wait "$_BALANCER_PID" 2>/dev/null || true
     fi
     _BALANCER_PID=""
-    [ -n "$_MERGE_FIFO" ] && rm -f "$_MERGE_FIFO" || true
-    [ -n "$_TASK_FIFO"  ] && rm -f "$_TASK_FIFO"  || true
+    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO"  || true
+    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO"   || true
+    [ -n "$_PSI_FIXTURE" ] && rm -f "$_PSI_FIXTURE" || true
     _MERGE_FIFO=""
     _TASK_FIFO=""
+    _PSI_FIXTURE=""
 }
 
 trap _cleanup_balancer EXIT
