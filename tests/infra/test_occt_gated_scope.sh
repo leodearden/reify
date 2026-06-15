@@ -252,12 +252,14 @@ assert "no live nextest show-config invocation in this script (compile-free Test
     "
 
 # Test 10 (compile-free parse, default): gen-nextest-config.sh with
-# REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file whose [test-groups]
-# section has occt max-threads = 24. Section-scoped awk extraction; no
-# cargo/nextest invocation, no workspace compile (task 4613, esc-4607-213).
-assert "gen-nextest-config.sh default: [test-groups] occt max-threads resolves to 24" \
+# REIFY_OCCT_NEXTEST_MAX_THREADS unset and REIFY_OCCT_NPROC=32/MEMTOTAL_GIB=128
+# injected (host-independent: workstation profile min(24,32,64)=24, task 4621)
+# produces a config file whose [test-groups] section has occt max-threads = 24.
+# Section-scoped awk extraction; no cargo/nextest invocation, no workspace compile
+# (task 4613, esc-4607-213).
+assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): [test-groups] occt max-threads resolves to 24" \
     bash -c "
-        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
         val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
         rm -f \"\$cfg\"
         [ \"\$val\" = \"24\" ]
@@ -273,12 +275,13 @@ assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: [test-groups] oc
         [ \"\$val\" = \"7\" ]
     "
 
-# Test 12a (fallback, no nextest required): gen-nextest-config.sh default output
-# contains the TOML literal 'occt = { max-threads = 24 }' so the mechanism has
-# coverage even when nextest is absent from PATH.
-assert "gen-nextest-config.sh default: output file contains TOML 'occt = { max-threads = 24 }'" \
+# Test 12a (fallback, no nextest required): gen-nextest-config.sh with
+# REIFY_OCCT_NPROC=32/MEMTOTAL_GIB=128 (host-independent workstation profile,
+# task 4621) default output contains the TOML literal 'occt = { max-threads = 24 }'
+# so the mechanism has coverage even when nextest is absent from PATH.
+assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): output file contains TOML 'occt = { max-threads = 24 }'" \
     bash -c "
-        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
         rc=0
         grep -qF 'occt = { max-threads = 24 }' \"\$cfg\" || rc=1
         rm -f \"\$cfg\"
@@ -293,6 +296,51 @@ assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: output file cont
         grep -qF 'occt = { max-threads = 7 }' \"\$cfg\" || rc=1
         rm -f \"\$cfg\"
         exit \$rc
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 13a–13c (task 4621): host-relative nproc bound (RED until step-2 impl).
+#
+# REIFY_OCCT_NPROC injects the CPU count so the derivation is deterministically
+# testable on ANY host (workstation 32t or laptop 16t).  REIFY_OCCT_MEMTOTAL_GIB
+# is set high (999) so the RAM term (not yet implemented in step-2; added in step-4)
+# does not bind and confound these nproc-focused assertions.
+#
+# Derivation (step-2 and beyond): cap = min(HARD_CAP=24, nproc, [ram_bound])
+#   HARD_CAP from REIFY_OCCT_NEXTEST_HARD_CAP (default 24).
+#   nproc from REIFY_OCCT_NPROC if valid, else system nproc.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 13a–13c (task 4621): host-relative nproc bound for OCCT cap ---"
+
+# Test 13a: REIFY_OCCT_NPROC=16 → cap=16 (nproc < HARD_CAP=24).
+# RED against current code (always emits 24 regardless of nproc).
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=16: [test-groups] occt max-threads resolves to 16 (nproc binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=999 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"16\" ]
+    "
+
+# Test 13b: REIFY_OCCT_NPROC=40 → cap=24 (nproc > HARD_CAP; ceiling holds).
+# Guard: ensures nproc > HARD_CAP does not break the hard ceiling.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=40: [test-groups] occt max-threads resolves to 24 (HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=40 REIFY_OCCT_MEMTOTAL_GIB=999 env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"24\" ]
+    "
+
+# Test 13c: explicit REIFY_OCCT_NEXTEST_MAX_THREADS=7 wins verbatim even with
+# REIFY_OCCT_NPROC=16 present (explicit override escape hatch is preserved).
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7 wins over REIFY_OCCT_NPROC=16: resolves to 7" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=999 bash \"${GEN_CFG}\")
+        val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"7\" ]
     "
 
 test_summary
