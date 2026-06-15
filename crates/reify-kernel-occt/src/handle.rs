@@ -1814,6 +1814,127 @@ mod tests {
         );
     }
 
+    /// Real-OCCT schema selection through the new `export_with_options`.
+    ///
+    /// Asserts the declared STEP schema reaches the OCCT writer and is
+    /// observable in the written FILE_SCHEMA. The assertions use the actual
+    /// OCCT EXPRESS schema identifiers (verified against linked OCCT 7.9.3):
+    /// AP203 → `CONFIG_CONTROL_DESIGN`, AP214 → `AUTOMOTIVE_DESIGN`,
+    /// AP242 → a name containing `AP242`. The literal token "AP203" is never
+    /// written by OCCT, so we assert the EXPRESS schema name instead.
+    ///
+    /// All three exports run in one process, so they share the process-global
+    /// `write.step.schema` static — this is exactly the case the per-call
+    /// `Interface_Static::SetCVal` must make deterministic.
+    #[test]
+    fn export_with_options_selects_step_schema() {
+        use reify_ir::{ExportFormat, ExportOptions, StepSchema};
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+
+        // (a) AP203 → CONFIG_CONTROL_DESIGN, never AUTOMOTIVE_DESIGN.
+        let mut buf_203 = Vec::new();
+        let w_203 = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions {
+                    step_schema: StepSchema::Ap203,
+                },
+                &mut buf_203,
+            )
+            .unwrap();
+        let content_203 = String::from_utf8(buf_203).unwrap();
+        assert!(
+            content_203.contains("CONFIG_CONTROL_DESIGN"),
+            "AP203 export must write the CONFIG_CONTROL_DESIGN EXPRESS schema"
+        );
+        assert!(
+            !content_203.contains("AUTOMOTIVE_DESIGN"),
+            "AP203 export must NOT write the AP214 AUTOMOTIVE_DESIGN schema"
+        );
+        assert!(w_203.is_empty(), "AP203 export raises no warnings");
+
+        // (b) default (AP214) → AUTOMOTIVE_DESIGN.
+        let mut buf_def = Vec::new();
+        let w_def = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions::default(),
+                &mut buf_def,
+            )
+            .unwrap();
+        let content_def = String::from_utf8(buf_def).unwrap();
+        assert!(
+            content_def.contains("AUTOMOTIVE_DESIGN"),
+            "default (AP214) export must write the AUTOMOTIVE_DESIGN schema"
+        );
+        assert!(w_def.is_empty());
+
+        // (c) The schema really changed: AP203 and AP214 bytes differ.
+        assert_ne!(
+            content_203, content_def,
+            "AP203 and AP214 exports must differ in their FILE_SCHEMA"
+        );
+
+        // (d) AP242 → schema name contains "AP242". OCCT 7.9.3 supports
+        // AP242DIS, so the happy path succeeds with no fallback warning.
+        let mut buf_242 = Vec::new();
+        let w_242 = handle
+            .export_with_options(
+                gh.id,
+                ExportFormat::Step,
+                &ExportOptions {
+                    step_schema: StepSchema::Ap242,
+                },
+                &mut buf_242,
+            )
+            .unwrap();
+        let content_242 = String::from_utf8(buf_242).unwrap();
+        assert!(
+            content_242.contains("AP242"),
+            "AP242 export must write a schema name containing AP242"
+        );
+        assert!(
+            w_242.is_empty(),
+            "OCCT 7.9.3 supports AP242DIS — AP242 happy path raises no warning"
+        );
+    }
+
+    /// The plain `export(Step)` path is unchanged by the options plumbing: it
+    /// still writes the ISO-10303-21 header and defaults to the AP214
+    /// AUTOMOTIVE_DESIGN schema (the per-call SetCVal on the default path
+    /// keeps this deterministic even after a prior AP203 export in-process).
+    #[test]
+    fn plain_export_step_still_writes_default_ap214_schema() {
+        let handle = super::OcctKernelHandle::spawn();
+        let op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(20.0),
+            depth: Value::Real(30.0),
+        };
+        let gh = handle.execute(&op).unwrap();
+        let mut buf = Vec::new();
+        handle
+            .export(gh.id, reify_ir::ExportFormat::Step, &mut buf)
+            .unwrap();
+        let content = String::from_utf8(buf).unwrap();
+        assert!(
+            content.contains("ISO-10303-21"),
+            "plain export must still write the ISO-10303-21 header"
+        );
+        assert!(
+            content.contains("AUTOMOTIVE_DESIGN"),
+            "plain export must default to the AP214 AUTOMOTIVE_DESIGN schema"
+        );
+    }
+
     #[test]
     fn export_unsupported_format_returns_error() {
         // Stl is now wired; use Obj (explicitly unsupported) to pin the
