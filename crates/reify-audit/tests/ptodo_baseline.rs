@@ -18,21 +18,22 @@
 //!   `cargo test -p reify-audit --test ptodo_baseline`               (A only)
 //!   `cargo test -p reify-audit --test ptodo_baseline -- --ignored`  (A + B)
 //!
-//! On (B) failure — regenerate the baseline (step-11 command):
-//!   ```
+//! On (B) failure — regenerate the baseline with the canonical generator
+//! (`src/bin/ptodo-baseline-gen.rs`). It is the SINGLE source of truth: it maps
+//! `ptodo::check` findings through the SAME `ptodo::fingerprint` this test uses,
+//! so generation and the ratchet check can never drift (PRD §6.6). Do NOT hand-
+//! derive fingerprints with `sed`/`jq` — a second derivation reintroduces the
+//! drift this design exists to prevent.
+//!   ```text
 //!   REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \
-//!     cargo run -p reify-audit --bin reify-audit -- \
-//!       --pattern PTODO --project-root /home/leo/src/reify 2>/dev/null \
-//!     | grep '^\[Medium\] PTodo' \
-//!     | while read line; do
-//!         path=$(echo "$line" | sed 's/.*task=\([^:]*\):.*/\1/')
-//!         kind=$(echo "$line" | sed 's/.*task=[^:]*: \([a-z-]*\):.*/\1/')
-//!         text=$(echo "$line" | sed 's/.*task=[^:]*: [a-z-]*: line [0-9]*: //')
-//!         echo "$path :: $kind :: $text"
-//!       done | sort -u > crates/reify-audit/ptodo-baseline.txt
+//!     cargo run -p reify-audit --bin ptodo-baseline-gen -- \
+//!       --project-root /home/leo/src/reify \
+//!     > crates/reify-audit/ptodo-baseline.txt
 //!   ```
-//!   (Or use the `fingerprint()` Rust derivation via a small binary/script
-//!   that calls `ptodo::check` and maps findings through `ptodo::fingerprint`.)
+//!   `REIFY_PTODO_TASKS_DB` must point at the real `tasks.db` so the β liveness
+//!   lane runs and orphaned/unknown-id residue is captured as a SUPERSET (a task
+//!   worktree's `.taskmaster/` is untracked, so without it the lane degrades to
+//!   structural-only).
 
 use reify_audit::ptodo::{fingerprint, is_allowlisted, is_swept_ext};
 use std::collections::HashSet;
@@ -84,10 +85,11 @@ fn baseline_is_well_formed() {
     assert!(
         path.exists(),
         "ptodo-baseline.txt not found at {path:?}.\n\
-         Run step-11 to generate it:\n\
+         Generate it with the canonical generator:\n\
          REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \\\n\
-           cargo run -p reify-audit --bin reify-audit -- \\\n\
-             --pattern PTODO --project-root /home/leo/src/reify"
+           cargo run -p reify-audit --bin ptodo-baseline-gen -- \\\n\
+             --project-root /home/leo/src/reify \\\n\
+           > crates/reify-audit/ptodo-baseline.txt"
     );
 
     let content = std::fs::read_to_string(&path)
@@ -254,13 +256,12 @@ fn live_findings_are_within_baseline() {
     assert!(
         violations.is_empty(),
         "{} live PTODO finding(s) are not in the committed baseline:\n{}\n\n\
-         Regenerate the baseline (step-11 command):\n\
+         Regenerate the baseline with the canonical generator (it reuses the \
+         SAME ptodo::fingerprint, so it cannot drift from this check):\n\
          REIFY_PTODO_TASKS_DB=/home/leo/src/reify/.taskmaster/tasks/tasks.db \\\n\
-           cargo run -p reify-audit --bin reify-audit -- \\\n\
-             --pattern PTODO --project-root /home/leo/src/reify 2>/dev/null \\\n\
-           | tee /tmp/ptodo-findings.txt\n\
-         Then derive fingerprints via ptodo::fingerprint() and write to \
-         crates/reify-audit/ptodo-baseline.txt (sorted, deduplicated).",
+           cargo run -p reify-audit --bin ptodo-baseline-gen -- \\\n\
+             --project-root /home/leo/src/reify \\\n\
+           > crates/reify-audit/ptodo-baseline.txt",
         violations.len(),
         violations.join("\n"),
     );
