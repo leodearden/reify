@@ -639,12 +639,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
         // DFM diagnostics carry no DiagnosticCode, so `d.code.is_none()` prevents
         // double-catching any coded diagnostic already handled above.
+        // Gated on `has_dfm_rule` to avoid escalating unrelated Error-severity
+        // code-less diagnostics (e.g. FEA "no registered compute trampoline"
+        // from modules without DFMRule — those must remain exit 0 under check).
         // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
         // exit 0, never a false positive (C1 graceful degradation).
-        if result
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.code.is_none())
+        if has_dfm_rule
+            && result
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == Severity::Error && d.code.is_none())
         {
             return ExitCode::FAILURE;
         }
