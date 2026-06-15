@@ -104,6 +104,12 @@ except ValueError as _exc:
     )
     sys.exit(1)
 
+# Path to the kernel PSI file (testability seam: override via env to point at a
+# fixture file so tests can inject deterministic pressure values without root).
+PSI_PROC_PATH: str = os.environ.get(
+    "REIFY_JOBSERVER_PSI_PROC_PATH", "/proc/pressure/cpu"
+)
+
 # Token byte: '+' (0x2b) — matches the retired printf/tr seeder for byte-level
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
@@ -123,6 +129,30 @@ def fionread(fd: int) -> int:
     buf = struct.pack("i", 0)
     result = fcntl.ioctl(fd, termios.FIONREAD, buf)
     return struct.unpack("i", result)[0]
+
+
+def read_pressure(proc_path: str):
+    """Parse a /proc/pressure/cpu-format file and return avg10 as a float.
+
+    Scans the file for the line starting with 'some', then extracts the
+    'avg10=' field.  Returns None on any OSError or parse failure — fail-open:
+    an unreadable PSI file must never wedge the build.  This mirrors
+    verify.sh's _psi_should_pass() missing-PSI branch.
+
+    Port of verify.sh's awk idiom: /^some/ → split on 'avg10=' token.
+
+    Returns float (the avg10 value) or None (on any failure).
+    """
+    try:
+        with open(proc_path) as _f:
+            for _line in _f:
+                if _line.startswith("some"):
+                    for _token in _line.split():
+                        if _token.startswith("avg10="):
+                            return float(_token[len("avg10="):])
+        return None  # 'some' line absent in file
+    except (OSError, ValueError):
+        return None  # unreadable file or malformed float — fail-open
 
 
 def make_fifo(path: str) -> None:
