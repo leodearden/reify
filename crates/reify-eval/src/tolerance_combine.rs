@@ -1681,4 +1681,68 @@ mod tests {
             "a non-StructureInstance value must not yield a spec"
         );
     }
+
+    /// A `STEPVersion::<variant>` enum value (the shape of a STEPOutput
+    /// occurrence's `version` field).
+    fn step_ver(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "STEPVersion".to_string(),
+            variant: variant.to_string(),
+        }
+    }
+
+    /// The `version` field of a STEPOutput occurrence selects the STEP schema:
+    /// `STEPVersion.AP203`→`Ap203`, `AP242`→`Ap242`, and an absent `version`
+    /// defaults to `Ap214` (matching the DSL default
+    /// `version : STEPVersion = STEPVersion.AP214`). The reader keys on the
+    /// enum's `STEPVersion` type name and variant, mirroring how `format`
+    /// reads the `OutputFormat` enum.
+    #[test]
+    fn extract_output_export_spec_reads_step_version_into_schema() {
+        use reify_ir::StepSchema;
+
+        // version = STEPVersion.AP203 → Ap203.
+        let step_203 = struct_instance(
+            "STEPOutput",
+            &[
+                ("format", out_fmt("STEP")),
+                ("path", Value::String("a.step".to_string())),
+                ("version", step_ver("AP203")),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&step_203).map(|s| s.step_schema),
+            Some(StepSchema::Ap203),
+            "version STEPVersion.AP203 → StepSchema::Ap203"
+        );
+
+        // version = STEPVersion.AP242 → Ap242.
+        let step_242 = struct_instance(
+            "STEPOutput",
+            &[
+                ("format", out_fmt("STEP")),
+                ("path", Value::String("b.step".to_string())),
+                ("version", step_ver("AP242")),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&step_242).map(|s| s.step_schema),
+            Some(StepSchema::Ap242),
+            "version STEPVersion.AP242 → StepSchema::Ap242"
+        );
+
+        // No `version` field → default Ap214 (the DSL default).
+        let step_default = struct_instance(
+            "STEPOutput",
+            &[
+                ("format", out_fmt("STEP")),
+                ("path", Value::String("c.step".to_string())),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&step_default).map(|s| s.step_schema),
+            Some(StepSchema::Ap214),
+            "absent version → StepSchema::Ap214 (DSL default)"
+        );
+    }
 }
