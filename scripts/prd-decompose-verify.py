@@ -56,6 +56,91 @@ _alpha_spec.loader.exec_module(pcc)
 
 
 # ---------------------------------------------------------------------------
+# Premise — input record from the Enumerator / leaf fixture
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Premise:
+    """A single premise asserted by a decompose-leaf signal.
+
+    Fields:
+        text            — human-readable assertion statement
+        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir"
+        fixture         — repo-relative path to the .ri fixture file
+        match           — match predicate dict for α's probe (exit_code, stderr_contains, …)
+        capability      — optional human name; falls back to text if None
+    """
+    text: str
+    assertion_kind: str
+    fixture: str
+    match: Dict[str, Any]
+    capability: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Assertion-kind → (probe_kind, observation) mapping
+# ---------------------------------------------------------------------------
+
+# Deterministic binding table (PRD D1 / negative-assertion mandate):
+#   rejection → check / present  — the rejection FIRES → exit_code 1 → match satisfied → PRESENT
+#                                   if reify accepts silently (exit 0) → match fails → ABSENT → FAIL
+#   parses    → grammar / present — tree-sitter exits 0 (no parse errors) → PRESENT → PASS
+#   resolves  → check / present  — reify check exits 0 → match {exit_code:0} satisfied → PRESENT
+#   produces  → ir / present     — reify eval exits ≠ 0 with signature → PRESENT → PASS
+#   ir        → ir / absent      — reify eval exits 0 (clean) → ABSENT → expected absent → PASS
+_ASSERTION_KIND_MAP: Dict[str, tuple] = {
+    "rejection": ("check",   "present"),
+    "parses":    ("grammar", "present"),
+    "resolves":  ("check",   "present"),
+    "produces":  ("ir",      "present"),
+    "ir":        ("ir",      "absent"),
+}
+
+
+def premise_to_probe(premise: Premise) -> Dict[str, Any]:
+    """Bind a Premise record to an α probe dict.
+
+    The binding is deterministic — assertion_kind → (probe_kind, observation) from
+    _ASSERTION_KIND_MAP; the match dict is passed through verbatim from the premise.
+
+    Negative-assertion mandate (D1): a "rejection" premise binds observation="present"
+    (NOT "absent").  A "revolute rejects a non-axis arg" assertion must probe that the
+    rejection FIRES (exit_code:1 → match satisfied → PRESENT → PASS).  If reify silently
+    accepts (exit 0), the match is not satisfied → ABSENT → expected "present" → FAIL.
+    This is the exact W1 polarity guard: a human or LLM would naturally write "absent"
+    (the rejection is absent), which inverts the test sense and masks the 4575 bug.
+
+    Args:
+        premise: A Premise record from the Enumerator or a leaf fixture.
+
+    Returns:
+        A dict in α's committed-probe-set shape, accepted by pcc.load_probe_set.
+
+    Raises:
+        ValueError: if the assertion_kind is unknown.
+    """
+    kind = premise.assertion_kind
+    if kind not in _ASSERTION_KIND_MAP:
+        raise ValueError(
+            f"unknown assertion_kind {kind!r}; "
+            f"must be one of {sorted(_ASSERTION_KIND_MAP)}"
+        )
+
+    probe_kind, observation = _ASSERTION_KIND_MAP[kind]
+    capability = premise.capability if premise.capability is not None else premise.text
+
+    return {
+        "capability": capability,
+        "probe_kind": probe_kind,
+        "fixture": premise.fixture,
+        "expected": {
+            "observation": observation,
+            "match": premise.match,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # main() stub — returns 64 (EX_USAGE) until fully implemented
 # ---------------------------------------------------------------------------
 
