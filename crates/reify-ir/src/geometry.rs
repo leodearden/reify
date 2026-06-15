@@ -7965,4 +7965,78 @@ mod tests {
         let w = ExportWarning::StepAp242Fallback;
         assert_eq!(w, ExportWarning::StepAp242Fallback);
     }
+
+    /// A minimal kernel that only implements the required `export`: it writes
+    /// a deterministic marker so the default `export_with_options` delegation
+    /// can be proven byte-for-byte. It does NOT override
+    /// `export_with_options`, so it exercises the trait DEFAULT.
+    struct EchoExportKernel;
+
+    impl GeometryKernel for EchoExportKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(
+                "not used by this test".into(),
+            ))
+        }
+        fn query(&self, _q: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed("not used by this test".into()))
+        }
+        fn export(
+            &self,
+            handle: GeometryHandleId,
+            format: ExportFormat,
+            writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            // Deterministic, input-dependent bytes so delegation is provable.
+            write!(writer, "EXPORT:{:?}:{}", format, handle.0)
+                .map_err(|e| ExportError::IoError(e.to_string()))
+        }
+        fn tessellate(&self, _h: GeometryHandleId, _t: f64) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(
+                "not used by this test".into(),
+            ))
+        }
+    }
+
+    /// The trait DEFAULT `export_with_options` must delegate to `export`:
+    /// it writes exactly the bytes a plain `export` writes and returns an
+    /// empty `Vec<ExportWarning>` (no kernel knows about options unless it
+    /// overrides the method). This is what keeps every non-OCCT kernel
+    /// (manifold, openvdb, mocks, GUI) compiling unchanged.
+    #[test]
+    fn default_export_with_options_delegates_to_export() {
+        let kernel = EchoExportKernel;
+        let handle = GeometryHandleId(7);
+        let format = ExportFormat::Step;
+
+        // Reference bytes from the plain `export`.
+        let mut expected = Vec::new();
+        kernel.export(handle, format, &mut expected).unwrap();
+
+        // The default `export_with_options` must produce the same bytes and
+        // no warnings, ignoring the supplied options.
+        let mut actual = Vec::new();
+        let warnings = kernel
+            .export_with_options(handle, format, &ExportOptions::default(), &mut actual)
+            .unwrap();
+
+        assert_eq!(actual, expected, "default delegation must write identical bytes");
+        assert!(warnings.is_empty(), "default delegation must return no warnings");
+
+        // A non-default schema is likewise ignored by the default impl.
+        let mut actual_ap203 = Vec::new();
+        let warnings_ap203 = kernel
+            .export_with_options(
+                handle,
+                format,
+                &ExportOptions { step_schema: StepSchema::Ap203 },
+                &mut actual_ap203,
+            )
+            .unwrap();
+        assert_eq!(
+            actual_ap203, expected,
+            "default impl ignores options entirely — bytes are schema-independent"
+        );
+        assert!(warnings_ap203.is_empty());
+    }
 }
