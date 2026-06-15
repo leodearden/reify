@@ -296,3 +296,46 @@ let coarse_case = LoadCase(
 // envelope_von_mises also returns Undef for the same reason.
 // Inspect coarse_sanity independently via result_for(results, "coarse_sanity").
 ```
+
+---
+
+## 5. Performance notes
+
+### Volume-mesh cache reuse
+
+When `material`, `length`, `width`, `height` (the first four `solve_load_cases` parameters) together with the shared `options.mesh_size` and `options.element_order` are identical across all cases, the volume-mesh ComputeNode cache hits **once** and is reused for every case's assembly step. The v0.3 cache key excludes `loads` and `supports` from the mesh hash — boundary conditions do not affect the meshing step.
+
+This makes the canonical "shared BCs, per-case load variation" shape (like the bracket example) as cache-efficient as a single-case solve: meshing is paid once regardless of how many cases are stacked on top.
+
+For cache-key details, storage layout, environment variables, and the `reify cache` subcommand reference (stats / clear / gc / export / import), see [`docs/fea-cache.md`](../fea-cache.md).
+
+### Warm-start chain
+
+The **first case** pays the full cost: mesh generation → matrix assembly → factorisation → back-substitution.
+
+**Subsequent cases** within the same `solve_load_cases` call incur:
+
+| Step | Cost when supports are unchanged | Cost when supports vary |
+|---|---|---|
+| Mesh | Free (cache hit) | Free (cache hit) |
+| Matrix assembly | Free (stiffness matrix identical) | Paid (BCs change the assembled system) |
+| Factorisation | Free (reused from first case) | Paid per distinct support configuration |
+| Back-substitution | Paid (right-hand side changes with loads) | Paid |
+
+In the bracket example — three cases sharing one `FixedSupport("mount_face")`, with only the load vector differing — the marginal cost per additional case is one back-substitution. The mesh and factorisation are paid once for the three cases combined.
+
+If `supports` vary between cases (e.g. one pinned case and one fixed-base case), the assembled system matrix differs and factorisation is repeated per distinct support configuration. Load variation within a fixed support configuration is always cheap.
+
+### `linear_combine` is always cheap
+
+`linear_combine` performs pure field arithmetic over pre-solved `SampledField.data` buffers — no solver call, no mesh work. Cost scales as O(N\_cases × N\_gridpoints), not as O(N\_solver\_dof). A 10–20-row LRFD combination sweep over pre-solved cases completes in milliseconds.
+
+---
+
+## References
+
+- [`docs/prds/v0_3/multi-load-case-fea.md`](../prds/v0_3/multi-load-case-fea.md) — PRD with design rationale, resolved decisions, and decomposition.
+- [`docs/fea-cache.md`](../fea-cache.md) — FEA cache key details, `reify cache` subcommand reference, performance caveats.
+- [`examples/multi_load_bracket.ri`](../../examples/multi_load_bracket.ri) — validated end-to-end example: three load cases, stress envelope, LRFD superposition.
+- [`crates/reify-compiler/stdlib/fea_multi_case.ri`](../../crates/reify-compiler/stdlib/fea_multi_case.ri) — authoritative type and function declarations with full doc-comments (lines 40-244 types/accessors; 547-601 `solve_load_cases`).
+- [`docs/getting-started.md`](../getting-started.md) — broader introduction to Reify.
