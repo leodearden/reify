@@ -159,6 +159,20 @@ enum OcctRequest {
         reply:
             oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
     },
+    /// Curated asymmetric per-edge chamfer (task 4185, β): apply
+    /// `BRepFilletAPI_MakeChamfer` to ONLY the selected `edges` of `shape` with
+    /// DISTINCT setbacks `d1`/`d2` (d1 on the reference face, d2 on the other),
+    /// capturing Modified/Generated/Deleted records. An empty `edges` vector
+    /// means all edges (the Rust wrapper enumerates them; there is no separate
+    /// asymmetric all-edges path).
+    ChamferAsymmetricEdgesWithHistory {
+        shape: GeometryHandleId,
+        d1: f64,
+        d2: f64,
+        edges: Vec<GeometryHandleId>,
+        reply:
+            oneshot::Sender<Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError>>,
+    },
     /// v0.2 persistent-naming-v2 sweep history: dispatches per-op to a
     /// kernel-side history-aware primitive (Extrude → `extrude_with_history`,
     /// future variants → analogous), returning `AttributeHistory::None` for
@@ -725,6 +739,42 @@ impl OcctKernelHandle {
         Ok((handle.id, records))
     }
 
+    /// Apply `BRepFilletAPI_MakeChamfer` with ASYMMETRIC setbacks (`d1`/`d2`) to
+    /// a curated subset of `edges` of `shape`, returning the modified-result
+    /// handle id alongside the per-parent face/edge history records
+    /// (Modified / Generated / Deleted) emitted by the algorithm.
+    ///
+    /// Mirrors [`OcctKernel::chamfer_asymmetric_edges_with_history`] across the
+    /// kernel-thread channel. Result handle is registered with `BRepKind::Solid`.
+    /// An empty `edges` slice means ALL edges (back-compat); both `d1` and `d2`
+    /// must be finite positive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    ///
+    /// Curated edge-selection seam (task 4185, β).
+    pub fn chamfer_asymmetric_edges_with_history(
+        &self,
+        shape: GeometryHandleId,
+        d1: f64,
+        d2: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandleId, LocalFeatureOpHistoryRecords), GeometryError> {
+        let edges = edges.to_vec();
+        let (handle, records) = self.send_request_blocking(
+            |reply| OcctRequest::ChamferAsymmetricEdgesWithHistory {
+                shape,
+                d1,
+                d2,
+                edges,
+                reply,
+            },
+            || GeometryError::OperationFailed("kernel thread died".into()),
+        )??;
+        Ok((handle.id, records))
+    }
+
     /// Execute `op` on the kernel thread, returning the result handle and
     /// any kernel-emitted [`AttributeHistory`] for the op.
     ///
@@ -1202,6 +1252,17 @@ impl OcctKernelHandle {
                         reply,
                     } => {
                         let result = kernel.chamfer_edges_with_history(shape, distance, &edges);
+                        let _ = reply.send(result);
+                    }
+                    OcctRequest::ChamferAsymmetricEdgesWithHistory {
+                        shape,
+                        d1,
+                        d2,
+                        edges,
+                        reply,
+                    } => {
+                        let result =
+                            kernel.chamfer_asymmetric_edges_with_history(shape, d1, d2, &edges);
                         let _ = reply.send(result);
                     }
                     OcctRequest::ExecuteWithHistory { op, reply } => {

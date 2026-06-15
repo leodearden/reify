@@ -476,6 +476,24 @@ pub mod ffi {
             edge_indices: &Vec<u32>,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` applying ASYMMETRIC
+        /// setbacks (`d1` on the reference face F, `d2` on the other adjacent
+        /// face) to ONLY the selected edges via `MakeChamfer::Add(d1, d2, E, F)`,
+        /// where F is the first adjacent face from the edge→face ancestor map.
+        /// `edge_indices` are 0-based positions into the canonical
+        /// `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration — the same order
+        /// `extract_edges` mints edge handles in. Eagerly captures the per-parent
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Both `d1` and `d2` must be finite positive;
+        /// requires a non-empty `edge_indices` (the Rust wrapper enumerates all
+        /// parent edges for the empty=all-edges path).
+        fn make_chamfer_asymmetric_edges_with_history(
+            shape: &OcctShape,
+            d1: f64,
+            d2: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
         /// Move the result shape out of the local-feature-history wrapper for
         /// registration in the kernel's shape table.
         fn local_feature_op_history_take_result_shape(

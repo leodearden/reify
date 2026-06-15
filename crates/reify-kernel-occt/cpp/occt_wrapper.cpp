@@ -1772,6 +1772,80 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
     });
 }
 
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_asymmetric_edges_with_history(
+    const OcctShape& shape, double d1, double d2,
+    const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_asymmetric_edges_with_history", [&]() {
+        if (!std::isfinite(d1) || d1 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d1 must be a finite "
+                "positive value");
+        }
+        if (!std::isfinite(d2) || d2 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d2 must be a finite "
+                "positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // Rust wrapper enumerates all parent edge indices for the empty=all
+            // path, so this function always receives a non-empty selection.
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: edge_indices must be "
+                "non-empty");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Canonical 1-based edge map (matches OcctShape::edge_map() and
+            // get_edges(), so the 0-based edge_indices line up), plus the
+            // edge→adjacent-faces ancestor map used to pick the reference face F
+            // for each MakeChamfer::Add(d1, d2, E, F): d1 lands on F, d2 on the
+            // other adjacent face.
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+            TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                const TopoDS_Shape& edge = edge_map.FindKey(idx + 1);
+                // Reference face F = first adjacent face from the edge→face
+                // incidence map. Deterministic for a given shape; the test
+                // asserts the setback pair as an unordered {d1, d2}, robust to
+                // which physical face F resolves to.
+                if (!edge_face_map.Contains(edge)) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                const TopTools_ListOfShape& adj_faces = edge_face_map.FindFromKey(edge);
+                TopTools_ListIteratorOfListOfShape face_it(adj_faces);
+                if (!face_it.More()) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                chamfer.Add(d1, d2, TopoDS::Edge(edge), TopoDS::Face(face_it.Value()));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated asymmetric per-edge "
+                    "selection)");
+            }
+            return chamfer;
+        });
+    });
+}
+
 std::unique_ptr<OcctShape> local_feature_op_history_take_result_shape(
     LocalFeatureOpHistory& history) {
     return std::move(history.result);

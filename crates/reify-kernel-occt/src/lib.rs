@@ -1716,6 +1716,65 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepFilletAPI_MakeChamfer` with ASYMMETRIC setbacks (`d1` on one
+    /// adjacent face, `d2` on the other) to a curated subset of `edges` of
+    /// `shape_id`, via `MakeChamfer::Add(d1, d2, E, F)` per edge. Returns the
+    /// modified-result handle alongside the per-parent face/edge
+    /// Modified/Generated/Deleted history records.
+    ///
+    /// Both `d1` and `d2` must be finite and strictly positive. Result handle
+    /// is registered with `BRepKind::Solid`. `parent_index` in every record is
+    /// `0`.
+    ///
+    /// An empty `edges` slice means ALL edges (back-compat, mirroring the
+    /// symmetric/Fillet contract): the wrapper enumerates every parent edge
+    /// index, so the kernel still receives a non-empty selection (there is no
+    /// separate asymmetric all-edges FFI). The reference face F for each edge is
+    /// chosen kernel-side (first adjacent face); see
+    /// `make_chamfer_asymmetric_edges_with_history`.
+    ///
+    /// Curated edge-selection seam (task 4185, β).
+    pub fn chamfer_asymmetric_edges_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        d1: f64,
+        d2: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        validate_positive_finite(d1, "chamfer d1")?;
+        validate_positive_finite(d2, "chamfer d2")?;
+        // Map each selected edge handle → its 0-based position in the parent's
+        // canonical edge enumeration. `extract_edges`, `get_edges`, and
+        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
+        // so the position is exactly the index the kernel-side FFI expects.
+        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "chamfer_asymmetric_edges_with_history: failed to enumerate parent \
+                 edges of {shape_id:?}: {e:?}"
+            ))
+        })?;
+        // Empty selection = all edges: enumerate every parent edge index so the
+        // empty=all-edges back-compat holds without a dedicated all-edges FFI.
+        let edge_indices: Vec<u32> = if edges.is_empty() {
+            (0..parent_edges.len() as u32).collect()
+        } else {
+            let mut indices: Vec<u32> = Vec::with_capacity(edges.len());
+            for e in edges {
+                let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "chamfer_asymmetric_edges_with_history: edge {e:?} does not \
+                         belong to solid {shape_id:?}"
+                    ))
+                })?;
+                indices.push(pos as u32);
+            }
+            indices
+        };
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_chamfer_asymmetric_edges_with_history(shape, d1, d2, &edge_indices)
+        })
+    }
+
     /// Extrude `profile` along the +Z direction by `distance` metres via
     /// `BRepPrimAPI_MakePrism`, returning the swept-result handle alongside
     /// the per-parent face/edge Modified/Generated/Deleted history records
