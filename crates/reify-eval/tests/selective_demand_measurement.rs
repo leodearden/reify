@@ -65,7 +65,7 @@ fn two_body_engine() -> Engine {
 }
 
 // ---------------------------------------------------------------------------
-// Step-12 RED: helper stubs — implemented in step-13.
+// Step-13 GREEN: scenario helpers + summarizer.
 // ---------------------------------------------------------------------------
 
 /// Scenario A: bracket with only `thickness` property observed (no visible
@@ -75,7 +75,30 @@ fn two_body_engine() -> Engine {
 /// Scripted edits: thickness → 0.003, 0.004, 0.005, 0.006, 0.004 m.
 /// All edits dirty the thickness cone {volume, C0, C1, C2, R0}.
 fn run_scenario_a() -> Vec<DemandPruneMeasurement> {
-    todo!("implement in step-13")
+    let thickness_id = vcid("Bracket", "thickness");
+
+    // Observed demand: only the `thickness` value cell is registered.
+    // No realization is in the observed cone, so R0 will always appear in
+    // would_prune when the dirty cone touches thickness.
+    let mut engine = bracket_engine();
+    engine.add_observed_demand(NodeId::Value(thickness_id.clone()));
+    engine.rebuild_observed_cone();
+
+    let edits: &[f64] = &[0.003, 0.004, 0.005, 0.006, 0.004];
+    let mut measurements = Vec::with_capacity(edits.len());
+
+    for &metres in edits {
+        engine
+            .edit_param(thickness_id.clone(), Value::length(metres))
+            .unwrap_or_else(|e| panic!("scenario A: edit_param({metres}) failed: {e:?}"));
+        let m = engine
+            .last_demand_prune_measurement()
+            .expect("measurement must be Some after edit_param")
+            .clone();
+        measurements.push(m);
+    }
+
+    measurements
 }
 
 /// Scenario B: two-body module with body_a (realization[0]) registered as
@@ -87,7 +110,96 @@ fn run_scenario_a() -> Vec<DemandPruneMeasurement> {
 /// Scripted edits: drive → 0.011, 0.012, 0.010, 0.013 m — each dirtying
 /// both realizations.
 fn run_scenario_b() -> (Vec<DemandPruneMeasurement>, Vec<DemandPruneMeasurement>) {
-    todo!("implement in step-13")
+    let drive_id = vcid("TwoBody", "drive");
+    let edits: &[f64] = &[0.011, 0.012, 0.010, 0.013];
+
+    // Observed engine: body_a (realization[0]) is visible.
+    let mut engine_obs = two_body_engine();
+    engine_obs.add_observed_demand(NodeId::Realization(RealizationNodeId::new("TwoBody", 0)));
+    engine_obs.rebuild_observed_cone();
+
+    // Control engine: no observed registration.
+    let mut engine_ctrl = two_body_engine();
+
+    let mut measurements_obs = Vec::with_capacity(edits.len());
+    let mut measurements_ctrl = Vec::with_capacity(edits.len());
+
+    for &metres in edits {
+        let val = Value::length(metres);
+
+        engine_obs
+            .edit_param(drive_id.clone(), val.clone())
+            .unwrap_or_else(|e| panic!("scenario B obs: edit_param({metres}) failed: {e:?}"));
+        let m_obs = engine_obs
+            .last_demand_prune_measurement()
+            .expect("obs measurement must be Some after edit_param")
+            .clone();
+        measurements_obs.push(m_obs);
+
+        engine_ctrl
+            .edit_param(drive_id.clone(), val.clone())
+            .unwrap_or_else(|e| panic!("scenario B ctrl: edit_param({metres}) failed: {e:?}"));
+        let m_ctrl = engine_ctrl
+            .last_demand_prune_measurement()
+            .expect("ctrl measurement must be Some after edit_param")
+            .clone();
+        measurements_ctrl.push(m_ctrl);
+    }
+
+    (measurements_obs, measurements_ctrl)
+}
+
+// ---------------------------------------------------------------------------
+// Summarizer (step-13): aggregate per-edit measurements → distribution table.
+// ---------------------------------------------------------------------------
+
+/// Aggregated distribution statistics for a set of measurements.
+struct Distribution {
+    min: usize,
+    median: usize,
+    max: usize,
+}
+
+impl Distribution {
+    fn of<F: Fn(&DemandPruneMeasurement) -> usize>(ms: &[DemandPruneMeasurement], f: F) -> Self {
+        let mut vals: Vec<usize> = ms.iter().map(&f).collect();
+        vals.sort_unstable();
+        let min = vals.first().copied().unwrap_or(0);
+        let max = vals.last().copied().unwrap_or(0);
+        let median = vals[vals.len() / 2];
+        Distribution { min, median, max }
+    }
+
+    fn fmt(&self) -> String {
+        format!("{}/{}/{}", self.min, self.median, self.max)
+    }
+}
+
+/// Print the distribution table to stdout so it is visible under
+/// `cargo test ... -- --nocapture`.
+///
+/// Columns: scenario | eval_set_size | observed_retained | would_prune.value
+///          | would_prune.constraint | would_prune.realization | total_would_prune
+/// Rows show min/median/max over the scripted edit session.
+fn print_distribution_table(
+    scenario: &str,
+    measurements: &[DemandPruneMeasurement],
+) {
+    let eval_sz   = Distribution::of(measurements, |m| m.eval_set_size);
+    let retained  = Distribution::of(measurements, |m| m.observed_retained);
+    let wp_val    = Distribution::of(measurements, |m| m.would_prune.value);
+    let wp_con    = Distribution::of(measurements, |m| m.would_prune.constraint);
+    let wp_real   = Distribution::of(measurements, |m| m.would_prune.realization);
+    let wp_total  = Distribution::of(measurements, |m| m.would_prune.total());
+
+    println!();
+    println!("=== {} (min/median/max over {} edits) ===", scenario, measurements.len());
+    println!("{:<26} {}", "eval_set_size:",    eval_sz.fmt());
+    println!("{:<26} {}", "observed_retained:", retained.fmt());
+    println!("{:<26} {}", "would_prune.value:",       wp_val.fmt());
+    println!("{:<26} {}", "would_prune.constraint:",   wp_con.fmt());
+    println!("{:<26} {}", "would_prune.realization:",  wp_real.fmt());
+    println!("{:<26} {}", "would_prune.total:",        wp_total.fmt());
 }
 
 // ---------------------------------------------------------------------------
@@ -240,4 +352,50 @@ fn scenario_b_measurement_is_populated_and_shows_pruning() {
     );
     let any_prune: bool = measurements.iter().any(|m| m.would_prune.total() > 0);
     assert!(any_prune, "scenario B: at least one edit must show would_prune > 0");
+}
+
+/// Emit the full distribution table for both scenarios.
+///
+/// Visible under `cargo test -p reify-eval --test selective_demand_measurement
+///     emit_distribution_table -- --nocapture`.
+///
+/// The numbers from this output are tabulated in
+/// `docs/design/selective-demand-measurement.md`.
+#[test]
+fn emit_distribution_table() {
+    let a_measurements = run_scenario_a();
+    let (b_measurements_obs, b_measurements_ctrl) = run_scenario_b();
+
+    print_distribution_table("Scenario A: bracket, body hidden (thickness observed only)", &a_measurements);
+    print_distribution_table("Scenario B observed: two-body, body_a visible", &b_measurements_obs);
+    print_distribution_table("Scenario B control:  two-body, no observed registration", &b_measurements_ctrl);
+
+    println!();
+    println!("G6 finding:");
+    let a_prune_total: usize = a_measurements.iter().map(|m| m.would_prune.total()).sum();
+    let a_eval_total: usize  = a_measurements.iter().map(|m| m.eval_set_size).sum();
+    let b_prune_total: usize = b_measurements_obs.iter().map(|m| m.would_prune.total()).sum();
+    let b_eval_total: usize  = b_measurements_obs.iter().map(|m| m.eval_set_size).sum();
+    println!(
+        "  Scenario A: {}/{} nodes would be pruned across session ({:.0}%)",
+        a_prune_total, a_eval_total,
+        100.0 * a_prune_total as f64 / a_eval_total.max(1) as f64
+    );
+    println!(
+        "  Scenario B: {}/{} nodes would be pruned across session ({:.0}%)",
+        b_prune_total, b_eval_total,
+        100.0 * b_prune_total as f64 / b_eval_total.max(1) as f64
+    );
+    println!();
+    println!("Coarse-per-realization vs fine-per-cell:");
+    let b_real_prune: usize = b_measurements_obs.iter().map(|m| m.would_prune.realization).sum();
+    let b_val_prune:  usize = b_measurements_obs.iter().map(|m| m.would_prune.value).sum();
+    println!(
+        "  realization nodes pruned: {}  (coarse grain — one per body)",
+        b_real_prune
+    );
+    println!(
+        "  value nodes pruned:       {}  (fine grain — one per property cell)",
+        b_val_prune
+    );
 }
