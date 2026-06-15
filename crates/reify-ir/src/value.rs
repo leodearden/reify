@@ -9,6 +9,7 @@ use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 use reify_core::ty::SelectorKind;
+use crate::geometry::Role;
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -429,6 +430,8 @@ impl GeometryHandleRef {
 /// `Named` / `All` accept any [`SelectorKind`].
 /// `ByNormal` / `ByArea` require [`SelectorKind::Face`].
 /// `ByLength` / `ByHeight` / `ByParallel` require [`SelectorKind::Edge`].
+/// `ByRole` requires the kind implied by its [`Role`] (MidSurfaceFace → Face,
+/// MidSurfaceEdge → Edge; any other role accepts any kind).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LeafQuery {
     /// Select by user-assigned label.  Accepts any kind.
@@ -445,6 +448,13 @@ pub enum LeafQuery {
     ByHeight { z_m: f64, tol_m: f64 },
     /// Select edges parallel to `axis` within `tol_rad`.
     ByParallel { axis: [f64; 3], tol_rad: f64 },
+    /// Select elements carrying a derived-geometry [`Role`] attribute in the
+    /// realized body's `TopologyAttributeTable` (task 4536). The motivating
+    /// case is `mid_surface(body)` → `ByRole(Role::MidSurfaceFace)`, which
+    /// resolves to the shell-extract mid-surface faces. Unlike the kernel-query
+    /// leaves, resolution reads the attribute table (no kernel call), since the
+    /// synthetic mid-surface ids are not enumerable via `extract_faces`.
+    ByRole(Role),
 }
 
 impl LeafQuery {
@@ -455,6 +465,14 @@ impl LeafQuery {
             LeafQuery::ByLength { .. }
             | LeafQuery::ByHeight { .. }
             | LeafQuery::ByParallel { .. } => Some(SelectorKind::Edge),
+            // Attribute-role leaf (task 4536): the role implies the kind so
+            // K1 kind-closure rejects e.g. an Edge selector carrying a
+            // MidSurfaceFace leaf. Roles without a surfaced selector kind map
+            // to None (accept any kind) — keeps the match total without
+            // presuming a kind for roles not yet wired to a selector.
+            LeafQuery::ByRole(Role::MidSurfaceFace) => Some(SelectorKind::Face),
+            LeafQuery::ByRole(Role::MidSurfaceEdge) => Some(SelectorKind::Edge),
+            LeafQuery::ByRole(_) => None,
             LeafQuery::Named(_) | LeafQuery::All => None,
         }
     }
@@ -664,6 +682,14 @@ impl SelectorValue {
                     buf[17..25].copy_from_slice(&nan_bits(axis[2]).to_le_bytes());
                     buf[25..33].copy_from_slice(&nan_bits(*tol_rad).to_le_bytes());
                     ContentHash::of(&buf)
+                }
+                // Task 4536: fresh tag byte 7 (0–6 already taken by the leaves
+                // above). The role is encoded via its stable derived `Debug`
+                // string — distinguishing every `Role` value (including
+                // data-carrying variants) without enumerating them here, the
+                // same string-hashing discipline `Named` uses.
+                LeafQuery::ByRole(role) => {
+                    ContentHash::of(&[7u8]).combine(ContentHash::of_str(&format!("{role:?}")))
                 }
             }
         }
