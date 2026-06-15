@@ -69,6 +69,30 @@
 #   psi-gate action             — `verify.sh psi-gate` runs only the gate and exits;
 #                                  used as the first test-phase plan entry (test/all).
 #
+# Compile-phase admission gate (task 4618 — soft PSI backpressure for clippy/check):
+#   REIFY_COMPILE_GATE_THRESHOLD — CPU avg10 % ceiling for compile admission.
+#                                  Default: 85 (well above test gate's 50; a single
+#                                  EXEMPT merge holding its reserved core fraction
+#                                  does NOT by itself reach 85 — only sustained
+#                                  multi-lane oversubscription does).
+#                                  Host-portable: PSI avg10 is a kernel-normalized
+#                                  stall-%, so no nproc-baked count is introduced.
+#   REIFY_COMPILE_GATE_MAX_WAIT  — maximum seconds to wait before ADMITTING anyway
+#                                  (fairness floor). Default: 300. On timeout the
+#                                  gate returns 0 (admits + warning) — NEVER exit 75.
+#                                  This is the fundamental difference from the test
+#                                  gate: compile admission is soft backpressure; it
+#                                  can delay/stagger a compile start but NEVER requeues.
+#   REIFY_COMPILE_GATE_POLL      — recheck interval in seconds. Default: 5.
+#                                  (testability knob; reduce in tests for faster runs)
+#   REIFY_COMPILE_GATE_PROC_PATH — PSI source; defaults to /proc/pressure/cpu.
+#                                  (testability knob; override to inject fixture files)
+#   REIFY_COMPILE_GATE_DISABLE   — set to 1 to bypass entirely. Emergency break-glass.
+#   compile-gate action          — `verify.sh compile-gate` runs only the compile gate
+#                                  and exits; wired into build_plan() before cargo
+#                                  check/clippy for lint/typecheck/all (not pure test).
+#                                  DF_VERIFY_ROLE=merge → immediate bypass (CAVEAT 1).
+#
 # Host-relative compile timeout knobs (task 4621):
 #   REIFY_VERIFY_TEST_TIMEOUT   — outer timeout for `cargo nextest run` passes.
 #                                  Default 60m (workstation budget, η/4521 × 4.5).
@@ -175,6 +199,19 @@ usage() {
 # PSI gate — throttle per-task test phases under multi-worktree verify bursts
 # ---------------------------------------------------------------------------
 
+# _psi_read_avg10 <proc_path>
+# Parse the avg10 value from a /proc/pressure/cpu-formatted file.
+# Echoes the numeric avg10 string (e.g. "42.50") on success; echoes the empty
+# string on parse failure, missing file, or any awk error.
+# Shared by psi_gate() (via _psi_should_pass) and compile_gate().
+_psi_read_avg10() {
+    awk '/^some/ {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+        }
+    }' "$1" 2>/dev/null || echo ""
+}
+
 # _psi_should_pass() — helper for psi_gate().
 # Returns 0 if both PSI and window conditions are satisfied (safe to dispatch
 # now), or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from
@@ -185,11 +222,7 @@ _psi_should_pass() {
     local _ts="$1" _mtime _age _avg10
     _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
     _age=$(( _ts - _mtime ))
-    _avg10=$(awk '/^some/ {
-        for (i=1; i<=NF; i++) {
-            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-        }
-    }' "$PROC_PATH" 2>/dev/null || echo "")
+    _avg10="$(_psi_read_avg10 "$PROC_PATH")"
     [ -n "$_avg10" ] && \
         awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
         [ "$_age" -ge "$WINDOW" ]
@@ -296,6 +329,85 @@ psi_gate() {
     done
 }
 
+# compile_gate() — soft PSI admission backpressure for the compile/check/clippy phases.
+# Called directly via `verify.sh compile-gate` (testable entry point) and wired
+# as a plan entry in build_plan() before cargo check/clippy (lint/typecheck/all).
+#
+# Key differences from psi_gate():
+#   - Higher default threshold (85 vs 50): treats a lone exempt merge's core
+#     reservation as expected-high-pressure baseline — only sustained multi-lane
+#     oversubscription trips it.
+#   - Admit-on-timeout (return 0 + warning on MAX_WAIT) — NEVER exit 75. Compile
+#     admission is soft backpressure; it can delay/stagger a compile start but
+#     can NEVER requeue a task (storm-proof, CAVEAT 2).
+#   - No WINDOW/dispatch-file/flock: compiles are meant to run concurrently
+#     (bounded by the jobserver); serializing them would recreate the exact
+#     throttling the dual-pool jobserver already owns.
+#
+# Environment knobs (see header comment block for full doc):
+#   REIFY_COMPILE_GATE_THRESHOLD  — avg10 ceiling (default 85)
+#   REIFY_COMPILE_GATE_MAX_WAIT   — admit-on-timeout seconds (default 300)
+#   REIFY_COMPILE_GATE_POLL       — recheck interval in seconds (default 5)
+#   REIFY_COMPILE_GATE_PROC_PATH  — PSI source path (default /proc/pressure/cpu)
+#   REIFY_COMPILE_GATE_DISABLE    — set to 1 to bypass entirely
+compile_gate() {
+    local THRESHOLD="${REIFY_COMPILE_GATE_THRESHOLD:-85}"
+    local MAX_WAIT="${REIFY_COMPILE_GATE_MAX_WAIT:-300}"
+    local POLL="${REIFY_COMPILE_GATE_POLL:-5}"
+    # Clamp POLL to a sane minimum: sleep 0 (or an invalid value) causes a
+    # tight busy-spin hammering date + _psi_read_avg10 for up to MAX_WAIT=300s.
+    # The 2>/dev/null silently handles non-integer values ([ -ge 1 ] exits non-0).
+    [ "$POLL" -ge 1 ] 2>/dev/null || POLL=1
+    local PROC_PATH="${REIFY_COMPILE_GATE_PROC_PATH:-/proc/pressure/cpu}"
+
+    # (1) Break-glass bypass — total bypass: no PSI read, no wait
+    if [ "${REIFY_COMPILE_GATE_DISABLE:-}" = "1" ]; then
+        echo "verify.sh: compile-gate disabled (REIFY_COMPILE_GATE_DISABLE=1)" >&2
+        return 0
+    fi
+
+    # (2) Merge bypass: CAVEAT 1 — merge role must never wait; it earns priority
+    # by competitors backing off.  Mirror the psi_gate bypass contract exactly.
+    if [ "${DF_VERIFY_ROLE:-task}" = "merge" ]; then
+        echo "verify.sh: compile-gate bypass (role=merge)" >&2
+        return 0
+    fi
+
+    # (3) Fail-open on missing/unreadable PSI source (older kernels / non-Linux hosts).
+    if [ ! -r "$PROC_PATH" ]; then
+        echo "verify.sh: WARNING — compile-gate fail-open — kernel lacks ${PROC_PATH}" >&2
+        return 0
+    fi
+
+    # (4) Poll loop: back off while avg10 >= THRESHOLD.
+    # On deadline (MAX_WAIT seconds), ADMIT (return 0 + warning) — NEVER exit 75.
+    # This is the structural storm-proof invariant: the gate can delay/stagger a
+    # compile start but can NEVER requeue a task (CAVEAT 2).
+    # No WINDOW/flock: compiles are meant to run concurrently under the jobserver.
+    local deadline
+    deadline=$(( $(date +%s) + MAX_WAIT ))
+
+    while true; do
+        local now _avg10
+        now=$(date +%s)
+
+        _avg10="$(_psi_read_avg10 "$PROC_PATH")"
+
+        # Admit immediately if: PSI unreadable/unparseable OR avg10 < THRESHOLD.
+        if [ -z "$_avg10" ] || awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}'; then
+            return 0
+        fi
+
+        # Deadline reached → admit anyway (fairness floor, NEVER exit 75).
+        if [ "$now" -ge "$deadline" ]; then
+            echo "verify.sh: compile-gate admitting compile under sustained pressure (fairness floor; avg10=${_avg10} >= ${THRESHOLD} for ${MAX_WAIT}s)" >&2
+            return 0
+        fi
+
+        sleep "$POLL"
+    done
+}
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -309,7 +421,7 @@ PRINT_PLAN=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        test|lint|typecheck|all|psi-gate)
+        test|lint|typecheck|all|psi-gate|compile-gate)
             if [ -n "$ACTION" ]; then
                 echo "verify.sh: ERROR — action already set to '$ACTION', got '$1'" >&2
                 exit 64
@@ -392,6 +504,14 @@ esac
 # how it was invoked.
 if [ "$ACTION" = "psi-gate" ]; then
     psi_gate
+    exit $?
+fi
+
+# compile-gate is dispatched EARLY — same idiom as psi-gate: execute-only,
+# hermetic, testable in isolation without triggering the cargo pipeline.
+# DF_VERIFY_ROLE is already resolved above so the merge bypass works correctly.
+if [ "$ACTION" = "compile-gate" ]; then
+    compile_gate
     exit $?
 fi
 
@@ -893,6 +1013,19 @@ build_plan() {
     # tree-sitter parser regeneration is a Rust-build prerequisite.
     if [ "$RUN_RUST" -eq 1 ]; then
         add "./scripts/tree-sitter-generate.sh"
+    fi
+
+    # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
+    # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
+    # token per concurrent cargo) and non-cargo load.  Emitted only when
+    # cargo check/clippy will actually run (lint or typecheck side); pure
+    # 'test' is not emitted here — the nextest compile is already inside the
+    # existing test psi-gate + held-slot region (no double-gate).
+    # DF_VERIFY_ROLE=merge is bypass at RUNTIME inside compile_gate() (CAVEAT 1);
+    # the plan line is still emitted in merge plans so the plan shape is
+    # role-invariant (mirrors the psi-gate idiom).
+    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
+        add "./scripts/verify.sh compile-gate"
     fi
 
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
