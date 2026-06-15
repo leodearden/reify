@@ -296,3 +296,95 @@ fn chamfer_asymmetric_zero_distance_errors() {
         "asymmetric chamfer with d2=0 must error (distance must be finite positive)"
     );
 }
+
+/// CONTROL (2-arg back-compat unchanged): the empty-selection dispatch
+/// `GeometryOp::Chamfer{edges: vec![], ..}` must produce the SAME volume as the
+/// canonical all-edges chamfer (`chamfer_with_history` over all 12 edges).
+/// Proves step-6's `branch-on-edges.is_empty()` keeps empty selection ==
+/// all-edges, so the legacy 2-arg chamfer path is bit-for-bit unchanged.
+/// β parallel of `per_edge_fillet.rs::fillet_empty_edges_matches_all_edges_back_compat`.
+#[test]
+fn chamfer_empty_edges_matches_all_edges_back_compat() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+    let kernel = OcctKernelHandle::spawn();
+    let box_id = build_box(&kernel);
+
+    // Empty-edges dispatch (the back-compat all-edges path).
+    let empty_id = kernel
+        .execute(&GeometryOp::Chamfer {
+            target: box_id,
+            edges: vec![],
+            distance: Value::Real(CHAMFER_DISTANCE_M),
+        })
+        .expect("empty-edges chamfer should succeed")
+        .id;
+    let vol_empty = volume_of(&kernel, empty_id);
+
+    // Canonical all-edges chamfer via `chamfer_with_history`.
+    let (all_id, _history) = kernel
+        .chamfer_with_history(box_id, CHAMFER_DISTANCE_M)
+        .expect("all-edges chamfer_with_history should succeed");
+    let vol_all = volume_of(&kernel, all_id);
+
+    // Same operation (all 12 edges, same distance) → matching volume within a
+    // loose relative tolerance (1e-6), distinguishing "same all-edges op" from
+    // "different op" while tolerating incidental floating-point drift between
+    // the two all-edges FFI entry points.
+    assert!(vol_all > 0.0, "all-edges volume must be positive, got {vol_all}");
+    let rel_err = (vol_empty - vol_all).abs() / vol_all;
+    assert!(
+        rel_err < 1e-6,
+        "empty-edges chamfer must match the all-edges volume (back-compat): \
+         vol_empty={vol_empty}, vol_all={vol_all}, rel_err={rel_err}"
+    );
+}
+
+/// `GeometryOp::Chamfer{edges: <non-empty>, ..}` through `execute` must route to
+/// the curated per-edge path (`chamfer_edges_with_history`), reproducing the
+/// step-1 volume ordering: vol(all 12) < vol(4-edge subset) < vol(box). Proves
+/// execute's `branch-on-edges.is_empty()` sends a non-empty selection to the
+/// curated primitive, not the all-edges fall-through.
+#[test]
+fn chamfer_execute_routes_curated_edges_volume_ordering() {
+    if !OCCT_AVAILABLE {
+        return;
+    }
+    let kernel = OcctKernelHandle::spawn();
+    let box_id = build_box(&kernel);
+    let vol_box = volume_of(&kernel, box_id);
+
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges should succeed on a solid box");
+    let four_edges: Vec<GeometryHandleId> = edges.iter().take(4).copied().collect();
+
+    // Curated 4-edge chamfer via execute (must route to chamfer_edges_with_history).
+    let four_edge_id = kernel
+        .execute(&GeometryOp::Chamfer {
+            target: box_id,
+            edges: four_edges,
+            distance: Value::Real(CHAMFER_DISTANCE_M),
+        })
+        .expect("curated 4-edge chamfer via execute should succeed")
+        .id;
+    let vol_4edge = volume_of(&kernel, four_edge_id);
+
+    // All-edges baseline via the existing all-edges primitive.
+    let (all_id, _history) = kernel
+        .chamfer_with_history(box_id, CHAMFER_DISTANCE_M)
+        .expect("all-edges chamfer_with_history should succeed");
+    let vol_all = volume_of(&kernel, all_id);
+
+    assert!(
+        vol_all < vol_4edge,
+        "all-edges chamfer must remove MORE material than the 4-edge subset: \
+         vol_all={vol_all}, vol_4edge={vol_4edge}"
+    );
+    assert!(
+        vol_4edge < vol_box,
+        "curated 4-edge chamfer via execute must remove SOME material vs the box: \
+         vol_4edge={vol_4edge}, vol_box={vol_box}"
+    );
+}

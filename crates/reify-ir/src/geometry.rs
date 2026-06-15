@@ -7890,6 +7890,47 @@ mod tests {
         }
     }
 
+    /// `GeometryOp::Chamfer` records a curated `edges` selection alongside
+    /// `target`/`distance`. A non-empty list names the specific edges to chamfer;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg chamfer).
+    /// β parallel of `fillet_records_curated_edges_selection` (task 4185).
+    #[test]
+    fn chamfer_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            distance: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated chamfer must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+
+        // Back-compat: empty edges = all-edges chamfer.
+        let all_edges = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            distance: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat chamfer must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+    }
+
     /// δ / contract: `GeometryOp::Draft` records a curated `faces` selection
     /// alongside `target`/`angle`/`plane`. A non-empty list names the specific
     /// faces to draft; an empty list is the all-draftable back-compat path
