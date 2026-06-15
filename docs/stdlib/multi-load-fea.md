@@ -176,3 +176,77 @@ let critical_case = worst_case(results, |r| r)
 ```
 
 This idiom is exercised in [`crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`](../../crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs).
+
+---
+
+## 3. Superposition (`linear_combine`)
+
+For **linear-elastic** FEA the superposition identity holds:
+
+> result(α·A + β·B) = α·result(A) + β·result(B)
+
+This means any weighted combination of pre-solved cases is pure field arithmetic — no re-solve required. `linear_combine` implements this:
+
+```
+linear_combine(
+    base_results : MultiCaseResult,
+    weights      : Map<String, Number>,
+) -> ElasticResult
+```
+
+The output `ElasticResult` has:
+
+| Field | Value |
+|---|---|
+| `displacement` | Weighted-sum Sampled field (`name = "linear_combine"`) |
+| `stress` | Weighted-sum Sampled field (`name = "linear_combine"`) |
+| `max_von_mises` | `max` over the combined stress field's finite values |
+| `converged` | `true` (synthesised, not solved) |
+| `frame` | `Undef` (tet convention — no per-element local frame for solid elements) |
+| `iterations` | `Undef` (synthesised, not solved) |
+
+### LRFD combination sweep
+
+A typical structural design code (LRFD / Eurocode) mandates checking several factored load combinations. With pre-solved bases these are cheap:
+
+```
+// Pre-solved bases: "operating" (live load), "transport" (dead/inertial), "overload" (2× live)
+
+// ASCE 7-style factored combinations (illustrative — apply project-specific factors):
+let combo_1 = linear_combine(results, map{"transport" => 1.4})
+    // 1.4D — dead load only
+
+let combo_2 = linear_combine(results, map{"transport" => 1.2, "operating" => 1.6})
+    // 1.2D + 1.6L — dominant live load
+
+let combo_3 = linear_combine(results, map{"transport" => 1.2, "overload"  => 1.0})
+    // 1.2D + 1.0E — notional seismic / accident event
+
+let combo_4 = linear_combine(results, map{"transport" => 0.9, "overload"  => 1.0})
+    // 0.9D + 1.0E — uplift check (dead resists overturning)
+
+// From the validated bracket example (ACI 318 legacy factors):
+let lrfd = linear_combine(results, map{"transport" => 1.4, "operating" => 1.7})
+```
+
+Each call returns an `ElasticResult` that can be queried directly:
+
+```
+// Peak stress in the dominant-live-load combination:
+let combo_2_peak = max(envelope_von_mises(MultiCaseResult(cases: map{"combo_2" => combo_2})))
+let combo_2_ok   = combo_2_peak < yield_limit
+```
+
+Each `linear_combine` call is cheap field arithmetic over pre-solved `SampledField.data` buffers — no solver invocation, no mesh work. For a 10–20-row design-code combination sweep, all combinations complete in milliseconds. See §5 for the cost model.
+
+### The linear-elastic-only constraint
+
+**`linear_combine` is valid for linear-elastic results only.** The superposition identity holds because linear-elastic analysis imposes no state that carries between load applications: no plasticity, no contact, no geometric stiffness from large deformations. Applying superposition to a non-linear analysis produces incorrect results without warning.
+
+The v0.4+ non-linear solver result types (plasticity, contact, large-deformation) will **not** provide a `linear_combine` overload — the absence of the overload at the type level is the machine-checked enforcement. If you migrate a design from linear-elastic to a non-linear solver and attempt `linear_combine`, the call will fail to resolve at compile time.
+
+### Mesh-compatibility pre-check
+
+All referenced base cases must share identical Sampled-field grid metadata (grid kind, axis lengths, bounds, spacing). If grids differ — for example because two cases used different `mesh_size` overrides — `linear_combine` returns `Undef`. Actionable diagnostics for this mismatch are deferred to PRD task #10.
+
+See §4 for the per-case `mesh_size` / `element_order` option interaction and the full compatibility matrix.
