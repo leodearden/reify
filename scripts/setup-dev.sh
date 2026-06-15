@@ -375,7 +375,7 @@ EOF
 
     cat > "$unit_dir/reify-jobserver.service" <<EOF
 [Unit]
-Description=Dual-pool cargo jobserver custodian (merge + task FIFOs) for reify orchestrator
+Description=Dual-pool cargo jobserver custodian (merge + task FIFOs, pressure-reactive load-aware admission) for reify orchestrator
 # PartOf= re-seeds both pools when the orchestrator restarts (a restart SIGKILLs
 # in-flight verify rustc, each permanently losing the FIFO token it held).
 # Inert if orchestrator-reify.service isn't installed.
@@ -383,10 +383,12 @@ PartOf=orchestrator-reify.service
 
 [Service]
 Type=simple
-# Remove stale FIFOs so the daemon starts clean (it recreates them).
-ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task
+# Remove stale FIFOs and the pressure-reservoir state file so the daemon starts
+# clean (it recreates the FIFOs and publishes held_back=0 on startup).
+# Stale held_back must not mask a real token leak on restart (PRD canary §C2).
+ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back
 ExecStart=${repo_dir}/scripts/jobserver-balancer.py
-ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task
+ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back
 Restart=on-failure
 RestartSec=2
 
