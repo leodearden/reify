@@ -1,0 +1,37 @@
+// gdt_zones.ri — GD&T γ zone-constructor CI gate (task 4476).
+//
+// Exercises the three prismatic zone geometry constructors:
+//   zone_cylinder(axis, width)                          — Ø-zone cylinder about an axis wire
+//   zone_annulus(axis, nominal_radius, width, length)   — annular shell tolerance zone
+//   zone_profile(solid, width)                          — surface profile zone shell
+//
+// `reify eval` must: exit 0, emit no Error diagnostics, and print
+//   cyl_zone, ann_zone, prof_zone (geometry cell names)
+//   zone_ok = true (non-geometry Bool anchor: w > 0mm = 8mm > 0mm → true)
+//
+// Exact zone volumes are pinned in Rust kernel oracle tests
+// (zone_constructors_e2e.rs) — not asserted here.
+
+structure def GdtZones {
+    // ── Common zone width and axis wire ─────────────────────────────────────
+    let w    = 8mm
+    let R    = 20mm
+    let axis = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm)
+
+    // ── zone_cylinder(axis: Geometry, width: Length) ─────────────────────────
+    // Ø-zone cylinder: lowers to Sweep{Pipe(axis, radius=w/2)}.
+    let cyl_zone = zone_cylinder(axis, w)
+
+    // ── zone_annulus(axis: Geometry, nominal_radius: Length, width: Length, length: Length)
+    // Annular shell: lowers to Difference(Pipe(axis, R+w/2), Pipe(axis, R−w/2)).
+    // The axis wire supplies the swept extent; length is validated only (esc-4476-88 Option A).
+    let ann_zone = zone_annulus(axis, R, 4mm, 20mm)
+
+    // ── zone_profile(solid: Geometry, width: Length) ──────────────────────────
+    // Profile zone shell: lowers to Difference(Thicken(solid, +w/2), Thicken(solid, −w/2)).
+    let prof_zone = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+
+    // ── Observable Bool anchor (non-geometry) ───────────────────────────────
+    // Asserted by cli_gdt_zones_eval.rs: zone_ok = true (w = 8mm > 0mm → true).
+    let zone_ok = w > 0mm
+}
