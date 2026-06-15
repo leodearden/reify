@@ -106,7 +106,7 @@ pub use stubs::{OcctKernel, OcctKernelHandle, TopologyCacheBuildCounts};
 use std::collections::HashMap;
 
 #[cfg(has_occt)]
-use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
+use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
 
 #[cfg(has_occt)]
 /// Send-safe payload for OCCT warm-start state.
@@ -3354,10 +3354,14 @@ impl OcctKernel {
 
         match format {
             ExportFormat::Step => {
-                let content = ffi::ffi::export_step(shape)
+                // Plain export uses the DEFAULT schema (AP214), set explicitly
+                // on the FFI call so a prior AP203 export cannot leak its
+                // process-global schema into this one. AP214 never falls back,
+                // so `ap242_fell_back` is unread here.
+                let result = ffi::ffi::export_step(shape, StepSchema::default().as_str())
                     .map_err(|e| ExportError::FormatError(e.to_string()))?;
                 writer
-                    .write_all(content.as_bytes())
+                    .write_all(result.content.as_bytes())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
             ExportFormat::Stl => {
@@ -3383,6 +3387,41 @@ impl OcctKernel {
                 "unsupported export format: {:?}",
                 format
             ))),
+        }
+    }
+
+    /// Export honoring [`ExportOptions`] — the OCCT override of the trait
+    /// default. The STEP arm threads `options.step_schema` into the FFI so a
+    /// declared `STEPVersion` selects the written schema, and surfaces the
+    /// honest AP242→AP214 degradation as [`ExportWarning::StepAp242Fallback`].
+    /// Non-STEP formats ignore options and delegate to [`export`](Self::export)
+    /// (the schema is meaningless for STL/3MF), returning no warnings.
+    pub fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        match format {
+            ExportFormat::Step => {
+                let shape = self
+                    .get_shape(handle)
+                    .map_err(|_| ExportError::InvalidHandle(handle))?;
+                let result = ffi::ffi::export_step(shape, options.step_schema.as_str())
+                    .map_err(|e| ExportError::FormatError(e.to_string()))?;
+                writer
+                    .write_all(result.content.as_bytes())
+                    .map_err(|e| ExportError::IoError(e.to_string()))?;
+                Ok(if result.ap242_fell_back {
+                    vec![ExportWarning::StepAp242Fallback]
+                } else {
+                    Vec::new()
+                })
+            }
+            // Non-STEP formats: options carry nothing they consume, so reuse
+            // the existing `export` path verbatim and return no warnings.
+            _ => self.export(handle, format, writer).map(|()| Vec::new()),
         }
     }
 

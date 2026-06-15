@@ -18,7 +18,7 @@ use crate::{
     BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
     SweepOpHistoryRecords,
 };
-use reify_ir::{AttributeHistory, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
+use reify_ir::{AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, TessError, Value, WarmStartable, debug_assert_query_many_invariant};
 use tokio::sync::{mpsc, oneshot};
 
 /// Requests sent from `OcctKernelHandle` to the dedicated kernel thread.
@@ -39,6 +39,16 @@ enum OcctRequest {
         handle: GeometryHandleId,
         format: ExportFormat,
         reply: oneshot::Sender<Result<Vec<u8>, ExportError>>,
+    },
+    /// Like `Export`, but threads `ExportOptions` (the STEP schema) and
+    /// replies with both the serialized bytes and any non-fatal export
+    /// warnings (e.g. an AP242→AP214 fallback). The plain `Export` variant is
+    /// left untouched so the heavily-used CLI/GUI export path is unchanged.
+    ExportWithOptions {
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: ExportOptions,
+        reply: oneshot::Sender<Result<(Vec<u8>, Vec<ExportWarning>), ExportError>>,
     },
     Tessellate {
         handle: GeometryHandleId,
@@ -264,6 +274,40 @@ impl OcctKernelHandle {
         writer
             .write_all(&bytes)
             .map_err(|e| ExportError::IoError(e.to_string()))
+    }
+
+    /// Export a geometry handle honoring [`ExportOptions`] (the STEP schema),
+    /// writing bytes to `writer` and returning any non-fatal export warnings.
+    ///
+    /// Routes through the new `ExportWithOptions` actor request so the schema
+    /// selection (and any AP242→AP214 fallback) happens on the kernel thread
+    /// alongside the FFI. The kernel serializes to a `Vec<u8>` internally and
+    /// replies with `(bytes, warnings)`; the handle writes the bytes to the
+    /// caller's writer and returns the warnings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async execution context.
+    pub fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        let (bytes, warnings) = self.send_request_blocking(
+            |reply| OcctRequest::ExportWithOptions {
+                handle,
+                format,
+                options: *options,
+                reply,
+            },
+            || ExportError::IoError("kernel thread died".into()),
+        )??;
+        writer
+            .write_all(&bytes)
+            .map_err(|e| ExportError::IoError(e.to_string()))?;
+        Ok(warnings)
     }
 
     /// Run a query against a geometry handle on the kernel thread.
@@ -1013,6 +1057,18 @@ impl OcctKernelHandle {
                         let result = kernel.export(handle, format, &mut buf).map(|()| buf);
                         let _ = reply.send(result);
                     }
+                    OcctRequest::ExportWithOptions {
+                        handle,
+                        format,
+                        options,
+                        reply,
+                    } => {
+                        let mut buf = Vec::new();
+                        let result = kernel
+                            .export_with_options(handle, format, &options, &mut buf)
+                            .map(|warnings| (buf, warnings));
+                        let _ = reply.send(result);
+                    }
                     OcctRequest::Tessellate {
                         handle,
                         tolerance,
@@ -1580,6 +1636,19 @@ impl GeometryKernel for OcctKernelHandle {
         writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
         OcctKernelHandle::export(self, handle, format, writer)
+    }
+
+    /// Override the trait default with a real channel-routed implementation
+    /// so OCCT actually selects the STEP schema. Delegates to the inherent
+    /// `export_with_options` (which only needs `&self`).
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        OcctKernelHandle::export_with_options(self, handle, format, options, writer)
     }
 
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {

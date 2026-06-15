@@ -132,6 +132,8 @@
 
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
+#include <STEPControl_Controller.hxx>
+#include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
@@ -4884,9 +4886,64 @@ std::unique_ptr<OcctShapeVec> split_shape(
 // all concurrent export_step() calls across all kernel threads.
 static std::mutex g_step_export_mutex;
 
-rust::String export_step(const OcctShape& shape) {
+ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
+        // Register the STEP statics BEFORE setting them. STEPControl_Controller
+        // ::Init() is the idempotent call that REGISTERS the
+        // `write.step.schema` Interface_Static; calling SetCVal before any
+        // controller exists is a silent no-op (the static is not registered
+        // yet). The writer's own constructor also runs Init(), but it then
+        // immediately builds its model from the STEP Template Model — which
+        // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
+        // So the correct order is: Init() → SetCVal → construct writer →
+        // Transfer → Write. Setting the static AFTER constructing the writer
+        // is too late: the model has already captured the default schema.
+        STEPControl_Controller::Init();
+
+        // Map the kernel-neutral schema name (StepSchema::as_str()) to the
+        // OCCT `write.step.schema` enum token. The accepted tokens for this
+        // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
+        // the DIS variants for AP214/AP242. Unknown inputs default to the
+        // AP214 token so a malformed schema never aborts the export.
+        std::string neutral(schema);
+        const char* token = "AP214DIS";
+        bool want_ap242 = false;
+        if (neutral == "AP203") {
+            token = "AP203";
+        } else if (neutral == "AP214") {
+            token = "AP214DIS";
+        } else if (neutral == "AP242") {
+            token = "AP242DIS";
+            want_ap242 = true;
+        }
+
+        // Set the schema EXPLICITLY on every call — including the AP214
+        // default. `write.step.schema` is a process-global Interface_Static;
+        // export_step is serialized by g_step_export_mutex, but the static
+        // persists between calls, so without an explicit per-call set a prior
+        // AP203 export would leak its schema into a later default export.
+        bool ap242_fell_back = false;
+        Standard_Boolean set_ok =
+            Interface_Static::SetCVal("write.step.schema", token);
+
+        if (want_ap242) {
+            // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
+            // (SetCVal failed, or the static did not actually take the value),
+            // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
+            // support AP242DIS, so this branch is a guard for builds that
+            // don't — it is intentionally not exercised in-tree.
+            const char* current = Interface_Static::CVal("write.step.schema");
+            bool accepted = set_ok && current != nullptr &&
+                            std::string(current) == "AP242DIS";
+            if (!accepted) {
+                Interface_Static::SetCVal("write.step.schema", "AP214DIS");
+                ap242_fell_back = true;
+            }
+        }
+
+        // Construct the writer AFTER the schema is set, so its model captures
+        // the requested `write.step.schema`.
         STEPControl_Writer writer;
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
@@ -4910,7 +4967,10 @@ rust::String export_step(const OcctShape& shape) {
         ifs.close();
         std::remove(tmpname);
 
-        return rust::String(content);
+        ExportStepResult result;
+        result.content = rust::String(content);
+        result.ap242_fell_back = ap242_fell_back;
+        return result;
     });
 }
 
