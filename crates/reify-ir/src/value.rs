@@ -10103,6 +10103,102 @@ mod tests {
             assert!(SelectorValue::leaf(SelectorKind::Edge, t3, LeafQuery::Named("rim".into())).is_ok());
         }
 
+        // ── Task 4536: ByRole(Role) attribute-role leaf query (step-5 RED) ─────
+        // RED (compile-failure) until step-6 adds the LeafQuery::ByRole variant.
+
+        // required_kind: ByRole(MidSurfaceFace) -> Face, ByRole(MidSurfaceEdge) -> Edge.
+        #[test]
+        fn byrole_required_kind_maps_role_to_kind() {
+            use crate::geometry::Role;
+            assert_eq!(
+                LeafQuery::ByRole(Role::MidSurfaceFace).required_kind(),
+                Some(SelectorKind::Face),
+                "ByRole(MidSurfaceFace) must require a Face-kind selector"
+            );
+            assert_eq!(
+                LeafQuery::ByRole(Role::MidSurfaceEdge).required_kind(),
+                Some(SelectorKind::Edge),
+                "ByRole(MidSurfaceEdge) must require an Edge-kind selector"
+            );
+        }
+
+        // K1 leaf↔query: ByRole(MidSurfaceFace) accepts Face, rejects Edge.
+        #[test]
+        fn k1_leaf_byrole_mid_surface_face_kind_closure() {
+            use crate::geometry::Role;
+            let t_ok = ghr("B", 0, [0u8; 32], 1);
+            assert!(
+                SelectorValue::leaf(
+                    SelectorKind::Face,
+                    t_ok,
+                    LeafQuery::ByRole(Role::MidSurfaceFace)
+                )
+                .is_ok(),
+                "Face-kind selector must accept a ByRole(MidSurfaceFace) leaf"
+            );
+            let t_bad = ghr("B", 0, [0u8; 32], 1);
+            let result = SelectorValue::leaf(
+                SelectorKind::Edge,
+                t_bad,
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            );
+            assert_eq!(
+                result,
+                Err(SelectorError::KindMismatch {
+                    expected: SelectorKind::Face,
+                    found: SelectorKind::Edge,
+                }),
+                "Edge-kind selector must reject a ByRole(MidSurfaceFace) leaf (K1 kind-closure)"
+            );
+        }
+
+        // content_hash: equal for equal ByRole leaves; distinct across the query
+        // (vs an All leaf of the same kind) and across role (Face vs Edge leaf).
+        #[test]
+        fn byrole_content_hash_is_stable_and_distinct() {
+            use crate::geometry::Role;
+            let face_role_a = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            )
+            .unwrap();
+            let face_role_b = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceFace),
+            )
+            .unwrap();
+            // Equal ByRole leaves hash equal (deterministic).
+            assert_eq!(
+                face_role_a, face_role_b,
+                "two identical ByRole(MidSurfaceFace) Face leaves must be equal"
+            );
+            // Same kind, different query (ByRole vs All) — must differ (isolates the
+            // fresh tag byte 7 + role encoding from the All tag).
+            let face_all = SelectorValue::leaf(
+                SelectorKind::Face,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::All,
+            )
+            .unwrap();
+            assert_ne!(
+                face_role_a, face_all,
+                "ByRole(MidSurfaceFace) must hash distinct from an All leaf of the same kind"
+            );
+            // Different role (and kind) — must differ.
+            let edge_role = SelectorValue::leaf(
+                SelectorKind::Edge,
+                ghr("B", 0, [0u8; 32], 1),
+                LeafQuery::ByRole(Role::MidSurfaceEdge),
+            )
+            .unwrap();
+            assert_ne!(
+                face_role_a, edge_role,
+                "ByRole(MidSurfaceFace) must hash distinct from ByRole(MidSurfaceEdge)"
+            );
+        }
+
         // K1 composition: union of face + edge selector must Err.
         #[test]
         fn k1_union_rejects_mixed_kinds() {
