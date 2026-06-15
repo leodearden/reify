@@ -225,8 +225,26 @@ fn live_findings_are_within_baseline() {
     let findings = reify_audit::ptodo::check(&ctx);
 
     // Map every finding through fingerprint() and assert membership.
+    //
+    // Restrict the convergence check to findings representable in the
+    // source-marker baseline grammar (the same boundary `baseline_is_well_formed`
+    // enforces): a swept, non-allowlisted SOURCE PATH key and a §8.3 taxonomy
+    // kind. The α structural and β liveness lanes are path-keyed (`task_id` = the
+    // swept file), so they pass this gate. The ζ inverse lane, by contrast, emits
+    // `task-cites-deleted-path` findings keyed by TASK ID (e.g. `task_id = "2560"`)
+    // with a kind outside the baseline taxonomy — a task-DB-metadata hygiene
+    // class, not source-marker debt. Such findings can NEVER appear in
+    // `ptodo-baseline.txt` (they would fail `baseline_is_well_formed`'s swept-ext
+    // and kind-taxonomy assertions), so demanding their membership here would be a
+    // category error that no well-formed baseline could satisfy. They remain
+    // surfaced by the `reify-audit --pattern PTODO` binary and are remediated via
+    // task-metadata curation; they are simply out of scope for the source-marker
+    // baseline ratchet this test guards.
     let mut violations: Vec<String> = Vec::new();
     for f in &findings {
+        if !is_swept_ext(&f.task_id) {
+            continue;
+        }
         let fp = fingerprint(f);
         if !baseline.contains(&fp) {
             violations.push(fp);
