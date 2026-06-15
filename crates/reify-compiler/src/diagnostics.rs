@@ -168,6 +168,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dup_ambient_default_error_is_error_with_code_and_two_labels() {
+        let first_span = SourceSpan::new(0, 5);
+        let dup_span = SourceSpan::new(10, 15);
+        let d = dup_ambient_default_error("Material", first_span, dup_span);
+
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::DuplicateAmbientDefault));
+
+        // Message embeds the E_DUP_AMBIENT_DEFAULT mnemonic and the type name
+        // (downstream tooling matches on the code, not the text).
+        assert!(
+            d.message.contains("E_DUP_AMBIENT_DEFAULT"),
+            "expected 'E_DUP_AMBIENT_DEFAULT' in message: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Material"),
+            "expected type name 'Material' in message: {:?}",
+            d.message
+        );
+
+        // Exactly two labels: the duplicate site first, then the first-seen site
+        // (mirrors dup_member_key_error's two-label shape).
+        assert_eq!(d.labels.len(), 2);
+        assert_eq!(d.labels[0].span, dup_span);
+        assert!(
+            d.labels[0].message.contains("duplicate default declared here"),
+            "expected 'duplicate default declared here' in label 0: {:?}",
+            d.labels[0].message
+        );
+        assert_eq!(d.labels[1].span, first_span);
+        assert!(
+            d.labels[1].message.contains("first defined here"),
+            "expected 'first defined here' in label 1: {:?}",
+            d.labels[1].message
+        );
+    }
+
     fn keyed_entry(key: &str, span: SourceSpan) -> reify_ast::KeyedSubMemberEntry {
         reify_ast::KeyedSubMemberEntry {
             key: key.to_string(),
