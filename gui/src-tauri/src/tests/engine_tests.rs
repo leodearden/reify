@@ -3594,7 +3594,7 @@ fn get_entity_tree_no_realization_has_mesh_false() {
 
     // Load a module with no realizations via source (no geometry ops)
     session
-        .load_from_source("structure Simple { param x: Scalar = 1mm }", "simple")
+        .load_from_source("structure Simple { param x: Length = 1mm }", "simple")
         .expect("load");
     let tree = session.get_entity_tree();
     let root = &tree[0];
@@ -3611,7 +3611,7 @@ fn get_entity_tree_sub_component_produces_nested_node() {
 
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3703,7 +3703,7 @@ fn get_entity_tree_value_cell_type_name_from_cell_type() {
         .find(|c| c.entity_path == "Bracket.width")
         .expect("should have Bracket.width node");
 
-    // width is `param width: Scalar = 80mm` → type is Scalar[LENGTH]
+    // width is `param width: Length = 80mm` → type is Scalar[LENGTH]
     // cell_type.to_string() for a Length scalar should contain "Scalar"
     let type_name = width_node
         .type_name
@@ -3723,7 +3723,7 @@ fn get_entity_tree_sub_node_type_name_from_structure_name() {
     let mut session = EngineSession::new(Box::new(checker), None);
     session
         .load_from_source(
-            r#"structure Bolt { param mass: Scalar = 1 }
+            r#"structure Bolt { param mass: Length = 1 }
 structure Assembly { sub bolt = Bolt() }"#,
             "test",
         )
@@ -3984,7 +3984,7 @@ fn get_containing_definition_no_module_returns_none() {
 fn get_containing_definition_inside_structure_returns_some() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4001,7 +4001,7 @@ fn get_containing_definition_outside_def_returns_none() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
     // The structure def lives entirely on line 1; line 2 is a comment.
-    let source = "structure Foo { param x: Scalar = 1 }\n// outside any def";
+    let source = "structure Foo { param x: Length = 1 }\n// outside any def";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4036,7 +4036,7 @@ fn get_containing_definition_occurrence_returns_occurrence_kind() {
 fn get_containing_definition_span_valid_and_starts_at_zero() {
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
-    let source = "structure Foo { param x: Scalar = 1 }";
+    let source = "structure Foo { param x: Length = 1 }";
     session
         .load_from_source(source, "test")
         .expect("load should succeed");
@@ -4128,7 +4128,7 @@ fn get_def_preview_no_default_param_is_undetermined() {
     let mut session = EngineSession::new(Box::new(checker), None);
     // 'x' has no default expression — must be Undetermined in preview.
     session
-        .load_from_source("structure Bar { param x: Scalar }", "test")
+        .load_from_source("structure Bar { param x: Length }", "test")
         .expect("load should succeed");
     let state = session
         .get_def_preview("Bar")
@@ -4681,7 +4681,7 @@ fn commit_state_refreshes_caches_on_update_source() {
     let mut session = EngineSession::new(Box::new(checker), None);
 
     // Load a single-structure source (1 declaration, 0 newlines).
-    let source1 = "structure A { param x: Scalar = 1 }";
+    let source1 = "structure A { param x: Length = 1 }";
     session
         .load_from_source(source1, "test_refresh")
         .expect("first load should succeed");
@@ -4697,7 +4697,7 @@ fn commit_state_refreshes_caches_on_update_source() {
         .len();
 
     // Update with a two-structure source split across two lines (1 newline).
-    let source2 = "structure A { param x: Scalar = 1 }\nstructure B { param y: Scalar = 2 }";
+    let source2 = "structure A { param x: Length = 1 }\nstructure B { param y: Length = 2 }";
     session
         .update_source("test_refresh.ri", source2)
         .expect("update_source should succeed");
@@ -5450,11 +5450,11 @@ fn freshness_wires_through_get_entity_tree_for_sub_component_cell() {
     // A minimal two-structure module: Parent has a sub-component `rib` of type
     // `Child`.  Child has a param `height` and a let binding `half_h`.
     let source = r#"structure Child {
-    param height: Scalar = 10mm
+    param height: Length = 10mm
     let half_h = height / 2
 }
 structure Parent {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     sub rib = Child(height: width * 0.5)
 }"#;
 
@@ -5777,7 +5777,7 @@ fn load_file_with_user_import_resolves_imported_structure() {
     // helper.ri: a public structure with one param
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5842,7 +5842,7 @@ fn load_file_solo_helper_no_imports_works() {
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -5922,7 +5922,7 @@ fn load_file_unresolved_import_returns_clear_err() {
 /// Multi-file project fixture used by `update_source` regression tests.
 ///
 /// Creates a [`tempfile::TempDir`] containing:
-/// - `helper.ri`: `pub structure Helper { param x: Scalar = 10mm }`
+/// - `helper.ri`: `pub structure Helper { param x: Length = 10mm }`
 /// - `main.ri`: `import helper\nstructure Top { sub h = Helper() }`
 ///
 /// Calls `load_file` on `main.ri`, asserts the baseline `Helper.x` value cell
@@ -5949,7 +5949,7 @@ fn loaded_helper_session() -> (tempfile::TempDir, EngineSession, std::path::Path
 
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Helper { param x: Scalar = 10mm }\n",
+        "pub structure Helper { param x: Length = 10mm }\n",
     )
     .expect("write helper.ri");
 
@@ -6034,7 +6034,7 @@ fn update_source_after_load_file_dirty_buffer_edit_preserves_imports() {
 
     // v2: keep the import, add a new top-level param — simulates a real keystroke edit
     let main_content_v2 =
-        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Scalar = 20mm }\n";
+        "import helper\nstructure Top { sub h = Helper()\nparam top_size: Length = 20mm }\n";
 
     let state = session
         .update_source(main_path.to_str().unwrap(), main_content_v2)
@@ -6077,7 +6077,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     // main.ri: no imports — load succeeds
     std::fs::write(
         dir.path().join("main.ri"),
-        "structure Top { param w: Scalar = 5mm }\n",
+        "structure Top { param w: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6089,7 +6089,7 @@ fn update_source_after_load_file_with_unresolved_import_returns_err() {
     let main_path = dir.path().join("main.ri");
     let result = session.update_source(
         main_path.to_str().unwrap(),
-        "import nonexistent\nstructure Top { param w: Scalar = 5mm }\n",
+        "import nonexistent\nstructure Top { param w: Length = 5mm }\n",
     );
 
     assert!(
@@ -6132,7 +6132,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // A self-contained structure — no imports needed; the bug is purely about
     // module_name derivation, independent of multi-file resolution.
-    let initial_content = "structure Main { param w: Scalar = 10mm }\n";
+    let initial_content = "structure Main { param w: Length = 10mm }\n";
     std::fs::write(dir.path().join("main.ri"), initial_content).expect("write main.ri");
 
     session
@@ -6141,7 +6141,7 @@ fn update_source_with_divergent_path_keeps_loaded_module_name() {
 
     // Build a divergent path: file_stem = "renamed_buffer", differs from "main".
     let divergent = dir.path().join("renamed_buffer.ri");
-    let updated_content = "structure Main { param w: Scalar = 20mm }\n";
+    let updated_content = "structure Main { param w: Length = 20mm }\n";
 
     let state = session
         .update_source(divergent.to_str().unwrap(), updated_content)
@@ -6200,7 +6200,7 @@ fn update_source_on_fresh_session_compiles_single_file_source_without_disk_io() 
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    let source = "structure Solo { param w: Scalar = 7mm }\n";
+    let source = "structure Solo { param w: Length = 7mm }\n";
     let state = session
         .update_source("/nonexistent/dir/solo.ri", source)
         .expect("fresh-session update_source with valid single-file source should return Ok");
@@ -6397,14 +6397,14 @@ fn load_file_two_imports_with_same_pub_structure_emits_collision_diagnostic() {
     // helper1.ri: declares pub structure Foo with x = 1mm
     std::fs::write(
         dir.path().join("helper1.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper1.ri");
 
     // helper2.ri: also declares pub structure Foo (collision with helper1)
     std::fs::write(
         dir.path().join("helper2.ri"),
-        "pub structure Foo { param x: Scalar = 2mm }\n",
+        "pub structure Foo { param x: Length = 2mm }\n",
     )
     .expect("write helper2.ri");
 
@@ -6435,14 +6435,14 @@ fn load_file_entry_redeclares_imported_pub_structure_emits_collision_diagnostic(
     // helper.ri: declares pub structure Foo
     std::fs::write(
         dir.path().join("helper.ri"),
-        "pub structure Foo { param x: Scalar = 1mm }\n",
+        "pub structure Foo { param x: Length = 1mm }\n",
     )
     .expect("write helper.ri");
 
     // main.ri: also declares structure Foo (shadows the import)
     std::fs::write(
         dir.path().join("main.ri"),
-        "import helper\nstructure Foo { param y: Scalar = 5mm }\n",
+        "import helper\nstructure Foo { param y: Length = 5mm }\n",
     )
     .expect("write main.ri");
 
@@ -6470,7 +6470,7 @@ fn load_file_three_imports_same_pub_structure_emits_two_collision_diagnostics() 
     for (name, val) in [("helper1", "1mm"), ("helper2", "2mm"), ("helper3", "3mm")] {
         std::fs::write(
             dir.path().join(format!("{name}.ri")),
-            format!("pub structure Foo {{ param x: Scalar = {val} }}\n"),
+            format!("pub structure Foo {{ param x: Length = {val} }}\n"),
         )
         .unwrap_or_else(|_| panic!("write {name}.ri"));
     }
@@ -7349,7 +7349,7 @@ fn get_entity_at_source_location_zero_line_or_col_returns_none() {
 
 /// (c) Cursor mid-"width" identifier (line=2, col=11) → Some("Bracket.width").
 ///
-/// bracket_source() line 2: "    param width: Scalar = 80mm"
+/// bracket_source() line 2: "    param width: Length = 80mm"
 /// col 11 is 'w' in "width", inside the width cell span.
 #[test]
 fn get_entity_at_source_location_width_cell_returns_bracket_width() {
@@ -7369,7 +7369,7 @@ fn get_entity_at_source_location_width_cell_returns_bracket_width() {
 
 /// (d) Cursor mid-"thickness" identifier (line=4, col=11) → Some("Bracket.thickness").
 ///
-/// bracket_source() line 4: "    param thickness: Scalar = 5mm"
+/// bracket_source() line 4: "    param thickness: Length = 5mm"
 /// col 11 is 't' in "thickness", inside the thickness cell span.
 #[test]
 fn get_entity_at_source_location_thickness_cell_returns_bracket_thickness() {
@@ -7465,20 +7465,20 @@ fn get_entity_at_source_location_past_end_of_source_returns_none() {
 /// Source layout (1-based lines):
 /// ```text
 ///  1: pub structure First {
-///  2:     param a: Scalar = 1mm
+///  2:     param a: Length = 1mm
 ///  3: }
 ///  4: (blank)
 ///  5: pub structure Middle {
-///  6:     param b: Scalar = 2mm
+///  6:     param b: Length = 2mm
 ///  7: }
 ///  8: (blank)
 ///  9: pub structure Last {
-/// 10:     param c: Scalar = 3mm
+/// 10:     param c: Length = 3mm
 /// 11: }
 /// ```
 #[test]
 fn get_entity_at_source_location_multi_structure_header_lines_resolve_to_each_structure() {
-    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Scalar = 1mm\n}\n\npub structure Middle {\n    param b: Scalar = 2mm\n}\n\npub structure Last {\n    param c: Scalar = 3mm\n}\n";
+    const THREE_STRUCT_SOURCE: &str = "pub structure First {\n    param a: Length = 1mm\n}\n\npub structure Middle {\n    param b: Length = 2mm\n}\n\npub structure Last {\n    param c: Length = 3mm\n}\n";
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -8052,7 +8052,7 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
 }"#;
 
@@ -8118,7 +8118,7 @@ fn with_registered_kernel_production_session_resolves_auto_param() {
 
     // Mirror auto_minimize.ri: one auto param + box constraints + minimize.
     let source = r#"structure AutoMinimize {
-    param thickness: Scalar = auto
+    param thickness: Length = auto
     constraint thickness > 2mm
     constraint thickness < 20mm
     minimize thickness
@@ -8738,7 +8738,7 @@ fn fea_case_emitter_wires_through_real_commit_path() {
     use std::sync::Arc;
 
     let source = r#"structure S {
-    param width: Scalar = 10mm
+    param width: Length = 10mm
 }"#;
 
     let checker = SimpleConstraintChecker;
@@ -9236,7 +9236,7 @@ fn build_gui_state_extracts_tensegrity_wires_from_t_prism() {
     }
 
     // First strut: node 0 (1m, 0m, 1m) → node 3 (0.866m, 0.5m, 0m).
-    // SI passthrough: values are the raw float stored in Value::Scalar.si_value.
+    // SI passthrough: values are the raw float stored in Value::Length.si_value.
     let strut0 = &state.tensegrity_wires[0];
     assert_eq!(strut0.x1, 1.0, "strut0.x1 must be 1.0 (node 0 x)");
     assert_eq!(strut0.y1, 0.0, "strut0.y1 must be 0.0 (node 0 y)");
@@ -9885,7 +9885,7 @@ fn cantilever_fixture_realizes_body() {
 /// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
 ///   - `CheckResult.values` contains the cell `FeaCantileverSmoke.result`
 ///   - that value is a `Value::StructureInstance` (not Undef / stub)
-///   - `result.max_von_mises` is a `Value::Scalar` with dimension PRESSURE
+///   - `result.max_von_mises` is a `Value::Length` with dimension PRESSURE
 ///   - the SI value is within ±50% of the analytical 6 MPa reference
 ///     (matches the tolerance documented in the cantilever comment header and
 ///     the reify-eval e2e test at crates/reify-eval/tests/solve_elastic_static_e2e.rs)
