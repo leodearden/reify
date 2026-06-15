@@ -192,6 +192,14 @@ assert "workspace nextest pass is wrapped in 'timeout --kill-after=60 [0-9]+m'" 
 # execute path produces a real config file.  Test 9 checks the 'reify-nextest-occt'
 # prefix (present in both the real path and the placeholder), not a real file.
 #
+# Tests 10-11 (compile-free parse, task 4613): gen-nextest-config.sh output is
+# parsed directly for the [test-groups] occt max-threads integer — no
+# cargo/nextest invocation, no workspace compile.  The old behavioral check via
+# show-config was dropped: it forced a full workspace build on cold cache and
+# blew run_all.sh's 20-min budget (esc-4607-213).  The --config-file mechanism
+# was verified once on nextest 0.9.136 (documented in gen-nextest-config.sh).
+# The TOML cap contract is covered by the parse plus Tests 12a/12b.
+#
 # NOTE: the broken cargo-config form `--config 'test-groups.occt.max-threads=N'`
 # (the step-3 mechanism) is a NO-OP for nextest test-groups — it overrides CARGO
 # config, not nextest's own test-groups (verified on nextest 0.9.136).  That form
@@ -230,46 +238,39 @@ assert "NO 'cargo nextest run' line carries the broken cargo-config form --confi
         [ -z \"\$bad\" ]
     "
 
-# Test 10 (behavioral gold, default): gen-nextest-config.sh with
-# REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file that makes
-# 'cargo nextest show-config test-groups' report 'group: occt (max threads = 24)'.
-# Guarded on nextest being available (vacuous pass when absent, mirroring the
-# NEXTEST tolerance in the plan-shape tests above).
-HAVE_NEXTEST=0
-if cargo nextest --version >/dev/null 2>&1; then
-    HAVE_NEXTEST=1
-fi
-
-assert "gen-nextest-config.sh default: 'cargo nextest show-config' reports 'group: occt (max threads = 24)'" \
+# Regression guard: no live (non-comment) invocation of the workspace-compiling
+# nextest show-config command in this script — that command enumerates test
+# binaries and forces a full workspace compile on cold cache, blowing
+# run_all.sh's 20-min budget (esc-4607-213). Tests 10-11 parse the generated
+# config file directly (compile-free). The needle is split to prevent self-match.
+assert "no live nextest show-config invocation in this script (compile-free Tests 10-11)" \
     bash -c "
-        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
-        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
-        out=\$(cd \"${REPO_ROOT}\" && timeout 60 cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null)
-        rc=\$?
-        rm -f \"\$cfg\"
-        # 'show-config' compiles the workspace when no test binaries exist yet. Under
-        # INCLUDE_INFRA=1 the infra phase runs BEFORE the nextest build, so on a cold cache
-        # this compile can exceed run_all.sh's 20-min budget (esc-4528-187). Bound it with a
-        # timeout and skip gracefully on 124 — tests 12a/12b verify the TOML contract without
-        # compilation, so the mechanism stays covered. When the workspace is already built,
-        # show-config returns in seconds and full behavioral coverage is retained.
-        if [ \$rc -eq 124 ]; then exit 0; fi
-        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 24)'
+        _SELF='${BASH_SOURCE[0]}'
+        _NEEDLE=\"cargo nextest show\"\"-config\"
+        bad=\$(grep -F \"\$_NEEDLE\" \"\$_SELF\" | grep -v '^[[:space:]]*#' || true)
+        [ -z \"\$bad\" ]
     "
 
-# Test 11 (behavioral gold, override): REIFY_OCCT_NEXTEST_MAX_THREADS=7 produces
-# a config that makes show-config report 'group: occt (max threads = 7)'.
-assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: show-config reports 'group: occt (max threads = 7)'" \
+# Test 10 (compile-free parse, default): gen-nextest-config.sh with
+# REIFY_OCCT_NEXTEST_MAX_THREADS unset produces a config file whose [test-groups]
+# section has occt max-threads = 24. Section-scoped awk extraction; no
+# cargo/nextest invocation, no workspace compile (task 4613, esc-4607-213).
+assert "gen-nextest-config.sh default: [test-groups] occt max-threads resolves to 24" \
     bash -c "
-        if [ '${HAVE_NEXTEST}' -eq 0 ]; then exit 0; fi
-        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
-        out=\$(cd \"${REPO_ROOT}\" && timeout 60 cargo nextest show-config test-groups --config-file \"\$cfg\" 2>/dev/null)
-        rc=\$?
+        cfg=\$(env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
         rm -f \"\$cfg\"
-        # See test 10: bounded timeout + graceful 124 skip so a cold-cache compile cannot
-        # blow run_all.sh's budget (esc-4528-187); tests 12a/12b cover the TOML contract.
-        if [ \$rc -eq 124 ]; then exit 0; fi
-        printf '%s\n' \"\$out\" | grep -qF 'group: occt (max threads = 7)'
+        [ \"\$val\" = \"24\" ]
+    "
+
+# Test 11 (compile-free parse, override): REIFY_OCCT_NEXTEST_MAX_THREADS=7
+# produces a config whose [test-groups] occt max-threads resolves to 7.
+assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: [test-groups] occt max-threads resolves to 7" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=7 bash \"${GEN_CFG}\")
+        val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"7\" ]
     "
 
 # Test 12a (fallback, no nextest required): gen-nextest-config.sh default output
