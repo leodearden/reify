@@ -324,3 +324,116 @@ structure def TwoMats : DualMaterial {{
         );
     }
 }
+
+// ─── purpose-scope per-scope checks (DD6: checks, but NO injection) ──────────
+//
+// A `default` nested directly in a `purpose` body receives the SAME per-scope
+// duplicate (DD5) and declaration-site type (DD4) checks as a file-level default,
+// but is NEVER injected into a structure (structures cannot nest in a purpose, so
+// a purpose default can never reach a definition-site injection — DD6). These
+// mirror the file-scope collection tests above, one scope inward.
+
+/// Two `default Material = ...` declarations in the SAME purpose body produce
+/// exactly one `DiagnosticCode::DuplicateAmbientDefault` error (DD5, per-scope).
+#[test]
+fn duplicate_purpose_nested_default_is_one_dup_error() {
+    let source = format!(
+        r#"
+purpose Exploration() {{
+    default Material = {STEEL_CTOR}
+    default Material = {STEEL_CTOR}
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    let dups: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DuplicateAmbientDefault))
+        .collect();
+
+    assert_eq!(
+        dups.len(),
+        1,
+        "two same-type defaults in one purpose body should yield exactly one \
+         DuplicateAmbientDefault error; got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
+
+/// `default Material = 5mm` inside a purpose body errors with
+/// `DiagnosticCode::AmbientDefaultTypeMismatch`, anchored at the DECLARATION
+/// span (DD4) — same per-scope check as the file-level form.
+#[test]
+fn type_mismatch_purpose_nested_default_errors_at_declaration() {
+    let source = r#"
+purpose Exploration() {
+    default Material = 5mm
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let mismatches: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AmbientDefaultTypeMismatch))
+        .collect();
+
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "a Length default for Material inside a purpose should yield exactly one \
+         AmbientDefaultTypeMismatch error; got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let d = mismatches[0];
+    assert!(
+        !d.labels.is_empty(),
+        "type-mismatch error should carry a label at the declaration span"
+    );
+    let span = d.labels[0].span;
+    let sliced = &source[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains("Material"),
+        "label should be anchored at the purpose-nested `default Material = ...` \
+         declaration, got slice {sliced:?}"
+    );
+}
+
+/// A single valid purpose-nested `default Material = Material(...)` compiles with
+/// NO error AND NO leftover `W_DEFAULT_NOT_WIRED` warning (the task-A placeholder
+/// is fully replaced by real per-scope semantics for the purpose form too).
+#[test]
+fn single_valid_purpose_nested_default_has_no_error_and_no_wired_warning() {
+    let source = format!(
+        r#"
+purpose Exploration() {{
+    default Material = {STEEL_CTOR}
+}}
+"#
+    );
+    let module = compile_source_with_stdlib(&source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a single valid purpose-nested ambient default should produce no errors; \
+         got: {errors:?}"
+    );
+
+    assert!(
+        !module
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("W_DEFAULT_NOT_WIRED")),
+        "the task-A W_DEFAULT_NOT_WIRED warning must be gone for purpose-nested \
+         defaults; got diagnostics: {:?}",
+        module.diagnostics
+    );
+}
