@@ -8383,4 +8383,139 @@ mod tests {
              got {diags:?}"
         );
     }
+
+    // --- task 4323 γ: undef-cause sink tests ---
+    //
+    // Drives the `with_undef_cause_sink` builder, `push_op_contract_failure` helper,
+    // and the two push sites (FunctionCall arm, eval_binop).
+    //
+    // RED: `with_undef_cause_sink` does not exist → compile fail.
+    // GREEN after step-4 adds it to EvalContext.
+
+    /// BinOp::Div with a zero Int divisor produces Undef AND, when a sink is
+    /// attached via `with_undef_cause_sink`, records exactly one
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Mirrors the `div_by_zero_is_undef` test above but adds the sink assertion.
+    /// Drives the eval_binop push site (after the strict undef-propagation check).
+    #[test]
+    fn div_by_zero_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let left = lit(Value::Int(42), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "div-by-zero must produce Undef");
+        let causes = sink.borrow();
+        assert_eq!(causes.len(), 1, "sink must contain exactly one cause, got {causes:?}");
+        assert!(
+            matches!(
+                &causes[0],
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            ),
+            "cause must be OpContractFailed {{ OpContractViolation }}, got {:?}",
+            causes[0]
+        );
+    }
+
+    /// sqrt of a determined negative Real produces Undef AND the sink receives
+    /// an `OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Drives the FunctionCall arm push site (after `eval_builtin` returns Undef
+    /// with a fully-determined arg list — the arg list has no Undef entries,
+    /// so the strict undef-arg short-circuit did NOT fire).
+    #[test]
+    fn sqrt_negative_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Real(-1.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x21]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(-1.0) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            !causes.is_empty(),
+            "sink must contain at least one OpContractFailed cause, got {causes:?}"
+        );
+        assert!(
+            causes.iter().any(|c| matches!(
+                c,
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            )),
+            "causes must include OpContractFailed {{ OpContractViolation }}, got {causes:?}"
+        );
+    }
+
+    /// sqrt(Undef) with a sink leaves the sink EMPTY (expr-layer BT6).
+    ///
+    /// The strict undef-arg short-circuit at lib.rs:206 fires BEFORE the builtin
+    /// is ever called, so `reify_stdlib::eval_builtin` is never reached and
+    /// no OpContractFailed can be pushed — the no-false-attribution guarantee
+    /// falls out of the existing short-circuit structure.
+    #[test]
+    fn sqrt_undef_arg_with_sink_leaves_sink_empty() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x22]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(Undef) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            causes.is_empty(),
+            "sink must be EMPTY for Undef arg (BT6 — undef-arg short-circuit fires first), \
+             got {causes:?}"
+        );
+    }
+
+    /// div-by-zero with NO sink attached does not panic; result is still Undef.
+    ///
+    /// Pins the transparency invariant G3: absence of a sink changes nothing in
+    /// the eval result — all pushes are no-ops when `undef_causes` is None.
+    #[test]
+    fn div_by_zero_without_sink_is_transparent() {
+        let left = lit(Value::Int(10), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        // Plain EvalContext::simple — no sink.
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(result.is_undef(), "div-by-zero without sink must still produce Undef");
+    }
 }
