@@ -131,13 +131,13 @@ fn validate_baseline_content(content: &str) -> Result<(), String> {
             continue;
         }
         check_baseline_line(line).map_err(|e| format!("line {n}: {e}; line={line:?}"))?;
-        if let Some(prev) = prev {
-            if line <= prev {
-                return Err(format!(
-                    "line {n}: baseline is not strictly sorted (duplicate or out of order); \
-                     {prev:?} >= {line:?}"
-                ));
-            }
+        if let Some(prev) = prev
+            && line <= prev
+        {
+            return Err(format!(
+                "line {n}: baseline is not strictly sorted (duplicate or out of order); \
+                 {prev:?} >= {line:?}"
+            ));
         }
         prev = Some(line);
     }
