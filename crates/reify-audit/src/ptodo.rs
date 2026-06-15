@@ -1550,4 +1550,68 @@ mod tests {
         assert_eq!(fold_whitespace("\t\n "), "");
         assert_eq!(fold_whitespace(""), "");
     }
+
+    // -------------------------------------------------------------------
+    // θ (#4560) assess-NO regression guard — softer vocabularies
+    // -------------------------------------------------------------------
+
+    /// Regression guard for the task θ (#4560) ASSESS NO-decision: every
+    /// vocabulary in [`ASSESSED_REJECTED_VOCAB`] must remain silent when
+    /// embedded in a benign line that carries **no** TODO/FIXME/HACK marker,
+    /// no `todo!()`/`unimplemented!()` macro, and no `#[ignore]` attribute.
+    ///
+    /// A future contributor who adds one of these vocabularies as a recognised
+    /// marker will see this test fail, prompting them to revisit the θ evidence
+    /// and update the PRD §14 record before proceeding.
+    #[test]
+    fn softer_vocabularies_remain_unrecognised() {
+        // Each vocabulary embedded in an innocent comment — no TODO/FIXME/HACK
+        // / todo!() / unimplemented!() / #[ignore] present.  scan_file must
+        // return an empty vec for both Rust and non-Rust contexts.
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let rust_line = format!("// this uses {vocab} in a comment");
+            assert_eq!(
+                scan_file(&rust_line, true),
+                vec![],
+                "vocab {:?} must not trigger the detector in a Rust comment",
+                vocab,
+            );
+            let non_rust_line = format!("# {vocab} mentioned here");
+            assert_eq!(
+                scan_file(&non_rust_line, false),
+                vec![],
+                "vocab {:?} must not trigger the detector in a non-Rust comment",
+                vocab,
+            );
+        }
+
+        // Concrete real-corpus benign forms that must also stay silent.
+
+        // (a) mktemp XXXXXX template — the dominant "XXX" corpus class (~100% FP).
+        //     Shell context (is_rust=false).
+        let mktemp_line = "TMPDIR=$(mktemp -d /tmp/reify-XXXXXX)";
+        assert_eq!(
+            scan_file(mktemp_line, false),
+            vec![],
+            "mktemp XXXXXX template line must not trigger the detector",
+        );
+
+        // (b) Doc-comment with "ephemeral placeholder" — the dominant "placeholder"
+        //     corpus class (type-system/UI vocabulary, ~100% FP).  Rust context.
+        let placeholder_line = "/// Uses an ephemeral placeholder for the auto-generated type param.";
+        assert_eq!(
+            scan_file(placeholder_line, true),
+            vec![],
+            "doc-comment with 'placeholder' must not trigger the detector",
+        );
+
+        // (c) Doc-comment with "in stub mode" — the dominant "stub" corpus class
+        //     (stub-mode architectural concept, ~100% FP).  Rust context.
+        let stub_mode_line = "/// Returns `None` in stub mode (OCCT/OpenVDB absent builds).";
+        assert_eq!(
+            scan_file(stub_mode_line, true),
+            vec![],
+            "doc-comment with 'stub mode' must not trigger the detector",
+        );
+    }
 }
