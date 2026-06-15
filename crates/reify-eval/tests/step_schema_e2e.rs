@@ -16,7 +16,6 @@
 //! EXPRESS schema name is the user-observable signal.
 
 use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
-use std::path::Path;
 
 /// Two `STEPOutput` occurrences on the same `box` solid — one declaring
 /// `version: STEPVersion.AP203`, one leaving `version` at its DSL default
@@ -48,7 +47,14 @@ fn step_version_selects_occt_step_schema_end_to_end() {
         Some(Box::new(kernel)),
     );
 
-    let artifacts = engine.build_outputs(&module, Path::new("/tmp/step_schema_e2e"), None);
+    // A unique per-run temp dir (auto-removed when `out_dir` drops) rather than
+    // a shared, never-cleaned hardcoded `/tmp` path. `build_outputs` uses it
+    // only to resolve the occurrences' relative paths and the assertions below
+    // read the in-memory `artifact.bytes`, but a unique dir keeps repeated and
+    // concurrent test runs from racing on a world-shared destination. Keep
+    // `out_dir` bound through the assertions so the directory outlives the call.
+    let out_dir = tempfile::tempdir().expect("create a unique temp dir for the e2e exports");
+    let artifacts = engine.build_outputs(&module, out_dir.path(), None);
 
     // Locate each artifact by its resolved destination filename.
     let find = |suffix: &str| -> &reify_eval::ExportArtifact {
