@@ -145,7 +145,7 @@ pub(crate) fn compute_gradient(field_val: &Value) -> Value {
     // The sample handler detects lambda=Field + source=Gradient and dispatches to
     // compute_numerical_gradient_at_point.
     //
-    // FIXME(#4592): `field_val.clone()` copies the outer Value::Field struct
+    // FIXME(#4593): `field_val.clone()` copies the outer Value::Field struct
     // (domain_type, codomain_type, source); only the inner lambda field is O(1)
     // via Arc::clone.  A full O(1) wrap requires callers to pass Arc<Value> so
     // the entire source field can be ref-counted rather than cloned.  This needs
@@ -218,7 +218,7 @@ pub(crate) fn compute_divergence(field_val: &Value) -> Value {
     };
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(#4592): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -285,7 +285,7 @@ pub(crate) fn compute_curl(field_val: &Value) -> Value {
     };
 
     // Result: vector field with dimensionally-correct codomain.
-    // FIXME(#4592): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
@@ -350,7 +350,7 @@ pub(crate) fn compute_laplacian(field_val: &Value) -> Value {
     };
 
     // Result: scalar field with dimensionally-correct codomain.
-    // FIXME(#4592): see compute_gradient for note on Arc<Value> caller optimization.
+    // FIXME(#4593): see compute_gradient for note on Arc<Value> caller optimization.
     Value::Field {
         domain_type: domain_type.clone(),
         codomain_type: result_codomain,
