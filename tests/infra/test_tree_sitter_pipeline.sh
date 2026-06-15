@@ -118,6 +118,35 @@ assert_file_nonempty() {
     fi
 }
 
+# --- Guard Helper ---
+# run_guarded_cargo_check <out_file> <cmd...>
+# Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
+# Returns a tri-state code safe under `set -euo pipefail`:
+#   0 — success     (caller continues to parser.c existence checks)
+#   1 — hard fail   (diagnostic already printed; caller returns 1)
+#   2 — timeout     (SKIP message printed; caller returns 0 to skip asserts)
+#
+# Uses `|| rc=$?` to capture cmd's GENUINE exit code, shielding it from
+# `set -e` (the established codebase idiom; see test_portable_timeout.sh:212).
+run_guarded_cargo_check() {
+    local out_file="$1"; shift
+    local rc=0
+    "$@" >"$out_file" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    elif [ "$rc" -eq 124 ]; then
+        echo "  SKIP: cargo check timed out after 300 s (cold/contended-cache environment)"
+        return 2
+    else
+        echo ""
+        echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
+        echo "  --- captured output ---"
+        cat "$out_file"
+        echo "  --- end output ---"
+        return 1
+    fi
+}
+
 # --- Runner ---
 run_tests() {
     local tests
@@ -171,23 +200,14 @@ test_auto_generation_rebuilds_parser() {
     # cold cache.  parser.c is ~5 MB; C compilation can take several minutes when
     # sccache is cold.  On a warm cache this completes in seconds.  Skip
     # gracefully on timeout (exit 124) so the rest of the suite still runs.
-    local cargo_out rc
+    local cargo_out
     cargo_out=$(mktemp)
     CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
-    if ! timeout 300 cargo check -p tree-sitter-reify \
-            --manifest-path "$REPO_ROOT/Cargo.toml" >"$cargo_out" 2>&1; then
-        rc=$?
-        if [ "$rc" -eq 124 ]; then
-            echo "  SKIP: cargo check timed out after 300 s (cold-cache environment)"
-            return 0
-        fi
-        echo ""
-        echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
-        echo "  --- captured output ---"
-        cat "$cargo_out"
-        echo "  --- end output ---"
-        return 1
-    fi
+    local guard_rc=0
+    run_guarded_cargo_check "$cargo_out" timeout 300 cargo check -p tree-sitter-reify \
+            --manifest-path "$REPO_ROOT/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi   # timed out — SKIP (message already printed)
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi    # hard fail — message already printed
 
     # Verify parser.c was recreated
     assert_file_exists "$parser" || return 1
