@@ -1699,4 +1699,51 @@ rm -f "$_b16b_held_file"
 _cleanup_balancer
 rm -f "$_b16_psi_fixture" "$_b16_held_back_file"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 17: setup-dev.sh reify-jobserver.service held-back state file cleanup
+#   Grep-the-source assertions (Block 5/6 pattern — hermetic, no systemctl).
+#
+#   (a) An uncommented ExecStartPre line in the reify-jobserver unit rm's
+#       /tmp/reify-jobserver-held-back (cleans stale reservoir on restart).
+#   (b) An uncommented ExecStopPost line rm's /tmp/reify-jobserver-held-back
+#       (clean shutdown; stale count must not mask a real leak on next start).
+#   (c) The reify-jobserver.service Description (or an adjacent comment) mentions
+#       "pressure-reactive" or "load-aware" admission.
+#
+#   GUARD: the addition must not have clobbered the existing lines:
+#     (d) ExecStart=jobserver-balancer.py still present
+#     (e) ExecStopPost still references reify-jobserver-merge (orig FIFO)
+#     (f) ExecStopPost still references reify-jobserver-task (orig FIFO)
+#
+#   RED: setup-dev.sh not yet updated → (a)/(b)/(c) fail.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 17: setup-dev.sh: ExecStartPre/StopPost rm held-back + Description ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+# 17a: an uncommented ExecStartPre line rm's reify-jobserver-held-back
+assert "17a: ExecStartPre rm's reify-jobserver-held-back (stale cleanup on restart)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStartPre' | grep -qF 'reify-jobserver-held-back'"
+
+# 17b: an uncommented ExecStopPost line rm's reify-jobserver-held-back
+assert "17b: ExecStopPost rm's reify-jobserver-held-back (clean shutdown)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-held-back'"
+
+# 17c: Description (or comment near the unit) mentions pressure-reactive or load-aware
+assert "17c: unit Description mentions pressure-reactive or load-aware admission" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -iE 'pressure.reactive|load.aware'"
+
+# 17d: GUARD — ExecStart=jobserver-balancer.py not clobbered
+assert "17d: GUARD — ExecStart still references scripts/jobserver-balancer.py" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'scripts/jobserver-balancer.py'"
+
+# 17e: GUARD — ExecStopPost reify-jobserver-merge line still present
+assert "17e: GUARD — ExecStopPost still references reify-jobserver-merge (orig FIFO)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-merge'"
+
+# 17f: GUARD — ExecStopPost reify-jobserver-task line still present
+assert "17f: GUARD — ExecStopPost still references reify-jobserver-task (orig FIFO)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-task'"
+
 test_summary
