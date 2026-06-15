@@ -133,29 +133,20 @@ All three share the same silent-Undef contract: shape failures (mismatched Sampl
 | `envelope_max_principal` | `result[P] == max over cases of max_eigenvalue(cases[name].stress[P])` |
 | `envelope_displacement_magnitude` | `result[P] == max over cases of \|cases[name].displacement[P]\|` |
 
-### Compositional primitives (reach for these for any other scalar field)
+### Compositional primitives: `envelope_max` and `envelope_min`
 
 ```
 envelope_max(fields : Map<String, Field<Point3, T>>) -> Field<Point3, T>  // T : Ordered
 envelope_min(fields : Map<String, Field<Point3, T>>) -> Field<Point3, T>  // T : Ordered
 ```
 
-`envelope_max` and `envelope_min` reduce a named-field map to a point-wise maximum or minimum across the case axis. Compose them with any per-case scalar projection to envelope a custom quantity:
-
-```
-// Example: per-point max of a scalar derived from each case's displacement field
-let disp_fields = map{
-    "operating" => displacement_magnitude_field(result_for(results, "operating")),
-    "overload"  => displacement_magnitude_field(result_for(results, "overload")),
-    "transport" => displacement_magnitude_field(result_for(results, "transport")),
-}
-let worst_disp = envelope_max(disp_fields)
-```
+`envelope_max` and `envelope_min` reduce a named map of per-case scalar fields to a point-wise maximum or minimum across the case axis. They are the underlying building blocks for all three convenience helpers: `envelope_von_mises` is `envelope_max` composed with the built-in per-case von Mises projection; `envelope_max_principal` is `envelope_max` over the per-case max-eigenvalue projection; `envelope_displacement_magnitude` is `envelope_max` over the per-case displacement vector magnitude. The round-trip identities in the table above hold because each helper is a thin wrapper over the shared Rust `envelope_reduce` kernel.
 
 **When to reach for which:**
 
-- Use the three **convenience helpers** (`envelope_von_mises`, `envelope_max_principal`, `envelope_displacement_magnitude`) for the common projections — they are shorter and pre-validated against the `MultiCaseResult` shape.
-- Use `envelope_max` / `envelope_min` for any **other scalar field** derived from per-case `ElasticResult` data; the helpers are one-liners over these primitives.
+- Use the three **convenience helpers** (`envelope_von_mises`, `envelope_max_principal`, `envelope_displacement_magnitude`) for the three common projections — they compose the per-case projection internally in Rust and are pre-validated against the `MultiCaseResult` shape.
+- **Per-case displacement magnitude:** use `envelope_displacement_magnitude`. There is no standalone user-callable function that extracts a per-case displacement magnitude field from an `ElasticResult` for direct composition with `envelope_max`.
+- **Custom scalar projections (v0.3 limitation):** v0.3 ships no standalone user-callable per-case projection that you could supply to `envelope_max` directly. The per-case von Mises, max-principal, and displacement-magnitude projections exist only inside the convenience helper implementations in Rust (`crates/reify-stdlib/src/fea.rs`). `envelope_max` and `envelope_min` remain useful when you have a `Map<String, Field<Point3, T>>` built from another source, but extracting per-case field data from an `ElasticResult` in the current Reify grammar is not yet supported. Future releases will generalise field access on `ElasticResult` (see task #2930).
 
 **Shared-grid-metadata contract:** all per-case fields passed to envelope primitives must share identical Sampled-grid metadata (grid kind, axis lengths, bounds, spacing, `domain_type`, `codomain_type`). This is the same contract as `linear_combine`. Mismatched grids collapse to `Undef`.
 
