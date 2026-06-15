@@ -3523,11 +3523,12 @@ pub(crate) fn try_eval_resolve_selector(
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match &expr.kind {
         reify_ir::CompiledExprKind::ResolveSelector { selector } => {
-            resolve_selector_to_list(selector, named_steps, values, kernel, diagnostics)
+            resolve_selector_to_list(selector, named_steps, values, kernel, table, diagnostics)
         }
         reify_ir::CompiledExprKind::IndexAccess { object, index } => {
             // Only handle IndexAccess whose object is a selector / ResolveSelector;
@@ -3542,6 +3543,7 @@ pub(crate) fn try_eval_resolve_selector(
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             )? {
                 reify_ir::Value::List(elems) => {
@@ -3597,6 +3599,7 @@ pub(crate) fn try_eval_resolve_selector(
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             )? {
                 reify_ir::Value::List(mut elems) => {
@@ -3929,6 +3932,7 @@ pub(crate) fn resolve_selector_to_list(
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
     kernel: &mut dyn reify_ir::GeometryKernel,
+    table: &reify_ir::TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     // (1) Obtain the Value::Selector via the shared helper (task 4119 δ, step-6).
@@ -3945,8 +3949,11 @@ pub(crate) fn resolve_selector_to_list(
     let parent_hash = target.upstream_values_hash;
 
     // (3) Resolve via the single executor — the kernel-bearing query happens HERE,
-    // not at construction (K2/BT7).
-    match crate::topology_selectors::resolve(&sv, kernel, diagnostics) {
+    // not at construction (K2/BT7). `resolve_with_attributes` is the
+    // table-threaded twin of `resolve` (task 4536): a `ByRole` leaf (e.g.
+    // `mid_surface(body)`) filters the realized body's `TopologyAttributeTable`,
+    // while every other leaf/composite behaves exactly as `resolve`.
+    match crate::topology_selectors::resolve_with_attributes(&sv, kernel, table, diagnostics) {
         Ok(ids) => {
             let elements = ids
                 .into_iter()
@@ -18647,12 +18654,14 @@ mod tests {
         );
         let expr = reify_ir::CompiledExpr::resolve_selector(inner);
 
+        let table = reify_ir::TopologyAttributeTable::default();
         let mut diagnostics = Vec::new();
         let result = super::try_eval_resolve_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
+            &table,
             &mut diagnostics,
         );
 
@@ -18746,12 +18755,14 @@ mod tests {
         let index = reify_ir::CompiledExpr::literal(reify_ir::Value::Int(0), Type::Int);
         let expr = reify_ir::CompiledExpr::index_access(object, index, Type::Geometry);
 
+        let table = reify_ir::TopologyAttributeTable::default();
         let mut diagnostics = Vec::new();
         let result = super::try_eval_resolve_selector(
             &expr,
             &named_steps,
             &values,
             &mut kernel,
+            &table,
             &mut diagnostics,
         );
 

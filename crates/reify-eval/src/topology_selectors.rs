@@ -35,7 +35,8 @@ use reify_core::ty::SelectorKind;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
-    FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Value,
+    FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
+    TopologyAttributeTable, Value,
 };
 
 // ── Sub-handle lowering primitives (task 3616, KGQ-η) ──────────────────────
@@ -1359,15 +1360,47 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
     kernel: &mut K,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
+    // Back-compat wrapper (task 4536): the table-free entry point that external
+    // callers (`crates/reify-eval/tests/selector_boundary_gate.rs`) and the
+    // legacy in-crate caller (`eval_selector_feature_datum`) keep. Delegates
+    // with an empty default attribute table, so a `LeafQuery::ByRole` leaf
+    // resolves to empty here — harmless, since those callers never build a
+    // `ByRole` leaf (the only `ByRole`-needing caller, `resolve_selector_to_list`,
+    // calls `resolve_with_attributes` directly with the realized body's table).
+    resolve_with_attributes(selector, kernel, &TopologyAttributeTable::default(), diagnostics)
+}
+
+/// Table-threaded twin of [`resolve`] (task 4536): carries a
+/// [`TopologyAttributeTable`] through the composite recursion so a
+/// [`LeafQuery::ByRole`] leaf can filter the realized body's recorded topology
+/// attributes (e.g. the shell-extract `Role::MidSurfaceFace` synthetic faces,
+/// which are NOT enumerable via `extract_faces`).
+///
+/// All non-`ByRole` behavior is identical to [`resolve`]; the table is simply
+/// threaded into [`resolve_leaf`] and the `Union`/`Intersect`/`Difference`
+/// recursion so a `ByRole` leaf nested inside a 4119 set-composition still sees
+/// the table.
+///
+/// # Errors
+///
+/// Same as [`resolve`] — propagates any [`QueryError`] from the predicate fns
+/// or kernel extraction. The `ByRole` arm itself is pure/total/kernel-free and
+/// never errors (an empty match is a valid empty `Ok`).
+pub fn resolve_with_attributes<K: GeometryKernel + ?Sized>(
+    selector: &SelectorValue,
+    kernel: &mut K,
+    table: &TopologyAttributeTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
     match &selector.node {
         SelectorNode::Leaf { target, query } => {
-            resolve_leaf(selector.kind, target, query, kernel, diagnostics)
+            resolve_leaf(selector.kind, target, query, kernel, table, diagnostics)
         }
         SelectorNode::Union(children) => {
             let mut out: Vec<GeometryHandleId> = Vec::new();
             let mut seen: HashSet<GeometryHandleId> = HashSet::new();
             for child in children {
-                for id in resolve(child, kernel, diagnostics)? {
+                for id in resolve_with_attributes(child, kernel, table, diagnostics)? {
                     if seen.insert(id) {
                         out.push(id);
                     }
@@ -1380,7 +1413,7 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
             // preserving the first child's canonical first-seen order.
             let mut resolved: Vec<Vec<GeometryHandleId>> = Vec::with_capacity(children.len());
             for child in children {
-                resolved.push(resolve(child, kernel, diagnostics)?);
+                resolved.push(resolve_with_attributes(child, kernel, table, diagnostics)?);
             }
             // `intersect`'s constructor rejects an empty children list, so
             // `split_first` normally yields a `first`; treat the impossible
@@ -1400,9 +1433,10 @@ pub fn resolve<K: GeometryKernel + ?Sized>(
             Ok(out)
         }
         SelectorNode::Difference(a, b) => {
-            let a_ids = resolve(a, kernel, diagnostics)?;
-            let b_set: HashSet<GeometryHandleId> =
-                resolve(b, kernel, diagnostics)?.into_iter().collect();
+            let a_ids = resolve_with_attributes(a, kernel, table, diagnostics)?;
+            let b_set: HashSet<GeometryHandleId> = resolve_with_attributes(b, kernel, table, diagnostics)?
+                .into_iter()
+                .collect();
             let mut out: Vec<GeometryHandleId> = Vec::new();
             let mut seen: HashSet<GeometryHandleId> = HashSet::new();
             for id in a_ids {
@@ -1426,6 +1460,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
     target: &GeometryHandleRef,
     query: &LeafQuery,
     kernel: &mut K,
+    table: &TopologyAttributeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Vec<GeometryHandleId>, QueryError> {
     let handle = target.kernel_handle;
@@ -1462,6 +1497,28 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
                 .with_code(DiagnosticCode::TopologyTagStale),
             );
             Ok(Vec::new())
+        }
+        LeafQuery::ByRole(role) => {
+            // Task 4536: pure, total, kernel-free filter over the realized
+            // body's recorded topology attributes. The synthetic mid-surface
+            // sub-shapes (`Role::MidSurfaceFace`) are NOT enumerable via
+            // `extract_faces`/`extract_edges`, so resolution reads the
+            // `TopologyAttributeTable` directly (no kernel query — `handle` is
+            // unused on this arm). Results are ordered canonically by
+            // `(local_index, id)` so the output is independent of the
+            // HashMap-backed table's unspecified iteration/insertion order
+            // (exactly the collect-and-sort discipline `iter()`'s doc-comment
+            // prescribes). An empty match is a valid empty `Ok`; the
+            // empty→`Value::Undef` + diagnostic decision lives one layer up in
+            // `resolve_selector_to_list`, keeping this arm uniform with the
+            // other pure leaf arms.
+            let mut matches: Vec<(u32, GeometryHandleId)> = table
+                .iter()
+                .filter(|(_, attr)| attr.role == *role)
+                .map(|(id, attr)| (attr.local_index, id))
+                .collect();
+            matches.sort_unstable();
+            Ok(matches.into_iter().map(|(_, id)| id).collect())
         }
     }
 }

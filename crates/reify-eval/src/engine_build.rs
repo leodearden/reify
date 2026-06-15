@@ -6635,7 +6635,14 @@ impl Engine {
             &*kernel,
             diagnostics,
         );
-        Engine::post_process_topology_selectors(template, named_steps, values, kernel, diagnostics);
+        Engine::post_process_topology_selectors(
+            template,
+            named_steps,
+            values,
+            kernel,
+            table,
+            diagnostics,
+        );
         // geometric-relations ε: feature → datum projections (`feature.axis` /
         // `.plane` / `.point` / `.dir`). Placed AFTER post_process_topology_selectors
         // so the receiver body handles (`let cyl = revolve(...)`) are populated as
@@ -6727,6 +6734,7 @@ impl Engine {
         named_steps: &HashMap<String, KernelHandle>,
         values: &mut ValueMap,
         kernel: &mut dyn GeometryKernel,
+        table: &TopologyAttributeTable,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
@@ -6758,10 +6766,15 @@ impl Engine {
                 // FunctionCall, so the "do not chain through value cells"
                 // invariant above is preserved — no dependency on another
                 // selector cell already being patched in this loop.
+                //
+                // Task 4536: `table` carries the realized body's recorded
+                // topology attributes so a `mid_surface(body)` (`ByRole`) leaf
+                // resolves against `Role::MidSurfaceFace` entries.
                 default_expr,
                 named_steps,
                 values,
                 kernel,
+                table,
                 diagnostics,
             ) {
                 values.insert(cell.id.clone(), value);
@@ -13787,6 +13800,7 @@ mod tests {
                 &named_steps,
                 &mut values_clone,
                 &mut kernel2 as &mut dyn GeometryKernel,
+                &table,
                 &mut diags2,
             );
             let patched = values_clone
