@@ -20,7 +20,9 @@
 // Clearance: radial gap = hole_r − VC_r = 5.2mm − 5.075mm = 0.125mm > 0mm → Satisfied.
 // See vc_bolt_pattern_interference.ri for the under-clearanced (Violated) variant.
 //
-// `reify build` (OCCT required) must: exit 0, stdout contains "All constraints satisfied".
+// `reify build` (OCCT required) must: exit 0, stdout contains per-constraint
+// "  OK <struct>#constraint[N]" lines (no "All constraints satisfied." summary —
+// that summary is emitted by `reify check`, not `build`).
 //
 // OCCT-gated via cli_vc_clearance.rs: build_vc_bolt_pattern_clearance_satisfied.
 // This file is also the VC-boundary-clearance e2e (VC boundary solid + mating geometry +

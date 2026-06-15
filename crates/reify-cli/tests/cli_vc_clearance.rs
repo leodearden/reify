@@ -54,14 +54,18 @@ fn eval_vc_boundary_solid_example_succeeds() {
     );
 
     // ── Scalar cell-name anchors ──────────────────────────────────────────────
+    // Anchor on "vc =" (the cell-name printed line) rather than bare "vc" which
+    // is vacuously subsumed by both "vc_positive = true" and "vc_boundary" above.
     assert!(
-        stdout.contains("vc"),
-        "stdout should contain 'vc' (virtual_condition result);\n\
+        stdout.contains("vc ="),
+        "stdout should contain 'vc =' (virtual_condition result cell);\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    // Anchor on "rc =" rather than bare "rc" (2-char substring is too brittle —
+    // could match incidental output; "rc =" pins the resultant_condition cell line).
     assert!(
-        stdout.contains("rc"),
-        "stdout should contain 'rc' (resultant_condition result);\n\
+        stdout.contains("rc ="),
+        "stdout should contain 'rc =' (resultant_condition result cell);\n\
          stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
