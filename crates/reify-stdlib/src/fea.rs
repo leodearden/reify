@@ -64,6 +64,16 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
         // only when the lib.rs dispatch declines (wrong arity), preserving the
         // "recognised name" contract for direct `eval_builtin` callers.
         "solve_load_cases" => Value::Undef,
+        // `worst_buckling_case` — argmin over cases of modes[0].eigenvalue.
+        // Smaller λ = closer to buckling = worst case.  No reference_load needed
+        // (a common positive scalar doesn't change argmin).  Implemented directly
+        // in eval_fea (no .ri decl, no lib.rs interceptor) because it reads
+        // eigenvalue scalars — no Lambda or EvalContext required.
+        "worst_buckling_case" => worst_buckling_case(args),
+        // `envelope_critical_load` — min over cases of eigenvalue × reference_load.
+        // Deviation from PRD §7: takes an explicit reference_load: Force arg
+        // (mirrors task ε DD-1 — BucklingResult stores no applied load magnitude).
+        "envelope_critical_load" => envelope_critical_load(args),
         _ => return None,
     })
 }
@@ -1005,6 +1015,180 @@ fn result_for(args: &[Value]) -> Value {
         .get(&Value::String(key.clone()))
         .cloned()
         .unwrap_or(Value::Undef)
+}
+
+// ── Buckling multi-case helpers ───────────────────────────────────────────────
+//
+// `worst_buckling_case` and `envelope_critical_load` operate on
+// `MultiCaseBucklingResult` values (Value::Map{"cases"->Map<String,BucklingResult>}).
+// They mirror the pattern of `case_names`/`result_for` for `MultiCaseResult`:
+// - both are name-dispatched in `eval_fea` (no .ri decl, no lib.rs interceptor)
+// - both use `extract_cases_map` to crack the outer Map
+// - both follow silent-Undef discipline (all shape failures → Value::Undef)
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
+
+/// Extract `modes[0].eigenvalue` from a `BucklingResult` StructureInstance.
+///
+/// Returns `Some(f64)` when the value is present and finite, `None` on any
+/// shape failure:
+///   - `case_val` is not a `Value::StructureInstance`
+///   - `fields["modes"]` is absent or not a `Value::List`
+///   - modes list is empty
+///   - `modes[0]` is not a `Value::StructureInstance`
+///   - `modes[0].fields["eigenvalue"]` is absent or not `Value::Real`
+///
+/// Called by both `worst_buckling_case` and `envelope_critical_load` so the
+/// eigenvalue-extraction logic lives in exactly one place.
+fn extract_first_mode_eigenvalue(case_val: &Value) -> Option<f64> {
+    let data = match case_val {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    let modes = match data.fields.get(&"modes".to_string()) {
+        Some(Value::List(v)) => v,
+        _ => return None,
+    };
+    let first_mode = modes.first()?;
+    let mode_data = match first_mode {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+    match mode_data.fields.get(&"eigenvalue".to_string()) {
+        Some(Value::Real(v)) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Return the name of the `BucklingResult` case with the smallest first-mode
+/// eigenvalue (`modes[0].eigenvalue`) from a `MultiCaseBucklingResult`.
+///
+/// Smaller λ = smaller load multiplier = closer to buckling = worst case.
+/// A common positive reference load does not change the argmin, so no
+/// reference_load argument is needed (unlike `envelope_critical_load`).
+///
+/// # Input shape
+///
+/// `args == [Value::Map { "cases" -> Value::Map<Value::String, BucklingResult> }]`
+///
+/// # Output
+///
+/// `Value::String(name)` of the min-λ case, or `Value::Undef` on any
+/// shape failure or when no case yields a finite eigenvalue.
+///
+/// Tie-break: BTreeMap lexicographic iteration + strict `<` first-occurrence-wins
+/// (same discipline as `case_names` / `result_for` / `envelope_reduce`).
+///
+/// # Failure modes (silent-Undef discipline)
+///
+///   - arity != 1
+///   - `args[0]` is not `Value::Map` or has no `"cases"` key
+///   - no case yields a finite `modes[0].eigenvalue`
+fn worst_buckling_case(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let cases = match extract_cases_map(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+
+    let mut best_name: Option<&str> = None;
+    let mut best_lambda = f64::INFINITY;
+
+    for (key, case_val) in cases {
+        let name = match key {
+            Value::String(s) => s.as_str(),
+            _ => continue, // non-String key — skip silently
+        };
+        let lambda = match extract_first_mode_eigenvalue(case_val) {
+            Some(v) if v.is_finite() => v,
+            _ => continue, // shape failure or non-finite eigenvalue — skip
+        };
+        // Strict `<`: first finite case that achieves the minimum wins.
+        // BTreeMap iterates in lexicographic key order, giving deterministic
+        // lex-first tie-break for free (mirrors case_names / worst_case).
+        if lambda.total_cmp(&best_lambda).is_lt() {
+            best_lambda = lambda;
+            best_name = Some(name);
+        }
+    }
+
+    best_name
+        .map(|s| Value::String(s.to_string()))
+        .unwrap_or(Value::Undef)
+}
+
+/// Return the minimum critical load across all cases in a
+/// `MultiCaseBucklingResult`.
+///
+/// Computes `min(modes[0].eigenvalue) × reference_load` and returns it as a
+/// `Value::Scalar` with the same dimension as `reference_load`.
+///
+/// # Input shape
+///
+/// `args == [mcbr: Value::Map { "cases" -> ... },
+///           reference_load: Value::Scalar { si_value, dimension }]`
+///
+/// # Design deviation from PRD §7
+///
+/// PRD §7 declared `envelope_critical_load(mcbr) -> Force` (single arg).
+/// This deviates by adding an explicit `reference_load: Force` parameter,
+/// mirroring task ε's DD-1 for `critical_load(result, reference_load)`.
+/// BucklingResult is frozen to 4 fields and stores no applied-load magnitude;
+/// the kernel returns only a dimensionless multiplier λ = P_cr / F_applied,
+/// so the reference load must be supplied explicitly to recover a Force result.
+/// The "match per-case singletons" observable requires the same reference_load
+/// used by per-case `critical_load(result_for(mcbr, name), ref)` calls.
+///
+/// # Failure modes (silent-Undef discipline)
+///
+///   - arity != 2
+///   - `args[0]` is not `Value::Map` or has no `"cases"` key
+///   - `args[1]` is not `Value::Scalar`
+///   - no case yields a finite `modes[0].eigenvalue`
+fn envelope_critical_load(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return Value::Undef;
+    }
+    let (ref_si, ref_dim) = match &args[1] {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
+        _ => return Value::Undef,
+    };
+    let cases = match extract_cases_map(&args[0]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+
+    let mut min_lambda: Option<f64> = None;
+
+    for (_, case_val) in cases {
+        let lambda = match extract_first_mode_eigenvalue(case_val) {
+            Some(v) if v.is_finite() => v,
+            _ => continue,
+        };
+        min_lambda = Some(match min_lambda {
+            None => lambda,
+            Some(prev) => {
+                if lambda.total_cmp(&prev).is_lt() {
+                    lambda
+                } else {
+                    prev
+                }
+            }
+        });
+    }
+
+    match min_lambda {
+        Some(lambda) => Value::Scalar {
+            si_value: lambda * ref_si,
+            dimension: ref_dim,
+        },
+        None => Value::Undef,
+    }
 }
 
 /// Per-grid-point reduction across a `Map<String, Field<Point3, T>>` of
@@ -4596,6 +4780,323 @@ mod tests {
         assert!(
             extract_per_case_sampled_field(&result, "nonexistent_field", 1).is_none(),
             "missing field name must return None"
+        );
+    }
+
+    // ── worst_buckling_case unit tests ──────────────────────────────────────
+    //
+    // RED until step-4 adds the "worst_buckling_case" arm to eval_fea:
+    //   eval_fea("worst_buckling_case", ...) returns None (unrecognised name).
+    //
+    // GREEN after step-4:
+    //   eval_fea returns Some(Value::Undef) for bad args, Some(Value::String)
+    //   for the case with the smallest modes[0].eigenvalue.
+
+    /// Build a minimal `BucklingResult` StructureInstance with one Mode at
+    /// the given eigenvalue.  Mirrors the trampoline's output shape.
+    fn make_buckling_result(eigenvalue: f64) -> Value {
+        let mode_fields: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Real(eigenvalue)),
+            ("mode_shape".to_string(), Value::Undef),
+        ]
+        .into_iter()
+        .collect();
+        let mode = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields,
+        }));
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![mode])),
+            ("converged".to_string(), Value::Bool(true)),
+            ("iterations".to_string(), Value::Int(0)),
+            ("pre_stress".to_string(), Value::Undef),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }))
+    }
+
+    /// Build a `MultiCaseBucklingResult`-shaped `Value::Map` from
+    /// `(name, BucklingResult)` pairs.
+    fn make_mcbr(cases: &[(&str, Value)]) -> Value {
+        let inner: BTreeMap<Value, Value> = cases
+            .iter()
+            .map(|(n, v)| (Value::String((*n).to_string()), v.clone()))
+            .collect();
+        let mut outer = BTreeMap::new();
+        outer.insert(Value::String("cases".to_string()), Value::Map(inner));
+        Value::Map(outer)
+    }
+
+    // ── dispatcher-signal tests (worst_buckling_case) ───────────────────────
+
+    #[test]
+    fn eval_fea_worst_buckling_case_returns_some() {
+        // "worst_buckling_case" must be a recognised name in eval_fea.
+        // RED: before step-4, returns None → assertion fails.
+        assert!(eval_fea("worst_buckling_case", &[]).is_some());
+    }
+
+    // ── correctness tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn worst_buckling_case_returns_min_eigenvalue_case() {
+        // "low" has eigenvalue 2.0, "high" has eigenvalue 4.0.
+        // worst_buckling_case must return "low" (smallest λ = closest to buckling).
+        let mcbr = make_mcbr(&[
+            ("low", make_buckling_result(2.0)),
+            ("high", make_buckling_result(4.0)),
+        ]);
+        assert_eq!(
+            eval_fea("worst_buckling_case", &[mcbr]).unwrap(),
+            Value::String("low".to_string())
+        );
+    }
+
+    #[test]
+    fn worst_buckling_case_lex_first_min_tie_break() {
+        // Two cases with identical eigenvalue — lexicographically-first name wins.
+        // BTreeMap iterates in "aaa" < "bbb" order, so "aaa" is first-occurrence.
+        let mcbr = make_mcbr(&[
+            ("aaa", make_buckling_result(3.0)),
+            ("bbb", make_buckling_result(3.0)),
+        ]);
+        assert_eq!(
+            eval_fea("worst_buckling_case", &[mcbr]).unwrap(),
+            Value::String("aaa".to_string())
+        );
+    }
+
+    // ── silent-Undef negative paths ─────────────────────────────────────────
+
+    #[test]
+    fn worst_buckling_case_zero_args_returns_undef() {
+        assert!(eval_fea("worst_buckling_case", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn worst_buckling_case_two_args_returns_undef() {
+        let mcbr = make_mcbr(&[("a", make_buckling_result(2.0))]);
+        assert!(
+            eval_fea("worst_buckling_case", &[mcbr, Value::Undef])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn worst_buckling_case_non_map_arg_returns_undef() {
+        assert!(eval_fea("worst_buckling_case", &[Value::Undef])
+            .unwrap()
+            .is_undef());
+    }
+
+    #[test]
+    fn worst_buckling_case_missing_cases_key_returns_undef() {
+        let map = Value::Map(BTreeMap::new());
+        assert!(eval_fea("worst_buckling_case", &[map]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn worst_buckling_case_empty_modes_list_returns_undef() {
+        // BucklingResult with empty modes → no eigenvalue → silent Undef.
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![])),
+            ("converged".to_string(), Value::Bool(true)),
+        ]
+        .into_iter()
+        .collect();
+        let case_val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }));
+        let mcbr = make_mcbr(&[("only", case_val)]);
+        assert!(eval_fea("worst_buckling_case", &[mcbr]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn worst_buckling_case_non_real_eigenvalue_returns_undef() {
+        // Mode with eigenvalue: Undef (non-Real) → skip → no finite eigenvalue → Undef.
+        let mode_fields: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Undef),
+        ]
+        .into_iter()
+        .collect();
+        let mode = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields,
+        }));
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![mode])),
+        ]
+        .into_iter()
+        .collect();
+        let case_val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }));
+        let mcbr = make_mcbr(&[("only", case_val)]);
+        assert!(eval_fea("worst_buckling_case", &[mcbr]).unwrap().is_undef());
+    }
+
+    // ── envelope_critical_load unit tests ───────────────────────────────────
+    //
+    // Symmetrical with the worst_buckling_case tests above.
+    // Uses the same make_buckling_result / make_mcbr helpers.
+
+    // ── dispatcher-signal test (envelope_critical_load) ─────────────────────
+
+    #[test]
+    fn eval_fea_envelope_critical_load_returns_some() {
+        // "envelope_critical_load" must be a recognised name in eval_fea.
+        assert!(eval_fea("envelope_critical_load", &[]).is_some());
+    }
+
+    // ── correctness tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn envelope_critical_load_returns_min_eigenvalue_times_reference() {
+        // "low" has λ=2.0, "high" has λ=4.0, reference=1000 N.
+        // envelope = min(2.0, 4.0) × 1000 = 2000 N.
+        let mcbr = make_mcbr(&[
+            ("low", make_buckling_result(2.0)),
+            ("high", make_buckling_result(4.0)),
+        ]);
+        let ref_load = Value::Scalar {
+            si_value: 1000.0,
+            dimension: DimensionVector::FORCE,
+        };
+        let result = eval_fea("envelope_critical_load", &[mcbr, ref_load])
+            .unwrap();
+        match result {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(dimension, DimensionVector::FORCE);
+                assert!(
+                    (si_value - 2000.0).abs() < 1e-10,
+                    "expected 2000.0 N, got {si_value}"
+                );
+            }
+            other => panic!("expected Value::Scalar{{Force}}, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn envelope_critical_load_dimension_propagates_from_reference() {
+        // The returned Scalar must carry the same dimension as reference_load.
+        let mcbr = make_mcbr(&[("a", make_buckling_result(5.0))]);
+        let ref_load = Value::Scalar {
+            si_value: 500.0,
+            dimension: DimensionVector::FORCE,
+        };
+        let result = eval_fea("envelope_critical_load", &[mcbr, ref_load])
+            .unwrap();
+        match result {
+            Value::Scalar { dimension, .. } => {
+                assert_eq!(dimension, DimensionVector::FORCE);
+            }
+            other => panic!("expected Value::Scalar, got: {other:?}"),
+        }
+    }
+
+    // ── silent-Undef negative paths ─────────────────────────────────────────
+
+    #[test]
+    fn envelope_critical_load_zero_args_returns_undef() {
+        assert!(eval_fea("envelope_critical_load", &[]).unwrap().is_undef());
+    }
+
+    #[test]
+    fn envelope_critical_load_one_arg_returns_undef() {
+        let mcbr = make_mcbr(&[("a", make_buckling_result(3.0))]);
+        assert!(eval_fea("envelope_critical_load", &[mcbr])
+            .unwrap()
+            .is_undef());
+    }
+
+    #[test]
+    fn envelope_critical_load_three_args_returns_undef() {
+        let mcbr = make_mcbr(&[("a", make_buckling_result(3.0))]);
+        let ref_load = Value::Scalar {
+            si_value: 1000.0,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            eval_fea("envelope_critical_load", &[mcbr, ref_load, Value::Undef])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn envelope_critical_load_non_map_first_arg_returns_undef() {
+        let ref_load = Value::Scalar {
+            si_value: 1000.0,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            eval_fea("envelope_critical_load", &[Value::Undef, ref_load])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn envelope_critical_load_non_scalar_ref_returns_undef() {
+        let mcbr = make_mcbr(&[("a", make_buckling_result(3.0))]);
+        assert!(
+            eval_fea("envelope_critical_load", &[mcbr, Value::Undef])
+                .unwrap()
+                .is_undef()
+        );
+    }
+
+    #[test]
+    fn envelope_critical_load_no_finite_eigenvalue_returns_undef() {
+        // All cases have shape-failure eigenvalues → no finite min → Undef.
+        let mode_fields: PersistentMap<String, Value> = [
+            ("eigenvalue".to_string(), Value::Undef),
+        ]
+        .into_iter()
+        .collect();
+        let mode = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Mode".to_string(),
+            version: 1,
+            fields: mode_fields,
+        }));
+        let result_fields: PersistentMap<String, Value> = [
+            ("modes".to_string(), Value::List(vec![mode])),
+        ]
+        .into_iter()
+        .collect();
+        let case_val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BucklingResult".to_string(),
+            version: 1,
+            fields: result_fields,
+        }));
+        let mcbr = make_mcbr(&[("only", case_val)]);
+        let ref_load = Value::Scalar {
+            si_value: 1000.0,
+            dimension: DimensionVector::FORCE,
+        };
+        assert!(
+            eval_fea("envelope_critical_load", &[mcbr, ref_load])
+                .unwrap()
+                .is_undef()
         );
     }
 }
