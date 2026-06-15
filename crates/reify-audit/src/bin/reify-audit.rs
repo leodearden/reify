@@ -1168,19 +1168,22 @@ mod tests {
         );
     }
 
-    /// Guard: PTODO is opt-in only — must not run in the default (no --pattern)
-    /// all-detector sweep. Tests the actual `run_ptodo` dispatch predicate so a
-    /// real change to the dispatch logic (e.g. accidentally folding PTODO into
-    /// the default sweep — ε's job, not α's) would be caught.
+    /// ε: PTODO is now part of the no-`--pattern` default all-detector sweep,
+    /// mirroring P1/P2/P5. Tests the actual `run_ptodo` dispatch predicate:
+    /// default (None) → true; explicit PTODO → true; non-PTODO pattern → false.
     #[test]
-    fn ptodo_not_in_default_sweep() {
+    fn ptodo_in_default_sweep() {
         assert!(
-            !run_ptodo(&make_args(false, None)),
-            "PTODO must be opt-in only (not part of the default sweep)"
+            run_ptodo(&make_args(false, None)),
+            "PTODO must run in the no-`--pattern` default sweep"
         );
         assert!(
             run_ptodo(&make_args(false, Some("PTODO"))),
             "PTODO must activate when --pattern PTODO is given"
+        );
+        assert!(
+            !run_ptodo(&make_args(false, Some("P2"))),
+            "PTODO must be excluded when a named non-PTODO pattern is given"
         );
     }
 
