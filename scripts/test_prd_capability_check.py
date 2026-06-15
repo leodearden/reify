@@ -15,6 +15,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import textwrap
 import unittest
 import unittest.mock
 from typing import Any
@@ -1204,6 +1205,157 @@ class TestMain(unittest.TestCase):
         # expected present → FAIL
         self.assertEqual(rc, 1, "arrow_type.ri with expected present → FAIL (exit 1)")
         self.assertIn(pcc.FAIL, out)
+
+
+# ---------------------------------------------------------------------------
+# step-15 (RED): regression — grammar-probe fixture must be absolute in build_command
+# ---------------------------------------------------------------------------
+
+class TestBuildCommandAbsoluteFixture(unittest.TestCase):
+    """Regression tests for the grammar fixture-resolution bug.
+
+    build_command() currently emits probe.fixture verbatim (repo-relative).
+    When run_probe() executes grammar probes with CWD=tree-sitter-reify/, the
+    relative path resolves under that wrong directory — the fixture is not found,
+    tree-sitter exits 1, and observe() misclassifies the file-not-found as ABSENT,
+    making every grammar verdict wrong.
+
+    These tests FAIL on current code because build_command() returns a relative path:
+    - test_*_fixture_is_absolute: os.path.isabs() on a relative path → False → FAIL.
+    - test_grammar_run_probe_locates_fixture: stub exits 1 (file not found in CWD).
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_abs_test_")
+        self._stub_idx = 0
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _make_probe(self, kind, fixture):
+        return pcc.Probe(
+            capability="abs-path-test",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    # ── (a) build_command must return absolute fixture paths for all kinds ─────
+
+    def test_grammar_fixture_is_absolute(self):
+        """grammar: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        fixture_rel = "tests/prd-gate/fixtures/arrow_type.ri"
+        probe = self._make_probe("grammar", fixture_rel)
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "tree-sitter"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        abs_fixture = cmd[-1]
+        self.assertTrue(
+            os.path.isabs(abs_fixture),
+            f"build_command fixture must be absolute; got {abs_fixture!r}",
+        )
+        self.assertTrue(
+            os.path.isfile(abs_fixture),
+            f"absolute fixture path must exist on disk: {abs_fixture!r}",
+        )
+        self.assertTrue(
+            abs_fixture.endswith(fixture_rel),
+            f"absolute path must end with repo-relative fixture; got {abs_fixture!r}",
+        )
+
+    def test_check_fixture_is_absolute(self):
+        """check: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        fixture_rel = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
+        probe = self._make_probe("check", fixture_rel)
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        abs_fixture = cmd[-1]
+        self.assertTrue(
+            os.path.isabs(abs_fixture),
+            f"build_command fixture must be absolute; got {abs_fixture!r}",
+        )
+        self.assertTrue(
+            os.path.isfile(abs_fixture),
+            f"absolute fixture path must exist on disk: {abs_fixture!r}",
+        )
+        self.assertTrue(
+            abs_fixture.endswith(fixture_rel),
+            f"absolute path must end with repo-relative fixture; got {abs_fixture!r}",
+        )
+
+    def test_ir_fixture_is_absolute(self):
+        """ir: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        fixture_rel = "tests/prd-gate/fixtures/ir_clean_eval.ri"
+        probe = self._make_probe("ir", fixture_rel)
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
+            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        abs_fixture = cmd[-1]
+        self.assertTrue(
+            os.path.isabs(abs_fixture),
+            f"build_command fixture must be absolute; got {abs_fixture!r}",
+        )
+        self.assertTrue(
+            os.path.isfile(abs_fixture),
+            f"absolute fixture path must exist on disk: {abs_fixture!r}",
+        )
+        self.assertTrue(
+            abs_fixture.endswith(fixture_rel),
+            f"absolute path must end with repo-relative fixture; got {abs_fixture!r}",
+        )
+
+    # ── (b) run_probe must locate the grammar fixture despite CWD change ───────
+
+    def _make_file_exists_stub(self):
+        """Create a stub TREE_SITTER_BIN that exits 0 iff any argv entry is an existing file."""
+        self._stub_idx += 1
+        path = os.path.join(self._tmpdir, f"ts_stub{self._stub_idx}")
+        script = textwrap.dedent("""\
+            #!/bin/sh
+            # Exit 0 if any argument names an existing regular file; else exit 1.
+            for arg in "$@"; do
+                if [ -f "$arg" ]; then
+                    exit 0
+                fi
+            done
+            exit 1
+        """)
+        with open(path, "w") as f:
+            f.write(script)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_grammar_run_probe_locates_fixture(self):
+        """Grammar run_probe() passes an absolute fixture path so the stub locates it.
+
+        Premises (verified on disk in prereq-3):
+          - tests/prd-gate/fixtures/arrow_type.ri exists in the repo.
+
+        The stub exits 0 iff any argv entry is an existing regular file (-f test).
+        With a repo-relative path and CWD=tree-sitter-reify/, the relative path
+        resolves incorrectly → stub exits 1.
+        With an absolute path (after the fix) → stub exits 0 regardless of CWD.
+
+        If this test fails with exit_code=1, it means build_command still returns
+        a relative path that is not found under the grammar CWD.
+        """
+        fixture_rel = "tests/prd-gate/fixtures/arrow_type.ri"
+        fixture_abs = os.path.join(_REPO_ROOT, fixture_rel)
+        # Precondition: fixture must exist so the stub can find it when given abs path.
+        self.assertTrue(
+            os.path.isfile(fixture_abs),
+            f"precondition: fixture must exist on disk: {fixture_abs}",
+        )
+
+        stub = self._make_file_exists_stub()
+        probe = self._make_probe("grammar", fixture_rel)
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
+
+        self.assertEqual(
+            run.exit_code, 0,
+            "grammar run_probe must pass an absolute fixture path so the stub locates it "
+            "(exit 0 = file found; exit 1 = file not found, i.e. build_command returned "
+            "a relative path that does not resolve under CWD=tree-sitter-reify/)",
+        )
 
 
 if __name__ == "__main__":
