@@ -78,14 +78,21 @@ fn volume_of(kernel: &mut OcctKernel, id: GeometryHandleId) -> f64 {
 ///   0 < V < V_solid  (we have a hollow solid, not empty and not full)
 ///   V ≈ V_wall(+Z)  within 3%
 ///
-/// V_wall(+Z) = Lx·Ly·Lz − (Lx−2t)·(Ly−2t)·(Lz−t)
-///            = 0.03×0.02×0.01 − 0.028×0.018×0.009
-///            = 6.000e-6 − 4.536e-6 = 1.464e-6 m³
+/// `BRepOffsetAPI_MakeThickSolidByJoin` with POSITIVE offset t builds the
+/// shell OUTSIDE the original solid (outward offset).  For the 30×20×10 mm
+/// box with the +Z face removed:
 ///
-/// Opening the +X face instead gives V_wall(+X) ≈ 1.824e-6 m³  (24.6%
-/// different from V_wall(+Z)), so a mis-ordered face map that opens the
-/// wrong face causes a genuine volume error > 3% → this test PINS face
-/// IDENTITY, not just "some face was opened".
+///   V_wall(+Z) = (Lx+2t)·(Ly+2t)·(Lz+t) − Lx·Ly·Lz
+///              = 0.032×0.022×0.011 − 0.03×0.02×0.01
+///              = 7.744e-6 − 6.000e-6 = 1.744e-6 m³
+///
+/// Opening the +X face instead gives V_wall(+X) = (Lx+t)·(Ly+2t)·(Lz+2t)
+///   − Lx·Ly·Lz = 2.184e-6 m³  (25.2% different from V_wall(+Z)), so a
+/// mis-ordered face map that opens the wrong face causes a genuine volume
+/// error > 3% → this test PINS face IDENTITY, not just "some face was opened".
+///
+/// Note: OCCT's join at corners reduces the actual volume slightly below
+/// the formula (~1.8% underrun); the 3% tolerance accommodates this.
 #[test]
 fn shell_solid_faces_top_face_volume_pins_face_identity() {
     if !OCCT_AVAILABLE {
@@ -96,9 +103,12 @@ fn shell_solid_faces_top_face_volume_pins_face_identity() {
     // --- Analytic expected volumes (SI m³) ---
     let v_solid = BOX_LX_M * BOX_LY_M * BOX_LZ_M;
     let t = THICKNESS_M;
-    let v_wall = BOX_LX_M * BOX_LY_M * BOX_LZ_M
-        - (BOX_LX_M - 2.0 * t) * (BOX_LY_M - 2.0 * t) * (BOX_LZ_M - t);
-    // v_wall ≈ 1.464e-6 m³,  v_solid = 6.0e-6 m³
+    // MakeThickSolidByJoin with POSITIVE offset builds the shell OUTWARD.
+    // For the +Z face removed: V_wall = (Lx+2t)(Ly+2t)(Lz+t) − Lx·Ly·Lz.
+    // Computed: 0.032×0.022×0.011 − 6.0e-6 = 7.744e-6 − 6.0e-6 = 1.744e-6 m³.
+    let v_wall = (BOX_LX_M + 2.0 * t) * (BOX_LY_M + 2.0 * t) * (BOX_LZ_M + t)
+        - BOX_LX_M * BOX_LY_M * BOX_LZ_M;
+    // v_wall ≈ 1.744e-6 m³,  v_solid = 6.0e-6 m³
 
     // --- Extract all 6 faces and identify the +Z top face ---
     let faces = kernel
