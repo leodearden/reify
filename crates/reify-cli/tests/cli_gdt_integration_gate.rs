@@ -290,3 +290,155 @@ fn b5_oracle_outside_oracles_agree() {
          dev = {dev_m:.6e} m, pokeout = {pokeout_m3:.6e} m³."
     );
 }
+
+// ── B9 — Pass ordering / weave (OCCT-gated) ──────────────────────────────────
+//
+// B9 proves the C5 caller-order weave contract: mixing a Satisfied scalar
+// Conforms [0], a Violated geometric Conforms [1] (η), and a Satisfied
+// RepresentationWithin [2] in one module produces results in declaration order
+// and neither pass perturbs the other's verdicts.
+//
+// gdt_pass_weave.ri declares:
+//   GdtPassWeave structure:
+//     [0] scalar Conforms (no `actual`): tol=0.1mm, dev=0.05mm → Satisfied
+//     [1] geometric Conforms (explicit `actual`): actual=translate(part,0.5mm)
+//         vs 0.1mm zone → Violated under OCCT (like B1)
+//   WeaveSphereCheck structure:
+//     [0] RepresentationWithin(subject, 1mm) over fine sphere at #precision(0.1mm)
+//         → Satisfied under OCCT / Indeterminate in stub mode
+//
+// Constraint labels (ConstraintNodeId format: "Entity#constraint[N]"):
+//   scalar_label = "GdtPassWeave#constraint[0]"
+//   geo_label    = "GdtPassWeave#constraint[1]"
+//   rw_label     = "WeaveSphereCheck#constraint[0]"
+//
+// Under OCCT: scalar=OK, geometric=VIOLATED, RW=OK; exit non-zero;
+//   "Some constraints violated."; exactly one "VIOLATED".
+// Stub mode: scalar=OK, geometric=INDETERMINATE, RW=INDETERMINATE; exit 0;
+//   no "VIOLATED"; order still preserved.
+//
+// RED until step-5 creates `examples/tolerancing/gdt_pass_weave.ri`.
+
+/// B9: `reify check examples/tolerancing/gdt_pass_weave.ri` produces three
+/// constraint result lines in declaration order with correct verdicts (under
+/// OCCT and in stub mode), proving C5 caller-order weave + cross-pass
+/// non-perturbation.
+///
+/// RED until step-5 creates the fixture.
+#[test]
+fn b9_pass_ordering_and_weave() {
+    let path = common::example_path("tolerancing/gdt_pass_weave.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    // Constraint labels (ConstraintNodeId format: "Entity#constraint[N]").
+    let scalar_label = "GdtPassWeave#constraint[0]";
+    let geo_label    = "GdtPassWeave#constraint[1]";
+    let rw_label     = "WeaveSphereCheck#constraint[0]";
+
+    // The three labels must appear in stdout.
+    // RED: fixture missing → check exits non-zero / labels absent → panic!.
+    let scalar_pos = stdout.find(scalar_label).unwrap_or_else(|| {
+        panic!(
+            "B9: '{scalar_label}' not found in stdout \
+             (fixture missing → RED until step-5).\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        )
+    });
+    let geo_pos = stdout.find(geo_label).unwrap_or_else(|| {
+        panic!(
+            "B9: '{geo_label}' not found in stdout \
+             (fixture missing → RED until step-5).\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        )
+    });
+    let rw_pos = stdout.find(rw_label).unwrap_or_else(|| {
+        panic!(
+            "B9: '{rw_label}' not found in stdout \
+             (fixture missing → RED until step-5).\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        )
+    });
+
+    // Declaration order: scalar[0] before geometric[1] before RW[0].
+    assert!(
+        scalar_pos < geo_pos,
+        "B9: scalar [0] must appear before geometric [1] in stdout \
+         (declaration order preserved; scalar_pos={scalar_pos}, geo_pos={geo_pos}).\n\
+         stdout: {stdout}"
+    );
+    assert!(
+        geo_pos < rw_pos,
+        "B9: geometric [1] must appear before RepresentationWithin in stdout \
+         (declaration order preserved; geo_pos={geo_pos}, rw_pos={rw_pos}).\n\
+         stdout: {stdout}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Stub mode: no kernel → geometric=INDETERMINATE, RW=INDETERMINATE, scalar=OK.
+        // Exit 0 (no VIOLATED); no "VIOLATED" in stdout.
+        assert!(
+            status.success(),
+            "B9 stub: should exit 0 (geometric=INDETERMINATE, RW=INDETERMINATE → \
+             no VIOLATED).\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            !stdout.contains("VIOLATED"),
+            "B9 stub: stdout must NOT contain 'VIOLATED' (C1: no false Violated).\n\
+             stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("OK {scalar_label}")),
+            "B9 stub: scalar Conforms [0] must be OK (kernel-independent scalar path).\n\
+             stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("INDETERMINATE {geo_label}")),
+            "B9 stub: geometric Conforms [1] must be INDETERMINATE (no kernel → C1).\n\
+             stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("INDETERMINATE {rw_label}")),
+            "B9 stub: RepresentationWithin must be INDETERMINATE (no kernel → C1).\n\
+             stdout: {stdout}"
+        );
+        eprintln!(
+            "B9: stub-mode assertions passed — OCCT unavailable, \
+             full VIOLATED verdict check skipped"
+        );
+        return;
+    }
+
+    // OCCT mode: scalar=OK, geometric=VIOLATED, RW=OK; exit non-zero; one VIOLATED.
+    assert!(
+        !status.success(),
+        "B9 OCCT: should exit non-zero \
+         (geometric Conforms is VIOLATED: 0.5mm deviation > 0.1mm zone).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Some constraints violated."),
+        "B9 OCCT: stdout must contain 'Some constraints violated.'.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("OK {scalar_label}")),
+        "B9 OCCT: scalar Conforms [0] must be OK (η must NOT perturb scalar Conforms).\n\
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("VIOLATED {geo_label}")),
+        "B9 OCCT: geometric Conforms [1] must be VIOLATED (0.5mm > 0.1mm zone).\n\
+         stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("OK {rw_label}")),
+        "B9 OCCT: RepresentationWithin must be OK (η must NOT perturb RW verdict).\n\
+         stdout: {stdout}"
+    );
+    // Exactly one VIOLATED (from the geometric Conforms only — non-perturbation proof).
+    let violated_count = stdout.matches("VIOLATED").count();
+    assert_eq!(
+        violated_count, 1,
+        "B9 OCCT: exactly one 'VIOLATED' expected (geometric Conforms only); \
+         got {violated_count}.\nstdout: {stdout}"
+    );
+}
