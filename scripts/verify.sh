@@ -1011,6 +1011,19 @@ build_plan() {
         add "./scripts/tree-sitter-generate.sh"
     fi
 
+    # Compile-phase PSI admission gate (task 4618): soft backpressure backstop
+    # for the jobserver's implicit-token leak (FIFO pool tokens + 1 implicit
+    # token per concurrent cargo) and non-cargo load.  Emitted only when
+    # cargo check/clippy will actually run (lint or typecheck side); pure
+    # 'test' is not emitted here — the nextest compile is already inside the
+    # existing test psi-gate + held-slot region (no double-gate).
+    # DF_VERIFY_ROLE=merge is bypass at RUNTIME inside compile_gate() (CAVEAT 1);
+    # the plan line is still emitted in merge plans so the plan shape is
+    # role-invariant (mirrors the psi-gate idiom).
+    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
+        add "./scripts/verify.sh compile-gate"
+    fi
+
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
     # is a strict superset of `cargo check`, so running both would be redundant.
     if [ "$DO_TYPECHECK" -eq 1 ] && [ "$DO_LINT" -eq 0 ] && [ "$RUN_RUST" -eq 1 ]; then
