@@ -253,6 +253,18 @@ class TestProbeSetRoundTrip(unittest.TestCase):
         with self.assertRaises(Exception):
             pcc.load_probe_set(text)
 
+    def test_load_rejects_non_list_probes(self):
+        """load_probe_set raises ValueError when 'probes' is not a list (e.g. an int)."""
+        text = json.dumps({"probes": 42})
+        with self.assertRaises(ValueError):
+            pcc.load_probe_set(text)
+
+    def test_load_rejects_non_dict_probe_items(self):
+        """load_probe_set raises ValueError when probe items are not dicts."""
+        text = json.dumps({"probes": [1, "string_item"]})
+        with self.assertRaises(ValueError):
+            pcc.load_probe_set(text)
+
     # ── committed example-probe-set.json ─────────────────────────────────────
 
     def test_committed_probe_set_parses_into_3_records(self):
@@ -932,6 +944,36 @@ class TestHarnessExitCode(unittest.TestCase):
             pcc.harness_exit_code(results2),
         )
 
+    def test_harness_error_full_precedence(self):
+        """PASS + FAIL + UNPROVABLE + HARNESS_ERROR → exit 70 (highest priority wins)."""
+        results = [
+            self._make_result(pcc.PASS),
+            self._make_result(pcc.FAIL),
+            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc._HARNESS_ERROR),
+        ]
+        self.assertEqual(pcc.harness_exit_code(results), 70)
+
+    def test_binary_not_found_sentinel_flows_to_exit_70(self):
+        """_BINARY_NOT_FOUND_SENTINEL in stderr → observe → HARNESS_ERROR verdict → exit 70."""
+        probe = pcc.Probe(
+            capability="sentinel-flow-test",
+            probe_kind="check",
+            fixture="some/fixture.ri",
+            expected={"observation": "present", "match": {}},
+        )
+
+        def sentinel_runner(p):
+            return pcc.ProbeRun(
+                exit_code=127,
+                stdout="",
+                stderr=pcc._BINARY_NOT_FOUND_SENTINEL + ": [Errno 2] No such file or directory",
+            )
+
+        result = pcc.evaluate(probe, runner=sentinel_runner)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(pcc.harness_exit_code([result]), 70)
+
 
 # ---------------------------------------------------------------------------
 # step-13 (RED): main(argv) integration + skip-guarded real e2e
@@ -1020,6 +1062,18 @@ class TestMain(unittest.TestCase):
         finally:
             os.unlink(tmp)
         self.assertEqual(rc, 64)
+
+    def test_main_empty_probe_set_exits_64(self):
+        """main() with an empty 'probes' list → exit 64 (empty gate masks CI failures)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(json.dumps({"probes": []}))
+            tmp = f.name
+        try:
+            rc, _, err = self._run_main_capturing([tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 64, "empty probe set must return 64 (EX_USAGE)")
+        self.assertIn("no probes", err, "error message must mention 'no probes'")
 
     # ── hermetic: exit code matches harness_exit_code ─────────────────────────
 

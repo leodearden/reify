@@ -34,16 +34,18 @@ Probe kinds and dispatch:
                exit ≠ 0 WITHOUT asserted signature → INDETERMINATE → UNPROVABLE
 
 Verdicts:
-    PASS       — observed matches expected
-    FAIL       — observed contradicts expected
-    UNPROVABLE — observation is INDETERMINATE (only possible for ir kind)
+    PASS          — observed matches expected
+    FAIL          — observed contradicts expected
+    UNPROVABLE    — observation is INDETERMINATE (only possible for ir kind)
+    HARNESS_ERROR — probe tool error: missing binary, grammar load failure, etc.
+                    Emitted verbatim in both text and --json output; always triggers exit 70.
 
 Harness exit codes:
     0   all PASS
     1   ≥1 FAIL
     2   ≥1 UNPROVABLE, 0 FAIL
     64  usage / argument error (sysexits EX_USAGE)
-    70  tool / runtime error (sysexits EX_SOFTWARE) — missing binary, grammar load failure, etc.
+    70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
 """
 
 from __future__ import annotations
@@ -179,8 +181,17 @@ def load_probe_set(text: str) -> List[Probe]:
     if not isinstance(obj, dict) or "probes" not in obj:
         raise ValueError("probe set JSON must be an object with a top-level 'probes' key")
 
+    if not isinstance(obj["probes"], list):
+        raise ValueError(
+            f"'probes' must be a list, got {type(obj['probes']).__name__}"
+        )
+
     probes: List[Probe] = []
     for i, raw in enumerate(obj["probes"]):
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"probe[{i}] must be an object (dict), got {type(raw).__name__}"
+            )
         # Required fields
         for field_name in ("capability", "probe_kind", "fixture", "expected"):
             if field_name not in raw:
@@ -260,7 +271,7 @@ class ProbeRun:
 # Harness-error sentinel — an internal signal meaning "the observation cannot
 # be trusted because the probe tool itself failed" (e.g. grammar load-failure).
 # Never returned as a public PRESENT/ABSENT observation.
-_HARNESS_ERROR = "_harness_error"
+_HARNESS_ERROR = "HARNESS_ERROR"
 
 
 def match_predicate(run: ProbeRun, match: Dict[str, Any]) -> bool:
@@ -291,8 +302,11 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
 
     grammar:
         exit 0 → PRESENT (no parse errors)
-        exit 1 + "(ERROR" in combined output → ABSENT
-        exit 1 + "Failed to load language" in stderr → _HARNESS_ERROR
+        exit 1 without "Failed to load language" in stderr → ABSENT
+            (NOTE: tree-sitter with --quiet may suppress the "(ERROR …)" tree
+             output entirely, so any exit 1 that is not a load-failure is
+             classified as ABSENT, regardless of whether "(ERROR" appears)
+        exit 1 with "Failed to load language" in stderr → _HARNESS_ERROR
         any other exit → _HARNESS_ERROR
 
     check:
@@ -362,8 +376,8 @@ class Result:
         exit_code   — process exit code
         stdout      — captured stdout text
         stderr      — captured stderr text
-        observation — PRESENT / ABSENT / INDETERMINATE / _HARNESS_ERROR
-        verdict     — PASS / FAIL / UNPROVABLE  (or _HARNESS_ERROR for tool errors)
+        observation — PRESENT / ABSENT / INDETERMINATE / HARNESS_ERROR
+        verdict     — PASS / FAIL / UNPROVABLE / HARNESS_ERROR (tool errors → exit 70)
     """
     probe: Probe
     command: List[str]
@@ -496,8 +510,10 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
     if runner is None:
         runner = run_probe
 
-    # Build the command argv for this probe (used for display/evidence).
-    cmd = build_command(probe)
+    # Build the command with the same repo_root that run_probe() uses, so the
+    # recorded evidence command matches the actually-executed command exactly.
+    repo_root = _find_repo_root()
+    cmd = build_command(probe, repo_root=repo_root)
 
     # Run the probe and capture output.
     run = runner(probe)
@@ -638,6 +654,13 @@ def main(argv: List[str]) -> int:
     except ValueError as exc:
         sys.stderr.write(f"error: invalid probe set: {exc}\n")
         return 64  # EX_USAGE
+
+    if not probes:
+        sys.stderr.write(
+            f"error: probe set '{args.probe_set}' contains no probes; "
+            "an empty probe set is likely a misconfiguration.\n"
+        )
+        return 64  # EX_USAGE — vacuous all-pass masks broken CI gates
 
     # --- Evaluate each probe with the real runner ---
     results = [evaluate(probe) for probe in probes]
