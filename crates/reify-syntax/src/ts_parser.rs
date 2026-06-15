@@ -800,7 +800,7 @@ impl<'a> Lowering<'a> {
 
     /// Lower a `qualified_type` CST node to a `TypeExpr`.
     ///
-    /// Handles three grammar forms (task 4601 α widened the base to
+    /// Handles four grammar forms (task 4601 α widened the base to
     /// `choice($.identifier, $.parameterized_type)`):
     /// - Bare:           `Beam::Material`
     ///   → `QualifiedAssoc { base: Named("Beam"), trait_name: None, member: "Material" }`

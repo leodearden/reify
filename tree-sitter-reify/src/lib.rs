@@ -885,6 +885,41 @@ mod tests {
         );
     }
 
+    /// (c3) Fixture test: applied-base projection α deliverable `f_applied_base_projection.ri`.
+    /// Embeds the file via include_str! so the fixture cannot silently rot — any
+    /// grammar regression that breaks either the bare or FORK-G applied-base form
+    /// will surface here as a test failure.
+    #[test]
+    fn test_f_applied_base_projection_fixture_parses_cleanly() {
+        let mut parser = make_parser();
+        let source = include_str!("../test/fixtures/f_applied_base_projection.ri");
+        let tree = parser
+            .parse(source.as_bytes(), None)
+            .expect("parse failed");
+        let root = tree.root_node();
+        let kinds = collect_kinds(root);
+
+        // (1) No parse errors — the primary regression signal
+        assert!(
+            !root.has_error(),
+            "REGRESSION: f_applied_base_projection.ri broke (applied-base projection): {kinds:?}"
+        );
+
+        // (2) qualified_type node must exist (both params produce one)
+        assert!(
+            kinds.contains(&"qualified_type".to_string()),
+            "expected qualified_type in f_applied_base_projection.ri: {kinds:?}"
+        );
+
+        // (3) At least one qualified_type must have a parameterized_type base
+        //     (pins the applied-base form, not just a bare identifier base)
+        assert!(
+            kinds.contains(&"parameterized_type".to_string()),
+            "expected parameterized_type base inside qualified_type in \
+             f_applied_base_projection.ri: {kinds:?}"
+        );
+    }
+
     // ── Task 3971: fixture-driven tests ─────────────────────────────────────
     // These two tests embed the fixture files via include_str! and are RED until
     // the grammar change (step-2) lands.  They verify `!root.has_error()` for
