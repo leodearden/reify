@@ -657,39 +657,46 @@ class TestRunProbe(unittest.TestCase):
     # ── build_command shapes ──────────────────────────────────────────────────
 
     def test_build_command_check_shape(self):
-        """check → [reify, check, fixture]"""
-        probe = self._make_probe(
-            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"
-        )
+        """check → [reify, check, <abs-fixture>]; fixture is resolved to absolute path."""
+        fixture_rel = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
+        probe = self._make_probe("check", fixture_rel)
         with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
             cmd = pcc.build_command(probe)
-        self.assertEqual(
-            cmd,
-            ["reify", "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"],
-        )
+        # Binary + subcommand are unchanged.
+        self.assertEqual(cmd[:2], ["reify", "check"])
+        # Fixture is resolved to an absolute path.
+        self.assertTrue(os.path.isabs(cmd[-1]),
+                        f"fixture must be absolute; got {cmd[-1]!r}")
+        self.assertTrue(cmd[-1].endswith(fixture_rel),
+                        f"absolute fixture must end with repo-relative path; got {cmd[-1]!r}")
 
     def test_build_command_ir_shape(self):
-        """ir → [reify, eval, fixture]"""
-        probe = self._make_probe("ir", "tests/prd-gate/fixtures/ir_clean_eval.ri")
+        """ir → [reify, eval, <abs-fixture>]; fixture is resolved to absolute path."""
+        fixture_rel = "tests/prd-gate/fixtures/ir_clean_eval.ri"
+        probe = self._make_probe("ir", fixture_rel)
         with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
             cmd = pcc.build_command(probe)
-        self.assertEqual(
-            cmd,
-            ["reify", "eval", "tests/prd-gate/fixtures/ir_clean_eval.ri"],
-        )
+        # Binary + subcommand are unchanged.
+        self.assertEqual(cmd[:2], ["reify", "eval"])
+        # Fixture is resolved to an absolute path.
+        self.assertTrue(os.path.isabs(cmd[-1]),
+                        f"fixture must be absolute; got {cmd[-1]!r}")
+        self.assertTrue(cmd[-1].endswith(fixture_rel),
+                        f"absolute fixture must end with repo-relative path; got {cmd[-1]!r}")
 
     def test_build_command_grammar_shape(self):
-        """grammar → [tree-sitter, parse, --quiet, fixture]"""
-        probe = self._make_probe(
-            "grammar", "tests/prd-gate/fixtures/arrow_type.ri"
-        )
+        """grammar → [tree-sitter, parse, --quiet, <abs-fixture>]; fixture is absolute."""
+        fixture_rel = "tests/prd-gate/fixtures/arrow_type.ri"
+        probe = self._make_probe("grammar", fixture_rel)
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "tree-sitter"}):
             cmd = pcc.build_command(probe)
-        self.assertEqual(
-            cmd,
-            ["tree-sitter", "parse", "--quiet",
-             "tests/prd-gate/fixtures/arrow_type.ri"],
-        )
+        # Binary + flags are unchanged.
+        self.assertEqual(cmd[:3], ["tree-sitter", "parse", "--quiet"])
+        # Fixture is resolved to an absolute path.
+        self.assertTrue(os.path.isabs(cmd[-1]),
+                        f"fixture must be absolute; got {cmd[-1]!r}")
+        self.assertTrue(cmd[-1].endswith(fixture_rel),
+                        f"absolute fixture must end with repo-relative path; got {cmd[-1]!r}")
 
     def test_build_command_reify_bin_override(self):
         """REIFY_BIN env var overrides the reify binary in the command."""

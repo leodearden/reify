@@ -400,31 +400,42 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
         check/ir → REIFY_BIN (default "reify")
 
     Command shapes:
-        grammar  → [tree-sitter, parse, --quiet, <fixture>]
-        check    → [reify, check, <fixture>]
-        ir       → [reify, eval, <fixture>]
+        grammar  → [tree-sitter, parse, --quiet, <abs-fixture>]
+        check    → [reify, check, <abs-fixture>]
+        ir       → [reify, eval, <abs-fixture>]
 
-    The fixture path in the command is as-given in the probe record
-    (repo-relative).  run_probe() resolves it to an absolute path and
-    sets CWD for grammar probes; build_command() returns the logical argv
-    for display and testing purposes.
+    Fixture-path resolution: build_command() resolves probe.fixture to an
+    absolute path via os.path.join(repo_root, probe.fixture) so that the path
+    survives any CWD change — in particular, grammar probes run with
+    CWD=<repo_root>/tree-sitter-reify/ and a relative fixture would resolve
+    incorrectly under that directory.  If probe.fixture is already absolute it
+    is used verbatim.  repo_root defaults to _find_repo_root() when None.
+
+    The same repo_root is passed to _resolve_reify_bin() so the binary and the
+    fixture are resolved consistently.  run_probe() calls build_command() with
+    the same repo_root it uses for CWD, so the recorded evidence command and
+    the executed argv are identical.
 
     Args:
         probe:     The probe to build a command for.
-        repo_root: Optional repo root for resolving fixture paths.  Unused
-                   by this function directly; provided for forward-compat
-                   with step-10's full resolution logic.
+        repo_root: Repo root directory for resolving relative fixture paths and
+                   locating the reify binary.  Defaults to _find_repo_root().
 
     Returns:
         A list of strings — the exact argv to be passed to subprocess.run().
     """
+    root = repo_root if repo_root is not None else _find_repo_root()
+
+    # Resolve fixture to absolute path so it survives CWD changes.
     fixture = probe.fixture
+    if not os.path.isabs(fixture):
+        fixture = os.path.join(root, fixture)
 
     if probe.probe_kind == "grammar":
         ts_bin = _resolve_tree_sitter_bin()
         return [ts_bin, "parse", "--quiet", fixture]
 
-    reify_bin = _resolve_reify_bin(repo_root=repo_root)
+    reify_bin = _resolve_reify_bin(repo_root=root)
 
     if probe.probe_kind == "check":
         return [reify_bin, "check", fixture]
@@ -443,9 +454,12 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
 def run_probe(probe: Probe) -> ProbeRun:
     """Run a probe command in a subprocess and return captured output.
 
-    Command construction delegates to build_command().  Grammar probes run
-    with CWD = <repo_root>/tree-sitter-reify/ so that the tree-sitter parser
-    can locate its grammar (src/parser.c must already be generated).
+    Delegates command construction to build_command(), which resolves
+    probe.fixture to an absolute path so it survives the CWD change.
+    Grammar probes run with CWD = <repo_root>/tree-sitter-reify/ so that
+    the tree-sitter parser can locate its grammar (src/parser.c must be
+    generated first).  build_command() uses the same repo_root so the
+    recorded fixture path and the executed path are identical.
 
     FileNotFoundError (missing binary) is caught and represented as a ProbeRun
     with _BINARY_NOT_FOUND_SENTINEL in stderr and exit_code=127.  observe()
