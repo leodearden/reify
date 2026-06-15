@@ -249,10 +249,11 @@ citation-liveness — γ wires the split using the existing pub extraction fns.
 
 ### 8.4 Severity + exit
 
-All PTODO kinds emit at **Medium** until task η flips `untracked` / `orphaned` /
-`bare-ignore` to **High** (hard gate: non-zero exit). η is dispatch-gated on PTODO
-reporting zero violations on main. `unknown-id` stays Medium even post-η (a DB-sync
-artifact shouldn't hard-fail verify); `task-cites-deleted-path` stays advisory.
+As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
+**High** (hard gate: `reify-audit` exits non-zero, exit code = High count; the
+`tests/infra` PTODO check hard-fails verify). `unknown-id` stays **Medium** (a
+DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
+advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
 
 ## 9. Boundary-test sketch
 
@@ -341,7 +342,7 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   High (§8.4); infra check fails hard accordingly. Dispatch condition (checked at
   dispatch, not a dep edge): PTODO reports **zero** violations on main — if not,
   fix cites first or bounce. **Leaf.** Signal: a violation makes `reify-audit` exit
-  non-zero and verify fail.
+  non-zero and verify fail. **Landed 2026-06-15 (task #4559).**
 - **θ — vocabulary-expansion ASSESS** (dep ε). FP-review of softer vocabularies
   (§6.2: STUB_MSG idiom, "for now", "placeholder", "stub", "XXX", "workaround")
   mirroring 4075/4076/4141 methodology; extend the vocabulary for those that clear;
