@@ -187,4 +187,46 @@ assert "plain test plan: npm run typecheck present and before psi-gate" \
         [ -n "$NPM_IDX" ] && [ -n "$PSI_IDX" ] && [ "$NPM_IDX" -lt "$PSI_IDX" ]
     ' _ "$PLAIN_TEST_PLAN"
 
+# ===========================================================================
+# Test 6: task #4624 — reify-audit release pre-step ordered BEFORE run_all.sh
+#          and run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1
+#
+# Hermetic: --print-plan never runs cargo.
+# FAIL until impl-verify-prestep adds the pre-step and env token.
+# ===========================================================================
+echo ""
+echo "--- Test 6 (#4624): reify-audit pre-step before run_all.sh + env token ---"
+
+# (a) pre-step line is present in the all-plan (contains `cargo build --release`
+#     and `-p reify-audit`)
+assert "all plan: reify-audit release pre-step line present (cargo build --release -p reify-audit)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-audit"' _ "$ALL_PLAN"
+
+# (b) pre-step index < run_all.sh line index
+assert "all plan: reify-audit pre-step index < run_all.sh index (pre-step ordered before suite)" \
+    bash -c '
+        PRE_IDX=$(printf "%s\n" "$1" | grep -n "cargo build --release" | grep "\-p reify-audit" | head -1 | cut -d: -f1)
+        RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
+        [ -n "$PRE_IDX" ] && [ -n "$RUN_IDX" ] && [ "$PRE_IDX" -lt "$RUN_IDX" ]
+    ' _ "$ALL_PLAN"
+
+# (c) pre-step line does NOT contain `run_all.sh` (it is a separate plan line)
+#     and does NOT contain `20m` (its own bounded timeout must differ from the
+#     20m run_all wall, so we know it is the pre-step, not the walled line)
+assert "all plan: reify-audit pre-step line is separate from run_all.sh (no 'run_all.sh' on the cargo line)" \
+    bash -c '
+        PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        echo "$PRE_LINE" | grep -qv "run_all\.sh"
+    ' _ "$ALL_PLAN"
+
+assert "all plan: reify-audit pre-step line does not contain '20m' (timeout distinct from run_all wall)" \
+    bash -c '
+        PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        echo "$PRE_LINE" | grep -qv "20m"
+    ' _ "$ALL_PLAN"
+
+# (d) run_all.sh plan line carries REIFY_AUDIT_NO_COLD_BUILD=1 (backstop armed)
+assert "all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$ALL_PLAN"
+
 test_summary
