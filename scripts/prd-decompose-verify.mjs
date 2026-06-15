@@ -278,11 +278,26 @@ If the command fails or stdout is not valid JSON, return:
     // ── Aggregate batch verdict ──────────────────────────────────────────────
 
     const filtered = leaf_verdicts.filter(Boolean);
-    const anyBlocks = filtered.some(v => v.blocks);
-    const allBlocking = filtered.filter(v => v.blocks).flatMap(v => v.blocking || []);
+
+    // Fail closed on dropped leaves: a leaf whose Enumerate/Prove stage raised
+    // (agent death, malformed output) is dropped to null by the pipeline and
+    // filtered out above.  Treating 'could not evaluate' as PASS is a false
+    // negative for a verification gate — block instead.
+    const dropped = leaves.length - filtered.length;
+    const droppedBlocking = Array.from({ length: dropped }, (_, i) => {
+        const originalIdx = leaf_verdicts.findIndex((v, j) => !v && j >= (leaves.length - dropped - i));
+        return `<dropped-leaf:${originalIdx >= 0 ? originalIdx : "?"}>`;
+    });
+
+    const anyBlocks = dropped > 0 || filtered.some(v => v.blocks);
+    const allBlocking = [
+        ...droppedBlocking,
+        ...filtered.filter(v => v.blocks).flatMap(v => v.blocking || []),
+    ];
 
     const summary = anyBlocks
-        ? `γ BLOCKS — ${allBlocking.length} premise(s) failed across ${filtered.filter(v => v.blocks).length} leaf(ves)`
+        ? `γ BLOCKS — ${allBlocking.length} premise(s)/leaf(ves) failed or dropped`
+            + (dropped > 0 ? ` (${dropped} leaf(ves) dropped by pipeline errors)` : "")
         : `γ PASS — all ${filtered.length} leaf(ves) verified`;
 
     log(summary); // eslint-disable-line no-undef
