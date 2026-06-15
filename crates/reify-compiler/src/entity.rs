@@ -1301,6 +1301,9 @@ pub(crate) fn compile_entity(
             enum_defs,
             functions,
             alias_registry,
+            // task 4497: empty placeholder ambient-default table; the real
+            // file-level table is threaded from entities_phase in step-10.
+            &crate::ambient_defaults::AmbientDefaults::default(),
             diagnostics,
             &mut structure_assoc_fns,
             &mut structure_assoc_types,

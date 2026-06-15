@@ -1,5 +1,7 @@
 use crate::*;
 
+use crate::ambient_defaults::AmbientDefaults;
+
 /// Tag used when cross-checking requirements against available defaults.
 /// A `param` requirement can only be satisfied by a `param` default, and a `let`
 /// requirement only by a `let` default. A kind mismatch is treated the same as "no
@@ -1980,6 +1982,96 @@ pub(super) fn check_phase_inject_defaults(
             DefaultKind::AssocType(_) => {}
         }
     }
+}
+
+/// Ambient-default injection phase (task 4497, ambient-default-material B).
+///
+/// Runs immediately AFTER [`check_phase_collect_trait_bounds`] and BEFORE the
+/// pre-register / available-defaults / inject phases consume `ctx.defaults`.
+/// For every unfilled `Param` requirement whose type is a `StructureRef(T)`,
+/// it resolves the ambient default for `T` (at the given scope) and — on a hit
+/// — synthesizes a `TraitDefault { kind: DefaultKind::Param { .. } }` carrying
+/// the ambient value expr into `ctx.defaults`. The existing
+/// [`check_phase_inject_defaults`] then performs the real `ValueCellDecl`
+/// injection, so an ambient default rides the verified trait-default rails
+/// exactly like a trait-declared param default (DD2) — no new injection code.
+///
+/// ## Resolution ladder (DD3): explicit member > trait-declared default > ambient
+///
+/// A requirement is synthesized ONLY when it is neither an explicit structure
+/// member (`structure_members.contains_key`) nor already covered by an entry in
+/// `ctx.defaults` (a trait-declared default). Skipping both cases before
+/// synthesis enforces the ladder at the cheapest point — the ambient entry is
+/// simply never created when a higher-priority source exists.
+///
+/// ## Type-keying (DD1)
+///
+/// The ambient table is keyed by the referenced structure's type *name*, so any
+/// `Param(StructureRef(name))` requirement is a candidate; there is no trait- or
+/// member-path coupling. The v1 grammar only exercises `Material`, but the
+/// machinery is type-generic.
+///
+/// ## Scope (DD6)
+///
+/// `purpose` selects the innermost scope for resolution. Top-level structures
+/// (the only structures that exist) resolve at file scope (`purpose = None`);
+/// purpose-scoped defaults are never injected into a structure.
+pub(super) fn check_phase_inject_ambient_defaults(
+    ctx: &mut MergeContext,
+    ambient: &AmbientDefaults,
+    structure_members: &HashMap<String, Type>,
+    purpose: Option<&str>,
+) {
+    // Names already covered by a trait-declared default — these win over an
+    // ambient default (DD3). Collected as owned Strings so this set does not
+    // borrow `ctx.defaults` while we extend it below.
+    let existing_default_names: HashSet<String> =
+        ctx.defaults.iter().filter_map(|d| d.name.clone()).collect();
+
+    // Synthesize into a local buffer first (the loop reads `ctx.requirements`;
+    // the extend mutates `ctx.defaults`).
+    let mut synthesized: Vec<TraitDefault> = Vec::new();
+    for req in &ctx.requirements {
+        // Only `Param` requirements referencing a structure type can be filled
+        // by an ambient default (DD1: keyed by the referenced type name).
+        let RequirementKind::Param(Type::StructureRef(type_name)) = &req.kind else {
+            continue;
+        };
+        // DD3 ladder: explicit member wins, then trait-declared default wins.
+        if structure_members.contains_key(&req.name) {
+            continue;
+        }
+        if existing_default_names.contains(&req.name) {
+            continue;
+        }
+        // Resolve the ambient default for the referenced type at this scope.
+        let Some(entry) = ambient.resolve(type_name, purpose) else {
+            continue;
+        };
+        // Synthesize a Param default carrying the ambient value expr as its
+        // `default`, so `check_phase_inject_defaults` compiles + injects it via
+        // `compile_expr` exactly like a real trait param default. Mirrors the
+        // synthetic-ParamDecl construction at conformance/mod.rs:2131.
+        synthesized.push(TraitDefault {
+            name: Some(req.name.clone()),
+            kind: DefaultKind::Param {
+                cell_type: entry.declared_type.clone(),
+                default_decl: reify_ast::ParamDecl {
+                    name: req.name.clone(),
+                    doc: None,
+                    is_priv: false,
+                    type_expr: None,
+                    default: Some(entry.value.clone()),
+                    where_clause: None,
+                    annotations: vec![],
+                    span: entry.span,
+                    content_hash: ContentHash(0),
+                },
+            },
+            span: entry.span,
+        });
+    }
+    ctx.defaults.extend(synthesized);
 }
 
 #[cfg(test)]

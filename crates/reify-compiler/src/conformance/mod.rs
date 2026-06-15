@@ -5,6 +5,7 @@ pub(super) mod sub_component_validation;
 pub(crate) use sub_component_validation::check_sub_structure_existence;
 
 use super::*;
+use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
 };
@@ -23,6 +24,11 @@ pub(crate) fn check_trait_conformance(
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
+    // task 4497 (ambient-default-material B): the ambient-default table resolved
+    // for this structure's scope. Top-level structures (the only structures that
+    // exist) are fed the file-level table and resolve at file scope (DD6 →
+    // `purpose = None` below).
+    ambient: &AmbientDefaults,
     diagnostics: &mut Vec<Diagnostic>,
     // task 3939 δ: out-param receiving the resolved assoc-fn table, populated by
     // `check_phase_resolve_assoc_fns` (step-8). entity.rs stores it on the
@@ -99,12 +105,20 @@ pub(crate) fn check_trait_conformance(
     // (structure_assoc_type_bindings was already collected above — before the
     // check_phase_resolve_structure_members call — so it is in scope for phase 5.)
 
-    let ctx = check_phase_collect_trait_bounds(
+    let mut ctx = check_phase_collect_trait_bounds(
         structure,
         trait_registry,
         &structure_all_members,
         diagnostics,
     );
+
+    // task 4497: synthesize ambient-default Param entries into `ctx.defaults`
+    // for unfilled `Param(StructureRef(T))` requirements, BEFORE the
+    // pre-register / available-defaults / inject phases read `ctx.defaults` —
+    // so an ambient default rides the trait-default rails exactly like a
+    // trait-declared param default (DD2). Top-level structures resolve at file
+    // scope (DD6 → `purpose = None`).
+    check_phase_inject_ambient_defaults(&mut ctx, ambient, &structure_all_members, None);
 
     let pre = check_phase_pre_register_default_types(
         &ctx,
@@ -1716,6 +1730,10 @@ mod tests {
             enum_defs,
             functions,
             &alias_registry,
+            // task 4497: empty placeholder table — these conformance unit tests
+            // exercise trait-default behavior, not ambient injection (the real
+            // file-level table is threaded from entities_phase in step-10).
+            &AmbientDefaults::default(),
             &mut diagnostics,
             &mut assoc_fns,
             &mut assoc_types,
