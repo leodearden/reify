@@ -15,29 +15,6 @@ pub(crate) fn lossy_real_warning(span: SourceSpan) -> Diagnostic {
     .with_label(DiagnosticLabel::new(span, "precision lost"))
 }
 
-/// Build the accept-and-ignore warning for an ambient-default declaration that has
-/// been parsed but whose semantics are not yet wired up (task A: grammar producer).
-///
-/// Emitted once per `default <TypeName> = <expr>` declaration — top-level and
-/// purpose-nested — from `entities_phase`.  Task B will replace this warning with
-/// real scope-resolution and injection semantics, at which point this function will
-/// be removed.
-///
-/// The `W_DEFAULT_NOT_WIRED` mnemonic is embedded in the message text (matching
-/// the `W_MODULE_DECL_MISSING` style in `pre_pass`) so that tests and tooling can
-/// match on it without a `DiagnosticCode` enum variant — diagnostic-code naming
-/// for the task-B errors is explicitly deferred (PRD open question 2).
-pub(crate) fn default_not_yet_wired_warning(decl: &reify_ast::DefaultDecl) -> Diagnostic {
-    Diagnostic::warning(
-        "W_DEFAULT_NOT_WIRED: ambient-default declaration parsed but not yet applied; \
-         scope resolution and material injection will land in task B",
-    )
-    .with_label(DiagnosticLabel::new(
-        decl.span,
-        "default declared here — semantics pending task B",
-    ))
-}
-
 /// Build the `E_DUP_MEMBER_KEY` error for two members of the same `Keyed<T>`
 /// sub-collection that declare the same author-assigned String key.
 ///

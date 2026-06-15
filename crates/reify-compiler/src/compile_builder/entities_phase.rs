@@ -122,7 +122,7 @@ pub(crate) fn phase_entities(
     // declaration-site type-mismatch (DD4) diagnostics. The table is threaded
     // into each top-level structure's conformance check below (DD6: file-scope
     // injection → top-level structures only; `purpose = None`).
-    let ambient_defaults = collect_file_ambient_defaults(
+    let ambient_defaults = collect_ambient_defaults(
         parsed,
         &prelude_template_registry,
         &structure_names,
@@ -225,14 +225,12 @@ pub(crate) fn phase_entities(
             reify_ast::Declaration::Field(_) => {
                 // Already compiled by fields_phase::phase_fields.
             }
-            reify_ast::Declaration::Purpose(p) => {
-                // Handled later by post_passes::phase_purposes.
-                // Emit W_DEFAULT_NOT_WIRED for any ambient-default declarations
-                // nested directly in this purpose body.
-                for d in &p.defaults {
-                    ctx.diagnostics
-                        .push(crate::diagnostics::default_not_yet_wired_warning(d));
-                }
+            reify_ast::Declaration::Purpose(_) => {
+                // Handled later by post_passes::phase_purposes. Purpose-nested
+                // ambient defaults are collected — and their per-scope duplicate
+                // (DD5) and declaration-site type-mismatch (DD4) diagnostics
+                // emitted — by the ambient-default pre-pass above (DD6: checked
+                // per purpose scope, but never injected into a structure).
             }
             reify_ast::Declaration::Constraint(_) => {
                 // Already compiled by defs_phase::phase_constraint_defs; annotation/pragma validation ran there too.
@@ -273,14 +271,15 @@ pub(crate) fn phase_entities(
     }
 }
 
-/// File-scope ambient-default collection (ambient-default-material task B).
+/// Ambient-default collection — file scope AND purpose scope (task B).
 ///
 /// Walk every TOP-LEVEL `default <TypeName> = <expr>` declaration
-/// (`Declaration::Default`), build the file-level [`AmbientDefaults`] table, and
-/// emit the per-scope duplicate (DD5) and declaration-site type-mismatch (DD4)
-/// diagnostics. Runs as a PRE-PASS — before the entity-compile loop — because
-/// defaults apply file-wide and may appear lexically after the structures they
-/// fill.
+/// (`Declaration::Default`) into the file-level [`AmbientDefaults`] table, plus
+/// every `default` nested directly in a `purpose` body into the purpose-level
+/// map, emitting the per-scope duplicate (DD5) and declaration-site type-mismatch
+/// (DD4) diagnostics for both. Runs as a PRE-PASS — before the entity-compile
+/// loop — because file defaults apply file-wide and may appear lexically after
+/// the structures they fill.
 ///
 /// Duplicate detection is keyed by resolved type name within file scope: the
 /// FIRST well-typed declaration of a type is retained as the table entry, and
@@ -289,10 +288,14 @@ pub(crate) fn phase_entities(
 /// NOT inserted, so a later top-level structure is never injected with an
 /// ill-typed value (no cascade past the single declaration-site error).
 ///
-/// Purpose-nested defaults (`PurposeDef.defaults`) are NOT collected here; they
-/// receive the same per-scope checks under their own scope in a later step (DD6).
+/// Purpose-nested defaults (`PurposeDef.defaults`) are collected into the
+/// purpose-level map with the SAME per-scope duplicate (DD5) and declaration-site
+/// type (DD4) checks, keyed under their purpose name (duplicate detection is
+/// per-purpose). Per DD6 they are NEVER injected into a structure (structures
+/// cannot nest in a purpose) — the purpose-level map is purely the
+/// forward-compatible seam a later task layers structure-in-purpose overrides on.
 #[allow(clippy::too_many_arguments)]
-fn collect_file_ambient_defaults(
+fn collect_ambient_defaults(
     parsed: &ParsedModule,
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
     structure_names: &HashSet<String>,
@@ -313,38 +316,75 @@ fn collect_file_ambient_defaults(
     scope.set_template_registry(prelude_template_registry);
 
     let mut table = AmbientDefaults::default();
-    // First-seen declaration span per type name, for same-scope duplicate
-    // detection (DD5). Records well-typed declarations only.
-    let mut first_seen: HashMap<String, SourceSpan> = HashMap::new();
+    // First-seen declaration span per type name within FILE scope, for same-scope
+    // duplicate detection (DD5). Records well-typed declarations only.
+    let mut file_first_seen: HashMap<String, SourceSpan> = HashMap::new();
 
     for decl in &parsed.declarations {
-        let reify_ast::Declaration::Default(decl) = decl else {
-            continue;
-        };
-        let Some((type_name, entry)) = resolve_ambient_default(
-            decl,
-            &scope,
-            enum_defs,
-            functions,
-            alias_registry,
-            structure_names,
-            trait_names,
-            diagnostics,
-        ) else {
-            continue;
-        };
-
-        match first_seen.get(&type_name) {
-            Some(&first_span) => {
-                // Same type already declared in this (file) scope — ambiguity (DD5).
-                diagnostics.push(crate::diagnostics::dup_ambient_default_error(
-                    &type_name, first_span, decl.span,
-                ));
+        match decl {
+            // ── File scope: a top-level `default <TypeName> = <expr>`. ──
+            reify_ast::Declaration::Default(decl) => {
+                let Some((type_name, entry)) = resolve_ambient_default(
+                    decl,
+                    &scope,
+                    enum_defs,
+                    functions,
+                    alias_registry,
+                    structure_names,
+                    trait_names,
+                    diagnostics,
+                ) else {
+                    continue;
+                };
+                match file_first_seen.get(&type_name) {
+                    Some(&first_span) => {
+                        // Same type already declared at file scope — ambiguity (DD5).
+                        diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                            &type_name, first_span, decl.span,
+                        ));
+                    }
+                    None => {
+                        file_first_seen.insert(type_name.clone(), decl.span);
+                        table.insert_file_level(type_name, entry);
+                    }
+                }
             }
-            None => {
-                first_seen.insert(type_name.clone(), decl.span);
-                table.insert_file_level(type_name, entry);
+            // ── Purpose scope: `default`s nested directly in a purpose body. ──
+            // DD6: same per-scope dup (DD5) + decl-site type (DD4) checks, keyed
+            // under the purpose name, but NEVER injected into a structure.
+            // Duplicate detection is per-purpose — a fresh first-seen map per body.
+            // The value expr is compiled at the shared file scope: the v1 surface
+            // is literal `Material(...)` ctors, which need no purpose-param scope.
+            reify_ast::Declaration::Purpose(p) => {
+                let mut purpose_first_seen: HashMap<String, SourceSpan> = HashMap::new();
+                for d in &p.defaults {
+                    let Some((type_name, entry)) = resolve_ambient_default(
+                        d,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    match purpose_first_seen.get(&type_name) {
+                        Some(&first_span) => {
+                            // Same type twice in THIS purpose body — ambiguity (DD5).
+                            diagnostics.push(crate::diagnostics::dup_ambient_default_error(
+                                &type_name, first_span, d.span,
+                            ));
+                        }
+                        None => {
+                            purpose_first_seen.insert(type_name.clone(), d.span);
+                            table.insert_purpose_level(p.name.clone(), type_name, entry);
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
 
