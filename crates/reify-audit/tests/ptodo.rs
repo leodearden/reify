@@ -88,7 +88,7 @@ mod tests {
 
         let findings = reify_audit::ptodo::check(&ctx);
 
-        // Exactly three findings, all PTodo + Medium.
+        // Exactly three findings, all PTodo.
         assert_eq!(
             findings.len(),
             3,
@@ -96,7 +96,6 @@ mod tests {
         );
         for f in &findings {
             assert_eq!(f.pattern, Pattern::PTodo, "wrong pattern: {f:?}");
-            assert_eq!(f.severity, Severity::Medium, "wrong severity: {f:?}");
         }
 
         // Locate the finding whose evidence references `path`.
@@ -110,6 +109,26 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("no finding referencing {path}; findings={findings:?}"))
         };
+
+        // Per-kind severity: untracked→High; malformed-cite→Medium; phantom-tracking→Medium.
+        assert_eq!(
+            finding_for("untracked.rs").severity,
+            Severity::High,
+            "untracked must be High: {:?}",
+            finding_for("untracked.rs")
+        );
+        assert_eq!(
+            finding_for("malformed.rs").severity,
+            Severity::Medium,
+            "malformed-cite must stay Medium: {:?}",
+            finding_for("malformed.rs")
+        );
+        assert_eq!(
+            finding_for("phantom.rs").severity,
+            Severity::Medium,
+            "phantom-tracking must stay Medium: {:?}",
+            finding_for("phantom.rs")
+        );
 
         // §8.3 kind carried as a stable summary prefix `"<kind>: …"`.
         assert!(
@@ -261,7 +280,7 @@ mod tests {
             panic!("expected untracked finding for ignore_blocker.rs; findings={findings:?}")
         });
         assert_eq!(bf.pattern, Pattern::PTodo, "pattern: {bf:?}");
-        assert_eq!(bf.severity, Severity::Medium, "severity: {bf:?}");
+        assert_eq!(bf.severity, Severity::High, "severity: {bf:?}");
         assert!(
             bf.summary.starts_with("untracked:"),
             "summary must start with 'untracked:': {}",
@@ -702,6 +721,49 @@ mod tests {
             control_orphaned,
             "zzz_ptodo_control.rs must produce an orphaned #4590 finding (test has teeth); \
              findings={findings:?}"
+        );
+    }
+
+    /// A bare `#[ignore]` (no reason string) emits a `bare-ignore:` finding
+    /// with Severity::High (task η, #4559).
+    #[test]
+    fn bare_ignore_is_high() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(root, "bare.rs", "#[ignore]\nfn t() {}\n");
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["bare.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one bare-ignore finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo, "pattern: {f:?}");
+        assert_eq!(f.severity, Severity::High, "bare-ignore must be High: {f:?}");
+        assert!(
+            f.summary.starts_with("bare-ignore:"),
+            "summary must start with bare-ignore: {}",
+            f.summary
         );
     }
 }
