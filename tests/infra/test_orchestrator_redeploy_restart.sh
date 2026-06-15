@@ -207,4 +207,68 @@ assert "C11: systemctl pre-clean calls precede the systemd-run call" \
 assert "C12: pre-clean systemctl calls reference ORCH_TRANSIENT_UNIT (test-transient-unit)" \
     bash -c 'grep "^systemctl" "$1" | grep -q "test-transient-unit"' _ "$CALLS_FILE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — EXEC-MODE CLEAN (--exec-restart, clean project_root)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: exec-mode clean (stop then start, never restart) ---"
+
+CLEAN_REPO_D=""
+make_clean_repo CLEAN_REPO_D
+reset_calls
+
+ORCH_PROJECT_ROOT="$CLEAN_REPO_D" \
+ORCH_UNIT="exec-unit.service" \
+    run_helper --exec-restart
+assert "D1: exec-mode clean -> exits 0" test "$RC" -eq 0
+
+# Must have systemctl --user stop <unit>
+assert "D2: exec-mode records systemctl --user stop exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user stop exec-unit.service$" "$1"' _ "$CALLS_FILE"
+
+# Must have systemctl --user start <unit>
+assert "D3: exec-mode records systemctl --user start exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user start exec-unit.service$" "$1"' _ "$CALLS_FILE"
+
+# stop must come BEFORE start
+assert "D4: stop precedes start in exec-mode (ordering guarantee)" \
+    bash -c '
+        stop_ln=$(grep -n "^systemctl --user stop exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        start_ln=$(grep -n "^systemctl --user start exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        [ -n "$stop_ln" ] && [ -n "$start_ln" ] && [ "$stop_ln" -lt "$start_ln" ]
+    ' _ "$CALLS_FILE"
+
+# NO systemctl restart subcommand must appear
+assert "D5: exec-mode NEVER uses systemctl restart subcommand" \
+    bash -c '! grep -q "^systemctl.*restart" "$1"' _ "$CALLS_FILE"
+
+# NO systemd-run call in exec-mode
+assert "D6: exec-mode emits no systemd-run call" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — EXEC-MODE DIRTY (--exec-restart, dirty project_root)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: exec-mode dirty (no stop/start, exits 0, orchestrator left running) ---"
+
+DIRTY_REPO_E=""
+make_dirty_repo DIRTY_REPO_E
+reset_calls
+
+ORCH_PROJECT_ROOT="$DIRTY_REPO_E" \
+ORCH_UNIT="exec-unit.service" \
+    run_helper --exec-restart
+assert "E1: exec-mode dirty -> exits 0 (leave orchestrator running)" test "$RC" -eq 0
+
+# Must NOT record any stop or start for the service unit
+assert "E2: exec-mode dirty records NO systemctl stop" \
+    bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "E3: exec-mode dirty records NO systemctl start" \
+    bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+
+# Must log a "dirty, skipping" or similar message
+assert "E4: exec-mode dirty logs a warning about dirty project_root" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "dirty|skipping"' _ "$OUT"
+
 test_summary
