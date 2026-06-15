@@ -293,6 +293,24 @@ impl AnalysisContext {
             _ => None,
         })
     }
+
+    /// Surface the ΔDOF contract for a geometric-relation builtin call named
+    /// `name`, scoped to the enclosing declaration (the structure/occurrence the
+    /// hover cursor sits in). Returns `name(ArgTys) -> Relation removes N`, or
+    /// `None` if no such relation call is present in that scope
+    /// (geometric-relations γ, task 4383).
+    ///
+    /// A thin pass-through to the compiler-side traversal
+    /// [`reify_compiler::relation_signatures::relation_contract_for_call`], which
+    /// keeps `CompiledExprKind` matching inside reify-compiler rather than
+    /// exposing the IR's expression internals across the crate boundary.
+    pub fn relation_contract(&self, name: &str, enclosing_decl: Option<&str>) -> Option<String> {
+        reify_compiler::relation_signatures::relation_contract_for_call(
+            &self.compiled,
+            name,
+            enclosing_decl,
+        )
+    }
 }
 
 /// Return the declaration whose span contains `offset`,
@@ -318,6 +336,10 @@ pub fn enclosing_decl_at(declarations: &[Declaration], offset: usize) -> Option<
             Declaration::TypeAlias(t) => t.span,
             Declaration::Default(d) => d.span,
             Declaration::Module(m) => m.span,
+            // Grammar producer only (task α 4395). Joint bodies are not
+            // navigable by the LSP yet; included here so the exhaustive match
+            // stays complete. Semantics deferred to task β.
+            Declaration::Joint(j) => j.span,
         };
         if offset_u32 >= decl_span.start && offset_u32 < decl_span.end {
             return Some(decl);

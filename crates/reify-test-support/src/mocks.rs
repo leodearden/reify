@@ -520,6 +520,12 @@ enum QueryKey {
     FaceSurfaceKind(GeometryHandleId),
     /// EdgeCurveKind keys the (single) edge handle.
     EdgeCurveKind(GeometryHandleId),
+    /// FaceAnalyticDatum keys the (single) face handle (geometric-relations ε).
+    FaceAnalyticDatum(GeometryHandleId),
+    /// EdgeAnalyticDatum keys the (single) edge handle (geometric-relations ε).
+    EdgeAnalyticDatum(GeometryHandleId),
+    /// ShapeLocalTolerance keys the (single) sub-shape handle (geometric-relations ε).
+    ShapeLocalTolerance(GeometryHandleId),
     /// OwnerBody keys the (single) child sub-handle (the `extract_*`
     /// product). The stored `Value` should be a `Value::Int` carrying the
     /// parent body's `GeometryHandleId.0`.
@@ -708,6 +714,12 @@ impl QueryKey {
             // hashed by handle alone (no extra params).
             GeometryQuery::FaceSurfaceKind(id) => QueryKey::FaceSurfaceKind(*id),
             GeometryQuery::EdgeCurveKind(id) => QueryKey::EdgeCurveKind(*id),
+            // ε: analytic-datum + local-tolerance queries hashed by their
+            // single sub-shape handle (no extra params), parallel to the
+            // FaceSurfaceKind / EdgeCurveKind classification arms.
+            GeometryQuery::FaceAnalyticDatum(id) => QueryKey::FaceAnalyticDatum(*id),
+            GeometryQuery::EdgeAnalyticDatum(id) => QueryKey::EdgeAnalyticDatum(*id),
+            GeometryQuery::ShapeLocalTolerance(id) => QueryKey::ShapeLocalTolerance(*id),
             // Owner-body provenance from task 2658 (PRD line 81); hashed by
             // the child sub-handle alone.
             GeometryQuery::OwnerBody(id) => QueryKey::OwnerBody(*id),
@@ -1347,6 +1359,58 @@ impl MockGeometryKernel {
         self
     }
 
+    /// Configure a `FaceAnalyticDatum` query result for a specific face handle
+    /// (geometric-relations ε).
+    ///
+    /// The `value` should be the projected datum the OCCT kernel composes from
+    /// the face's `BRepAdaptor_Surface` classification: a `Value::Plane` for a
+    /// planar face, a `Value::Axis` for a cylinder / cone, or a `Value::Point`
+    /// for a sphere centre. Staged on the **typed** channel so it does not
+    /// collide with a `ShapeLocalTolerance` (a `Value::length`) staged for the
+    /// same handle — both ε queries key the single sub-shape handle.
+    pub fn with_face_analytic_datum_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::FaceAnalyticDatum(handle), value);
+        self
+    }
+
+    /// Configure an `EdgeAnalyticDatum` query result for a specific edge handle
+    /// (geometric-relations ε).
+    ///
+    /// The `value` should be the projected datum the OCCT kernel composes from
+    /// the edge's `BRepAdaptor_Curve` classification: a `Value::Axis` for a
+    /// line / circle / ellipse edge. Staged on the **typed** channel (see
+    /// [`Self::with_face_analytic_datum_result`]).
+    pub fn with_edge_analytic_datum_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::EdgeAnalyticDatum(handle), value);
+        self
+    }
+
+    /// Configure a `ShapeLocalTolerance` query result for a specific sub-shape
+    /// handle (geometric-relations ε).
+    ///
+    /// The `value` should be a `Value::length` mirroring `BRep_Tool::Tolerance`
+    /// on the sub-shape. Staged on the **typed** channel so it coexists with a
+    /// `FaceAnalyticDatum` / `EdgeAnalyticDatum` staged for the same handle.
+    pub fn with_shape_local_tolerance_result(
+        mut self,
+        handle: GeometryHandleId,
+        value: Value,
+    ) -> Self {
+        self.typed_queries
+            .insert(QueryKey::ShapeLocalTolerance(handle), value);
+        self
+    }
+
     /// Configure an `AdjacentFaces` query result for a specific (parent
     /// shape, 0-based face index) pair.
     ///
@@ -1609,6 +1673,11 @@ impl GeometryKernel for MockGeometryKernel {
             // ζ / C4: generic fallback uses the `actual` handle as the
             // representative handle (parallel to the Distance `from` arm).
             GeometryQuery::MaxDeviation { actual, .. } => actual,
+            // ε: single-handle analytic-datum + tolerance queries fall back to
+            // their handle, parallel to the FaceSurfaceKind / EdgeCurveKind arms.
+            GeometryQuery::FaceAnalyticDatum(id) => id,
+            GeometryQuery::EdgeAnalyticDatum(id) => id,
+            GeometryQuery::ShapeLocalTolerance(id) => id,
         };
 
         self.queries
@@ -2943,6 +3012,7 @@ mod tests {
         let handle = kernel
             .execute(&GeometryOp::Draft {
                 target: target.id,
+                faces: vec![],
                 angle: Value::Real(0.05),
                 plane: plane.id,
             })
@@ -2952,10 +3022,12 @@ mod tests {
         match &kernel.operations()[2].op {
             GeometryOp::Draft {
                 target,
+                faces,
                 angle,
                 plane,
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
+                assert!(faces.is_empty(), "expected empty faces for back-compat draft");
                 assert_eq!(*angle, Value::Real(0.05));
                 assert_eq!(*plane, GeometryHandleId(2));
             }

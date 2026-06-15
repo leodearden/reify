@@ -82,18 +82,22 @@ fn param_default_referencing_sibling_let_evaluates_correctly() {
         p_det
     );
 
-    // (b) T.p si_value within 1e-9 of 108.333333... (= 1.3 / 0.012).
+    // (b) T.p value within 1e-9 of 108.333333... (= 1.3 / 0.012).
+    // T.p = feed / drum_d = Length / Length → dimensionless. Per Invariant V
+    // (task β/4374), a dimension-cancelling quotient collapses to Value::Real,
+    // NOT an un-collapsed Value::Scalar{DIMENSIONLESS} (and T.p is declared `: Real`).
     let expected_p = 1.3_f64 / 0.012_f64; // ~108.33333333333333
     match result.values.get(&p_id) {
-        Some(Value::Scalar { si_value, .. }) => {
+        Some(Value::Real(si_value)) => {
             assert!(
                 (si_value - expected_p).abs() < 1e-9,
-                "T.p si_value must be ~108.333333...; got {si_value} (diff {})",
+                "T.p value must be ~108.333333...; got {si_value} (diff {})",
                 (si_value - expected_p).abs()
             );
         }
         other => panic!(
-            "T.p must be a Scalar in result.values; got {:?}. \
+            "T.p must be a Value::Real in result.values (dimensionless quotient \
+             collapses per Invariant V); got {:?}. \
              (Bug: pass-1 evaluates param before sibling let exists in values.)",
             other
         ),
@@ -110,14 +114,15 @@ fn param_default_referencing_sibling_let_evaluates_correctly() {
         "T.out must be Determined; got {:?}",
         out_det
     );
+    // T.out = p, so it is the same dimensionless Value::Real (Invariant V).
     match result.values.get(&out_id) {
-        Some(Value::Scalar { si_value, .. }) => {
+        Some(Value::Real(si_value)) => {
             assert!(
                 (si_value - expected_p).abs() < 1e-9,
-                "T.out si_value must equal T.p (~108.333333...); got {si_value}"
+                "T.out value must equal T.p (~108.333333...); got {si_value}"
             );
         }
-        other => panic!("T.out must be a Scalar in result.values; got {:?}", other),
+        other => panic!("T.out must be a Value::Real in result.values; got {:?}", other),
     }
 
     // (d) No circular-dependency error diagnostic.
@@ -269,13 +274,15 @@ fn eval_cached_param_default_sibling_let_parity_with_eval() {
     let mut engine_eval = fresh_engine();
     let eval_result = engine_eval.eval(&module);
 
+    // T.p = feed / drum_d (Length/Length) and T.out = p are dimensionless;
+    // per Invariant V (task β/4374) they collapse to Value::Real, not Scalar.
     let eval_p = match eval_result.values.get(&p_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!("eval() T.p must be Scalar; got {:?}", other),
+        Some(Value::Real(si_value)) => *si_value,
+        other => panic!("eval() T.p must be Value::Real; got {:?}", other),
     };
     let eval_out = match eval_result.values.get(&out_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!("eval() T.out must be Scalar; got {:?}", other),
+        Some(Value::Real(si_value)) => *si_value,
+        other => panic!("eval() T.out must be Value::Real; got {:?}", other),
     };
 
     // eval_cached() result (incremental path — must agree after step-6).
@@ -283,17 +290,18 @@ fn eval_cached_param_default_sibling_let_parity_with_eval() {
     let cached_result = engine_cached.eval_cached(&module, VersionId(1));
 
     let cached_p = match cached_result.eval_result.values.get(&p_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
+        Some(Value::Real(si_value)) => *si_value,
         other => panic!(
-            "eval_cached() T.p must be Scalar (cross-path parity); got {:?}. \
+            "eval_cached() T.p must be Value::Real (cross-path parity, dimensionless \
+             quotient collapses per Invariant V); got {:?}. \
              Bug: eval_cached still uses kind-partitioned two-pass after step-2 fixed eval().",
             other
         ),
     };
     let cached_out = match cached_result.eval_result.values.get(&out_id) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
+        Some(Value::Real(si_value)) => *si_value,
         other => panic!(
-            "eval_cached() T.out must be Scalar (cross-path parity); got {:?}",
+            "eval_cached() T.out must be Value::Real (cross-path parity); got {:?}",
             other
         ),
     };
@@ -387,8 +395,10 @@ fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
     let out_id = ValueCellId::new("T", "out");
     let expected_p = 1.3_f64 / 0.024_f64; // ≈ 54.16666...
 
+    // T.p = feed / drum_d (Length/Length) is dimensionless → Value::Real per
+    // Invariant V (task β/4374); T.out = p is the same Value::Real.
     match result.values.get(&p_id) {
-        Some(Value::Scalar { si_value, .. }) => {
+        Some(Value::Real(si_value)) => {
             assert!(
                 (si_value - expected_p).abs() < 1e-9,
                 "After edit_param(rope_dia=12mm), T.p must be re-evaluated to ~54.166... \
@@ -398,20 +408,21 @@ fn incremental_edit_rope_dia_re_evaluates_param_p_through_sibling_let() {
             );
         }
         other => panic!(
-            "T.p must be a Scalar after edit_param; got {:?}. \
+            "T.p must be a Value::Real after edit_param (dimensionless quotient \
+             collapses per Invariant V); got {:?}. \
              Bug: stale cache — p was not re-evaluated after drum_d changed.",
             other
         ),
     }
 
     match result.values.get(&out_id) {
-        Some(Value::Scalar { si_value, .. }) => {
+        Some(Value::Real(si_value)) => {
             assert!(
                 (si_value - expected_p).abs() < 1e-9,
                 "T.out must equal T.p (~54.166...) after edit; got {si_value}"
             );
         }
-        other => panic!("T.out must be a Scalar after edit_param; got {:?}", other),
+        other => panic!("T.out must be a Value::Real after edit_param; got {:?}", other),
     }
 }
 

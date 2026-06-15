@@ -1121,6 +1121,26 @@ pub struct CompiledConstraint {
     /// this field. A follow-up will extend the solver seam to route through
     /// an `OptimizedImpl` as well.
     pub optimized_target: Option<String>,
+    /// Explicit call-site argument bindings captured at constraint
+    /// instantiation (η/4480). Each entry is `(param_name,
+    /// compiled_arg_expr)` for an argument that was EXPLICITLY passed at the
+    /// `constraint Foo(a: x, ...)` call site. Params that fell back to their
+    /// declared default are NOT recorded.
+    ///
+    /// This is the seam the GD&T conformance pass
+    /// (`Engine::measure_gdt_conformance`) uses to detect a *geometric*
+    /// `Conforms` instance: `Conforms`'s predicate body never references its
+    /// `actual` param, so an explicit `actual` binding cannot be recovered by
+    /// walking the compiled predicate — unlike `RepresentationWithin`, whose
+    /// args ARE its predicate. The presence of `"actual"` here is the signal,
+    /// and the bound `CompiledExpr` is how the pass resolves the geometry to
+    /// measure.
+    ///
+    /// Populated only by `expand_constraint_inst` (the `constraint Foo(...)`
+    /// instantiation path); every other construction site defaults this to an
+    /// empty `Vec`. It is purely additive — the compiled predicate `expr` is
+    /// unchanged whether or not an unused param is explicitly bound (B4).
+    pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
 /// A realization declaration — specifies geometry to produce.
@@ -1228,6 +1248,9 @@ pub enum PrimitiveKind {
     /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
     /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
     Wedge,
+    /// Torus (ring): `torus(major_radius, minor_radius)`. Built at the kernel
+    /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
+    Torus,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1239,6 +1262,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Tube => f.write_str("tube"),
             PrimitiveKind::Cone => f.write_str("cone"),
             PrimitiveKind::Wedge => f.write_str("wedge"),
+            PrimitiveKind::Torus => f.write_str("torus"),
         }
     }
 }
@@ -1326,6 +1350,7 @@ pub enum TransformKind {
     Rotate,
     Scale,
     RotateAround,
+    ApplyTransform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1335,6 +1360,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::Rotate => f.write_str("rotate"),
             TransformKind::Scale => f.write_str("scale"),
             TransformKind::RotateAround => f.write_str("rotate_around"),
+            TransformKind::ApplyTransform => f.write_str("apply_transform"),
         }
     }
 }
@@ -1431,6 +1457,10 @@ pub enum ProfileKind {
     Rectangle,
     /// Circle in the XY plane: `circle(radius)`.
     Circle,
+    /// Closed planar polygon from flat coordinate pairs: `polygon(x1,y1, x2,y2, ...)`.
+    Polygon,
+    /// Ellipse in the XY plane: `ellipse(semi_major, semi_minor)`.
+    Ellipse,
 }
 
 impl std::fmt::Display for ProfileKind {
@@ -1438,6 +1468,8 @@ impl std::fmt::Display for ProfileKind {
         match self {
             ProfileKind::Rectangle => f.write_str("rectangle"),
             ProfileKind::Circle => f.write_str("circle"),
+            ProfileKind::Polygon => f.write_str("polygon"),
+            ProfileKind::Ellipse => f.write_str("ellipse"),
         }
     }
 }
@@ -1621,6 +1653,7 @@ mod kind_display_tests {
             (PrimitiveKind::Tube, "tube"),
             (PrimitiveKind::Cone, "cone"),
             (PrimitiveKind::Wedge, "wedge"),
+            (PrimitiveKind::Torus, "torus"),
         ]);
     }
 
@@ -1653,6 +1686,7 @@ mod kind_display_tests {
             (TransformKind::Rotate, "rotate"),
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
+            (TransformKind::ApplyTransform, "apply_transform"),
         ]);
     }
 

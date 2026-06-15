@@ -352,6 +352,18 @@ pub enum DiagnosticCode {
     /// from the same dispatch path; downstream tooling that wants to surface
     /// these as harder failures can filter by code at the consumer side.
     FieldSampledInvalidConfig,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: points must form a uniformly-spaced 1-D regular grid (<reason>)"`.
+    ///
+    /// Emitted when the `points` argument to `from_samples(points, values, method)` is not
+    /// a valid 1-D regular grid. Reasons include: non-scalar elements (e.g. Point2/Point3),
+    /// length mismatch between points and values, fewer than 2 points, non-positive or
+    /// non-uniform spacing. The builtin returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_FIELD_SAMPLES_NOT_GRID`. Severity is `Error`
+    /// (unlike the sibling `W_FIELD_SAMPLED_INVALID_CONFIG` which is a Warning).
+    FieldSamplesNotGrid,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Replaces canonical message:
     /// `"field '<name>' codomain mismatch: declared codomain '<C>', lambda body produces '<T>'"`.
@@ -392,6 +404,20 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_INTERPOLATION_DEFERRED`.
     InterpolationDeferred,
+    /// Origin: `crates/reify-expr/src/lib.rs::eval_from_samples`.
+    /// Canonical message form:
+    /// `"from_samples: interpolation method '<variant>' is not supported by from_samples \
+    ///  (supported: Linear, NearestNeighbor, Cubic)"`.
+    ///
+    /// Emitted when the `method` argument to `from_samples(points, values, method)` is a
+    /// `Value::Enum { type_name: "InterpolationMethod", .. }` variant that `from_samples`
+    /// does not support. Currently fires for `"RBF"` and `"Kriging"` (and any
+    /// unrecognized variant). These are HARD errors in `from_samples` — unlike
+    /// `interp::resolve_method`, which falls back to Linear with a Warning. The builtin
+    /// returns `Value::Undef` when this code fires.
+    ///
+    /// The PRD-prose mnemonic is `E_INTERP_METHOD_UNSUPPORTED`. Severity is `Error`.
+    InterpMethodUnsupported,
     /// Origin: `crates/reify-compiler/src/expr.rs` (binary-op `Add`/`Sub` site and
     ///          range-bounds site), via `crates/reify-compiler/src/type_compat::format_dimension_mismatch_diagnostic`.
     /// Canonical message form: `"dimension mismatch in {op}: {left} vs {right}"`.
@@ -1847,6 +1873,29 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_CONFLICTING_TRAIT_ASSOC_TYPE`
     /// (see task 3972; trait-assoc-type iota-β).
     ConflictingTraitAssocType,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    ///          (`resolve_qualified_assoc_type`, the qualified-assoc type-expr resolver).
+    ///
+    /// Canonical message form:
+    /// `"ambiguous associated type '<Structure>::<Member>': declared by traits '<A>', '<B>'; \
+    ///  qualify as '<Structure>::(<Trait>::<Member>)' to disambiguate"`.
+    /// (Trait names are comma-joined; the phrasing is "qualify as".)
+    ///
+    /// Emitted as a `Severity::Error` when a bare qualified associated-type access
+    /// `Base::Member` (a `TypeExprKind::QualifiedAssoc` with no `trait_name`) names a
+    /// member that is declared by two or more of `Base`'s conformed traits, so the
+    /// intended declaration is ambiguous. A single label is attached at the type-expr
+    /// span suggesting the `Base::(Trait::Member)` paren disambiguator (FORK-G). The
+    /// structure binds the associated type once, so the qualifier is
+    /// disambiguation-only — every valid qualifier resolves to the same `Type`.
+    ///
+    /// Sibling of [`TraitAssocTypeNotBound`] / [`ConflictingTraitAssocType`] (the
+    /// producer-side assoc-type diagnostics); this code is the consumer-side
+    /// resolution diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_ASSOC_TYPE`
+    /// (see task 3974; trait-assoc-type iota-ε).
+    AmbiguousAssocType,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
@@ -2224,6 +2273,191 @@ pub enum DiagnosticCode {
     /// (severity convention: `E_*` → Error; see
     /// `docs/prds/v0_6/geometric-relations.md` §9 β).
     DatumProjectionAmbiguous,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (the `MemberDecl::Relate`
+    /// arm and the inline `SubDecl.relate_relations` check, geometric-relations δ).
+    ///
+    /// Canonical message form:
+    /// `"relate member has type <T>, expected Relation"` — e.g. a Bool member
+    /// (`relate { true }`) or a metric query (`relate { distance(p1, p2) }`,
+    /// `Scalar<Length>`). A `relate { }` block — and its inline
+    /// `sub … at … where { }` twin — accepts ONLY `Type::Relation` members
+    /// (design §4/§7.3): a `drive` relation (`concentric`/`flush`/`offset`/…).
+    ///
+    /// Emitted as `Severity::Error` when a relate-block member's `result_type`
+    /// is neither `Type::Relation` nor `Type::Error` (a `Type::Error` member is
+    /// skipped — anti-cascade, so no second diagnostic piles onto an already-
+    /// errored member). The 3-verb routing falls out of this single check with
+    /// no name re-classification: a `check` verb types to `Bool` and a
+    /// `derive`/`query` verb types to a metric, both failing the Relation check.
+    ///
+    /// The symmetric mirror is the constraint side rejecting `Type::Relation`
+    /// (a Relation belongs in `relate {}`, not `constraint`; see the
+    /// `MemberDecl::Constraint` arm).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_RELATE_EXPECTS_RELATION`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 δ).
+    RelateExpectsRelation,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (StructureRef nominal
+    /// arg/default mismatch — task 4584).
+    ///
+    /// Emitted as `Severity::Error` in three sub-cases, differentiated by message text:
+    /// 1. A constructor arg passed to a `Type::StructureRef` param has the wrong nominal
+    ///    type (e.g. `ForcingTimeHistory(part: "beam", ...)` where `part : Part`).
+    /// 2. A structure `param`'s default expression has the wrong nominal type for a
+    ///    `Type::StructureRef`-typed cell (e.g. `param part : Part = "x"`).
+    /// 3. A structure `param`'s default expression is not a geometry-producing expression
+    ///    for a `Type::Geometry`-typed cell (e.g. `param g : Solid = 42`).
+    ///
+    /// Canonical message forms:
+    /// - `"argument '<arg>' has type '<T>' but param '<p>' requires structure type '<S>'"` (sub-case 1/2)
+    /// - `"param '<p>' has type 'Geometry' but its default expression has non-geometry type '<T>'"` (sub-case 3)
+    ///
+    /// One `DiagnosticCode` spans all three sub-cases per the established
+    /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
+    TypeNotConformingToStructureRef,
+    /// Origin: `crates/reify-eval/src/feature_datum.rs`
+    /// (`feature_datum_projection`, geometric-relations ε).
+    ///
+    /// Emitted as `Severity::Error` at *resolve time* when a feature → datum
+    /// projection (`feature.axis` / `.plane` / `.point` / `.dir`) cannot refine
+    /// to a single datum: the realized feature's deduplicated
+    /// `FeatureDatumBundle` carries either zero or several non-equivalent
+    /// candidates for the requested projection target (e.g. `box.axis` →
+    /// several non-coaxial edge axes). The projection evaluates to `Value::Undef`
+    /// (the runtime analogue of β's poison literal) and the author must select a
+    /// sub-feature to disambiguate.
+    ///
+    /// Canonical message form:
+    /// `"ambiguous feature datum projection '.<member>': the feature carries <n>
+    /// candidate <member> datums — select a sub-feature to disambiguate"`
+    /// (`<n>` is the candidate count; the zero case reads "carries no <member>
+    /// datum").
+    ///
+    /// This is the *resolve-time* (realized-geometry-dependent) sibling of the
+    /// *compile-time* [`DatumProjectionAmbiguous`]: β's ambiguity is a static
+    /// type-level non-uniqueness (`frame.dir`), whereas ε's depends on the dedup
+    /// result of the realized geometry and so cannot be known at type-check time
+    /// (design §7.2 — the ambiguous arm of the `Axis | Axis?` refinement). It is
+    /// surfaced as a select-a-subfeature diagnostic rather than a static error or
+    /// a new optional/union type.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEATURE_DATUM_AMBIGUOUS`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-relations.md` §9 ε).
+    FeatureDatumAmbiguous,
+
+    // ── Geometric-joints diagnostics (task 4396 β) ───────────────────────
+
+    /// Origin: `crates/reify-compiler/src/joint_self_check.rs` (the
+    /// definition-time DOF self-check, geometric-joints β).
+    ///
+    /// Emitted as `Severity::Error` at *definition time* (before any solve) when
+    /// a `joint NAME(datums) with <declared free DOF> = <relation body>`
+    /// definition's declared free DOF does NOT match the body's geometric
+    /// residual — by COUNT or by KIND. A mechanism nominally has 6 spatial DOF
+    /// (3 rotational + 3 translational, PRD §7.1.2); each body relation removes a
+    /// curated `(rot, trans)` codimension split, leaving a residual
+    /// `(3 − Σrot, 3 − Σtrans)`. The declared DOF fields contribute their own
+    /// kinds (`Angle` → rotational, `Length` → translational, `Orientation` → 3
+    /// rotational). The law is exact-integer equality of the two `(rot, trans)`
+    /// pairs — no tolerance (design §7.1; PRD §12 G6 numeric-floor is N/A).
+    ///
+    /// Canonical message form:
+    /// `"declared <Nr> rotational [+ <Nt> translational] free DOF, but the
+    /// relation leaves <Rr> rot + <Rt> trans; add a constraint or declare
+    /// <field>: <Type>"` — naming the count and/or kind disagreement and a
+    /// geometric remedy (add a constraint to remove a residual freedom, or
+    /// declare the missing DOF field with its `Angle`/`Length`/`Orientation`
+    /// type). An empty body (residual `(3, 3)`) cannot equal any sane declared
+    /// multiset, so it surfaces here naturally rather than via a bespoke
+    /// empty-body code.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_JOINT_DOF_MISMATCH`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/geometric-joints.md` §7.1).
+    JointDofMismatch,
+
+    // ── FEA failure-mode diagnostics (task 2929) ─────────────────────────
+    //
+    // Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    // (task 2929 — FEA diagnostic mapping for common failure modes).
+    // Conversion: `fea_diagnostic_to_core` in the same file.
+    //
+    // Severity convention (matches FeaFailure::is_error()):
+    //   W_FEA_* → Warning (advisory, solve still returns a result)
+    //   E_FEA_* → Error   (degenerate / unresolvable, solve aborts)
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when no user-specified supports are provided
+    /// (empty `supports` list); the fixed-cantilever trampoline auto-clamps
+    /// the root face so the solve still returns an ElasticResult.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_UNDER_CONSTRAINED`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaUnderConstrained,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when one or more elements have near-zero volume
+    /// (degenerate mesh); the stiffness matrix is singular and the solve
+    /// cannot proceed. Returns `ComputeOutcome::Failed`.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_SINGULAR_STIFFNESS`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaSingularStiffness,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when the CG solver reaches its iteration limit
+    /// without converging. The result is returned but may be inaccurate.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_NON_CONVERGENCE`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaNonConvergence,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when no loads are applied to the model (all
+    /// applied forces are zero). The solve produces a trivial all-zero
+    /// result.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_NO_LOADS`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaNoLoads,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when a load selector targets an interior node
+    /// rather than a boundary face.
+    ///
+    /// **Not yet emitted.** The trampoline receives already-resolved
+    /// `Load`/`Support` `StructureInstance` values (selector resolution is
+    /// upstream); detection wiring is deferred to a follow-up task.  The
+    /// variant and its `fea_diagnostic_to_core` arm are reserved so downstream
+    /// tooling can match on the typed code the moment wiring lands.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_LOAD_ON_INTERIOR`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaLoadOnInterior,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when a selector matches no geometry nodes.
+    ///
+    /// **Not yet emitted.** The trampoline receives already-resolved
+    /// `Load`/`Support` `StructureInstance` values (selector resolution is
+    /// upstream); detection wiring is deferred to a follow-up task.  The
+    /// variant and its `fea_diagnostic_to_core` arm are reserved so downstream
+    /// tooling can match on the typed code the moment wiring lands.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_FEA_SELECTOR_NO_MATCH`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaSelectorNoMatch,
+
+    /// Origin: `crates/reify-eval/src/compute_targets/fea_diagnostics.rs`
+    /// (task 2929). Emitted when the body bounding-box aspect ratio exceeds
+    /// the thin-body threshold (~10); P1 solid elements perform poorly for
+    /// very thin bodies. Advisory only — the solve still runs.
+    ///
+    /// The PRD-prose mnemonic for this code is `W_FEA_THIN_BODY`
+    /// (severity convention: `W_*` → Warning, `E_*` → Error).
+    FeaThinBody,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -2832,6 +3066,126 @@ mod tests {
         assert_eq!(s, "\"FieldSampledInvalidConfig\"");
     }
 
+    // --- FieldSamplesNotGrid tests (task 4221 — E_FIELD_SAMPLES_NOT_GRID) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::FieldSamplesNotGrid` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::FieldSamplesNotGrid)`.
+    /// Pins the error-severity contract for E_FIELD_SAMPLES_NOT_GRID.
+    #[test]
+    fn field_samples_not_grid_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("not a 1-D regular grid").with_code(DiagnosticCode::FieldSamplesNotGrid);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::FieldSamplesNotGrid));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::FieldSamplesNotGrid`
+    /// serializes as `"FieldSamplesNotGrid"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_field_samples_not_grid_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::FieldSamplesNotGrid).unwrap();
+        assert_eq!(s, "\"FieldSamplesNotGrid\"");
+    }
+
+    // --- InterpMethodUnsupported tests (task 4221 — E_INTERP_METHOD_UNSUPPORTED) ---
+    // Pairs with `eval_from_samples` in `crates/reify-expr/src/lib.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and severity tests are added here.
+
+    /// `DiagnosticCode::InterpMethodUnsupported` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::InterpMethodUnsupported)`.
+    /// Pins the error-severity contract for E_INTERP_METHOD_UNSUPPORTED.
+    #[test]
+    fn interp_method_unsupported_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("interpolation method 'RBF' is not supported by from_samples")
+            .with_code(DiagnosticCode::InterpMethodUnsupported);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::InterpMethodUnsupported));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::InterpMethodUnsupported`
+    /// serializes as `"InterpMethodUnsupported"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_interp_method_unsupported_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::InterpMethodUnsupported).unwrap();
+        assert_eq!(s, "\"InterpMethodUnsupported\"");
+    }
+
+    // --- RelateExpectsRelation tests (task 4384 δ — E_RELATE_EXPECTS_RELATION) ---
+    // Pairs with the `MemberDecl::Relate` arm + `SubDecl.relate_relations` check
+    // in `crates/reify-compiler/src/entity.rs`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // severity tests are added here.
+
+    /// `DiagnosticCode::RelateExpectsRelation` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::RelateExpectsRelation)`.
+    /// Pins the error-severity contract for E_RELATE_EXPECTS_RELATION.
+    #[test]
+    fn relate_expects_relation_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error("relate member has type Bool, expected Relation")
+            .with_code(DiagnosticCode::RelateExpectsRelation);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::RelateExpectsRelation));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::RelateExpectsRelation`
+    /// serializes as `"RelateExpectsRelation"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_relate_expects_relation_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::RelateExpectsRelation).unwrap();
+        assert_eq!(s, "\"RelateExpectsRelation\"");
+    }
+
+    // --- JointDofMismatch tests (task 4396 β — E_JOINT_DOF_MISMATCH) ---
+    // Pairs with the definition-time DOF self-check in
+    // `crates/reify-compiler/src/joint_self_check.rs` (geometric-joints β).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::JointDofMismatch` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::JointDofMismatch)`.
+    /// Pins the error-severity contract for E_JOINT_DOF_MISMATCH.
+    #[test]
+    fn joint_dof_mismatch_diagnostic_code_is_constructible() {
+        use super::Severity;
+        let d = Diagnostic::error(
+            "declared 1 rotational free DOF, but the relation leaves 1 rot + 1 trans; \
+             add a constraint or declare travel: Length",
+        )
+        .with_code(DiagnosticCode::JointDofMismatch);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::JointDofMismatch`
+    /// serializes as `"JointDofMismatch"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_joint_dof_mismatch_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::JointDofMismatch).unwrap();
+        assert_eq!(s, "\"JointDofMismatch\"");
+    }
+
     // --- TopologyAttributeAmbiguousAfterSplit tests (task 2721 — W_TOPOLOGY_ATTRIBUTE_AMBIGUOUS_AFTER_SPLIT) ---
     // Pairs with `emit_split_children_diagnostic` in
     // `crates/reify-eval/src/topology_attribute_resolver.rs`.
@@ -2865,6 +3219,37 @@ mod tests {
         let s =
             serde_json::to_string(&DiagnosticCode::TopologyAttributeAmbiguousAfterSplit).unwrap();
         assert_eq!(s, "\"TopologyAttributeAmbiguousAfterSplit\"");
+    }
+
+    // --- AmbiguousAssocType tests (task 3974 — E_AMBIGUOUS_ASSOC_TYPE) ---
+    // Pairs with `resolve_qualified_assoc_type` in
+    // `crates/reify-compiler/src/type_resolution.rs` (qualified-assoc resolver).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip, severity, and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::AmbiguousAssocType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` carrying both the expected
+    /// `Severity::Error` and `Some(DiagnosticCode::AmbiguousAssocType)`.
+    /// Pins the error-severity contract and variant existence for a bare
+    /// qualified associated-type access ambiguous across two conformed traits
+    /// (`Beam::Material` where two conformed traits each declare `Material`).
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::AmbiguousAssocType);
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(d.code, Some(DiagnosticCode::AmbiguousAssocType));
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::AmbiguousAssocType`
+    /// serializes as `"AmbiguousAssocType"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ambiguous_assoc_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::AmbiguousAssocType).unwrap();
+        assert_eq!(s, "\"AmbiguousAssocType\"");
     }
 
     // --- TopologyAttributeLocalIndexReassigned tests (task 2654 — W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED) ---

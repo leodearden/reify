@@ -1,0 +1,402 @@
+// crates/reify-solver-elastic/src/diagnostics.rs
+//
+// Neutral FEA failure classification — NO reify-core imports allowed.
+// (This crate depends on reify-ir / reify-kernel-gmsh / faer / inventory,
+// NOT on reify-core, so Diagnostic / DiagnosticCode / Severity / SourceSpan
+// must NOT appear here.)
+//
+// The mapping from FeaFailure → reify_core::Diagnostic lives in
+// reify-eval/src/compute_targets/fea_diagnostics.rs.
+
+/// The small fixed set of well-known FEA failure modes, with actionable messages.
+///
+/// Neutral type — no reify-core references.  The `message()` and `is_error()`
+/// methods encode the triage-table text and severity hints; the conversion to a
+/// full `reify_core::Diagnostic` happens in `reify-eval`'s `fea_diagnostic_to_core`.
+#[derive(Debug)]
+pub enum FeaFailure {
+    /// Root face auto-clamp model has no user-specified supports.
+    UnderConstrained { support_count: usize },
+    /// One or more elements have near-zero volume (degenerate mesh).
+    SingularStiffness { element_id: usize },
+    /// CG solver reached max iterations without converging.
+    NonConvergence {
+        iterations: usize,
+        max_iter: usize,
+        final_residual: Option<f64>,
+    },
+    /// No loads were specified (all-zero applied force).
+    NoLoads,
+    /// A load was applied to an interior node (not a boundary selector).
+    LoadOnInterior { selector: String },
+    /// A selector matched no geometry nodes.
+    SelectorNoMatch {
+        selector: String,
+        nearest: Option<String>,
+    },
+    /// Body bounding-box aspect ratio exceeds the thin-body threshold.
+    ThinBody { aspect_ratio: f64 },
+}
+
+impl FeaFailure {
+    /// Human-readable actionable message for this failure mode.
+    ///
+    /// Text follows the triage table in the FEA diagnostics PRD.
+    pub fn message(&self) -> String {
+        match self {
+            FeaFailure::UnderConstrained { support_count } => format!(
+                "FEA model has insufficient supports ({support_count} specified); \
+                 the root face is auto-clamped but results may not reflect design intent. \
+                 Add a FixedSupport or PinnedSupport to constrain the structure."
+            ),
+            FeaFailure::SingularStiffness { element_id } => format!(
+                "stiffness matrix is singular: element {element_id} has near-zero volume \
+                 (degenerate mesh). Refine the mesh or check geometry for collapsed elements."
+            ),
+            FeaFailure::NonConvergence {
+                iterations,
+                max_iter,
+                final_residual,
+            } => {
+                let res_str = final_residual
+                    .map(|r| format!(", final residual {r:.3e}"))
+                    .unwrap_or_default();
+                format!(
+                    "CG solver did not converge after {iterations}/{max_iter} iterations{res_str}. \
+                     Consider increasing ElasticOptions max_iter or checking boundary conditions."
+                )
+            }
+            FeaFailure::NoLoads => {
+                "No loads applied to the FEA model. \
+                 Add at least one PointLoad or PressureLoad to produce a non-trivial result."
+                    .to_string()
+            }
+            FeaFailure::LoadOnInterior { selector } => format!(
+                "Load selector '{selector}' targets an interior node, not a boundary face. \
+                 Use a face selector (x_min, x_max, y_min, y_max, z_min, z_max) or 'tip'."
+            ),
+            FeaFailure::SelectorNoMatch { selector, nearest } => {
+                let hint = nearest
+                    .as_deref()
+                    .map(|n| format!(" Did you mean '{n}'?"))
+                    .unwrap_or_default();
+                format!(
+                    "Selector '{selector}' did not match any geometry nodes.{hint}"
+                )
+            }
+            FeaFailure::ThinBody { aspect_ratio } => format!(
+                "Body aspect ratio {aspect_ratio:.1} is very thin; \
+                 P1 solid elements perform poorly for thin bodies (shells PRD, task P2). \
+                 Consider using shell elements via ElasticOptions(shell_force: ShellForce.On) \
+                 or increasing element_order."
+            ),
+        }
+    }
+
+    /// Returns `true` if this failure mode represents an unrecoverable error
+    /// (should map to `Severity::Error`), `false` for advisory warnings.
+    pub fn is_error(&self) -> bool {
+        matches!(
+            self,
+            FeaFailure::SingularStiffness { .. }
+                | FeaFailure::LoadOnInterior { .. }
+                | FeaFailure::SelectorNoMatch { .. }
+        )
+    }
+}
+
+/// Emit a `ThinBody` advisory if `max_dim / min_dim > threshold`.
+///
+/// Returns `Some(FeaFailure::ThinBody { aspect_ratio })` when the body's
+/// bounding-box aspect ratio exceeds `threshold`; `None` otherwise.
+///
+/// `threshold ≈ 10` is the recommended value (P1 solid elements are unreliable
+/// when the thinnest dimension is < 1/10 of the largest).
+pub fn thin_body_advisory(
+    length: f64,
+    width: f64,
+    height: f64,
+    threshold: f64,
+) -> Option<FeaFailure> {
+    let max_dim = length.max(width).max(height);
+    let min_dim = length.min(width).min(height);
+    if min_dim <= 0.0 {
+        return None;
+    }
+    let ratio = max_dim / min_dim;
+    if ratio > threshold {
+        Some(FeaFailure::ThinBody { aspect_ratio: ratio })
+    } else {
+        None
+    }
+}
+
+/// Classify convergence outcome.
+///
+/// Returns `Some(FeaFailure::NonConvergence{..})` when `!converged`;
+/// `None` when the solver converged.
+pub fn classify_convergence(
+    converged: bool,
+    iterations: usize,
+    max_iter: usize,
+    residual: Option<f64>,
+) -> Option<FeaFailure> {
+    if converged {
+        None
+    } else {
+        Some(FeaFailure::NonConvergence {
+            iterations,
+            max_iter,
+            final_residual: residual,
+        })
+    }
+}
+
+/// Classify a degenerate element.
+///
+/// Returns `Some(FeaFailure::SingularStiffness { element_id })` when
+/// `min_tet_volume < eps`; `None` otherwise.
+pub fn classify_degenerate(
+    min_tet_volume: f64,
+    eps: f64,
+    element_id: usize,
+) -> Option<FeaFailure> {
+    if min_tet_volume < eps {
+        Some(FeaFailure::SingularStiffness { element_id })
+    } else {
+        None
+    }
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── message() substrings ──────────────────────────────────────────────────
+
+    #[test]
+    fn under_constrained_message_contains_key_phrase() {
+        let f = FeaFailure::UnderConstrained { support_count: 0 };
+        assert!(
+            f.message().contains("insufficient supports"),
+            "UnderConstrained message must contain 'insufficient supports', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn no_loads_message_contains_key_phrase() {
+        let f = FeaFailure::NoLoads;
+        assert!(
+            f.message().contains("No loads"),
+            "NoLoads message must contain 'No loads', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn non_convergence_message_contains_key_phrase() {
+        let f = FeaFailure::NonConvergence {
+            iterations: 2000,
+            max_iter: 2000,
+            final_residual: Some(1.5e-3),
+        };
+        assert!(
+            f.message().contains("did not converge"),
+            "NonConvergence message must contain 'did not converge', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn thin_body_message_contains_key_phrase() {
+        let f = FeaFailure::ThinBody { aspect_ratio: 100.0 };
+        assert!(
+            f.message().contains("thin"),
+            "ThinBody message must contain 'thin', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn singular_stiffness_message_contains_key_phrase() {
+        let f = FeaFailure::SingularStiffness { element_id: 7 };
+        assert!(
+            f.message().contains("near-zero volume"),
+            "SingularStiffness message must contain 'near-zero volume', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn load_on_interior_message_contains_key_phrase() {
+        let f = FeaFailure::LoadOnInterior {
+            selector: "mid".to_string(),
+        };
+        assert!(
+            f.message().contains("interior"),
+            "LoadOnInterior message must contain 'interior', got: {}",
+            f.message()
+        );
+    }
+
+    #[test]
+    fn selector_no_match_message_contains_key_phrase() {
+        let f = FeaFailure::SelectorNoMatch {
+            selector: "oops".to_string(),
+            nearest: None,
+        };
+        assert!(
+            f.message().contains("did not match"),
+            "SelectorNoMatch message must contain 'did not match', got: {}",
+            f.message()
+        );
+    }
+
+    // ── is_error() ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn singular_stiffness_is_error() {
+        assert!(FeaFailure::SingularStiffness { element_id: 0 }.is_error());
+    }
+
+    #[test]
+    fn load_on_interior_is_error() {
+        assert!(FeaFailure::LoadOnInterior {
+            selector: "x".to_string()
+        }
+        .is_error());
+    }
+
+    #[test]
+    fn selector_no_match_is_error() {
+        assert!(FeaFailure::SelectorNoMatch {
+            selector: "x".to_string(),
+            nearest: None
+        }
+        .is_error());
+    }
+
+    #[test]
+    fn advisory_variants_are_not_errors() {
+        assert!(!FeaFailure::UnderConstrained { support_count: 0 }.is_error());
+        assert!(!FeaFailure::NonConvergence {
+            iterations: 1,
+            max_iter: 2000,
+            final_residual: None
+        }
+        .is_error());
+        assert!(!FeaFailure::NoLoads.is_error());
+        assert!(!FeaFailure::ThinBody { aspect_ratio: 100.0 }.is_error());
+    }
+
+    // ── thin_body_advisory ────────────────────────────────────────────────────
+
+    #[test]
+    fn thin_body_advisory_fires_when_ratio_exceeds_threshold() {
+        // 1.0 / 0.01 = 100 >> threshold 10.
+        let result = thin_body_advisory(1.0, 1.0, 0.01, 10.0);
+        match result {
+            Some(FeaFailure::ThinBody { aspect_ratio }) => {
+                assert!(
+                    (aspect_ratio - 100.0).abs() < 0.01,
+                    "expected aspect_ratio≈100, got {aspect_ratio}"
+                );
+            }
+            other => panic!("expected Some(ThinBody), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn thin_body_advisory_silent_when_ratio_at_or_below_threshold() {
+        // 1.0 / 1.0 = 1.0 <= threshold 10.
+        assert!(
+            thin_body_advisory(1.0, 1.0, 1.0, 10.0).is_none(),
+            "cubic body (ratio=1) must not trigger thin-body advisory"
+        );
+    }
+
+    #[test]
+    fn thin_body_advisory_silent_exactly_at_threshold() {
+        // max/min = 10.0 — exactly at threshold, NOT strictly exceeding.
+        let result = thin_body_advisory(1.0, 1.0, 0.1, 10.0);
+        assert!(
+            result.is_none(),
+            "ratio exactly at threshold must not fire advisory (must be strictly >), got {:?}",
+            result
+        );
+    }
+
+    // ── classify_convergence ──────────────────────────────────────────────────
+
+    #[test]
+    fn classify_convergence_non_converged_returns_failure() {
+        let result = classify_convergence(false, 2000, 2000, Some(1.5e-3));
+        assert!(
+            matches!(result, Some(FeaFailure::NonConvergence { .. })),
+            "non-converged solver must yield NonConvergence failure, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn classify_convergence_converged_returns_none() {
+        let result = classify_convergence(true, 42, 2000, Some(1e-8));
+        assert!(
+            result.is_none(),
+            "converged solver must yield None, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn classify_convergence_preserves_fields() {
+        match classify_convergence(false, 1500, 2000, Some(2.5e-4)) {
+            Some(FeaFailure::NonConvergence {
+                iterations,
+                max_iter,
+                final_residual: Some(r),
+            }) => {
+                assert_eq!(iterations, 1500);
+                assert_eq!(max_iter, 2000);
+                assert!((r - 2.5e-4).abs() < 1e-10);
+            }
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    // ── classify_degenerate ───────────────────────────────────────────────────
+
+    #[test]
+    fn classify_degenerate_tiny_volume_returns_failure() {
+        let result = classify_degenerate(1e-15, 1e-12, 3);
+        assert!(
+            matches!(result, Some(FeaFailure::SingularStiffness { element_id: 3 })),
+            "tiny tet volume must yield SingularStiffness{{element_id:3}}, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn classify_degenerate_normal_volume_returns_none() {
+        let result = classify_degenerate(1.0, 1e-12, 3);
+        assert!(
+            result.is_none(),
+            "normal tet volume must yield None, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn classify_degenerate_at_eps_returns_none() {
+        // volume == eps is NOT strictly less than eps → None.
+        let result = classify_degenerate(1e-12, 1e-12, 0);
+        assert!(
+            result.is_none(),
+            "volume exactly at eps must yield None (must be strictly <), got {:?}",
+            result
+        );
+    }
+}

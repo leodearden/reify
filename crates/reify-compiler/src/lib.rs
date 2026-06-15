@@ -31,8 +31,12 @@ mod guards;
 mod ice;
 mod list_helpers;
 mod joint_signatures;
+mod joint_self_check;
 mod builtin_signatures;
 mod math_signatures;
+// `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
+// to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
+pub mod relation_signatures;
 mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
@@ -520,6 +524,17 @@ pub fn compile_with_prelude_context_checked(
     // phase_fn_arg_conformance / for_each_template_root_expr doc-comments for the
     // exact root set and the documented residual (connections, compiled_purposes).
     compile_builder::entities_phase::phase_fn_arg_conformance(&mut compile_ctx, prelude_refs);
+
+    // Compile-time existence check: every sub's structure_name must resolve in
+    // (local templates ∪ prelude).  Runs after all entity/auto/bound phases so
+    // templates are fully populated.  Mirrors eval's find_template_with_prelude
+    // contract (engine_eval.rs:55); see conformance/sub_component_validation.rs.
+    // task 4528.
+    conformance::check_sub_structure_existence(
+        &compile_ctx.templates,
+        prelude_refs,
+        &mut compile_ctx.diagnostics,
+    );
 
     compile_builder::post_passes::phase_recursion_detection(&mut compile_ctx);
     compile_builder::post_passes::phase_dup_sig_check(&mut compile_ctx);

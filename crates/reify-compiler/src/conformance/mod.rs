@@ -1,6 +1,9 @@
 pub(super) mod checker;
 use checker::*;
 
+pub(super) mod sub_component_validation;
+pub(crate) use sub_component_validation::check_sub_structure_existence;
+
 use super::*;
 use crate::geometry_traits_inference::{
     GeometryTrait, InferredTraits, LetBindingEnv, infer_traits_for_expr_in_env, infer_traits_for_op,
@@ -292,6 +295,115 @@ pub(crate) fn check_fn_arg_conformance(
     walk_param_against_arg(param_type, compiled_arg, &mut ctx);
 }
 
+/// Check that each `Param`-kind value cell with a default expression in
+/// `template` has a default whose type is compatible with the declared
+/// `cell_type`, for nominal leaf types (task-4584):
+///
+/// - **`Type::StructureRef`** params: applies an inline skip-list (see the arm
+///   comment below for rationale — concretely, a `StructureRef` default for a
+///   `StructureRef` param is intentionally not rejected here because nominal-name
+///   mismatch does not imply incompatibility in Reify at eval time) and calls
+///   [`emit_structure_ref_mismatch`] directly for clearly incompatible primitive
+///   types (String, Int, …).  Does **not** delegate to `walk_param_against_arg`.
+///   Skips if `default_expr.result_type` is `Type::Error` (anti-cascade).
+///
+/// - **`Type::Geometry`** params: uses a geometry-function-aware predicate rather
+///   than `type_compatible` — geometry constructors compile to a scalar placeholder
+///   (GHR-γ), so plain `type_compatible(Geometry, result_type)` would falsely reject
+///   them.  Handled inline by the `Type::Geometry` arm below (no separate helper).
+///
+/// All other cell types (Real, Int, List, …) are out of scope for this pass.
+pub(crate) fn check_param_default_conformance(
+    template: &TopologyTemplate,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for vc in &template.value_cells {
+        if vc.kind != ValueCellKind::Param {
+            continue;
+        }
+        let Some(default) = &vc.default_expr else {
+            continue;
+        };
+        match &vc.cell_type {
+            Type::StructureRef(_) => {
+                // Anti-cascade: skip when the default expression itself had a compile error.
+                if matches!(default.result_type, Type::Error) {
+                    continue;
+                }
+                // Get the effective type, accounting for FunctionCall→StructureRef promotion
+                // (e.g. `Steel_AISI_1045()` may carry a numeric fallback result_type but
+                // its callee IS a known structure template → promote to StructureRef).
+                let promoted =
+                    promote_function_call_to_structure_ref(default, template_registry);
+                let effective_ty = promoted.as_ref().unwrap_or(&default.result_type);
+                // Conservatively skip when the effective type is plausibly structure-
+                // compatible at the eval level:
+                //   • StructureRef(_) — a concrete type used as default for an abstract-like
+                //     param (e.g. `Steel_AISI_1045` default for `Material`) is valid in Reify;
+                //     nominal-name mismatch here does NOT imply incompatibility.
+                //   • TraitObject(_) — may resolve to a conforming struct at evaluation.
+                //   • TypeParam(_) — unresolved generic; conformance decided at instantiation.
+                //   • Geometry — carries no nominal identity to verify here.
+                // Only emit for clearly incompatible primitive types (String, Int, Scalar, …).
+                if matches!(
+                    effective_ty,
+                    Type::StructureRef(_)
+                        | Type::TraitObject(_)
+                        | Type::TypeParam(_)
+                        | Type::Geometry
+                ) {
+                    continue;
+                }
+                let mut ctx = WalkCtx {
+                    arg_name: vc.id.member.as_str(),
+                    span: vc.span,
+                    templates: template_registry,
+                    traits: trait_registry,
+                    diagnostics,
+                };
+                emit_structure_ref_mismatch(&vc.cell_type, effective_ty, &mut ctx);
+            }
+            Type::Geometry => {
+                // Anti-cascade: skip when the default expression itself had an error or
+                // is an unresolved type param — both are unverifiable.
+                if matches!(default.result_type, Type::Error | Type::TypeParam(_)) {
+                    continue;
+                }
+                // Geometry constructors (box/cylinder/...) compile to a
+                // `Type::dimensionless_scalar()` PLACEHOLDER (GHR-γ), so
+                // `type_compatible(Geometry, default.result_type)` would FALSELY reject
+                // every legitimate geometry default.  Instead we detect geometry by:
+                //   1. result_type is already Type::Geometry (a let-bound geometry ref), or
+                //   2. the callee is a known geometry function (box/cylinder/sphere/...).
+                // This is the same signal `check_leaf_trait_conformance` uses for args.
+                let is_geometry_default = matches!(default.result_type, Type::Geometry)
+                    || extract_function_call_name(default)
+                        .map(is_geometry_function)
+                        .unwrap_or(false);
+                if !is_geometry_default {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
+                            vc.id.member, default.result_type
+                        ))
+                        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+                        .with_label(DiagnosticLabel::new(
+                            vc.span,
+                            format!(
+                                "expected a geometry expression, got '{}'",
+                                default.result_type
+                            ),
+                        )),
+                    );
+                }
+            }
+            _ => continue,
+        }
+    }
+}
+
 /// Context bundle threaded through the four recursive walker helpers.
 ///
 /// Collects the five fields that were previously repeated as trailing arguments
@@ -576,6 +688,30 @@ fn emit_leaf_conformance_for_arg_type(
     }
 }
 
+/// Emit a single `Diagnostic::error` with
+/// [`DiagnosticCode::TypeNotConformingToStructureRef`] when an arg type does not
+/// match a `Type::StructureRef` param (task-4584).
+///
+/// Modelled on [`emit_leaf_conformance_for_arg_type`]: one diagnostic, one label
+/// at `ctx.span`, message names the required structure and the offending type.
+fn emit_structure_ref_mismatch(
+    param_type: &Type,
+    arg_type: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -667,6 +803,22 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 );
             }
         },
+        // Leaf: param type is a StructureRef (nominal structure type, task-4584).
+        // Conservatively skip args that are Error (anti-cascade), TypeParam (unresolved
+        // generic — conformance decided at instantiation), Geometry (carries no
+        // nominal identity to verify here), or TraitObject (may resolve to a conforming
+        // struct). For all other concrete arg types, reject when type_compatible returns
+        // false (String/Int/different-StructureRef are genuine nominal mismatches).
+        (Type::StructureRef(_), arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !type_compatible(param_type, arg_ty) {
+                emit_structure_ref_mismatch(param_type, arg_ty, ctx);
+            }
+        }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
         // Emit a diagnostic when param_type is a wrapper (Option/List/Set/Map) and
         // arg_type doesn't match that wrapper — e.g. bare leaf passed to Option<T>,
@@ -5650,6 +5802,231 @@ mod tests {
             resolve_joint_nominal_type(&make_call("unknown_joint")).as_deref(),
             None,
             "unknown constructor must return None (not a recognized joint builtin)"
+        );
+    }
+
+    // ── task-4584 step-1: walk_param_against_arg_type StructureRef leaf arm ──
+
+    /// RED until step-2 (impl): `walk_param_against_arg_type` currently falls
+    /// through the `_` arm silently for `Type::StructureRef` params, so no
+    /// diagnostic is emitted even for clear mismatches like String-arg vs Part-param.
+    ///
+    /// (a) String-typed arg against StructureRef("Part") param → exactly one
+    ///     `TypeNotConformingToStructureRef`.
+    #[test]
+    fn structureref_param_rejects_string_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::String,
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef diagnostic for String arg \
+             against Part param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (b) Matching `StructureRef("Part")` arg against `StructureRef("Part")`
+    ///     param → ZERO diagnostics (identity passes).
+    #[test]
+    fn structureref_param_accepts_same_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Part".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "expected ZERO diagnostics for Part arg vs Part param (identity), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// (c) Different `StructureRef("Other")` arg against `StructureRef("Part")`
+    ///     param → exactly one `TypeNotConformingToStructureRef` (nominal mismatch).
+    #[test]
+    fn structureref_param_rejects_different_structureref_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::StructureRef("Other".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToStructureRef for Other vs Part, \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToStructureRef),
+            "expected TypeNotConformingToStructureRef, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (d) `Type::TypeParam` and `Type::Error` args against a `StructureRef`
+    ///     param → ZERO diagnostics (anti-cascade / unverifiable skip).
+    #[test]
+    fn structureref_param_skips_typeparam_and_error_args() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+
+        // Type::TypeParam — unresolved generic, skip.
+        let typeparam_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "x"),
+            Type::TypeParam("T".to_string()),
+        );
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &typeparam_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "TypeParam arg must emit ZERO diagnostics (unverifiable), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+
+        // Type::Error — anti-cascade, check_fn_arg_conformance returns early.
+        let error_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "y"),
+            Type::Error,
+        );
+        let mut diagnostics2: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &Type::StructureRef("Part".to_string()),
+            "part",
+            &error_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics2,
+        );
+        assert_eq!(
+            diagnostics2.len(),
+            0,
+            "Type::Error arg must emit ZERO diagnostics (anti-cascade early return), \
+             got {}: {:?}",
+            diagnostics2.len(),
+            diagnostics2,
+        );
+    }
+
+    /// Pin the intentional leniency in `check_param_default_conformance` for the
+    /// `Type::StructureRef` arm: a `StructureRef("Other")` effective type in the
+    /// default expression is conservatively **skipped** (zero diagnostics), even
+    /// though the param's declared cell_type is `StructureRef("Part")`.
+    ///
+    /// ## Why this is intentional
+    ///
+    /// In Reify, a concrete structure type used as a default for a param that is
+    /// declared with a *different* structure name is not necessarily incompatible —
+    /// structural compatibility is assessed at evaluation time, not by a nominal
+    /// name comparison alone (e.g. `param material : Material = Steel_AISI_1045()`
+    /// is a common valid pattern).  The `check_param_default_conformance` arm
+    /// therefore skips StructureRef effective types and only rejects clearly
+    /// incompatible *primitive* types (String, Int, …).
+    ///
+    /// This contrasts with the constructor-arg path (`walk_param_against_arg_type`
+    /// StructureRef arm) which uses `type_compatible` and does reject a
+    /// `StructureRef("Other")` arg for a `StructureRef("Part")` param.  The two
+    /// paths are deliberately asymmetric on this case; this test pins that gap so
+    /// any future tightening is made consciously.
+    #[test]
+    fn structureref_param_default_with_different_structureref_silently_accepted() {
+        // Build a Param cell: `param part : Part = <expr of type Other>`.
+        let param_cell = ValueCellDecl {
+            id: ValueCellId::new("Test", "part"),
+            kind: ValueCellKind::Param,
+            visibility: Visibility::Private,
+            is_aux: false,
+            cell_type: Type::StructureRef("Part".to_string()),
+            default_expr: Some(CompiledExpr::value_ref(
+                ValueCellId::new("OtherStruct", "instance"),
+                Type::StructureRef("Other".to_string()),
+            )),
+            solver_hints: vec![],
+            span: SourceSpan::empty(0),
+        };
+        let template = minimal_template("Test", vec![param_cell]);
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_param_default_conformance(
+            &template,
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "StructureRef default for StructureRef param with different name must emit \
+             ZERO diagnostics (intentional leniency — not a primitive mismatch), \
+             got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
         );
     }
 }

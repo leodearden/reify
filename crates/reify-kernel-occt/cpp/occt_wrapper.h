@@ -83,6 +83,10 @@ struct TopologyCacheBuildCounts;
 struct InertiaTensor3x3;
 /// Returned by `revolve_synthesis_post_sort_for_test`; defined by cxx bridge.
 struct RevolveSynthesisPostSortResult;
+/// Returned by `face_analytic_datum` / `edge_analytic_datum` (geometric-relations ε);
+/// defined by the cxx bridge (ffi.rs). Forward-declared here for the signatures below.
+struct AnalyticSurfaceDatum;
+struct AnalyticCurveDatum;
 
 // --- Foundation constants ---
 
@@ -122,6 +126,12 @@ std::unique_ptr<OcctShape> make_cone(double bottom_r, double top_r, double heigh
 ///               ltx > dx produces an inverted/wider-top taper, which is valid).
 /// Volume = dy * dz * (dx + ltx) / 2.
 std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double ltx);
+
+/// Create a torus centered at origin about the Z axis (in meters).
+/// `major_r` is the distance from the centre of the tube to the centre of
+/// the torus; `minor_r` is the radius of the tube. Callers must enforce
+/// `minor_r < major_r` (a self-intersecting torus is rejected upstream).
+std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r);
 
 // --- Compound assembly ---
 
@@ -728,6 +738,12 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
     const OcctShape& plane_shape);
 
+/// Apply `BRepOffsetAPI_DraftAngle` to a curated subset of faces, identified
+/// by 0-based canonical-order face indices (same order as `get_faces`).
+/// Requires non-empty `face_indices`; the all-faces path uses `draft_shape`.
+std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices);
+
 // --- Wire helpers / Loft ---
 
 /// Create a circular wire profile at a given Z height (for loft profiles).
@@ -746,6 +762,18 @@ std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height);
 /// Corners: (±width/2, ±height/2, z_height).  Both width and height must be
 /// finite and positive.
 std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height);
+
+/// Create a closed planar polygon face from n_points 2-D vertices in the XY plane
+/// at the given Z height.  `coords` is a flat slice of 2*n_points doubles (x0,y0, x1,y1, …).
+/// Requires n_points >= 3, coords.size() == 2*n_points, all coordinates finite,
+/// and a non-degenerate (non-collinear) vertex set (checked via BRepBuilderAPI_MakeFace IsDone).
+std::unique_ptr<OcctShape> make_polygon_face(rust::Slice<const double> coords, size_t n_points, double z_height);
+
+/// Create a flat ellipse face in the XY plane at the given Z height, centred at the origin.
+/// Both semi_major and semi_minor must be finite and positive.
+/// Internally normalises major = max(a,b), minor = min(a,b) so OCCT's major≥minor constraint
+/// is satisfied regardless of argument order.  Area = π·a·b is orientation-invariant.
+std::unique_ptr<OcctShape> make_ellipse_face(double semi_major, double semi_minor, double z_height);
 
 /// Create a straight line wire between two 3D points (for sweep paths).
 std::unique_ptr<OcctShape> make_line_wire(double x1, double y1, double z1,
@@ -1169,6 +1197,32 @@ rust::String face_surface_kind(const OcctShape& shape);
 ///
 /// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE`.
 rust::String edge_curve_kind(const OcctShape& shape);
+
+/// Project a face's underlying analytic surface to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Surface::GetType()` switch: Cylinder → `Cylinder().Axis()`
+/// location/direction + `.Radius()`; Cone → `Cone().Axis()` + `.SemiAngle()`;
+/// Sphere → `Sphere().Location()` + `.Radius()`; Plane → `Plane().Axis()`
+/// location/direction. The `kind` byte records the GeomAbs classification so
+/// the Rust dispatch composes the correct projected `Value`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_FACE` or the
+/// surface is non-analytic.
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape);
+
+/// Project an edge's underlying analytic curve to a datum (geometric-relations ε).
+///
+/// `BRepAdaptor_Curve::GetType()` switch: Line → `Line().Position()`/`.Direction()`;
+/// Circle → `Circle().Axis()` + `.Location()` + `.Radius()`; Ellipse →
+/// `Ellipse().Axis()` + `.Location()` + `.MajorRadius()`/`.MinorRadius()`.
+///
+/// Throws `std::runtime_error` if `shape` is not a `TopAbs_EDGE` or the curve
+/// is non-analytic.
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape);
+
+/// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+/// (geometric-relations ε). Returns the tolerance in kernel-native units (metres).
+double shape_local_tolerance(const OcctShape& shape);
 
 /// Unit outward normal at the parametric point `(u, v)` on `face`.
 ///

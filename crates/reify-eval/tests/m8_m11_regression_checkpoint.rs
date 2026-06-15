@@ -358,7 +358,7 @@ fn checkpoint_m11_field_sample_at_three() {
 
 // ── Type / Value variant coverage ────────────────────────────────────────────
 
-/// Compile-time exhaustiveness guard for all 29 `Type` variants.
+/// Compile-time exhaustiveness guard for all 30 `Type` variants.
 ///
 /// This function is NEVER called at runtime. Its only purpose is to force a
 /// compile error if a new `Type` variant is added without updating this list.
@@ -414,6 +414,8 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::Union(_) => true,
         // Dimension-param scalar: compile-time/signature-only (task 4234 ε)
         Type::ScalarParam(_) => true,
+        // DOF-removal directive: compile-time-only, no truth value (geometric-relations γ / task 4383)
+        Type::Relation => true,
     };
 }
 

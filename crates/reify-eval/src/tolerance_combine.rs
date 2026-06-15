@@ -403,6 +403,169 @@ pub fn extract_output_tolerance_bound(
     tightest
 }
 
+// ── Output-occurrence conformance (io-export δ) ───────────────────────────────
+
+/// Returns `true` iff any name in `trait_bounds` equals or transitively refines
+/// the `"Output"` trait, walking [`reify_compiler::CompiledTrait::refinements`]
+/// over a name→trait map built from `trait_defs`.
+///
+/// This is the io-export δ export-driver's trait-conformance gate: an occurrence
+/// template is a driver-eligible Output sink iff its `entity_kind == Occurrence`
+/// (checked by the caller) **and** `conforms_to_output(template.trait_bounds,
+/// module.trait_defs)`. Recognizing by *transitive trait-bound conformance* —
+/// not a `trait_bounds.contains("Output")` name match — means user-defined
+/// Output occurrences are driven too: `occurrence def Foo : MyExport` where
+/// `trait MyExport : Output` conforms even though `"Output"` never appears
+/// directly in `Foo`'s bounds.
+///
+/// # Why re-implemented here
+///
+/// reify-compiler's `satisfies_trait_bound` / `trait_satisfies` are
+/// `pub(crate)` and unreachable from reify-eval; making them `pub` would touch
+/// an out-of-scope crate. This small local closure keeps the change inside the
+/// three touched crates and is co-located with the other Output recognizers
+/// (`extract_output_tolerance_bound`, `match_representation_within_shape`) so
+/// the driver and the tolerance pipeline share one Output-recognition module.
+///
+/// # Cycle safety
+///
+/// A `visited` set bounds the refinement walk, so a malformed refinement cycle
+/// (`trait A : B`, `trait B : A`) terminates with `false` instead of looping
+/// forever. The `name == "Output"` check fires at pop time, before the visited
+/// guard, so a bound that *equals* `"Output"` is recognized even when `"Output"`
+/// also appears as an interior node of the lattice.
+pub fn conforms_to_output(
+    trait_bounds: &[String],
+    trait_defs: &[reify_compiler::CompiledTrait],
+) -> bool {
+    use std::collections::{HashMap, HashSet};
+
+    // name → refinement (parent-trait) names. Built once per call; a module's
+    // trait_defs is small (its declared traits), so the allocation is cheap.
+    let by_name: HashMap<&str, &[String]> = trait_defs
+        .iter()
+        .map(|t| (t.name.as_str(), t.refinements.as_slice()))
+        .collect();
+
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut stack: Vec<&str> = trait_bounds.iter().map(String::as_str).collect();
+
+    while let Some(name) = stack.pop() {
+        if name == "Output" {
+            return true;
+        }
+        // Cycle guard: skip a trait whose refinements were already enqueued.
+        if !visited.insert(name) {
+            continue;
+        }
+        if let Some(refinements) = by_name.get(name) {
+            stack.extend(refinements.iter().map(String::as_str));
+        }
+    }
+    false
+}
+
+/// Where a recognized Output occurrence sends its geometry — resolved from the
+/// occurrence's `format` field value by [`extract_output_export_spec`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputTarget {
+    /// Serialize a file in the given format (`OutputFormat.STEP/STL/ThreeMF`).
+    File(reify_ir::ExportFormat),
+    /// A `DisplayOutput` (`OutputFormat.Display`) — recognized as a conforming
+    /// Output but file emission is deferred (the viewport drive is a sibling
+    /// PRD). `build_outputs` surfaces an info diagnostic
+    /// ([`crate::I_DISPLAY_OUTPUT_DEFERRED`]) and emits no file.
+    DisplayDeferred,
+}
+
+/// The per-instance export spec read off a realized Output occurrence's
+/// [`reify_ir::value::StructureInstanceData`] fields.
+///
+/// Sibling to [`extract_output_tolerance_bound`] in this Output-recognition
+/// module: that extractor is template/constraint-scoped (tolerance only),
+/// whereas this reader is per-instance (the `format`/`path`/`resolution` that
+/// the io-export δ driver consumes). Co-locating them satisfies the task's
+/// "driver and tolerance pipeline share one Output-recognition path" directive
+/// without changing the existing extractor's signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputExportSpec {
+    /// The resolved target: a file format or display-deferred.
+    pub format: OutputTarget,
+    /// The destination path, verbatim from the occurrence's `path` field.
+    /// Empty for a `DisplayDeferred` occurrence that declares no path.
+    pub path: String,
+    /// STL tessellation tolerance (SI metres) from the occurrence's
+    /// `resolution` Length field, if present. Informational in δ — the demanded
+    /// tolerance is threaded through `build()`'s realization pass, not
+    /// re-tessellated per occurrence in v1; ε/γ consume this.
+    pub tess_tol: Option<f64>,
+}
+
+/// Read the [`OutputExportSpec`] off a realized Output-occurrence instance
+/// value, or `None` if `instance` is not a recognizable Output spec.
+///
+/// # Gates
+///
+/// 1. **Instance** — `instance` must be a [`Value::StructureInstance`].
+/// 2. **Format** — its `format` field must be a
+///    `Value::Enum { type_name: "OutputFormat", variant }`; the variant maps
+///    `STEP→File(Step)`, `STL→File(Stl)`, `ThreeMF→File(ThreeMF)`,
+///    `Display→DisplayDeferred`. Any other (absent / non-enum / unknown
+///    variant) → `None`.
+/// 3. **Path** — a `Value::String` `path` field is required for *file* targets
+///    (absent or non-String → `None`); for `DisplayDeferred` a missing/non-String
+///    path is tolerated (a viewport sink has no file path) and yields an empty
+///    `path`.
+/// 4. **Resolution** — a `Value::Scalar` `resolution` field with `LENGTH`
+///    dimension becomes `tess_tol` (its SI value); absent/non-LENGTH → `None`.
+///
+/// Keying the target on the resolved `format` *value* (not the instance type
+/// name) is robust to user-defined Output occurrences that set
+/// `format : OutputFormat`.
+pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> {
+    // Gate 1: must be a StructureInstance.
+    let Value::StructureInstance(data) = instance else {
+        return None;
+    };
+    let fields = &data.fields;
+
+    // Gate 2: `format` must be an OutputFormat enum; map variant → target.
+    let format = match fields.get("format") {
+        Some(Value::Enum { type_name, variant }) if type_name == "OutputFormat" => {
+            match variant.as_str() {
+                "STEP" => OutputTarget::File(reify_ir::ExportFormat::Step),
+                "STL" => OutputTarget::File(reify_ir::ExportFormat::Stl),
+                "ThreeMF" => OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
+                "Display" => OutputTarget::DisplayDeferred,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // Gate 3: path — required-as-String for file targets; optional for display.
+    let path = match (fields.get("path"), &format) {
+        (Some(Value::String(s)), _) => s.clone(),
+        (_, OutputTarget::DisplayDeferred) => String::new(),
+        _ => return None,
+    };
+
+    // Gate 4: `resolution` Length → tess_tol (SI metres); else None.
+    let tess_tol = match fields.get("resolution") {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::LENGTH => Some(*si_value),
+        _ => None,
+    };
+
+    Some(OutputExportSpec {
+        format,
+        path,
+        tess_tol,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1297,6 +1460,225 @@ mod tests {
         assert!(
             result.is_none(),
             "non-RepresentationWithin expr must return None (pass-through)"
+        );
+    }
+
+    // ── conforms_to_output (io-export δ step-1) ──────────────────────────────
+
+    /// Build a minimal `CompiledTrait` with the given name and refinement
+    /// (parent-trait) names. All other fields default to empty — only `name`
+    /// and `refinements` drive the transitive Output-conformance walk.
+    fn trait_def(name: &str, refinements: &[&str]) -> reify_compiler::CompiledTrait {
+        reify_compiler::CompiledTrait {
+            name: name.to_string(),
+            is_pub: true,
+            doc: None,
+            type_params: Vec::new(),
+            refinements: refinements.iter().map(|s| s.to_string()).collect(),
+            required_members: Vec::new(),
+            defaults: Vec::new(),
+            content_hash: ContentHash::of_str(name),
+            annotations: Vec::new(),
+            pragmas: Vec::new(),
+        }
+    }
+
+    /// Direct and transitive Output conformance is recognized; supertraits,
+    /// sibling traits, and empty bounds are rejected. Mirrors the stdlib io.ri
+    /// trait lattice: `Output : Sink`, `Input : Source`, with a synthetic
+    /// user-defined `MyExport : Output` for the transitive case.
+    #[test]
+    fn conforms_to_output_recognizes_direct_transitive_and_rejects_others() {
+        let trait_defs = vec![
+            trait_def("Source", &[]),
+            trait_def("Sink", &[]),
+            trait_def("Output", &["Sink"]),
+            trait_def("Input", &["Source"]),
+            trait_def("MyExport", &["Output"]),
+        ];
+
+        // Direct: a bound equal to "Output".
+        assert!(
+            conforms_to_output(&["Output".to_string()], &trait_defs),
+            "a direct [\"Output\"] bound must conform"
+        );
+
+        // Transitive: MyExport refines Output (user-defined Output occurrence).
+        assert!(
+            conforms_to_output(&["MyExport".to_string()], &trait_defs),
+            "a bound that transitively refines Output (MyExport : Output) must conform"
+        );
+
+        // Sink is a SUPERTRAIT of Output, not Output — must NOT conform.
+        assert!(
+            !conforms_to_output(&["Sink".to_string()], &trait_defs),
+            "Sink is a supertrait of Output, not Output itself — must not conform"
+        );
+
+        // Input refines Source, never reaches Output — must NOT conform.
+        assert!(
+            !conforms_to_output(&["Input".to_string()], &trait_defs),
+            "Input refines Source, never Output — must not conform"
+        );
+
+        // No bounds at all (a plain Structure) — must NOT conform.
+        assert!(
+            !conforms_to_output(&[], &trait_defs),
+            "empty trait_bounds must not conform"
+        );
+    }
+
+    /// A refinement cycle must terminate (no infinite loop) and yield the
+    /// correct answer: `false` when the cycle never reaches Output, `true`
+    /// when a node on the cycle also refines Output.
+    #[test]
+    fn conforms_to_output_handles_refinement_cycle_without_infinite_loop() {
+        // A → B → A cycle that never reaches Output → false (and terminates).
+        let cyclic = vec![trait_def("A", &["B"]), trait_def("B", &["A"])];
+        assert!(
+            !conforms_to_output(&["A".to_string()], &cyclic),
+            "an A⇄B cycle that never reaches Output must return false without looping"
+        );
+
+        // A → B → {A, Output}: the cycle co-exists with a path to Output → true.
+        let cyclic_with_output = vec![
+            trait_def("A", &["B"]),
+            trait_def("B", &["A", "Output"]),
+            trait_def("Output", &["Sink"]),
+            trait_def("Sink", &[]),
+        ];
+        assert!(
+            conforms_to_output(&["A".to_string()], &cyclic_with_output),
+            "a cycle that also refines Output (B : A, Output) must still conform"
+        );
+    }
+
+    // ── extract_output_export_spec (io-export δ step-3) ──────────────────────
+
+    /// Build a `Value::StructureInstance` named `type_name` with the given
+    /// fields. `type_id`/`version` are dummies — `extract_output_export_spec`
+    /// keys on the `format` *field value*, not the instance's type identity.
+    fn struct_instance(type_name: &str, fields: &[(&str, Value)]) -> Value {
+        let mut map: PersistentMap<String, Value> = PersistentMap::default();
+        for (k, v) in fields {
+            map.insert((*k).to_string(), v.clone());
+        }
+        Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+            type_id: reify_ir::StructureTypeId(0),
+            type_name: type_name.to_string(),
+            version: 0,
+            fields: map,
+        }))
+    }
+
+    /// An `OutputFormat::<variant>` enum value (the shape of an occurrence's
+    /// `format` field).
+    fn out_fmt(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "OutputFormat".to_string(),
+            variant: variant.to_string(),
+        }
+    }
+
+    /// File-format occurrences map `format`→`OutputTarget::File`, read a String
+    /// `path`, and turn a `resolution` Length into `tess_tol` (SI metres).
+    #[test]
+    fn extract_output_export_spec_reads_file_formats_path_and_resolution() {
+        // STLOutput: STL + path + 0.2mm resolution.
+        let stl = struct_instance(
+            "STLOutput",
+            &[
+                ("format", out_fmt("STL")),
+                ("path", Value::String("o.stl".to_string())),
+                ("resolution", Value::length(2e-4)),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&stl),
+            Some(OutputExportSpec {
+                format: OutputTarget::File(reify_ir::ExportFormat::Stl),
+                path: "o.stl".to_string(),
+                tess_tol: Some(2e-4),
+            }),
+            "STLOutput → File(Stl), path \"o.stl\", tess_tol 2e-4"
+        );
+
+        // STEPOutput: STEP + path, no resolution → tess_tol None.
+        let step = struct_instance(
+            "STEPOutput",
+            &[
+                ("format", out_fmt("STEP")),
+                ("path", Value::String("o2.step".to_string())),
+            ],
+        );
+        assert_eq!(
+            extract_output_export_spec(&step),
+            Some(OutputExportSpec {
+                format: OutputTarget::File(reify_ir::ExportFormat::Step),
+                path: "o2.step".to_string(),
+                tess_tol: None,
+            }),
+            "STEPOutput → File(Step), path \"o2.step\", tess_tol None"
+        );
+
+        // ThreeMFOutput: ThreeMF + path.
+        let mf = struct_instance(
+            "ThreeMFOutput",
+            &[
+                ("format", out_fmt("ThreeMF")),
+                ("path", Value::String("o.3mf".to_string())),
+            ],
+        );
+        let spec = extract_output_export_spec(&mf).expect("ThreeMF spec must be Some");
+        assert_eq!(
+            spec.format,
+            OutputTarget::File(reify_ir::ExportFormat::ThreeMF),
+            "ThreeMFOutput → File(ThreeMF)"
+        );
+        assert_eq!(spec.path, "o.3mf");
+    }
+
+    /// A `DisplayOutput` (format == Display, no `path` field) is recognized as a
+    /// deferred target — a `Some(DisplayDeferred)`, NOT a `None`.
+    #[test]
+    fn extract_output_export_spec_recognizes_display_as_deferred() {
+        let disp = struct_instance("DisplayOutput", &[("format", out_fmt("Display"))]);
+        let spec = extract_output_export_spec(&disp).expect("Display spec must be Some");
+        assert_eq!(
+            spec.format,
+            OutputTarget::DisplayDeferred,
+            "DisplayOutput → DisplayDeferred (recognized, file emission deferred)"
+        );
+    }
+
+    /// A file-format occurrence with a missing or non-String `path`, and any
+    /// non-`StructureInstance` value, yield `None`.
+    #[test]
+    fn extract_output_export_spec_rejects_missing_path_nonstring_path_and_non_instance() {
+        // File format with NO path field → None.
+        let no_path = struct_instance("STLOutput", &[("format", out_fmt("STL"))]);
+        assert_eq!(
+            extract_output_export_spec(&no_path),
+            None,
+            "a file Output with no path must not yield a spec"
+        );
+
+        // File format with a non-String path → None.
+        let bad_path = struct_instance(
+            "STLOutput",
+            &[("format", out_fmt("STL")), ("path", Value::Int(7))],
+        );
+        assert_eq!(
+            extract_output_export_spec(&bad_path),
+            None,
+            "a non-String path must not yield a spec"
+        );
+
+        // Non-StructureInstance value → None (pass-through posture).
+        assert_eq!(
+            extract_output_export_spec(&Value::Bool(true)),
+            None,
+            "a non-StructureInstance value must not yield a spec"
         );
     }
 }

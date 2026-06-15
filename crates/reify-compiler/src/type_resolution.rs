@@ -586,6 +586,11 @@ pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
         "Axis" => Some(Type::Axis),
         "Plane" => Some(Type::Plane),
         "Frame" => Some(Type::Frame(3)),
+        // Geometric-relation directive type (geometric-relations γ, task 4383).
+        // `fn concentric(...) -> Relation` and `param r : Relation` type-check;
+        // a relation is a DOF-removal directive (no truth value), distinct from
+        // Bool. Evaluates to Value::Undef until ζ supplies the relate-solve.
+        "Relation" => Some(Type::Relation),
         "Bool" => Some(Type::Bool),
         "Int" => Some(Type::Int),
         "Real" => Some(Type::dimensionless_scalar()),
@@ -702,6 +707,269 @@ pub(crate) fn resolve_assoc_type_name(
         return Some(Type::Error);
     }
     None
+}
+
+/// Does conformed trait `trait_name` declare an associated type named `member`?
+///
+/// Scans the trait's `required_members` for a `RequirementKind::AssocType` with
+/// the name, and its `defaults` for a `DefaultKind::AssocType` whose name
+/// matches. This is the basis for both ambiguity counting (how many of a
+/// structure's conformed traits declare `member`) and disambiguator validation
+/// (does the qualifier trait actually declare `member`). (task 3974 ιₑ)
+///
+/// A trait absent from `trait_registry` answers `false` — it cannot declare the
+/// member it does not define.
+///
+/// SCOPE LIMITATION (task 3974 ιₑ — trait refinement NOT handled; follow-up
+/// esc-3974-201): this scans only the trait's OWN `required_members`/`defaults`,
+/// not its transitive refinement closure (`CompiledTrait.refinements`). Reify
+/// DOES support trait refinement (`trait HasSkin : HasMaterial { … }`), and
+/// neither `CompiledTrait`'s member lists nor `TopologyTemplate.trait_bounds` are
+/// flattened — inherited assoc types are materialised only at conformance-check
+/// time by `trait_requirements::collect_all_requirements` (which walks
+/// `.refinements` recursively). Consequently an assoc type inherited purely
+/// through refinement (declared on a super-trait, never re-declared on the
+/// directly-named bound) is INVISIBLE to this predicate: at the `declaring_traits`
+/// site in [`resolve_qualified_assoc_type`] a valid `Beam::Material` would be
+/// reported as "no associated type" rather than resolving; conversely, listing
+/// both a child trait and its ancestor as explicit bounds could double-count and
+/// spuriously flag ambiguity. This task's param-only signal/example use directly
+/// declared assoc types. A correct fix must resolve declaration through the
+/// refinement closure WITH per-origin dedup (the deduped-by-name
+/// `collect_all_requirements` output collapses distinct origins, so it cannot by
+/// itself answer the ambiguity question) — deferred to the esc-3974-201 follow-up.
+fn trait_declares_assoc_type(
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_name: &str,
+    member: &str,
+) -> bool {
+    let Some(compiled) = trait_registry.get(trait_name) else {
+        return false;
+    };
+    compiled
+        .required_members
+        .iter()
+        .any(|r| r.name == member && matches!(r.kind, RequirementKind::AssocType(_)))
+        || compiled
+            .defaults
+            .iter()
+            .any(|d| d.name.as_deref() == Some(member) && matches!(d.kind, DefaultKind::AssocType(_)))
+}
+
+/// Resolve a qualified associated-type type-expr (`Base::Member`, or the FORK-G
+/// paren-disambiguated `Base::(Trait::Member)`) to a concrete [`Type`], reading
+/// iota-β's resolved associated-type table off the base structure's compiled
+/// [`TopologyTemplate`]. (task 3974 ιₑ)
+///
+/// Caller-side fallback mirroring [`resolve_assoc_type_name`]: the generic
+/// [`resolve_type_expr_with_aliases`] lacks the cross-structure
+/// `template_registry` / `trait_registry`, so it keeps returning `None` for
+/// `QualifiedAssoc`, and the entity.rs param `None =>` arm — which HAS the
+/// registries in scope — calls this helper instead.
+///
+/// `base` must be a bare `Named` with no type args (the structure name). The
+/// resolved `Type` comes from the single `template.assoc_types` entry keyed by
+/// `member`: a structure binds each associated-type name exactly once, so every
+/// valid trait qualifier resolves to the same `Type` — the qualifier is
+/// disambiguation-only (matching the value-side `obj.(Trait::member)`
+/// convention, FORK-G). Ambiguity is therefore a property of the trait
+/// declarations (`trait_bounds` + `trait_registry`), not of the dedup-by-name
+/// table.
+///
+/// Return value:
+/// - `Some(ty)`: resolved to the bound associated type.
+/// - `Some(Type::Error)`: the member is declared by a conformed trait but the
+///   structure never bound it (declared-but-unbound). The root-cause
+///   `TraitAssocTypeNotBound` was already emitted at the producer, so this returns
+///   the `Type::Error` poison sentinel — exactly as [`resolve_assoc_type_name`]
+///   does for the bare-name case — WITHOUT a new diagnostic, so the caller
+///   suppresses a downstream type-mismatch cascade rather than mis-poisoning to a
+///   concrete `Type::dimensionless_scalar()`.
+/// - `None`: a genuine error (each path pushes its own diagnostic); the caller
+///   poisons the param to a concrete `Type::dimensionless_scalar()` placeholder.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_qualified_assoc_type(
+    base: &reify_ast::TypeExpr,
+    trait_name: Option<&str>,
+    member: &str,
+    span: SourceSpan,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    type_param_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Type> {
+    // base must be a bare structure name (`Named` with no type args). The
+    // lowering always produces this shape; the guarded arms give a defined
+    // diagnostic should a future grammar extension produce something else.
+    let reify_ast::TypeExprKind::Named {
+        name: base_name,
+        type_args,
+    } = &base.kind
+    else {
+        diagnostics.push(
+            Diagnostic::error(
+                "qualified associated-type base must be a structure name".to_string(),
+            )
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "expected a structure name here")),
+        );
+        return None;
+    };
+    if !type_args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "qualified associated-type base `{base_name}` must not have type arguments"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "remove the type arguments")),
+        );
+        return None;
+    }
+
+    // A type-parameter base (`T::Material`) has no concrete structure binding at a
+    // definition site (PRD §3.5 adds no associated-type-projection Type variant);
+    // emit a clear, dedicated diagnostic rather than mis-resolving or panicking.
+    if type_param_names.contains(base_name.as_str()) {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "associated-type access on type parameter `{base_name}` is not supported \
+                 here; use a concrete structure (e.g. `Beam::{member}`)"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(
+                span,
+                format!("`{base_name}` is a type parameter, not a concrete structure"),
+            )),
+        );
+        return None;
+    }
+
+    // The base structure must already be compiled (source order: prelude + earlier
+    // local structures). A miss is an unknown or forward-referenced structure.
+    let Some(template) = template_registry.get(base_name.as_str()) else {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "unknown structure `{base_name}` in qualified associated type \
+                 `{base_name}::{member}`"
+            ))
+            .with_code(DiagnosticCode::UnresolvedType)
+            .with_label(DiagnosticLabel::new(span, "unknown structure")),
+        );
+        return None;
+    };
+
+    // The conformed traits of `base` that declare an assoc type named `member`.
+    // NOTE: directly-named bounds with an OWN declaration of `member` only —
+    // refinement-inherited assoc types are not seen here (see the SCOPE
+    // LIMITATION on `trait_declares_assoc_type`; follow-up esc-3974-201).
+    let declaring_traits: Vec<&str> = template
+        .trait_bounds
+        .iter()
+        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
+        .map(String::as_str)
+        .collect();
+
+    // The single resolved `Type` bound to `member`. A structure binds each
+    // associated-type name exactly once, so this is independent of the qualifier.
+    //
+    // Both call sites below invoke this ONLY after establishing that `member` IS
+    // declared by a conformed trait (bare path: exactly one declaring trait;
+    // disambiguated path: the named trait declares it). So a missing `assoc_types`
+    // entry is the declared-but-unbound case — already reported at the producer as
+    // `TraitAssocTypeNotBound`. Poison it to `Type::Error` (the same sentinel
+    // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
+    // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
+    // seeing the concrete `Type::dimensionless_scalar()` fallback would spuriously mismatch. No new
+    // diagnostic is emitted here (anti-cascade).
+    let resolved_member = || {
+        template
+            .assoc_types
+            .iter()
+            .find(|a| a.type_name == member)
+            .map(|a| a.resolved.clone())
+            .unwrap_or(Type::Error)
+    };
+
+    match trait_name {
+        // Bare access (`Base::Member`): resolve only when exactly one conformed
+        // trait declares `member`. Two or more is genuinely ambiguous (the
+        // qualifier is required); zero is handled by a later step.
+        None => match declaring_traits.len() {
+            1 => Some(resolved_member()),
+            n if n >= 2 => {
+                // A structure binds each associated-type name once, so the
+                // qualifier is disambiguation-only — point the user at the FORK-G
+                // paren form `Base::(Trait::Member)`.
+                let candidates = declaring_traits.join("`, `");
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous associated type `{base_name}::{member}`: declared by \
+                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
+                         to disambiguate"
+                    ))
+                    .with_code(DiagnosticCode::AmbiguousAssocType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
+                    )),
+                );
+                None
+            }
+            // Zero conformed traits declare `member`: the structure genuinely has
+            // no such associated type. (The declared-but-unbound case has
+            // `len >= 1` and resolves to `Some(Type::Error)` via `resolved_member`
+            // above WITHOUT a new diagnostic — anti-cascade, reported at the
+            // producer.)
+            _ => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` has no associated type `{member}`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` has no associated type `{member}`"),
+                    )),
+                );
+                None
+            }
+        },
+        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
+        // name a trait `Base` conforms to AND that declares `member`. When valid,
+        // resolve to the same single binding (no ambiguity check — the qualifier
+        // is disambiguation-only).
+        Some(t) => {
+            if !template.trait_bounds.iter().any(|b| b == t) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` does not conform to `{t}`"),
+                    )),
+                );
+                return None;
+            }
+            if !trait_declares_assoc_type(trait_registry, t, member) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "trait `{t}` does not declare associated type `{member}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{t}` has no associated type `{member}`"),
+                    )),
+                );
+                return None;
+            }
+            Some(resolved_member())
+        }
+    }
 }
 
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.
@@ -1307,6 +1575,12 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
                 .collect(),
         ),
 
+        // Dimension-param scalar: substitute when bound (mirrors the TypeParam
+        // arm above), else pass through unchanged. Nested dim-params inside
+        // Vector/Point/Tensor/Matrix quantity slots substitute for free via the
+        // quantity-slot recursion already in place above.
+        Type::ScalarParam(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
+
         // All remaining leaves carry no inner `Type` to substitute.
         Type::Bool
         | Type::Int
@@ -1323,12 +1597,11 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): a leaf with no inner `Type` to substitute.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — substitutes to itself.
-        // Dimension binding is ζ / D8 and does not go through this walk.
-        | Type::ScalarParam(_)
         | Type::Error => ty.clone(),
     }
 }
@@ -2437,6 +2710,97 @@ mod tests {
         }
     }
 
+    // ── task 3974 ιₑ: defensive guards in `resolve_qualified_assoc_type` ──────
+    // The lowering always produces a bare `Named` base with no type args, so the
+    // two leading guards (non-`Named` base; `Named` base WITH type args) are
+    // unreachable in practice. They emit a DEFINED `UnresolvedType` diagnostic
+    // (rather than panicking) should a future grammar/lowering change produce
+    // another shape. These tests pin that contract — a message/code regression or
+    // a silent-`None` change would be caught here. (review suggestion 3)
+    //
+    // Both guards return before any registry access, so empty registries suffice.
+
+    #[test]
+    fn qualified_assoc_non_named_base_emits_unresolved_type() {
+        // base is an integer literal, not a structure name.
+        let base = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::IntegerLiteral(3),
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
+        let type_params: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let resolved = resolve_qualified_assoc_type(
+            &base,
+            None,
+            "Material",
+            reify_core::SourceSpan::new(0, 0),
+            &templates,
+            &traits,
+            &type_params,
+            &mut diagnostics,
+        );
+
+        assert_eq!(resolved, None, "a non-Named base must not resolve");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one guard diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
+        assert!(
+            diagnostics[0].message.contains("must be a structure name"),
+            "guard message should explain the base shape; got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn qualified_assoc_base_with_type_args_emits_unresolved_type() {
+        // base is `Beam<T>` — a Named WITH type arguments.
+        let base = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Beam".to_string(),
+                type_args: vec![named_type_expr("T")],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
+        let type_params: HashSet<String> = HashSet::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let resolved = resolve_qualified_assoc_type(
+            &base,
+            None,
+            "Material",
+            reify_core::SourceSpan::new(0, 0),
+            &templates,
+            &traits,
+            &type_params,
+            &mut diagnostics,
+        );
+
+        assert_eq!(resolved, None, "a base with type args must not resolve");
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly one guard diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("must not have type arguments"),
+            "guard message should explain the type-args rejection; got: {:?}",
+            diagnostics[0].message
+        );
+    }
+
     #[test]
     fn resolve_type_name_recognises_money() {
         assert_eq!(
@@ -2764,6 +3128,19 @@ mod tests {
             resolve_type_name("Frame"),
             Some(Type::Frame(3)),
             "\"Frame\" should resolve to Type::Frame(3)"
+        );
+    }
+
+    /// `resolve_type_name("Relation")` must return `Type::Relation`
+    /// (geometric-relations γ, task 4383): the `Relation` directive type name
+    /// resolves so `fn ... -> Relation` and `param r : Relation` type-check.
+    /// RED until step-2 adds the arm.
+    #[test]
+    fn resolve_type_name_recognises_relation() {
+        assert_eq!(
+            resolve_type_name("Relation"),
+            Some(Type::Relation),
+            "\"Relation\" should resolve to Type::Relation"
         );
     }
 
@@ -3271,6 +3648,52 @@ mod tests {
         // (h) non-typeparam leaf (Int) with empty subst → identity.
         let subst = subst_of(&[]);
         assert_eq!(substitute_type_params(&Type::Int, &subst), Type::Int);
+    }
+
+    // ── task 4235 ζ: substitute_type_params dimension-param (D8) ────────────
+
+    /// (a) A bound ScalarParam substitutes to the concrete Scalar type.
+    ///
+    /// RED until step-4: the leaves arm clones ScalarParam unchanged even when
+    /// Q is in subst.
+    #[test]
+    fn substitute_scalar_param_bound_to_length() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("Q".to_string()), &subst),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+            "ScalarParam(\"Q\") with Q→Scalar{{LENGTH}} should substitute to Scalar{{LENGTH}}"
+        );
+    }
+
+    /// (b) Nested dim-param in Vector3<Q> substitutes in the quantity slot.
+    ///
+    /// RED until step-4: the leaves arm returns ScalarParam unchanged, so the
+    /// Vector quantity slot stays as ScalarParam rather than Scalar{LENGTH}.
+    #[test]
+    fn substitute_scalar_param_inside_vector3_quantity() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(
+                &Type::Vector { n: 3, quantity: Box::new(Type::ScalarParam("Q".to_string())) },
+                &subst,
+            ),
+            Type::Vector { n: 3, quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }) },
+            "Vector3<ScalarParam(\"Q\")> with Q→LENGTH should become Vector3<Scalar{{LENGTH}}>"
+        );
+    }
+
+    /// (c) Unbound ScalarParam passes through unchanged (R not in subst).
+    ///
+    /// GREEN even before step-4 (the leaves arm already clones ScalarParam).
+    #[test]
+    fn substitute_scalar_param_unbound_passthrough() {
+        let subst = subst_of(&[("Q", Type::Scalar { dimension: DimensionVector::LENGTH })]);
+        assert_eq!(
+            substitute_type_params(&Type::ScalarParam("R".to_string()), &subst),
+            Type::ScalarParam("R".to_string()),
+            "unbound ScalarParam(\"R\") should pass through unchanged"
+        );
     }
 
     // ── Range<T> parameterized resolution (step-1 RED / task 4576) ───────────

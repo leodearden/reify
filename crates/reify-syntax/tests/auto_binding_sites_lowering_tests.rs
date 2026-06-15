@@ -55,7 +55,7 @@ fn assert_let_value_auto(source: &str, expected_free: bool) {
         other => panic!("expected Let, got {:?}", other),
     };
     match let_decl.value.kind {
-        ExprKind::Auto { free } => assert_eq!(
+        ExprKind::Auto { free, .. } => assert_eq!(
             free, expected_free,
             "wrong `free` flag: expected {}, got {}",
             expected_free, free
@@ -90,7 +90,7 @@ fn assert_named_arg_value_auto(source: &str, expected_free: bool) {
         .find(|(n, _)| n == "bore")
         .expect("expected a 'bore' named arg");
     match expr.kind {
-        ExprKind::Auto { free } => assert_eq!(
+        ExprKind::Auto { free, .. } => assert_eq!(
             free, expected_free,
             "wrong `free` flag: expected {}, got {}",
             expected_free, free
@@ -130,7 +130,7 @@ fn assert_function_call_named_arg_value_auto(source: &str, expected_free: bool) 
     assert_eq!(name, "Bearing", "unexpected function name");
     assert!(!args.is_empty(), "expected at least one arg (auto), got none");
     match args[0].kind {
-        ExprKind::Auto { free } => assert_eq!(
+        ExprKind::Auto { free, .. } => assert_eq!(
             free, expected_free,
             "wrong `free` flag: expected {}, got {}",
             expected_free, free
@@ -169,7 +169,7 @@ fn assert_connect_param_value_auto(source: &str, expected_free: bool) {
         .find(|(n, _)| n == "gain")
         .expect("expected a 'gain' connect param");
     match expr.kind {
-        ExprKind::Auto { free } => assert_eq!(
+        ExprKind::Auto { free, .. } => assert_eq!(
             free, expected_free,
             "wrong `free` flag: expected {}, got {}",
             expected_free, free
@@ -434,7 +434,7 @@ fn param_assignment_auto_strict_lowers_to_expr_kind_auto_false() {
         "bore",
     );
     match kind {
-        ExprKind::Auto { free } => assert!(
+        ExprKind::Auto { free, .. } => assert!(
             !free,
             "expected free: false for strict auto, got free: true"
         ),
@@ -451,7 +451,7 @@ fn param_assignment_auto_free_lowers_to_expr_kind_auto_true() {
         "bore",
     );
     match kind {
-        ExprKind::Auto { free } => assert!(
+        ExprKind::Auto { free, .. } => assert!(
             free,
             "expected free: true for auto(free), got free: false"
         ),

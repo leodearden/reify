@@ -1,0 +1,14 @@
+// Fixture: §3 4575 silent-accept check probe.
+//
+// `reify check` exits 0 and prints "All constraints satisfied." even though
+// the first argument "not-an-axis" is a String literal, not an Axis/vec3.
+// The compiler performs NO nominal arg-vs-param rejection for concrete params
+// (the 4575-class bug): the mistyped argument is silently accepted.
+//
+// Used as the negative-assertion / FAIL probe in the committed probe set:
+//   expected = {observation: "present", match: {exit_code: 1}}
+//   (we expect a rejection diagnostic, observed=absent → FAIL)
+
+structure def RevoluteSilentAccept {
+    let j = revolute("not-an-axis", 0rad..1rad, point3(0mm,0mm,0mm))
+}

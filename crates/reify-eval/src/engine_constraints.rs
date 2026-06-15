@@ -8,10 +8,11 @@ use reify_core::{
     ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, Severity,
     SourceSpan, ValueCellId,
 };
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, StructureInstanceData,
-    StructureTypeId, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Satisfaction,
+    StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -964,6 +965,326 @@ impl Engine {
         diags
     }
 
+    /// GD&T geometric-conformance measurement pass (task 4480 η, PRD v0_6 C3/C5).
+    ///
+    /// For every active `Conforms` instance that carries an **explicit** `actual`
+    /// argument binding (the η detection signal, captured on
+    /// [`CompiledConstraint::arg_bindings`]), measure the deviation of the bound
+    /// `actual` geometry from the tolerance's nominal `feature` via
+    /// [`reify_ir::GeometryQuery::MaxDeviation`], feed the measured value into the
+    /// shipped scalar predicate (`effective_tolerance_zone(...) >= measured`), and
+    /// OVERRIDE the matching [`ConstraintCheckEntry`] (by [`ConstraintNodeId`], in
+    /// caller order) with the geometric verdict — Satisfied or Violated.
+    ///
+    /// # C1 invariant — never a false Violated
+    ///
+    /// When no geometry kernel is present, or the `actual`/`feature` handle is
+    /// unrealizable, or the kernel query fails, the verdict is **Indeterminate**
+    /// plus a diagnostic — never a (false) Violated. This is exactly why the
+    /// geometry stays in this check-time pass and out of the constraint body
+    /// (which evaluates in the kernel-less P1 phase): the structural shape that
+    /// sidesteps the trap that blocked #4275.
+    ///
+    /// # B4 — scalar path untouched
+    ///
+    /// A `Conforms` with no explicit `actual` (its `nominal()` default) is never
+    /// touched: its scalar `ConstraintCheckEntry` is left exactly as
+    /// [`check_constraints_against_templates`](Self::check_constraints_against_templates)
+    /// produced it. Modules with no explicit-`actual` Conforms hit the fast
+    /// no-op early-return and are byte-identical.
+    ///
+    /// # Borrow order
+    ///
+    /// Phase 1 resolves all specs from `&module` + `values` + immutable `self`
+    /// (prelude/functions/`realization_handles`) into owned [`GdtConformanceWork`];
+    /// phase 2 borrows `self.geometry_kernels` immutably to run the queries. The
+    /// two borrow regions never overlap. `achieved_repr_tol` and DFM state are
+    /// never touched.
+    pub(crate) fn measure_gdt_conformance(
+        &mut self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        constraint_results: &mut Vec<ConstraintCheckEntry>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        // Fast no-op for non-GD&T modules (B4 / C2): keep every module without an
+        // explicit-`actual` Conforms byte-identical and allocation-free.
+        let has_geometric_conforms = module.templates.iter().any(|t| {
+            let top = t.constraints.iter();
+            let guarded = t
+                .guarded_groups
+                .iter()
+                .flat_map(|g| g.constraints.iter().chain(g.else_constraints.iter()));
+            top.chain(guarded)
+                .any(|c| c.arg_bindings.iter().any(|(n, _)| n == "actual"))
+        });
+        if !has_geometric_conforms {
+            return;
+        }
+
+        // ── Phase 1: resolve specs (immutable prelude/functions/handles borrows) ──
+        let work: Vec<GdtConformanceWork> = {
+            // Trait + template registries (prelude + module), mirroring
+            // `enumerate_gdt_callouts` so the GeometricTolerance walk is identical.
+            let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+            for prelude_mod in self.prelude {
+                for t in &prelude_mod.trait_defs {
+                    trait_registry.insert(t.name.clone(), t);
+                }
+            }
+            for t in &module.trait_defs {
+                trait_registry.insert(t.name.clone(), t);
+            }
+            let mut template_by_name: HashMap<&str, &TopologyTemplate> = HashMap::new();
+            for prelude_mod in self.prelude {
+                for t in &prelude_mod.templates {
+                    template_by_name.insert(t.name.as_str(), t);
+                }
+            }
+            for t in &module.templates {
+                template_by_name.insert(t.name.as_str(), t);
+            }
+
+            // Augment the eval value map with live realization handles before
+            // evaluating the captured arg-bindings. A fresh `eval()` does NOT
+            // invoke the kernel, so geometry `let`/`param` cells are `Value::Undef`
+            // (not live `Value::GeometryHandle`) in `values` — the same gap
+            // `measure_dfm_rules` works around at :842-854 (which injects into a
+            // `PersistentMap` of fields by `realization.name`). Here we inject into
+            // a cloned `ValueMap` keyed by `ValueCellId(entity, realization.name)`
+            // so that `eval_expr` resolves an INLINE tolerance constructor
+            // (`Flatness(feature: part, …)`) and a bare `actual` `ValueRef` to the
+            // live post-build handle. `ValueMap` is a structural-sharing
+            // `PersistentMap`, so the clone is O(1) and only the injected cells are
+            // new. No realization handles populated → augmented == values (a fresh
+            // eval / unit-test path stays byte-identical).
+            let mut augmented = values.clone();
+            for template in &module.templates {
+                for realization in &template.realizations {
+                    let Some(ref name) = realization.name else {
+                        continue;
+                    };
+                    if let Some(&kernel_handle) =
+                        self.realization_handles.get(&realization.id)
+                    {
+                        augmented.insert(
+                            ValueCellId::new(realization.id.entity.clone(), name.clone()),
+                            Value::GeometryHandle {
+                                realization_ref: realization.id.clone(),
+                                upstream_values_hash: [0u8; 32],
+                                kernel_handle,
+                            },
+                        );
+                    }
+                }
+            }
+
+            let ctx = EvalContext::new(&augmented, &self.functions);
+            let realization_handles = &self.realization_handles;
+            // Resolve a `Value::GeometryHandle` to a live kernel handle: prefer the
+            // post-build realization bridge (the authoritative live handle, exactly
+            // like `measure_dfm_rules`), else the value's own kernel handle.
+            let resolve_handle = |v: &Value| -> Option<GeometryHandleId> {
+                let Value::GeometryHandle { kernel_handle, realization_ref, .. } = v else {
+                    return None;
+                };
+                if let Some(h) = realization_handles.get(realization_ref).copied() {
+                    return Some(h);
+                }
+                if *kernel_handle != GeometryHandleId::INVALID {
+                    return Some(*kernel_handle);
+                }
+                None
+            };
+
+            let mut work = Vec::new();
+            for template in &module.templates {
+                for c in Self::collect_active_constraints(template, values) {
+                    // η detection signal: an EXPLICIT `actual` binding. The Conforms
+                    // predicate never references `actual`, so this binding (not the
+                    // body) is the only trace of geometric intent.
+                    if !c.arg_bindings.iter().any(|(n, _)| n == "actual") {
+                        continue;
+                    }
+                    let binding = |name: &str| {
+                        c.arg_bindings.iter().find(|(n, _)| n == name).map(|(_, e)| e)
+                    };
+                    let (Some(tol_expr), Some(act_expr)) =
+                        (binding("tolerance"), binding("actual"))
+                    else {
+                        // An `actual` with no `tolerance` is not a Conforms callout.
+                        continue;
+                    };
+
+                    let resolution = (|| {
+                        // Resolve `tolerance` → a GeometricTolerance StructureInstance.
+                        let tol_val = eval_expr(tol_expr, &ctx);
+                        let data = match &tol_val {
+                            Value::StructureInstance(d) => d,
+                            _ => {
+                                return GdtConformanceResolution::Indeterminate(
+                                    "`tolerance` did not resolve to a GeometricTolerance instance"
+                                        .to_string(),
+                                );
+                            }
+                        };
+                        let conforms = template_by_name
+                            .get(data.type_name.as_str())
+                            .map(|t| {
+                                satisfies_trait_bound(
+                                    &t.trait_bounds,
+                                    "GeometricTolerance",
+                                    &trait_registry,
+                                )
+                            })
+                            .unwrap_or(false);
+                        if !conforms {
+                            return GdtConformanceResolution::Indeterminate(format!(
+                                "`tolerance` type `{}` is not a GeometricTolerance",
+                                data.type_name
+                            ));
+                        }
+                        // Nominal feature handle (read off the tolerance instance).
+                        let feature = match data.fields.get("feature").and_then(&resolve_handle) {
+                            Some(h) => h,
+                            None => {
+                                return GdtConformanceResolution::Indeterminate(
+                                    "could not resolve the nominal `feature` geometry handle"
+                                        .to_string(),
+                                );
+                            }
+                        };
+                        // Actual (measured) geometry handle.
+                        let actual_val = eval_expr(act_expr, &ctx);
+                        let actual = match resolve_handle(&actual_val) {
+                            Some(h) => h,
+                            None => {
+                                return GdtConformanceResolution::Indeterminate(
+                                    "could not resolve the `actual` geometry handle".to_string(),
+                                );
+                            }
+                        };
+                        // Tolerance zone via the SHIPPED scalar predicate's helper —
+                        // feed, not replace, `effective_tolerance_zone` (D3).
+                        let tol_value =
+                            data.fields.get("tolerance_value").cloned().unwrap_or(Value::Undef);
+                        let material_condition = data
+                            .fields
+                            .get("material_condition")
+                            .cloned()
+                            .unwrap_or(Value::Enum {
+                                type_name: "MaterialCondition".to_string(),
+                                variant: "RFS".to_string(),
+                            });
+                        let feature_departure = binding("feature_departure")
+                            .map(|e| eval_expr(e, &ctx))
+                            .unwrap_or(Value::Scalar {
+                                si_value: 0.0,
+                                dimension: DimensionVector::LENGTH,
+                            });
+                        let zone = reify_stdlib::eval_builtin(
+                            "effective_tolerance_zone",
+                            &[tol_value, material_condition, feature_departure],
+                        );
+                        let zone_m = match zone {
+                            Value::Scalar { si_value, .. }
+                                if si_value.is_finite() && si_value >= 0.0 =>
+                            {
+                                si_value
+                            }
+                            _ => {
+                                return GdtConformanceResolution::Indeterminate(
+                                    "could not compute the effective tolerance zone".to_string(),
+                                );
+                            }
+                        };
+                        GdtConformanceResolution::Resolved { actual, feature, zone_m }
+                    })();
+
+                    work.push(GdtConformanceWork {
+                        id: c.id.clone(),
+                        span: c.span,
+                        resolution,
+                    });
+                }
+            }
+            work
+        };
+
+        if work.is_empty() {
+            return;
+        }
+
+        // ── Phase 2: query the kernel + weave verdicts (immutable kernel borrow) ──
+        let kernel = self
+            .default_kernel_name
+            .as_deref()
+            .and_then(|n| self.geometry_kernels.get(n));
+
+        for w in work {
+            let (satisfaction, diag): (Satisfaction, Option<Diagnostic>) = match w.resolution {
+                GdtConformanceResolution::Indeterminate(reason) => (
+                    Satisfaction::Indeterminate,
+                    Some(gdt_indeterminate_diag(w.span, &reason)),
+                ),
+                GdtConformanceResolution::Resolved { actual, feature, zone_m } => match &kernel {
+                    None => (
+                        Satisfaction::Indeterminate,
+                        Some(gdt_indeterminate_diag(
+                            w.span,
+                            "no geometry kernel available to measure the `actual` deviation \
+                             against the nominal feature",
+                        )),
+                    ),
+                    Some(k) => {
+                        let query = reify_ir::GeometryQuery::MaxDeviation {
+                            actual,
+                            nominal: feature,
+                            tolerance: GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M,
+                        };
+                        match k.query(&query) {
+                            Ok(reply) => match measured_deviation_m(&reply) {
+                                Some(measured_m) => gdt_verdict(zone_m, measured_m, w.span),
+                                None => (
+                                    Satisfaction::Indeterminate,
+                                    Some(gdt_indeterminate_diag(
+                                        w.span,
+                                        &format!(
+                                            "geometry kernel returned an unusable MaxDeviation \
+                                             reply ({reply:?})"
+                                        ),
+                                    )),
+                                ),
+                            },
+                            Err(err) => (
+                                Satisfaction::Indeterminate,
+                                Some(gdt_indeterminate_diag(
+                                    w.span,
+                                    &format!("geometry kernel MaxDeviation query failed: {err}"),
+                                )),
+                            ),
+                        }
+                    }
+                },
+            };
+
+            // Weave: OVERRIDE the matching entry in caller order; push if absent
+            // (defensive — the scalar path normally pre-populates it).
+            if let Some(entry) = constraint_results.iter_mut().find(|e| e.id == w.id) {
+                entry.satisfaction = satisfaction;
+            } else {
+                constraint_results.push(ConstraintCheckEntry {
+                    id: w.id.clone(),
+                    label: Some("Conforms".to_string()),
+                    satisfaction,
+                });
+            }
+            if let Some(d) = diag {
+                diagnostics.push(d);
+            }
+        }
+    }
+
     /// Evaluate and check constraints (guard-aware).
     ///
     /// Checks top-level (unguarded) constraints unconditionally, plus
@@ -999,9 +1320,24 @@ impl Engine {
         // remains available when dispatch_constraints() reads it for
         // RepresentationWithin interception (type-name-scan fallback path).
         let det_values = &self.eval_state.as_ref().unwrap().snapshot.values;
-        let (constraint_results, constraint_diags) =
+        let (mut constraint_results, constraint_diags) =
             self.check_constraints_against_templates(module, &eval_result.values, Some(det_values));
         diagnostics.extend(constraint_diags);
+
+        // ── η GD&T geometric-conformance measurement pass (task 4480 η) ──────────
+        // Beside measure_dfm_rules: a check-time measure pass that OVERRIDES the
+        // scalar ConstraintCheckEntry of any explicit-`actual` Conforms with a
+        // geometric verdict (Satisfied/Violated), or Indeterminate when there is no
+        // kernel / the handle is unrealizable (C1 — never a false Violated). It is a
+        // fast no-op for modules with no geometric Conforms, so non-GD&T modules stay
+        // byte-identical (B4). `det_values` is no longer borrowed here (NLL), so the
+        // `&mut self` borrow is free.
+        self.measure_gdt_conformance(
+            module,
+            &eval_result.values,
+            &mut constraint_results,
+            &mut diagnostics,
+        );
 
         // DFM auto-measurement pass (task 4408 γ).
         // eval_result.values is a separate owned ValueMap — collect DFM specs
@@ -1211,6 +1547,85 @@ impl Engine {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// ── η/4480 GD&T conformance pass helpers ─────────────────────────────────────
+
+/// Tessellation deflection forwarded to [`reify_ir::GeometryQuery::MaxDeviation`]'s
+/// `tolerance` by [`Engine::measure_gdt_conformance`]. Mirrors
+/// `geometry_ops::MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (= 0.0001 m) and
+/// `Engine::DEFAULT_TESSELLATION_TOLERANCE`; the matching value is what
+/// `MockGeometryKernel::with_max_deviation_result` keys on in the η unit tests.
+const GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M: f64 = 0.0001;
+
+/// Outcome of resolving a geometric `Conforms` instance during phase 1 of
+/// [`Engine::measure_gdt_conformance`], before the kernel is queried.
+enum GdtConformanceResolution {
+    /// Both handles + the tolerance zone resolved; ready for a MaxDeviation query.
+    Resolved {
+        actual: GeometryHandleId,
+        feature: GeometryHandleId,
+        zone_m: f64,
+    },
+    /// Resolution failed (non-conforming tolerance, unrealizable handle, …) —
+    /// the verdict is Indeterminate with this reason (C1: never a false Violated).
+    Indeterminate(String),
+}
+
+/// A single geometric `Conforms` instance to weave back into the check results.
+struct GdtConformanceWork {
+    id: ConstraintNodeId,
+    span: SourceSpan,
+    resolution: GdtConformanceResolution,
+}
+
+/// Extract a non-negative, finite metres deviation from a MaxDeviation kernel
+/// reply (`Value::Real`, or defensively `Value::Scalar`). `None` for any other
+/// or degenerate reply — the caller maps `None` to Indeterminate (C1).
+fn measured_deviation_m(reply: &Value) -> Option<f64> {
+    match reply {
+        Value::Real(v) if v.is_finite() && *v >= 0.0 => Some(*v),
+        Value::Scalar { si_value, .. } if si_value.is_finite() && *si_value >= 0.0 => {
+            Some(*si_value)
+        }
+        _ => None,
+    }
+}
+
+/// Decide a geometric Conforms verdict from the tolerance zone and measured
+/// deviation (both SI metres): `zone >= measured` → Satisfied (no diagnostic);
+/// else Violated with a diagnostic carrying the measured magnitude + zone width
+/// (both in mm). Mirrors the shipped scalar predicate `effective_tolerance_zone(...)
+/// >= measured_deviation`.
+fn gdt_verdict(zone_m: f64, measured_m: f64, span: SourceSpan) -> (Satisfaction, Option<Diagnostic>) {
+    if zone_m >= measured_m {
+        return (Satisfaction::Satisfied, None);
+    }
+    let measured_mm = measured_m * 1e3;
+    let zone_mm = zone_m * 1e3;
+    (
+        Satisfaction::Violated,
+        Some(
+            Diagnostic::error(format!(
+                "Conforms VIOLATED: measured deviation {measured_mm:.4} mm exceeds the \
+                 {zone_mm:.4} mm tolerance zone"
+            ))
+            .with_code(DiagnosticCode::ConstraintViolated)
+            .with_label(DiagnosticLabel::new(span, "geometric conformance violated")),
+        ),
+    )
+}
+
+/// Build the Indeterminate diagnostic for a geometric Conforms that could not be
+/// measured (missing kernel, unrealizable handle, kernel error). Warning, not
+/// error — Indeterminate never fails the check (C1).
+fn gdt_indeterminate_diag(span: SourceSpan, reason: &str) -> Diagnostic {
+    Diagnostic::warning(format!("Conforms INDETERMINATE: {reason}"))
+        .with_code(DiagnosticCode::ConstraintIndeterminate)
+        .with_label(DiagnosticLabel::new(
+            span,
+            "geometric conformance could not be measured",
+        ))
+}
 
 /// Extract a `Value::Enum` variant string from a `StructureInstanceData.fields` map.
 /// Returns `None` if the key is absent or the value is not a concrete `Value::Enum`.
@@ -1496,5 +1911,425 @@ mod tests {
             ("subject", geometry_handle(1)),
         ]);
         assert!(dfm_rule_spec(&rule).is_none(), "no capability param → None");
+    }
+}
+
+// ── η/4480 step-9: measure_gdt_conformance core logic (MockGeometryKernel) ─────
+//
+// Unit tests for `Engine::measure_gdt_conformance` — the check-time GD&T
+// conformance measurement pass (PRD v0_6 task η, C3/C5).  Driven by a
+// `MockGeometryKernel` (`with_max_deviation_result`) so the Satisfied / Violated
+// / Indeterminate / weave logic is exercised deterministically without OCCT.
+//
+// Cases:
+//   (a) explicit `actual` + kernel deviation 0.5mm vs 0.1mm zone → Violated,
+//       diagnostic carries the measured magnitude + the zone width.
+//   (b) deviation 0mm vs 0.1mm zone → Satisfied.
+//   (c) explicit `actual` + NO kernel → Indeterminate + missing-kernel
+//       diagnostic, never a (false) Violated (C1 invariant).
+//   (d) Conforms with NO explicit `actual` → the scalar ConstraintCheckEntry is
+//       left untouched (no override, no geometric diagnostic) (B4).
+//
+// Results are woven back by matching `ConstraintNodeId` in caller order: the
+// pass OVERRIDES the existing entry for the geometric Conforms only.
+#[cfg(test)]
+mod gdt_conformance_tests {
+    use reify_compiler::{CompiledConstraint, CompiledModule};
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::DimensionVector;
+    use reify_core::identity::{RealizationNodeId, ValueCellId};
+    use reify_ir::{
+        CompiledExprKind, GeometryHandleId, PersistentMap, Satisfaction, StructureInstanceData,
+        StructureTypeId, Value, ValueMap,
+    };
+    use reify_test_support::{MockGeometryKernel, parse_and_compile_with_stdlib};
+
+    use crate::{ConstraintCheckEntry, Engine};
+
+    /// A geometric Conforms: `actual` is explicitly bound (the η detection
+    /// signal). Both `tolerance` and `actual` are bare param refs, so they
+    /// compile to `ValueRef` arg-bindings the test can resolve by cell id.
+    const GEOMETRIC_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+}
+"#;
+
+    /// A scalar Conforms: `actual` is omitted (falls to its `nominal()` default),
+    /// so the pass must leave its scalar verdict untouched (B4).
+    const SCALAR_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+}
+"#;
+
+    /// Find the single Conforms instance in `Probe` (recognised by binding
+    /// `tolerance`). There is exactly one per fixture.
+    fn find_conforms(module: &CompiledModule) -> &CompiledConstraint {
+        module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template")
+            .constraints
+            .iter()
+            .find(|c| c.arg_bindings.iter().any(|(n, _)| n == "tolerance"))
+            .expect("Conforms instance binding `tolerance`")
+    }
+
+    /// Extract the `ValueCellId` that the named arg-binding references
+    /// (the call-site arg compiles to a `ValueRef` for a bare param ref).
+    fn ref_cell(cc: &CompiledConstraint, name: &str) -> ValueCellId {
+        let (_, expr) = cc
+            .arg_bindings
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("arg-binding `{name}` not captured"));
+        match &expr.kind {
+            CompiledExprKind::ValueRef(id) => id.clone(),
+            other => panic!("expected ValueRef for arg `{name}`, got {other:?}"),
+        }
+    }
+
+    /// A `Value::GeometryHandle` carrying a *valid* kernel handle (so the pass
+    /// resolves it directly — the realization-bridge path is covered by the
+    /// OCCT CLI test).
+    fn handle_value(kernel: GeometryHandleId) -> Value {
+        Value::GeometryHandle {
+            realization_ref: RealizationNodeId::new("Probe", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: kernel,
+        }
+    }
+
+    /// A Flatness (GeometricTolerance-conforming) StructureInstance with the
+    /// given tolerance zone (metres), RFS material condition, and feature handle.
+    fn flatness_value(tolerance_value_m: f64, feature: GeometryHandleId) -> Value {
+        let mut fields: PersistentMap<String, Value> = PersistentMap::new();
+        fields.insert(
+            "tolerance_value".to_string(),
+            Value::Scalar { si_value: tolerance_value_m, dimension: DimensionVector::LENGTH },
+        );
+        fields.insert(
+            "material_condition".to_string(),
+            Value::Enum {
+                type_name: "MaterialCondition".to_string(),
+                variant: "RFS".to_string(),
+            },
+        );
+        fields.insert("feature".to_string(), handle_value(feature));
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Flatness".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// Build the value map binding the geometric Conforms's `tolerance` cell to a
+    /// Flatness (0.1mm zone, RFS, `feature`) and its `actual` cell to `actual`.
+    fn geometric_values(
+        conforms: &CompiledConstraint,
+        actual: GeometryHandleId,
+        feature: GeometryHandleId,
+    ) -> ValueMap {
+        let mut values = ValueMap::new();
+        values.insert(ref_cell(conforms, "tolerance"), flatness_value(1e-4, feature));
+        values.insert(ref_cell(conforms, "actual"), handle_value(actual));
+        values
+    }
+
+    /// (a) Explicit actual, measured 0.5mm > 0.1mm zone → Violated + diagnostic
+    /// carrying the measured magnitude (0.5mm) and the zone width (0.1mm).
+    #[test]
+    fn explicit_actual_deviation_exceeds_zone_is_violated() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+        let label = conforms.label.clone();
+
+        let actual = GeometryHandleId(202);
+        let feature = GeometryHandleId(101);
+        let values = geometric_values(conforms, actual, feature);
+
+        // Kernel measures a 0.5mm (5e-4 m) deviation between actual and feature.
+        let mock = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            feature,
+            0.0001,
+            Value::Real(5e-4),
+        );
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        // Scalar path's pre-existing (default-Satisfied) entry, to be OVERRIDDEN.
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id.clone(),
+            label,
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "weave must override in place, not append");
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Violated,
+            "measured 0.5mm exceeds the 0.1mm zone → Violated"
+        );
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .find(|m| m.contains("VIOLATED"))
+            .unwrap_or_else(|| panic!("expected a VIOLATED diagnostic, got: {diags:#?}"));
+        assert!(
+            msg.contains("0.5000"),
+            "diagnostic must carry the measured magnitude (0.5mm): {msg}"
+        );
+        assert!(
+            msg.contains("0.1000"),
+            "diagnostic must carry the zone width (0.1mm): {msg}"
+        );
+    }
+
+    /// (b) Explicit actual, measured 0mm ≤ 0.1mm zone → Satisfied.
+    #[test]
+    fn explicit_actual_within_zone_is_satisfied() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+
+        let actual = GeometryHandleId(202);
+        let feature = GeometryHandleId(101);
+        let values = geometric_values(conforms, actual, feature);
+
+        let mock = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            feature,
+            0.0001,
+            Value::Real(0.0),
+        );
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: None,
+            satisfaction: Satisfaction::Indeterminate,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "measured 0mm within the 0.1mm zone → Satisfied"
+        );
+        assert!(
+            !diags.iter().any(|d| d.message.contains("VIOLATED")),
+            "a Satisfied geometric Conforms must not emit a VIOLATED diagnostic"
+        );
+    }
+
+    /// (c) Explicit actual but NO kernel → Indeterminate + missing-kernel
+    /// diagnostic, never a (false) Violated (C1 invariant).
+    #[test]
+    fn explicit_actual_no_kernel_is_indeterminate_not_violated() {
+        let module = parse_and_compile_with_stdlib(GEOMETRIC_SOURCE);
+        let conforms = find_conforms(&module);
+        let node_id = conforms.id.clone();
+
+        let values = geometric_values(conforms, GeometryHandleId(202), GeometryHandleId(101));
+
+        // No geometry kernel.
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: None,
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &values, &mut results, &mut diags);
+
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Indeterminate,
+            "no kernel → Indeterminate (never a false Violated)"
+        );
+        assert_ne!(results[0].satisfaction, Satisfaction::Violated);
+        let msg = diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .find(|m| m.contains("INDETERMINATE"))
+            .unwrap_or_else(|| panic!("expected an INDETERMINATE diagnostic, got: {diags:#?}"));
+        assert!(
+            msg.to_lowercase().contains("kernel"),
+            "Indeterminate diagnostic must name the missing kernel: {msg}"
+        );
+    }
+
+    /// (d) A Conforms with NO explicit actual: the pass must leave its scalar
+    /// ConstraintCheckEntry untouched (no override, no geometric diagnostic).
+    #[test]
+    fn scalar_conforms_without_actual_is_untouched() {
+        let module = parse_and_compile_with_stdlib(SCALAR_SOURCE);
+        let conforms = find_conforms(&module);
+        assert!(
+            !conforms.arg_bindings.iter().any(|(n, _)| n == "actual"),
+            "fixture precondition: the scalar Conforms binds no `actual`"
+        );
+        let node_id = conforms.id.clone();
+
+        // A kernel IS present — but with no explicit actual the pass must not run.
+        let mock = MockGeometryKernel::new();
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(mock)));
+
+        let mut results = vec![ConstraintCheckEntry {
+            id: node_id,
+            label: Some("Conforms".to_string()),
+            satisfaction: Satisfaction::Satisfied,
+        }];
+        let mut diags = Vec::new();
+        engine.measure_gdt_conformance(&module, &ValueMap::new(), &mut results, &mut diags);
+
+        assert_eq!(results.len(), 1, "no override, no append");
+        assert_eq!(
+            results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "scalar Conforms (no actual) must keep its scalar verdict (B4)"
+        );
+        assert!(diags.is_empty(), "no geometric diagnostic for a scalar Conforms");
+    }
+}
+
+// ── η/4480 step-11: Engine::check weaves measure_gdt_conformance results ────────
+//
+// Proves the check()-level wiring (step-12): `Engine::check` invokes
+// `measure_gdt_conformance` and OVERRIDES only the geometric Conforms entry,
+// leaving a scalar Conforms (no explicit `actual`) and an ordinary constraint
+// untouched, while preserving caller (declaration) order (B9 weave).
+//
+// Driven WITHOUT a geometry kernel: the geometric Conforms cannot resolve a live
+// handle, so the pass overrides its scalar-Satisfied verdict with Indeterminate
+// (C1 — never a false Violated) and emits a "Conforms INDETERMINATE" diagnostic.
+// That is a deterministic, kernel-free signal that the weave ran; the
+// Violated/Satisfied measured path is covered by the OCCT-gated CLI test (η B1/B2).
+#[cfg(test)]
+mod gdt_conformance_check_weave_tests {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_ir::Satisfaction;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    use crate::Engine;
+
+    /// One structure carrying three unguarded constraints in declaration order:
+    ///   1. a GEOMETRIC Conforms (explicit `actual`)  — overridden by the η pass
+    ///   2. a SCALAR Conforms (no `actual`)            — left untouched (B4)
+    ///   3. an ordinary scalar constraint              — left untouched
+    const MIXED_SOURCE: &str = r#"
+structure def Probe {
+    param tol : Flatness = Flatness(tolerance_value: 0.1mm, feature: box(1mm, 1mm, 1mm))
+    param act : Geometry = box(1mm, 1mm, 1mm)
+    param len : Length = 5mm
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm, actual: act)
+    constraint Conforms(tolerance: tol, measured_deviation: 0mm, feature_departure: 0mm)
+    constraint len >= 0mm
+}
+"#;
+
+    #[test]
+    fn check_weaves_geometric_conforms_override_only() {
+        let module = parse_and_compile_with_stdlib(MIXED_SOURCE);
+
+        // Identify the three constraints by their captured arg-binding shape.
+        let probe = module
+            .templates
+            .iter()
+            .find(|t| t.name == "Probe")
+            .expect("Probe template");
+        let has = |c: &reify_compiler::CompiledConstraint, name: &str| {
+            c.arg_bindings.iter().any(|(n, _)| n == name)
+        };
+        let geometric_id = probe
+            .constraints
+            .iter()
+            .find(|c| has(c, "actual"))
+            .expect("geometric Conforms (explicit actual)")
+            .id
+            .clone();
+        let scalar_id = probe
+            .constraints
+            .iter()
+            .find(|c| has(c, "tolerance") && !has(c, "actual"))
+            .expect("scalar Conforms (no actual)")
+            .id
+            .clone();
+        let ordinary_id = probe
+            .constraints
+            .iter()
+            .find(|c| c.arg_bindings.is_empty())
+            .expect("ordinary constraint (no arg bindings)")
+            .id
+            .clone();
+
+        // No geometry kernel → the geometric Conforms cannot measure → Indeterminate.
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let result = engine.check(&module);
+
+        let entry = |id: &reify_core::ConstraintNodeId| {
+            result
+                .constraint_results
+                .iter()
+                .find(|e| &e.id == id)
+                .unwrap_or_else(|| panic!("constraint {id:?} missing from check results"))
+        };
+
+        // (1) geometric Conforms: OVERRIDDEN to Indeterminate (was scalar-Satisfied);
+        //     never a (false) Violated (C1).
+        assert_eq!(
+            entry(&geometric_id).satisfaction,
+            Satisfaction::Indeterminate,
+            "geometric Conforms must be overridden to Indeterminate (no kernel; C1)"
+        );
+        assert_ne!(entry(&geometric_id).satisfaction, Satisfaction::Violated);
+
+        // (2) scalar Conforms (no actual): untouched — keeps its scalar verdict (B4).
+        assert_eq!(
+            entry(&scalar_id).satisfaction,
+            Satisfaction::Satisfied,
+            "scalar Conforms (no actual) must keep its scalar verdict (B4)"
+        );
+
+        // (3) ordinary constraint: untouched by the η pass.
+        assert_eq!(
+            entry(&ordinary_id).satisfaction,
+            Satisfaction::Satisfied,
+            "ordinary constraint must be untouched by the η pass"
+        );
+
+        // The woven pass ran and emitted a geometric-conformance diagnostic.
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Conforms INDETERMINATE")),
+            "expected a 'Conforms INDETERMINATE' diagnostic from the woven pass, got: {:#?}",
+            result.diagnostics
+        );
+
+        // Caller (declaration) order preserved: geometric, then scalar, then ordinary.
+        let pos = |id: &reify_core::ConstraintNodeId| {
+            result
+                .constraint_results
+                .iter()
+                .position(|e| &e.id == id)
+                .expect("id present")
+        };
+        assert!(
+            pos(&geometric_id) < pos(&scalar_id) && pos(&scalar_id) < pos(&ordinary_id),
+            "weave must preserve caller (declaration) order"
+        );
     }
 }

@@ -626,7 +626,7 @@ const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
 /// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
 pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
-    if let reify_ast::ExprKind::Auto { free } = &expr.kind {
+    if let reify_ast::ExprKind::Auto { free, .. } = &expr.kind {
         Some(*free)
     } else {
         None
@@ -1731,13 +1731,15 @@ pub(crate) fn compile_expr_guarded(
                             &matched_fn.return_type,
                             &subst,
                         );
-                        // A BARE top-level unbound type-param means nothing pinned
-                        // the result type (e.g. `make<T>() -> T` called as `make()`):
-                        // the call yields a wholly-undetermined type → error + poison.
+                        // A BARE top-level unbound type-param or dimension-param
+                        // means nothing pinned the result type (e.g. `make<T>() -> T`
+                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
+                        // called as `mk(3.0)` — Q undetermined): the call yields a
+                        // wholly-undetermined type → error + poison (task ζ / D8).
                         // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
                         // is TOLERATED — it is pinned by an enclosing call (B5,
                         // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_)) {
+                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
                             return make_poison_literal(
                                 diagnostics,
                                 Diagnostic::error(format!(
@@ -1966,6 +1968,21 @@ pub(crate) fn compile_expr_guarded(
                         diagnostics,
                     );
 
+                    // γ (task 4383): compile-time per-arg type check for the
+                    // geometric-relation vocabulary — the three §3.2 policing
+                    // layers (unit / kind-projection / curation). A parallel
+                    // pure diagnostic side-effect to `check_builtin_arg_types`
+                    // above: result-type inference is unchanged (anti-cascade),
+                    // Type::Error / Type::TypeParam slots are skipped (gradualism),
+                    // and the shared verbs `angle`/`distance` are policed only in
+                    // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
+                    relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -2003,6 +2020,29 @@ pub(crate) fn compile_expr_guarded(
                         // the helper's actual return type.
                         topology_selector_result_type(name)
                             .expect("is_geometry_topology_selector implies result type")
+                    } else if let Some(t) =
+                        relation_signatures::relation_fn_result_type(name, &compiled_args)
+                    {
+                        // γ (task 4383): the geometric-relation vocabulary —
+                        // coincident / on / parallel / antiparallel /
+                        // perpendicular / concentric / flush / offset / tangent,
+                        // plus the arity-3 DRIVE forms of `angle` / `distance`.
+                        //
+                        // A relation is a DOF-removal directive: it types to
+                        // `Type::Relation` (distinct from Bool, no truth value)
+                        // and evaluates to `Value::Undef` until ζ supplies the
+                        // relate-solve (the geometry-query Phase-1 precedent — the
+                        // emitted node stays a `FunctionCall`).
+                        //
+                        // **Placed BEFORE `is_geometry_query`** (which is name-only
+                        // and would otherwise claim `angle`/`distance` at any
+                        // arity): this arg-aware arm returns `Some(Relation)` for
+                        // the pure names and for arity-3 `angle`/`distance`, and
+                        // `None` for the arity-2 `angle`/`distance` DERIVE forms so
+                        // they fall through to the geometry-query arm below
+                        // (Angle / Scalar<Length>). Mirrors the arg-aware
+                        // `selector_composition_result_type` fall-through idiom.
+                        t
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /
@@ -2047,6 +2087,21 @@ pub(crate) fn compile_expr_guarded(
                         // Returns None for non-selector operands so CSG
                         // union/difference fall through to `is_geometry_function`.
                         t
+                    } else if is_tolerancing_marker(name) {
+                        // η/4480 (C3): `nominal()` — a zero-arg inert Geometry
+                        // marker (eval in `reify_stdlib::tolerancing`). Typed
+                        // `Geometry` so `param actual : Geometry = nominal()`
+                        // type-checks; without this arm the zero-arg fallback
+                        // below would type it `Real` (first-arg → none → default)
+                        // and emit the "cannot infer return type of zero-arg
+                        // function" warning. The marker flows nowhere — the η
+                        // `measure_gdt_conformance` pass keys on an explicit
+                        // `actual` binding, never this default — so the
+                        // INVALID-handle sentinel is inert. Pinned disjoint from
+                        // the sibling families by the units.rs marker tests, so
+                        // this arm's position in the ladder is unobservable.
+                        tolerancing_marker_result_type(name)
+                            .expect("is_tolerancing_marker implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
@@ -2099,7 +2154,7 @@ pub(crate) fn compile_expr_guarded(
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
                     } else if is_math_typed_fn(name) {
-                        // The math-linalg family, routed via two sibling
+                        // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
                         //     vec / matrix / diag / identity.
@@ -2110,6 +2165,12 @@ pub(crate) fn compile_expr_guarded(
                         //     eigenvalues/complex_eigenvalues, and the complex
                         //     fns complex/real/imag/conjugate/complex_magnitude/
                         //     phase/arg.
+                        //   • TRIG / TRANSCENDENTAL (task 4352,
+                        //     MATH_TRANSCENDENTAL_NAMES): the §1.2 names —
+                        //     sin/cos/tan → dimensionless; asin/acos/atan/atan2
+                        //     → Angle; exp/log → dimensionless. Results are
+                        //     arg-independent (fixed arms in math_fn_result_type,
+                        //     matching eval).
                         // `math_fn_result_type` computes the per-call result type
                         // for BOTH: for constructors it recovers the return
                         // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —
@@ -3025,10 +3086,43 @@ pub(crate) fn compile_expr_guarded(
             // becomes a `MethodCall` (method = projection name, no args); eval
             // dispatches the datum-projection method names on datum Values
             // (the projection member names are disjoint from count/sum/keys/values).
-            if matches!(
+            //
+            // ── geometric-relations ε: feature→datum projections ───────────
+            //
+            // The same projection block also handles *feature* receivers —
+            // `Type::Geometry` (a realized solid) and `Type::Selector(_)` /
+            // `Type::AnySelector` (a topology selection) — projecting them to the
+            // datum their trait bundle carries (`feature.axis : Axis`,
+            // `.plane : Plane`, `.point : Point3<Length>`, `.dir : Direction`;
+            // design §2.2). Whereas a β *datum* receiver only enters here for a
+            // recognized projection member (`DATUM_PROJECTION_MEMBERS`), a feature
+            // receiver enters for *any* non-aggregation member: a geometry/selector
+            // has no other member-access semantics, so every such `.member` is a
+            // feature→datum projection attempt and an unrecognized one
+            // (`feature.foo`) is a typed rejection (`Unavailable` →
+            // `DatumProjectionUnavailable`), not a generic "unsupported" fallthrough.
+            // Collection-aggregation members (`count`/`sum`/`keys`/`values`) are
+            // excluded so a selector's aggregation still routes to the arm below.
+            //
+            // Lowering is a `MethodCall` (method = projection name, no args), the
+            // same NODE shape β uses — but the *eval* is kernel-backed: a feature
+            // receiver evaluates to a `Value::GeometryHandle`/`Value::Selector`, for
+            // which the pure `eval_datum_projection` returns `None` (→ `Undef`), and
+            // the `reify-eval` geometry_ops post-process patches the cell with the
+            // resolved feature-datum bundle projection. This is distinct from β's
+            // pure datum→datum `eval_datum_projection` (which fires only for an
+            // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
+            let receiver_is_datum = matches!(
                 &compiled_obj.result_type,
                 Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
-            ) && DATUM_PROJECTION_MEMBERS.contains(&member.as_str())
+            );
+            let receiver_is_feature = matches!(
+                &compiled_obj.result_type,
+                Type::Geometry | Type::Selector(_) | Type::AnySelector
+            );
+            if (receiver_is_datum && DATUM_PROJECTION_MEMBERS.contains(&member.as_str()))
+                || (receiver_is_feature
+                    && !COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()))
             {
                 match datum_projection_result_type(&compiled_obj.result_type, member) {
                     DatumProjectionResolution::Resolved(result_type) => {

@@ -1,0 +1,35 @@
+{
+    "probes": [
+        {
+            "capability": "arrow-type grammar production (3979 class)",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {
+                "observation": "present",
+                "match": {}
+            }
+        },
+        {
+            "capability": "arg-vs-param nominal rejection (4575 class)",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "exit_code": 1
+                }
+            }
+        },
+        {
+            "capability": "eval-error-proxy clean baseline (ir kind)",
+            "probe_kind": "ir",
+            "fixture": "tests/prd-gate/fixtures/ir_clean_eval.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "EvalError"
+                }
+            }
+        }
+    ]
+}

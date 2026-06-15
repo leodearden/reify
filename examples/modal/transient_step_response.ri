@@ -87,13 +87,14 @@ structure CantileverStepResponse {
     // Forcing: a single step load suddenly applied at the free tip in +Z at t=0.
     // ForcingTimeHistory bundles the sources acting on the part (PRD §5.1); the
     // `sources.count > 0` ctor constraint is satisfied by the one StepForce.
+    // `part` is the opaque Part marker (task 4578 / 4584: was String "beam").
     let tip_push = StepForce(
         at: "tip",
         direction: vec3(0.0, 0.0, 1.0),
         magnitude: 10N,
         start_time: 0s
     )
-    let forcing = ForcingTimeHistory(part: "beam", sources: [tip_push])
+    let forcing = ForcingTimeHistory(part: Part(), sources: [tip_push])
 
     // Transient solve: @optimized dispatcher → modal::transient_response
     // trampoline. t_range is split into (t_start, t_end) + dt — Range<T> is not a

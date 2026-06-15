@@ -1786,6 +1786,53 @@ impl Engine {
     ) -> &std::collections::HashMap<reify_core::ValueCellId, reify_ir::UndefCause> {
         &self.last_undef_causes
     }
+
+    /// Reconstruct the complete set of root [`reify_ir::UndefCause`]s for
+    /// `cell` by walking forward dependencies through undef cells.
+    ///
+    /// Combines the per-cell origin side-map from the most recent `eval()` call
+    /// with the dependency graph from the current snapshot to produce a sorted,
+    /// deduplicated `Vec<UndefCause>`.
+    ///
+    /// Returns an empty `Vec` when:
+    /// - no snapshot is available (eval not yet called), or
+    /// - `capture_undef_causes` was `false` during the last `eval()` (empty
+    ///   origins map), or
+    /// - `cell` is determined (no undef causes to report).
+    ///
+    /// Consumer-facing API for δ (CLI) / ε (GUI) / ζ (LSP). See also the
+    /// free function [`crate::trace_undef_causes`] for synthetic-input unit
+    /// testing.
+    pub fn trace_undef_causes(&self, cell: &reify_core::ValueCellId) -> Vec<reify_ir::UndefCause> {
+        // Reconstruct the complete root-cause set for `cell`.
+        //
+        // Early-out when no snapshot is available (eval not yet called): the
+        // dependency map and values table come from the snapshot, so without one
+        // there is nothing to walk.
+        let Some(snap) = self.snapshot() else {
+            return Vec::new();
+        };
+
+        // Build the dependency map from the current snapshot graph.
+        // Rebuilt per call (see design decision: O(graph) rebuild acceptable for
+        // a read-only tooling path; no Engine field or lifetime surface added).
+        // Callers tracing N cells per interaction (e.g. GUI hover, LSP diagnostics)
+        // can avoid O(N·graph) cost by calling the free function
+        // `crate::undef_tracer::trace_undef_causes` directly with a single
+        // pre-built `DependencyMap` (built once via `DependencyMap::from_graph`).
+        let dep_map = crate::deps::DependencyMap::from_graph(&snap.graph);
+
+        // Delegate to the free function which owns the cycle-safe DAG walk and
+        // origin-collection logic.  origins = engine-side side-map (populated by
+        // classify_undef_origins after every eval with capture_undef_causes=true;
+        // empty when capture is off — produces [] for capture-OFF callers).
+        crate::undef_tracer::trace_undef_causes(
+            self.undef_causes(),
+            &dep_map,
+            &snap.values,
+            cell,
+        )
+    }
 }
 
 /// Perform the full startup-sweep of `cache_root`, binding the current build's

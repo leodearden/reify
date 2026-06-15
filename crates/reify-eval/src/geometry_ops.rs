@@ -686,6 +686,10 @@ pub(crate) fn compile_geometry_op(
                     height: eval_arg("height")?,
                     top_width: eval_arg("top_width")?,
                 }),
+                PrimitiveKind::Torus => Ok(reify_ir::GeometryOp::Torus {
+                    major_radius: eval_arg("major_radius")?,
+                    minor_radius: eval_arg("minor_radius")?,
+                }),
             }
         }
         CompiledGeometryOp::Boolean { op, left, right } => {
@@ -917,22 +921,139 @@ pub(crate) fn compile_geometry_op(
                     })
                 }
                 reify_compiler::ModifyKind::Draft => {
+                    // Evaluate angle FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — this keeps
+                    // the missing-angle Warning behaviour identical to the 3-arg
+                    // path.
                     let angle = eval_arg("angle")?;
-                    // plane is passed as an expression that evaluates to a value;
-                    // at this level we don't have the geometry handle yet, so we
-                    // use step_handles.last() as a placeholder for the plane reference.
-                    // Filter INVALID so a preceding compile failure (sentinel) propagates
-                    // as Err here rather than forwarding INVALID to the kernel.
+                    // plane is resolved via step_handles.last() (a pre-existing
+                    // approximation — plane_xy yields a Value::Plane, not a sub-op;
+                    // the full plane-handle plumbing fix is out of scope for δ).
+                    // Filter INVALID so a preceding compile failure (sentinel)
+                    // propagates as Err here rather than forwarding INVALID to the
+                    // kernel.
                     let plane_id = step_handles
                         .last()
                         .copied()
                         .filter(|h| *h != GeometryHandleId::INVALID)
                         .ok_or_else(|| "no valid plane handle available for Draft".to_string())?;
-                    Ok(reify_ir::GeometryOp::Draft {
-                        target: target_id,
-                        angle,
-                        plane: plane_id,
-                    })
+                    // Is a curated face selector present? Presence of a "faces"
+                    // named arg distinguishes the 4-arg
+                    // `draft(solid, faces, angle, neutral_plane)` form from the
+                    // 3-arg `draft(solid, angle, neutral_plane)` back-compat form.
+                    // `args` is shared-borrowed (compatible with the closure's
+                    // shared borrow of `args`).
+                    let faces_expr = args.iter().find(|(n, _)| n == "faces").map(|(_, e)| e);
+                    // `eval_arg` is not used again on the Draft path after the
+                    // `angle` call above, so NLL ends its `&mut diagnostics`
+                    // borrow here — letting the empty-selection arm below push
+                    // its own EmptyEdgeSelection diagnostic.
+                    match faces_expr {
+                        // 3-arg form: no selector → empty faces = all-draftable-
+                        // faces back-compat (legacy `draft(solid, angle, plane)`).
+                        None => Ok(reify_ir::GeometryOp::Draft {
+                            target: target_id,
+                            faces: vec![],
+                            angle,
+                            plane: plane_id,
+                        }),
+                        // 4-arg form: evaluate the selector and resolve it.
+                        Some(expr) => {
+                            let faces_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &faces_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Extract each sub-handle's kernel_handle,
+                                    // ERRORING on any element that is NOT a
+                                    // Geometry sub-handle — mirroring the Fillet
+                                    // arm's reject-non-handle strictness so a
+                                    // partially-malformed selector surfaces an
+                                    // error rather than silently drafting only
+                                    // the surviving handle subset (the latent
+                                    // `filter_map` trap the task-3205 reviewer
+                                    // flagged for Fillet). The cross-solid
+                                    // membership gate is deferred to the
+                                    // engine-unified-build-dag η/ε work (tasks
+                                    // 4360/4358), matching the Fillet arm's
+                                    // constraint.
+                                    let mut raw_ids: Vec<GeometryHandleId> =
+                                        Vec::with_capacity(elems.len());
+                                    for (i, e) in elems.iter().enumerate() {
+                                        match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => raw_ids.push(*kernel_handle),
+                                            other => {
+                                                return Err(format!(
+                                                    "draft(solid, faces, angle, neutral_plane): \
+                                                     face selector element [{}] is not a Geometry \
+                                                     sub-handle (got {:?}) — the face selector \
+                                                     must be a List of face handles",
+                                                    i, other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let resolved = canonical_subhandle_ids(raw_ids);
+                                    // ANTI-ZERO-FACES: a present selector that
+                                    // resolves to ZERO faces must NEVER silently
+                                    // fall through to the all-faces path (the
+                                    // task-3295 fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "draft(solid, faces, angle, neutral_plane): \
+                                                 face selector resolved to zero faces — refusing \
+                                                 to silently draft all faces",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "draft: face selector resolved to zero faces"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::Draft {
+                                        target: target_id,
+                                        faces: resolved,
+                                        angle,
+                                        plane: plane_id,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on
+                                // the legacy pipeline it is `Undef` (the faces
+                                // selector resolves in P4, after this P2 arm).
+                                // This is NOT an empty selection, so do NOT emit
+                                // E_EMPTY_SELECTION (that would false-positive on
+                                // every legacy 4-arg draft); return a plain Err
+                                // so the cell stays Undef and future in-loop
+                                // resolution can handle it.
+                                //
+                                // The message is deliberately USER-ACTIONABLE:
+                                // names the 4-arg call form and points at the
+                                // 3-arg all-faces fallback. Pinned by
+                                // `compile_geometry_op_draft_legacy_selector_
+                                // unresolved_is_user_actionable`.
+                                other => Err(format!(
+                                    "draft(solid, faces, angle, neutral_plane): curated \
+                                     face selection is not yet available on the current \
+                                     build pipeline — the face selector cannot be resolved \
+                                     at the point this draft runs. Use 3-arg \
+                                     draft(solid, angle, neutral_plane) to draft all \
+                                     faces, or wait for curated face selection \
+                                     (engine-unified-build-dag tasks 4360/4358). \
+                                     [face selector evaluated to {:?}]",
+                                    other
+                                )),
+                            }
+                        }
+                    }
                 }
                 reify_compiler::ModifyKind::Thicken => {
                     let offset = eval_arg("offset")?;
@@ -959,6 +1080,44 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
             let target_id = resolve_geom_ref(target, step_handles)?;
+            // ApplyTransform fetches a Value (not f64) arg, so handle it before the
+            // f64_arg closure which borrows diagnostics mutably for the full match span.
+            if let reify_compiler::TransformKind::ApplyTransform = kind {
+                match eval_named_arg("transform", kind, args, values, functions, meta_map, diagnostics) {
+                    Some(v) => match decompose_transform_to_arrays(&v) {
+                        Some((rotation, translation)) => {
+                            // NOTE: quaternion unit-length is NOT validated here.
+                            // `decompose_transform_to_arrays` is total and only checks
+                            // structural shape (Orientation variant, Vector translation,
+                            // correct dimension count).  Unit-norm enforcement is
+                            // intentionally delegated to the kernel's `build_trsf`
+                            // (OCCT layer — apply_transform_integration.rs case f).
+                            // A non-unit quaternion that reaches the kernel produces a
+                            // kernel-level `OperationFailed` error, which is surfaced as
+                            // a build diagnostic (not a panic).  This is an accepted
+                            // layering choice: early-reject requires a square-root in
+                            // the eval hot path for every transform, while the kernel
+                            // already must validate for correctness.
+                            return Ok(reify_ir::GeometryOp::ApplyTransform {
+                                target: target_id,
+                                rotation,
+                                translation,
+                            });
+                        }
+                        None => {
+                            diagnostics.push(Diagnostic::warning(
+                                "apply_transform dropped: 'transform' arg is not a valid Transform<3>"
+                                    .to_string(),
+                            ));
+                            return Err("apply_transform: 'transform' arg is not a valid Transform<3>".into());
+                        }
+                    },
+                    None => {
+                        // eval_named_arg already pushed a Warning for the missing arg.
+                        return Err("apply_transform: 'transform' arg is missing".into());
+                    }
+                }
+            }
             let mut f64_arg = |name: &str| -> Result<f64, String> {
                 eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| {
@@ -1017,6 +1176,7 @@ pub(crate) fn compile_geometry_op(
                         angle_rad: f64_arg("angle")?,
                     })
                 }
+                reify_compiler::TransformKind::ApplyTransform => unreachable!("handled above"),
             }
         }
         CompiledGeometryOp::Pattern { kind, target, args } => {
@@ -1791,6 +1951,19 @@ pub(crate) fn compile_geometry_op(
         }
         CompiledGeometryOp::Profile { kind, args } => {
             use reify_compiler::ProfileKind;
+            // Polygon uses eval_all_args_to_f64 (borrows `diagnostics` directly).
+            // Handle it before the eval_arg closure to avoid a conflicting mutable borrow.
+            if matches!(kind, ProfileKind::Polygon) {
+                let coords =
+                    eval_all_args_to_f64("polygon", args, values, functions, meta_map, diagnostics)
+                        .ok_or_else(|| {
+                            "polygon() has invalid (non-numeric or non-finite) coordinates"
+                                .to_string()
+                        })?;
+                let points: Vec<[f64; 2]> =
+                    coords.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+                return Ok(reify_ir::GeometryOp::PolygonProfile { points });
+            }
             let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
                 eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
                     .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
@@ -1803,6 +1976,11 @@ pub(crate) fn compile_geometry_op(
                 ProfileKind::Circle => Ok(reify_ir::GeometryOp::CircleProfile {
                     radius: eval_arg("radius")?,
                 }),
+                ProfileKind::Ellipse => Ok(reify_ir::GeometryOp::EllipseProfile {
+                    semi_major: eval_arg("semi_major")?,
+                    semi_minor: eval_arg("semi_minor")?,
+                }),
+                ProfileKind::Polygon => unreachable!("handled above"),
             }
         }
     }
@@ -2255,7 +2433,10 @@ fn rewrite_geometry_queries(
 
 /// Issue a scalar-returning kernel query (`Volume` / `SurfaceArea` /
 /// `MaxDeviation`) and wrap the `Value::Real` (or, defensively,
-/// `Value::Scalar`) reply as `Value::Scalar { si_value, dimension }`.
+/// `Value::Scalar`) reply through the `Value::from_real_scalar` chokepoint: a
+/// dimensioned result becomes `Value::Scalar { si_value, dimension }`, while a
+/// dimensionless result collapses to `Value::Real` (Invariant V — no code path
+/// constructs a `Value::Scalar { dimension.is_dimensionless() }`).
 ///
 /// Returns `Some(Value::Undef)` + one Warning on:
 /// - a kernel error,
@@ -2274,23 +2455,24 @@ fn dispatch_scalar_query(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
     match kernel.query(&query) {
-        Ok(reify_ir::Value::Real(v)) if v.is_finite() && v >= 0.0 => {
-            Some(reify_ir::Value::Scalar {
-                si_value: v,
-                dimension,
-            })
+        // Both reply shapes — a bare `Real` and the defensive `Scalar` — carry a
+        // single magnitude that must be finite and non-negative to stand for a
+        // volume / area / deviation. Validate them identically (a NaN / ±Inf /
+        // negative magnitude in EITHER shape is downgraded to Undef + Warning),
+        // then collapse through the `from_real_scalar` chokepoint (dimensionless
+        // → Value::Real, dimensioned → Value::Scalar; Invariant V).
+        Ok(reify_ir::Value::Real(v)) | Ok(reify_ir::Value::Scalar { si_value: v, .. })
+            if v.is_finite() && v >= 0.0 =>
+        {
+            Some(reify_ir::Value::from_real_scalar(v, dimension))
         }
-        Ok(reify_ir::Value::Real(v)) => {
+        Ok(reify_ir::Value::Real(v)) | Ok(reify_ir::Value::Scalar { si_value: v, .. }) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{helper_name}(...) kernel returned a non-finite or negative value ({v}); \
                  cell left at Undef",
             )));
             Some(reify_ir::Value::Undef)
         }
-        Ok(reify_ir::Value::Scalar { si_value, .. }) => Some(reify_ir::Value::Scalar {
-            si_value,
-            dimension,
-        }),
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
                 "{helper_name}(...) kernel reply has unexpected type (expected Real, \
@@ -3206,6 +3388,196 @@ pub(crate) fn try_eval_resolve_selector(
         }
         _ => None,
     }
+}
+
+/// Feature → datum projection member names (geometric-relations ε): the four
+/// projections a realized feature's trait bundle carries. LOCKSTEP with the
+/// compiler typing table (`datum_projection.rs` `Type::Geometry`/`Selector` arm)
+/// — these are exactly the members `datum_projection_result_type` resolves for a
+/// feature receiver. Used to gate [`try_eval_feature_datum_projection`] so it
+/// only intercepts feature→datum projection `MethodCall`s, leaving β's pure
+/// datum→datum projections (and any other method call) to the pure eval path.
+const FEATURE_DATUM_PROJECTION_MEMBERS: [&str; 4] = ["axis", "plane", "point", "dir"];
+
+/// Kernel-backed evaluation of a feature → datum projection (`feature.axis` /
+/// `.plane` / `.point` / `.dir`), geometric-relations ε (design §7.2). The
+/// compiler lowers such a projection to a `MethodCall { object: <feature>,
+/// method: <proj>, args: [] }` whose object is a realized `Value::GeometryHandle`
+/// cell; the pure `eval_datum_projection` cannot evaluate it (it reaches the
+/// kernel, the construction history, and the dedup primitive), so it is resolved
+/// HERE, mirroring the `ResolveSelector` coercion in
+/// [`try_eval_resolve_selector`].
+///
+/// Resolves the receiver to its feature handle, builds the deduplicated
+/// [`feature_datum_bundle`](crate::feature_datum::feature_datum_bundle) from the
+/// analytic ∪ construction-history union (the recovered [`SweptKind`] history is
+/// looked up in `swept_kinds` by the feature handle), and refines it to the
+/// requested projection via
+/// [`feature_datum_projection`](crate::feature_datum::feature_datum_projection):
+/// a unique datum is returned as its `Value`, a zero/many group emits a
+/// select-a-subfeature [`DiagnosticCode::FeatureDatumAmbiguous`] error and yields
+/// `Value::Undef`.
+///
+/// Returns `None` (skip — leave the cell for the pure eval path) when the expr is
+/// not a feature→datum projection `MethodCall`, or when its receiver is a β
+/// *datum* receiver (e.g. `axis.dir`, owned by `eval_datum_projection`) that does
+/// not resolve to a realized `Value::GeometryHandle`.
+///
+/// A receiver that statically types as a topology *selector*
+/// (`Type::Selector(_)` / `Type::AnySelector`) is accepted at compile time
+/// (design §2.2 types a selection's feature→datum projection) but its
+/// selector→sub-handle resolution is not yet wired on the eval side; rather than
+/// leaving the cell a silent `Value::Undef`, it emits a select-a-subfeature
+/// [`DiagnosticCode::FeatureDatumAmbiguous`] error and yields `Value::Undef`.
+pub(crate) fn try_eval_feature_datum_projection(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let (object, member) = match &expr.kind {
+        reify_ir::CompiledExprKind::MethodCall {
+            object,
+            method,
+            args,
+        } if args.is_empty()
+            && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) =>
+        {
+            (object.as_ref(), method.as_str())
+        }
+        _ => return None,
+    };
+
+    // Resolve the receiver to a realized feature handle. Only a feature receiver
+    // backed by a realized `Value::GeometryHandle` cell is wired end-to-end; a β
+    // datum receiver (`Axis`/…) does not resolve here, so we return None and the
+    // pure `eval_datum_projection` path handles it.
+    let handle = match resolve_selector_target(object, values) {
+        Some(target) => target.kernel_handle,
+        None => {
+            // The receiver did not resolve to a realized geometry handle. Check
+            // whether the receiver cell holds a hydrated `Value::Selector` (the
+            // common post-hydration case where the topology-selector pass has
+            // already written the cell before this feature-datum pass runs).
+            if matches!(
+                object.result_type,
+                reify_core::ty::Type::Selector(_) | reify_core::ty::Type::AnySelector
+            ) {
+                // Try to read the hydrated Value::Selector from the values map.
+                let maybe_sv = match &object.kind {
+                    reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+                        Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(sv) = maybe_sv {
+                    return Some(eval_selector_feature_datum(
+                        &sv,
+                        member,
+                        kernel,
+                        swept_kinds,
+                        diagnostics,
+                    ));
+                }
+                // No hydrated Value::Selector in the cell: static-type fallback —
+                // emit an explicit select-a-subfeature diagnostic instead of
+                // leaving the cell a silent `Value::Undef`.
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "feature→datum projection '.{member}' over a topology selector \
+                         requires a resolved selector; select a single sub-feature \
+                         (e.g. `single(...)`) or project from the realized feature instead"
+                    ))
+                    .with_code(reify_core::DiagnosticCode::FeatureDatumAmbiguous),
+                );
+                return Some(reify_ir::Value::Undef);
+            }
+            // Not a selector receiver — β datum such as `axis.dir`, or a
+            // not-yet-hydrated cell. Return None and let the pure
+            // `eval_datum_projection` path own it.
+            return None;
+        }
+    };
+
+    let history = swept_kinds.lookup(handle);
+    let bundle = crate::feature_datum::feature_datum_bundle(handle, kernel, history);
+    Some(crate::feature_datum::feature_datum_projection(
+        &bundle,
+        member,
+        diagnostics,
+    ))
+}
+
+/// Resolve a hydrated `Value::Selector` to its sub-handle ids via
+/// [`crate::topology_selectors::resolve`], build a per-handle
+/// [`crate::feature_datum::FeatureDatumBundle`] for each, union the four groups
+/// across all handles, re-dedup the union at the confusion-floor tolerance
+/// (so coaxial/coplanar/coincident datums from different sub-handles collapse to
+/// one), and finally project via [`crate::feature_datum::feature_datum_projection`]
+/// — the same select-one-or-diagnose refinement the `GeometryHandle` arm uses.
+///
+/// On `topology_selectors::resolve` returning `Err`, pushes a `Severity::Warning`
+/// and returns `Value::Undef` (mirroring `try_eval_resolve_selector` @3471-3476).
+///
+/// Called from `try_eval_feature_datum_projection` in the `None` branch of
+/// `resolve_selector_target` when a hydrated `Value::Selector` cell is present.
+fn eval_selector_feature_datum(
+    sv: &reify_ir::value::SelectorValue,
+    member: &str,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    swept_kinds: &crate::sweep_classifier::SweptKindTable,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> reify_ir::Value {
+    // (a) Resolve the selector to a list of sub-handle ids.
+    let ids = match crate::topology_selectors::resolve(sv, kernel, diagnostics) {
+        Ok(ids) => ids,
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "feature→datum projection over selector: kernel error resolving selector: \
+                 {err}; cell left at Undef"
+            )));
+            return reify_ir::Value::Undef;
+        }
+    };
+
+    // (b) Union per-handle FeatureDatumBundles into one combined bundle.
+    let mut combined = crate::feature_datum::FeatureDatumBundle::default();
+    for id in ids {
+        let b = crate::feature_datum::feature_datum_bundle(id, kernel, swept_kinds.lookup(id));
+        combined.axes.extend(b.axes);
+        combined.planes.extend(b.planes);
+        combined.points.extend(b.points);
+        combined.directions.extend(b.directions);
+    }
+
+    // (c) Re-dedup each group at the confusion-floor tolerance so N coaxial /
+    // coplanar / coincident sub-handle datums collapse to one.
+    //
+    // V1 DESIGN NOTE — floor-only tolerance (deliberate):
+    // `dedup_tolerance(0.0, 0.0)` uses the geometric confusion floor with no
+    // per-sub-shape local modelling tolerance added.  The `Datum` carrier that
+    // flows through `feature_datum_bundle` does not retain each sub-shape's
+    // local lin_tol, so we cannot fold per-handle tolerances here without a
+    // Datum API change.  For clean analytic primitives (all local tols at the
+    // floor) this is equivalent to `max(local_tols)`, making it correct for the
+    // v1 target.  A coarse/imprecise sub-shape whose local tol exceeds the
+    // floor could in theory yield a spurious FeatureDatumAmbiguous where the
+    // single-GeometryHandle arm would merge; that narrowing is accepted as a v1
+    // limitation and documented here so future readers do not mistake it for a
+    // bug.  Threading per-handle lin_tol into the cross-handle re-dedup (e.g.
+    // fold the max of per-handle bundle lin_tols) would fix it at the cost of
+    // a `FeatureDatumBundle::lin_tol` field — left to a follow-up if coarse
+    // models are encountered in practice.
+    let tol = crate::feature_datum::dedup_tolerance(0.0, 0.0);
+    combined.axes = crate::feature_datum::dedup_datums(combined.axes, tol);
+    combined.planes = crate::feature_datum::dedup_datums(combined.planes, tol);
+    combined.points = crate::feature_datum::dedup_datums(combined.points, tol);
+    combined.directions = crate::feature_datum::dedup_datums(combined.directions, tol);
+
+    // (d) Project: unique → datum Value; zero/many → FeatureDatumAmbiguous + Undef.
+    crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
@@ -8276,6 +8648,158 @@ mod tests {
         }
     }
 
+    /// Helper: build a CompiledExpr literal from a Value::Transform
+    /// (quaternion [w,x,y,z] and SI-metre translation [tx,ty,tz]).
+    fn literal_transform(q: [f64; 4], t: [f64; 3]) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            transform_of(q, t),
+            reify_core::Type::transform(3),
+        )
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_happy_path() {
+        // orient_axis_angle(z, 90°) quaternion: [w, x, y, z] = [cos45°, 0, 0, sin45°]
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)), // placeholder; target resolved via GeomRef
+                ("transform".into(), literal_transform([w, 0.0, 0.0, w], [0.005, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let geo_op = result.expect("compile_geometry_op should return Ok for ApplyTransform happy path");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert!((rotation[0] - w).abs() < 1e-12, "rotation[0] (w) mismatch");
+                assert!(rotation[1].abs() < 1e-12, "rotation[1] (x) mismatch");
+                assert!(rotation[2].abs() < 1e-12, "rotation[2] (y) mismatch");
+                assert!((rotation[3] - w).abs() < 1e-12, "rotation[3] (z) mismatch");
+                assert!((translation[0] - 0.005).abs() < 1e-12, "translation[0] mismatch");
+                assert!(translation[1].abs() < 1e-12, "translation[1] mismatch");
+                assert!(translation[2].abs() < 1e-12, "translation[2] mismatch");
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        assert!(diagnostics.is_empty(), "expected no diagnostics, got {:?}", diagnostics);
+    }
+
+    #[test]
+    fn compile_geometry_op_apply_transform_malformed_arg_produces_warning_and_err() {
+        let step_handles = vec![GeometryHandleId(7)];
+        let values = ValueMap::new();
+
+        // Pass a Real(5.0) instead of a Transform value — should be rejected.
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_f64(5.0)),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(result.is_err(), "malformed transform arg must return Err");
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic, got {:?}", diagnostics);
+        let diag = &diagnostics[0];
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "diagnostic must be Warning severity"
+        );
+        assert!(
+            diag.message.contains("transform"),
+            "diagnostic message must name the 'transform' arg; got: {:?}",
+            diag.message
+        );
+    }
+
+    /// A non-unit quaternion (e.g. [2, 0, 0, 0]) must pass through the eval arm
+    /// as `Ok(GeometryOp::ApplyTransform{…})` — the eval seam does NOT validate
+    /// unit-length (see the layering note in the production arm above).
+    ///
+    /// The kernel (`build_trsf` in the OCCT layer) is responsible for rejecting
+    /// non-unit quaternions; it surfaces the rejection as a kernel-level
+    /// `OperationFailed` error, which the eval layer converts to a build diagnostic
+    /// (not a panic).  This test confirms the eval-to-kernel handoff contract:
+    /// eval always passes a structurally-valid Transform through, regardless of
+    /// whether its rotation has unit norm.
+    #[test]
+    fn compile_geometry_op_apply_transform_non_unit_quaternion_passthrough() {
+        // [2, 0, 0, 0] is structurally valid (Orientation variant) but not unit-norm.
+        let step_handles = vec![GeometryHandleId(99)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Transform {
+            kind: TransformKind::ApplyTransform,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_f64(0.0)),
+                ("transform".into(), literal_transform([2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0])),
+            ],
+        };
+
+        let mut diagnostics = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        // The eval arm must NOT panic and must return Ok — unit-norm is the kernel's job.
+        let geo_op = result.expect("non-unit quaternion must pass through eval arm as Ok");
+        match geo_op {
+            reify_ir::GeometryOp::ApplyTransform { target, rotation, translation } => {
+                assert_eq!(target, GeometryHandleId(99));
+                // Rotation passed through as-is (eval does not normalize).
+                assert!((rotation[0] - 2.0).abs() < 1e-12, "rotation[0] must be 2.0");
+                assert!(rotation[1].abs() < 1e-12);
+                assert!(rotation[2].abs() < 1e-12);
+                assert!(rotation[3].abs() < 1e-12);
+                assert!(translation.iter().all(|&v| v.abs() < 1e-12));
+            }
+            other => panic!("expected GeometryOp::ApplyTransform, got {:?}", other),
+        }
+        // No diagnostic emitted by the eval arm for a structurally-valid Transform.
+        assert!(
+            diagnostics.is_empty(),
+            "eval arm must not emit diagnostics for a structurally-valid (non-unit) Transform; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_sweep_resolves_distinct_profiles() {
         // Two distinct step handles representing two wire profiles
@@ -9965,6 +10489,339 @@ mod tests {
             diagnostics
         );
     }
+
+    // ── Draft eval-arm: faces resolution + anti-zero + 3-arg back-compat ──
+
+    /// Helper: build a `Value::GeometryHandle` sub-handle with the given
+    /// kernel handle id, using a fixed test realization_ref and hash.
+    fn geometry_handle_value(kernel_handle: GeometryHandleId) -> reify_ir::Value {
+        reify_ir::Value::GeometryHandle {
+            realization_ref: reify_core::identity::RealizationNodeId::new("test-solid", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle,
+        }
+    }
+
+    /// Helper: build a `CompiledExpr` literal that evaluates to a
+    /// `Value::List` of `Value::GeometryHandle` sub-handles.
+    fn geometry_handle_list_literal(handles: Vec<GeometryHandleId>) -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(handles.into_iter().map(geometry_handle_value).collect()),
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        )
+    }
+
+    /// (a) 4-arg draft: a "faces" selector that evaluates to a List of
+    /// `Value::GeometryHandle` sub-handles threads the canonical face ids
+    /// (ascending kernel_handle order, deduped) onto
+    /// `GeometryOp::Draft.faces`. Supplies two handles in REVERSE order so
+    /// the canonical-sort is observable (h7 < h42 → sorted [7, 42]).
+    #[test]
+    fn compile_geometry_op_draft_4arg_faces_threads_canonical_handles() {
+        // step_handles[0] = target solid; step_handles.last() = plane
+        // (the Draft eval arm resolves the plane via step_handles.last()).
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                (
+                    "faces".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Draft { target, faces, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert_eq!(
+                    faces,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "faces must be canonically sorted (ascending kernel_handle id), \
+                     got {:?}",
+                    faces
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Draft) for 4-arg draft with curated faces, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-faces draft must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (b) ANTI-ZERO-FACES: a 4-arg Draft whose "faces" selector is PRESENT
+    /// but evaluates to an empty List must NOT silently fall through to the
+    /// all-faces path. `compile_geometry_op` returns `Err` and pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`.
+    /// Closes the task-3295 fake-done trap for Draft.
+    #[test]
+    fn compile_geometry_op_draft_empty_face_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), empty_list_literal()),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present face selector resolving to zero faces must Err (never \
+             fall through to all-faces), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (c) 3-arg back-compat: a Draft with NO "faces" arg lowers to
+    /// `GeometryOp::Draft{faces: vec![], ..}` (the all-faces path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately
+    /// all-draftable-faces, distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_draft_3arg_no_faces_arg_is_all_faces_back_compat() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Draft { target, faces, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    faces.is_empty(),
+                    "3-arg draft (no faces arg) must lower to empty faces \
+                     (all-faces back-compat), got {:?}",
+                    faces
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Draft) for 3-arg draft, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "3-arg draft must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (d) MALFORMED ELEMENT: a 4-arg Draft whose "faces" selector resolves
+    /// to a List containing a NON-handle element must `Err` on the bad
+    /// element rather than silently drafting only the surviving handle
+    /// subset. A malformed element is distinct from an empty selection, so
+    /// it must NOT trip EmptyEdgeSelection.
+    #[test]
+    fn compile_geometry_op_draft_malformed_element_errors_not_empty_selection() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        // "faces" resolves to a List with a non-handle element (a bare Real)
+        let malformed_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), malformed_selector),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a selector with a non-handle element must Err (never silently \
+                 draft the surviving subset), got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("not a Geometry sub-handle"),
+            "diagnostic must flag the non-handle element, got: {msg:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a malformed-element selector must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// (e) NON-LIST SELECTOR: a 4-arg Draft whose "faces" selector evaluates
+    /// to a non-List value (e.g., `Value::Undef` on the legacy pipeline)
+    /// must return a user-actionable `Err` and must NOT emit
+    /// `EmptyEdgeSelection` (that would false-positive on every legacy miss).
+    #[test]
+    fn compile_geometry_op_draft_legacy_selector_unresolved_is_user_actionable() {
+        let step_handles = vec![GeometryHandleId(10), GeometryHandleId(20)];
+        let values = ValueMap::new();
+
+        // "faces" evaluates to `Value::Undef` — the legacy-pipeline state
+        // where the selector has not yet resolved.
+        let unresolved_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Undef,
+            reify_core::Type::List(Box::new(reify_core::Type::Geometry)),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Draft,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("faces".into(), unresolved_selector),
+                ("angle".into(), literal_angle(std::f64::consts::PI / 60.0)),
+                ("plane".into(), literal_length(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "an unresolved (non-List) faces selector must Err (stays \
+                 Undef for future in-loop resolution), got Ok({:?})",
+                other
+            ),
+        };
+        // User-actionable: names the 4-arg call form and points at the
+        // 3-arg all-faces fallback.
+        assert!(
+            msg.contains("draft(solid, faces, angle, neutral_plane)"),
+            "diagnostic must name the 4-arg call form, got: {msg:?}"
+        );
+        assert!(
+            msg.contains("3-arg draft(solid, angle, neutral_plane)"),
+            "diagnostic must point the user at the 3-arg all-faces fallback, \
+             got: {msg:?}"
+        );
+        // A non-List is NOT an empty selection — must never trip anti-zero
+        // guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "an unresolved (non-List) selector must NOT emit EmptyEdgeSelection, \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    // TODO(tasks 4360/4358): Once engine-unified-build-dag η/ε lands and the
+    // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
+    // resolve on the active pipeline, add an end-to-end .ri-source test that
+    // compiles a 4-arg draft, runs it through eval, and asserts the resulting
+    // `GeometryOp::Draft.faces` vector is non-empty and the kernel produces a
+    // drafted solid with positive volume — confirming the full
+    // compiler → eval → kernel path works from authored .ri source.
 
     #[test]
     fn compile_geometry_op_transform_pattern_sweep_present_args_emit_no_diagnostics() {
@@ -19810,6 +20667,495 @@ mod tests {
         );
     }
 
+    // ── feature→datum projection over a SELECTOR receiver (review amend) ────
+    //
+    // The compiler types a selection's feature→datum projection (`s.axis` where
+    // `s : FaceSelector` → Axis, design §2.2) but the selector→sub-handle
+    // resolution is not yet wired on the eval side. These pin that the eval emits
+    // an honest diagnostic instead of a silent `Value::Undef`, and that the β
+    // datum→datum path is NOT captured by the new branch.
+
+    /// A feature→datum projection whose receiver STATICALLY types as a topology
+    /// selector (`Type::Selector(_)`) but does not resolve to a realized
+    /// `Value::GeometryHandle` must emit exactly one select-a-subfeature
+    /// `FeatureDatumAmbiguous` error and evaluate to `Value::Undef` — NOT leave the
+    /// cell a silent `Value::Undef` with no diagnostic (the
+    /// clean-compile-then-silent-runtime failure mode).
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_emits_diagnostic_not_silent_undef() {
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // `s.axis` where `s : FaceSelector`. The receiver cell is unhydrated (and a
+        // Selector value would not resolve to a GeometryHandle anyway), so
+        // resolve_selector_target → None and the Selector static type drives the
+        // not-yet-supported diagnostic.
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let values = reify_ir::ValueMap::new();
+        let mut kernel = MockGeometryKernel::new();
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Undef),
+            "a selector-receiver feature→datum projection must yield Some(Value::Undef); \
+             got {result:?}"
+        );
+        let errs: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert_eq!(
+            errs.len(),
+            1,
+            "a selector-receiver projection must emit exactly one FeatureDatumAmbiguous \
+             (not-yet-supported / select-a-subfeature) error rather than a silent Undef; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// A β *datum* receiver (`axis.dir` — receiver statically types as `Axis`, not a
+    /// feature/selector) must make the kernel-backed feature-datum path DECLINE
+    /// (`None`, no diagnostic) so the pure `eval_datum_projection` owns it. Guards
+    /// that the selector not-yet-supported branch does not capture β's datum→datum
+    /// projections.
+    #[test]
+    fn feature_datum_projection_over_datum_receiver_declines_to_pure_path() {
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let object = reify_ir::CompiledExpr::value_ref(ValueCellId::new("S", "a"), Type::Axis);
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "dir".to_string(), vec![], Type::Direction);
+
+        let values = reify_ir::ValueMap::new();
+        let mut kernel = MockGeometryKernel::new();
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_none(),
+            "a β datum receiver (`axis.dir`) must decline (None) to the pure projection \
+             path; got {result:?}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "declining to the pure path must emit no diagnostic; got {diagnostics:?}"
+        );
+    }
+
+    // ── feature→datum projection over a HYDRATED Selector receiver (task 4594) ─
+    //
+    // These tests verify the new `eval_selector_feature_datum` arm added to
+    // `try_eval_feature_datum_projection`: when the receiver cell holds a hydrated
+    // `Value::Selector`, the arm resolves it to sub-handles, unions the per-handle
+    // `FeatureDatumBundle`s, re-dedups across handles at the confusion-floor
+    // tolerance, and calls `feature_datum_projection` — the same select-one-or-
+    // diagnose refinement the GeometryHandle arm uses.
+
+    /// Assert that a `Value` is a `Value::Axis` lying on the world Z line
+    /// (origin x ≈ y ≈ 0, direction parallel to ±Z, |z| ≈ 1).
+    /// Mirrors `assert_value_axis_is_z_line` from feature_datum_tests.rs.
+    fn assert_value_axis_is_z_line(v: &reify_ir::Value) {
+        match v {
+            reify_ir::Value::Axis { origin, direction } => {
+                let o = match origin.as_ref() {
+                    reify_ir::Value::Point(c) if c.len() == 3 => [
+                        c[0].as_f64().expect("axis origin x is numeric"),
+                        c[1].as_f64().expect("axis origin y is numeric"),
+                        c[2].as_f64().expect("axis origin z is numeric"),
+                    ],
+                    other => panic!("axis origin must be a 3-component Point; got {other:?}"),
+                };
+                let d = match direction.as_ref() {
+                    reify_ir::Value::Direction { x, y, z } => [*x, *y, *z],
+                    other => panic!("axis direction must be a Direction; got {other:?}"),
+                };
+                assert!(
+                    o[0].abs() < 1e-9 && o[1].abs() < 1e-9,
+                    "axis origin must lie on the world Z line; got {o:?}"
+                );
+                assert!(
+                    d[0].abs() < 1e-9 && d[1].abs() < 1e-9 && (d[2].abs() - 1.0).abs() < 1e-9,
+                    "axis direction must be parallel to ±Z; got {d:?}"
+                );
+            }
+            other => panic!("expected Value::Axis; got {other:?}"),
+        }
+    }
+
+    /// Build a `Value::Axis` along the world Z line at the given z-origin offset,
+    /// direction +Z.  Mirrors `axis_value` from feature_datum_tests.rs.
+    fn z_axis_value_at(z_origin: f64) -> reify_ir::Value {
+        reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(z_origin),
+            ])),
+            direction: Box::new(reify_ir::Value::Direction {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            }),
+        }
+    }
+
+    /// `s.axis` where `s : FaceSelector` is backed by a hydrated `Value::Selector`
+    /// that `topology_selectors::resolve` expands to a single cylindrical face,
+    /// whose `FaceAnalyticDatum` is an Axis on the world-Z line, must evaluate to
+    /// `Some(Value::Axis{..})` on Z with zero `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED today: the existing stub returns `Some(Value::Undef)` + one
+    /// `FeatureDatumAmbiguous` error for ANY selector receiver — hydrated or not.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_resolves_single_cyl_face_to_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let cyl_face = reify_ir::GeometryHandleId(10);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:        extract_faces(parent)   → [cyl_face]
+        // feature_datum_bundle:    extract_faces(cyl_face) → [cyl_face]
+        // FaceAnalyticDatum(cyl_face)                      → Axis at z=0, dir +Z
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![cyl_face])
+            .with_extracted_faces(cyl_face, vec![cyl_face])
+            .with_face_analytic_datum_result(cyl_face, z_axis_value_at(0.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (single cyl face) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over a single coaxial face must emit zero \
+             FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector resolves to TWO coaxial cylindrical faces whose
+    /// analytic axes share the world-Z line at different origins must deduplicate
+    /// across sub-handles and return `Some(Value::Axis{..})` on Z with zero
+    /// `FeatureDatumAmbiguous` errors.
+    ///
+    /// RED after step-2 (before step-4 dedup): without cross-handle
+    /// `dedup_datums` the combined bundle has `axes = [Z@0, Z@5]` (len 2), so
+    /// `feature_datum_projection` emits FeatureDatumAmbiguous + Undef.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_dedups_coaxial_faces_to_single_axis() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let face_a = reify_ir::GeometryHandleId(10);
+        let face_b = reify_ir::GeometryHandleId(11);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // selector resolve:     extract_faces(parent) → [face_a, face_b]
+        // bundle(face_a):       extract_faces(face_a) → [face_a]
+        //                       FaceAnalyticDatum(face_a) → Axis at z=0, dir +Z
+        // bundle(face_b):       extract_faces(face_b) → [face_b]
+        //                       FaceAnalyticDatum(face_b) → Axis at z=5, dir +Z
+        // → two coaxial Z axes, perpendicular distance = 0 → dedup_datums merges to 1
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![face_a, face_b])
+            .with_extracted_faces(face_a, vec![face_a])
+            .with_extracted_faces(face_b, vec![face_b])
+            .with_face_analytic_datum_result(face_a, z_axis_value_at(0.0))
+            .with_face_analytic_datum_result(face_b, z_axis_value_at(5.0));
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "hydrated-selector s.axis (two coaxial cyl faces) must yield Some(..), not None",
+        );
+        assert_value_axis_is_z_line(&value);
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert!(
+            ambiguous_errors.is_empty(),
+            "a hydrated-selector s.axis over two coaxial faces must dedup to one axis \
+             and emit zero FeatureDatumAmbiguous errors; got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector resolves to TWO genuinely non-coaxial cylindrical
+    /// faces (one on Z, one on X) must NOT merge the axes and must emit exactly one
+    /// `FeatureDatumAmbiguous` error and return `Some(Value::Undef)`.
+    ///
+    /// This guards the most important regression: real ambiguity is still surfaced
+    /// even after the cross-handle dedup pass.  The dedup step merges *only* datums
+    /// that are geometrically equivalent; distinct axes must survive and produce a
+    /// diagnostic rather than silently picking one.
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_ambiguous_non_coaxial_faces_emit_diagnostic()
+    {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{DiagnosticCode, Severity, Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+        let face_z = reify_ir::GeometryHandleId(10); // axis on +Z
+        let face_x = reify_ir::GeometryHandleId(11); // axis on +X (perpendicular to face_z)
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // An axis on +X, perpendicular to Z — not coaxial with the Z axis so
+        // dedup_datums will NOT merge the two.
+        let x_axis_value = reify_ir::Value::Axis {
+            origin: Box::new(reify_ir::Value::Point(vec![
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+                reify_ir::Value::length(0.0),
+            ])),
+            direction: Box::new(reify_ir::Value::Direction {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+        };
+
+        let mut kernel = MockGeometryKernel::new()
+            .with_extracted_faces(parent, vec![face_z, face_x])
+            .with_extracted_faces(face_z, vec![face_z])
+            .with_extracted_faces(face_x, vec![face_x])
+            .with_face_analytic_datum_result(face_z, z_axis_value_at(0.0))
+            .with_face_analytic_datum_result(face_x, x_axis_value);
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect("non-coaxial s.axis must yield Some(Value::Undef), not None");
+        assert!(
+            matches!(value, reify_ir::Value::Undef),
+            "non-coaxial s.axis must return Value::Undef; got {value:?}"
+        );
+
+        let ambiguous_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::FeatureDatumAmbiguous)
+            })
+            .collect();
+        assert_eq!(
+            ambiguous_errors.len(),
+            1,
+            "non-coaxial s.axis must emit exactly one FeatureDatumAmbiguous error; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// `s.axis` where the selector's `topology_selectors::resolve` returns `Err`
+    /// (e.g. `extract_faces` on the parent handle fails) must push a
+    /// `Severity::Warning` and return `Some(Value::Undef)` — not a hard error, not
+    /// `None`.
+    ///
+    /// Mirrors the `try_eval_resolve_selector` Err handling precedent
+    /// (geometry_ops.rs `@try_eval_resolve_selector` Warning arm).
+    #[test]
+    fn feature_datum_projection_over_selector_receiver_resolve_error_emits_warning_and_undef() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_core::{Severity, Type, ValueCellId};
+        use reify_ir::QueryError;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let parent = reify_ir::GeometryHandleId(1);
+
+        let sv = reify_ir::value::SelectorValue::leaf(
+            SelectorKind::Face,
+            reify_ir::value::GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("S", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: parent,
+            },
+            reify_ir::value::LeafQuery::All,
+        )
+        .expect("SelectorValue::leaf for Face/All must succeed");
+
+        // Inject an error so that extract_faces(parent) fails → resolve returns Err.
+        let mut kernel = MockGeometryKernel::new().with_extract_faces_error(
+            parent,
+            QueryError::QueryFailed("mock extract_faces failure for test".to_string()),
+        );
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(ValueCellId::new("S", "s"), reify_ir::Value::Selector(sv));
+
+        let object = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new("S", "s"),
+            Type::Selector(SelectorKind::Face),
+        );
+        let expr =
+            reify_ir::CompiledExpr::method_call(object, "axis".to_string(), vec![], Type::Axis);
+
+        let swept_kinds = crate::sweep_classifier::SweptKindTable::default();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let result = super::try_eval_feature_datum_projection(
+            &expr,
+            &values,
+            &mut kernel,
+            &swept_kinds,
+            &mut diagnostics,
+        );
+
+        let value = result.expect(
+            "resolve-error s.axis must yield Some(Value::Undef), not None",
+        );
+        assert!(
+            matches!(value, reify_ir::Value::Undef),
+            "resolve-error s.axis must return Value::Undef; got {value:?}"
+        );
+
+        let warnings: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .collect();
+        assert!(
+            !warnings.is_empty(),
+            "resolve-error s.axis must push at least one Severity::Warning diagnostic; \
+             got {diagnostics:?}"
+        );
+    }
+
     // ── Scalar-branch coverage (suggestion from review, task 3622 amend) ────
     //
     // Both dispatch_edge_length and dispatch_perimeter accept
@@ -21595,5 +22941,157 @@ mod tests {
                 diagnostics
             );
         }
+    }
+
+    /// β/step-12 — Invariant V at the kernel-reply boundary. A scalar query whose
+    /// caller-supplied dimension is DIMENSIONLESS must collapse the finite,
+    /// non-negative `Value::Real` reply to `Value::Real` (via the
+    /// `from_real_scalar` chokepoint), NOT leak a
+    /// `Value::Scalar { dimension.is_dimensionless() }`. A dimensioned (LENGTH)
+    /// query still yields a `Value::Scalar`.
+    #[test]
+    fn dispatch_scalar_query_dimensionless_collapses_to_real() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(50);
+        let nominal = reify_ir::GeometryHandleId(51);
+        const TOL: f64 = 0.0001;
+
+        let kernel = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            nominal,
+            TOL,
+            reify_ir::Value::Real(2.5),
+        );
+
+        // DIMENSIONLESS caller dimension → result must be Value::Real(2.5),
+        // never Value::Scalar { dimension.is_dimensionless() }.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            },
+            reify_core::DimensionVector::DIMENSIONLESS,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Real(2.5)),
+            "a DIMENSIONLESS dispatch_scalar_query must collapse to Value::Real, \
+             not leak Value::Scalar{{DIMENSIONLESS}}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a finite, non-negative reply must emit no warning; got: {diagnostics:?}"
+        );
+
+        // Guard: a dimensioned (LENGTH) query still yields a Value::Scalar.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            },
+            reify_core::DimensionVector::LENGTH,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Scalar {
+                si_value: 2.5,
+                dimension: reify_core::DimensionVector::LENGTH,
+            }),
+            "a dimensioned (LENGTH) query must still yield Value::Scalar{{LENGTH}}"
+        );
+        assert!(diagnostics.is_empty());
+    }
+
+    /// Amendment (task 4374/β, reviewer suggestion 2): the defensive `Scalar`
+    /// reply arm of `dispatch_scalar_query` must validate finiteness /
+    /// non-negativity *identically* to the `Real` arm. A `Scalar` reply carrying
+    /// NaN / ±Inf / a negative magnitude is downgraded to `Some(Value::Undef)` +
+    /// exactly one Warning (never silently wrapped); a finite, non-negative
+    /// `Scalar` reply collapses through `from_real_scalar` like a `Real` reply.
+    #[test]
+    fn dispatch_scalar_query_scalar_reply_validates_finite_non_negative() {
+        use reify_test_support::mocks::MockGeometryKernel;
+        let actual = reify_ir::GeometryHandleId(60);
+        let nominal = reify_ir::GeometryHandleId(61);
+        const TOL: f64 = 0.0001;
+
+        // Bad Scalar replies → Undef + exactly one Warning, just like Real.
+        for bad_value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-4_f64] {
+            let kernel = MockGeometryKernel::new().with_max_deviation_result(
+                actual,
+                nominal,
+                TOL,
+                reify_ir::Value::Scalar {
+                    si_value: bad_value,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+            );
+            let query = reify_ir::GeometryQuery::MaxDeviation {
+                actual,
+                nominal,
+                tolerance: TOL,
+            };
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = super::dispatch_scalar_query(
+                &kernel,
+                query,
+                reify_core::DimensionVector::LENGTH,
+                "max_deviation",
+                &mut diagnostics,
+            );
+            assert_eq!(
+                result,
+                Some(reify_ir::Value::Undef),
+                "Scalar reply with bad_value={bad_value:?} must return Some(Undef)"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "Scalar reply with bad_value={bad_value:?} must emit exactly one \
+                 Warning; got: {diagnostics:?}"
+            );
+        }
+
+        // A finite, non-negative Scalar reply collapses through the chokepoint:
+        // a DIMENSIONLESS caller dimension yields Value::Real (Invariant V).
+        let kernel = MockGeometryKernel::new().with_max_deviation_result(
+            actual,
+            nominal,
+            TOL,
+            reify_ir::Value::Scalar {
+                si_value: 2.5,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+        );
+        let query = reify_ir::GeometryQuery::MaxDeviation {
+            actual,
+            nominal,
+            tolerance: TOL,
+        };
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = super::dispatch_scalar_query(
+            &kernel,
+            query,
+            reify_core::DimensionVector::DIMENSIONLESS,
+            "leak_guard",
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result,
+            Some(reify_ir::Value::Real(2.5)),
+            "a finite, non-negative Scalar reply with a DIMENSIONLESS caller \
+             dimension must collapse to Value::Real"
+        );
+        assert!(diagnostics.is_empty());
     }
 }

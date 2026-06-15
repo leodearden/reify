@@ -1732,12 +1732,15 @@ fn value_point_div_real_zero_returns_undef() {
     assert_point_div_zero_returns_undef(Value::Real(0.0), Type::dimensionless_scalar());
 }
 
-/// Scalar/Scalar division producing a dimensionless result must return
-/// Value::Scalar { dimension: DIMENSIONLESS }, not Value::Real.
-/// This ensures consistency with eval_mul which always returns Scalar.
+/// Scalar/Scalar division producing a dimensionless result must collapse to
+/// the canonical Value::Real (Invariant V, task 4374/β), NOT
+/// Value::Scalar{DIMENSIONLESS}. eval_div routes through the value-layer
+/// chokepoint Value::from_real_scalar, which returns Real when the result
+/// dimension cancels. (Was pinned to Scalar{dimensionless} before β closed
+/// the leak.)
 #[test]
-fn scalar_div_scalar_dimensionless_returns_scalar() {
-    // 4m / 2m = 2 (dimensionless), should be Scalar not Real
+fn scalar_div_scalar_dimensionless_returns_real() {
+    // 4m / 2m = 2 (dimension cancels) → canonical Value::Real, not Scalar.
     let left = CompiledExpr::literal(Value::length(4.0), Type::length());
     let right = CompiledExpr::literal(Value::length(2.0), Type::length());
     let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::dimensionless_scalar());
@@ -1745,11 +1748,8 @@ fn scalar_div_scalar_dimensionless_returns_scalar() {
     let result = eval_expr(&expr, &EvalContext::simple(&values));
     assert_eq!(
         result,
-        Value::Scalar {
-            si_value: 2.0,
-            dimension: DimensionVector::DIMENSIONLESS,
-        },
-        "Scalar/Scalar with same dimension must produce Scalar{{dimensionless}}, not Real"
+        Value::Real(2.0),
+        "Scalar/Scalar with cancelling dimension must collapse to Value::Real (Invariant V)"
     );
 }
 

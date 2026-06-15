@@ -78,10 +78,10 @@ pub(crate) fn eval_fea(name: &str, args: &[Value]) -> Option<Value> {
 /// - `args[0]`: A `MultiCaseResult` struct instance
 ///   (`Value::Map { "cases" -> Value::Map<Value::String, ElasticResult-Map> }`).
 /// - `args[1]`: A non-empty `Value::Map<Value::String, numeric>` of (case name,
-///   weight) pairs. Accepted weight types are `Value::Real`, `Value::Int`,
-///   and `Value::Scalar` **with a dimensionless dimension** (i.e.
-///   `dimension.is_dimensionless()` is true). A `Value::Scalar` with a
-///   non-dimensionless dimension (e.g. `1.4 m`) is explicitly rejected to
+///   weight) pairs. Accepted weight types are `Value::Real` and `Value::Int`.
+///   Per Invariant V (real-dimensionless unification) a dimensionless quantity
+///   is always materialized as `Value::Real`, so any `Value::Scalar` reaching
+///   this consumer is dimensioned (e.g. `1.4 m`) and is rejected to
 ///   `Value::Undef` — the contract is stated here in production code rather
 ///   than relying on test coverage alone (Task 2544 convention). Non-finite
 ///   values — NaN, ±Inf — also reject to `Value::Undef`.
@@ -140,9 +140,9 @@ fn is_case_container(case_val: &Value) -> bool {
 ///   `cases` not a Map)
 /// - `args[1]` is not `Value::Map` or is empty
 /// - any weight key is not `Value::String`
-/// - any weight value is not `Value::Real`, `Value::Int`, or a dimensionless
-///   `Value::Scalar` (i.e. `Value::Scalar` with non-dimensionless dimension
-///   such as `1.4 m` is rejected)
+/// - any weight value is not `Value::Real` or `Value::Int` (per Invariant V a
+///   dimensionless quantity arrives as `Value::Real`; any `Value::Scalar` is
+///   dimensioned — such as `1.4 m` — and is rejected)
 /// - any weight value has a non-finite representation (NaN, ±Inf)
 /// - a weight name is absent from `base_results.cases`
 /// - a case value is not a `Value::Map` or `Value::StructureInstance`
@@ -187,10 +187,8 @@ fn linear_combine(args: &[Value]) -> Value {
         let weight = match weight_val {
             Value::Real(r) => *r,
             Value::Int(i) => *i as f64,
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if dimension.is_dimensionless() => *si_value,
+            // Per Invariant V a dimensionless quantity arrives as Value::Real;
+            // any Value::Scalar reaching here is dimensioned and is rejected.
             _ => return Value::Undef,
         };
         // Non-finite weights (NaN, ±Inf) would poison the accumulator — reject.
@@ -460,10 +458,8 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
         let weight_ok = match weight_val {
             Value::Real(r) => r.is_finite(),
             Value::Int(_) => true,
-            Value::Scalar {
-                si_value,
-                dimension,
-            } if dimension.is_dimensionless() => si_value.is_finite(),
+            // Per Invariant V a dimensionless quantity arrives as Value::Real;
+            // any Value::Scalar reaching here is dimensioned and is rejected.
             _ => false,
         };
         if !weight_ok {
@@ -4453,5 +4449,153 @@ mod tests {
     #[test]
     fn diagnose_linear_combine_incompatible_meshes_over_structure_instance_cases() {
         run_diagnose_linear_combine_incompatible_meshes_body(make_elastic_result_si_with_fields);
+    }
+
+    // ── step-3 (task θ): Kernel↔Sampled-encoding boundary contract ─────────
+    // PRD §5 first bullet: div/gradient/curl Sampled fields round-trip through
+    // extract_per_case_sampled_field with data.len()==grid_count*stride for
+    // stride ∈ {1, 9, 3} AND codomain_type arity == stride.  Complements
+    // β's reify-eval raw-data assertion (e2e_cantilever_gradient_curl_field_contract_and_identities)
+    // giving the contract genuine two-way coverage (overlay G5).
+
+    /// In-test arity helper: number of f64 scalars per grid node encoded in
+    /// a Sampled field with this codomain type.
+    ///   - Scalar (dimensioned/dimensionless) → 1
+    ///   - Vector { n } → n
+    ///   - Tensor { rank, n } → n^rank (rows-major square tensor)
+    ///   - Matrix { m, n } → m * n
+    ///   - any other type → 1 (unused in practice; prevents test panic)
+    fn sampled_field_arity(codomain: &Type) -> usize {
+        match codomain {
+            Type::Scalar { .. } => 1,
+            Type::Vector { n, .. } => *n,
+            Type::Tensor { rank, n, .. } => n.pow(*rank as u32),
+            Type::Matrix { m, n, .. } => m * n,
+            _ => 1,
+        }
+    }
+
+    /// Kernel↔Sampled-encoding boundary contract (PRD §5, task θ step-3).
+    ///
+    /// Builds a synthetic ElasticResult-shaped Value::Map on a 5-node Regular1D
+    /// grid with three Sampled channels matching solver_elastic.ri's declared
+    /// codomains:
+    ///   - divergence  (stride 1, codomain = Real/dimensionless scalar)
+    ///   - gradient    (stride 9, codomain = Tensor<2,3,Real>)
+    ///   - curl        (stride 3, codomain = Vector3<Real>)
+    ///
+    /// Assertions:
+    ///   (1) extract_per_case_sampled_field returns Some for each correct stride,
+    ///       with data.len() == grid_count * stride.
+    ///   (2) The returned codomain_type arity == stride for each channel.
+    ///   (3) NEGATIVE: stride-mismatch and missing-field queries return None.
+    #[test]
+    fn kernel_sampled_encoding_boundary_contract_div_grad_curl() {
+        // 5-node Regular1D grid (matches δ's proven make_1d_scalar(5,1.0,..) fixture).
+        let axis: Vec<f64> = vec![0.0, 1.0, 2.0, 3.0, 4.0];
+        let n = axis.len(); // 5
+
+        // ── divergence channel: stride 1, codomain = Real (dimensionless scalar) ──
+        let div_sf = make_sampled_1d(
+            "divergence",
+            axis.clone(),
+            vec![0.1, 0.2, 0.3, 0.4, 0.5],
+        );
+        let div_field = wrap_sampled_field(
+            div_sf,
+            Type::point3(Type::length()),
+            Type::dimensionless_scalar(),
+        );
+
+        // ── gradient channel: stride 9, codomain = Tensor<2,3,Real> ──────────────
+        let grad_tensors: Vec<[f64; 9]> = (0..n)
+            .map(|i| {
+                let v = i as f64 * 0.1;
+                [v, v, v, v, v, v, v, v, v]
+            })
+            .collect();
+        let grad_sf = make_sampled_tensor_3x3_1d("gradient", axis.clone(), grad_tensors);
+        let grad_field = wrap_sampled_field(
+            grad_sf,
+            Type::point3(Type::length()),
+            Type::tensor(2, 3, Type::dimensionless_scalar()),
+        );
+
+        // ── curl channel: stride 3, codomain = Vector3<Real> ─────────────────────
+        let curl_vecs: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let v = i as f64 * 0.01;
+                [v, v, v]
+            })
+            .collect();
+        let curl_sf = make_sampled_vector3_1d("curl", axis.clone(), curl_vecs);
+        let curl_field = wrap_sampled_field(
+            curl_sf,
+            Type::point3(Type::length()),
+            Type::vec3(Type::dimensionless_scalar()),
+        );
+
+        // Build a synthetic ElasticResult-shaped Value::Map (field-keyed by String).
+        let result = make_envelope_map(&[
+            ("divergence", div_field),
+            ("gradient", grad_field),
+            ("curl", curl_field),
+        ]);
+
+        // ── (1) stride-match: each extract_per_case_sampled_field returns Some ────
+        let (_, div_cod_rt, div_sf_rt) =
+            extract_per_case_sampled_field(&result, "divergence", 1)
+                .expect("divergence stride-1 round-trip must succeed");
+        let (_, grad_cod_rt, grad_sf_rt) =
+            extract_per_case_sampled_field(&result, "gradient", 9)
+                .expect("gradient stride-9 round-trip must succeed");
+        let (_, curl_cod_rt, curl_sf_rt) =
+            extract_per_case_sampled_field(&result, "curl", 3)
+                .expect("curl stride-3 round-trip must succeed");
+
+        // Verify data.len() == grid_count * stride for each channel.
+        let grid_count: usize = div_sf_rt.axis_grids.iter().map(|g| g.len()).product();
+        assert_eq!(
+            div_sf_rt.data.len(),
+            grid_count,
+            "divergence data.len() must equal grid_count*1"
+        );
+        assert_eq!(
+            grad_sf_rt.data.len(),
+            grid_count * 9,
+            "gradient data.len() must equal grid_count*9"
+        );
+        assert_eq!(
+            curl_sf_rt.data.len(),
+            grid_count * 3,
+            "curl data.len() must equal grid_count*3"
+        );
+
+        // ── (2) codomain_type arity == stride ─────────────────────────────────────
+        assert_eq!(
+            sampled_field_arity(div_cod_rt),
+            1,
+            "divergence codomain arity must be 1 (stride 1)"
+        );
+        assert_eq!(
+            sampled_field_arity(grad_cod_rt),
+            9,
+            "gradient codomain arity must be 9 (stride 9)"
+        );
+        assert_eq!(
+            sampled_field_arity(curl_cod_rt),
+            3,
+            "curl codomain arity must be 3 (stride 3)"
+        );
+
+        // ── (3) negative: stride mismatch and missing field return None ───────────
+        assert!(
+            extract_per_case_sampled_field(&result, "divergence", 3).is_none(),
+            "stride mismatch (divergence queried with stride 3) must return None"
+        );
+        assert!(
+            extract_per_case_sampled_field(&result, "nonexistent_field", 1).is_none(),
+            "missing field name must return None"
+        );
     }
 }

@@ -1,0 +1,48 @@
+// Example: GD&T geometric conformance — Conforms SATISFIED (task 4480 η)
+//
+// The satisfied twin of examples/gdt_conformance_violated.ri. Structurally
+// identical, except the as-built `measured` geometry is translated by 0 mm — it
+// is coincident with the nominal `part`, so its maximum deviation is ~0 mm, well
+// within the 0.1 mm flatness tolerance zone. The η geometric-conformance pass
+// (PRD v0_6 C3/C5) measures that deviation and confirms the constraint SATISFIED.
+//
+// See gdt_conformance_violated.ri for the full design rationale (inline tolerance
+// ctor, local `: GeometricTolerance` re-declaration, explicit `actual` binding).
+//
+// Usage:
+//   reify check examples/gdt_conformance_satisfied.ri
+//     → exit 0, "All constraints satisfied", no "VIOLATED"
+//            (under OCCT — the ~0 mm deviation is within the 0.1 mm zone)
+//     → exit 0, Indeterminate
+//            (without OCCT — no kernel → deviation cannot be measured → C1
+//             graceful degradation, never a false Violated)
+
+// Local enum re-declaration (eval-time availability; mirrors m8_tolerancing.ri).
+enum MaterialCondition { MMC, LMC, RFS }
+
+// Local GeometricTolerance callout type (see gdt_conformance_violated.ri).
+structure def FlatnessCallout : GeometricTolerance {
+    param tolerance_value : Length = 0mm
+    param feature : Geometry = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// The part under inspection and its as-built (coincident) twin.
+structure GdtConformanceSatisfied {
+    // Nominal feature: a 10 mm cube.
+    let part = box(10mm, 10mm, 10mm)
+
+    // As-built geometry: the same cube with a 0 mm shift — coincident with `part`.
+    // Max deviation from `part` is ~0 mm (within the f32-quantization floor),
+    // comfortably inside the 0.1 mm tolerance zone.
+    let measured = translate(part, 0mm, 0mm, 0mm)
+
+    // Geometric conformance: measure `measured` against the nominal `part` with a
+    // 0.1 mm flatness zone. The ~0 mm deviation is within the zone → Satisfied.
+    constraint Conforms(
+        tolerance: FlatnessCallout(feature: part, tolerance_value: 0.1mm),
+        actual: measured,
+        measured_deviation: 0mm,
+        feature_departure: 0mm
+    )
+}

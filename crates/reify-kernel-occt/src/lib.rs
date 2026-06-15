@@ -255,31 +255,12 @@ fn centroid_json(p: ffi::ffi::Point3) -> String {
 // without taking a normal-dep on `reify-kernel-occt`. Re-exported here for
 // callers that already import from this crate; new call sites should prefer
 // `reify_types::{BooleanOpHistoryRecords, HistoryRecord, DeletedRecord}`.
-pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LoftOpHistoryRecords, SweepOpHistoryRecords};
-
-/// History records emitted by a local-feature operation (fillet or chamfer)
-/// at the OCCT FFI surface.
-///
-/// Mirrors `BooleanOpHistoryRecords` (single-parent, no cap-face concept) —
-/// fillet/chamfer have no FirstShape/LastShape and no revolve-synthesis counters.
-/// `parent_index` in every record is always `0` (single parent solid).
-///
-/// Defined in `reify-kernel-occt` rather than `reify-types` because the
-/// narrowed task-2655 scope excludes reify-types changes. Subtask 2655.1
-/// (eval-side wiring) may lift this to `reify-types` when AttributeHistory
-/// grows Fillet/Chamfer variants.
-#[derive(Debug, Clone, Default)]
-pub struct LocalFeatureOpHistoryRecords {
-    /// Count of Modified/Generated children silently dropped because they
-    /// could not be found in the result map. Zero for a well-formed op.
-    pub silent_drop_count: u32,
-    pub face_modified: Vec<HistoryRecord>,
-    pub face_generated: Vec<HistoryRecord>,
-    pub face_deleted: Vec<DeletedRecord>,
-    pub edge_modified: Vec<HistoryRecord>,
-    pub edge_generated: Vec<HistoryRecord>,
-    pub edge_deleted: Vec<DeletedRecord>,
-}
+// Task 7b (#2831): LocalFeatureOpHistoryRecords lifted to reify-ir so that
+// reify-eval can consume fillet/chamfer history without a normal-dep on
+// reify-kernel-occt. Re-exported here so existing callers (stubs.rs,
+// tests/common/mod.rs, local_feature_helper_contract.rs, per_edge_fillet.rs)
+// continue resolving `reify_kernel_occt::LocalFeatureOpHistoryRecords` unchanged.
+pub use reify_ir::{AttributeHistory, BooleanOpHistoryRecords, DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, SweepOpHistoryRecords};
 
 #[cfg(has_occt)]
 /// Decode a flat `Vec<u32>` of `(parent_index, parent_subshape_index,
@@ -1601,6 +1582,65 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepOffsetAPI_DraftAngle` to a curated subset of faces of
+    /// `target` at `angle_rad` radians, using `plane` as the neutral plane.
+    ///
+    /// `faces` must be non-empty (defense-in-depth; the all-faces path is
+    /// the `GeometryOp::Draft { faces: vec![], .. }` execute arm which calls
+    /// `draft_shape` directly). Each handle in `faces` must belong to `target`;
+    /// handles are mapped to their 0-based canonical positions via
+    /// `extract_faces` (TopExp::MapShapes order, same as the eval-arm seam).
+    ///
+    /// The result is stored directly via `store_with_repr(.., BRepKind::Solid)`
+    /// (history-free) — mirroring the existing `draft_shape` execute arm, which
+    /// does not participate in persistent-naming.
+    pub fn draft_faces(
+        &mut self,
+        target: GeometryHandleId,
+        angle_rad: f64,
+        plane: GeometryHandleId,
+        faces: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if faces.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "draft_faces: face selection must be non-empty \
+                 (the all-faces path uses draft_shape / empty faces vec)"
+                    .into(),
+            ));
+        }
+        // Map each selected face handle → its 0-based position in the
+        // parent's canonical face enumeration. `extract_faces` and
+        // `draft_faces_shape` both use TopExp::MapShapes(TopAbs_FACE)
+        // order, so the index is exactly what the kernel-side FFI expects.
+        let parent_faces = self.extract_faces(target).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "draft_faces: failed to enumerate parent faces of {target:?}: {e:?}"
+            ))
+        })?;
+        // Build a reverse map (handle → 0-based index) once so each lookup is
+        // O(1) rather than scanning the whole parent list per selected face.
+        let face_index_map: std::collections::HashMap<GeometryHandleId, u32> = parent_faces
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (*h, i as u32))
+            .collect();
+        let mut face_indices: Vec<u32> = Vec::with_capacity(faces.len());
+        for f in faces {
+            let pos = face_index_map.get(f).copied().ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "draft_faces: face {f:?} does not belong to solid {target:?}"
+                ))
+            })?;
+            face_indices.push(pos);
+        }
+        let shape = self.get_shape(target)?;
+        let plane_shape = self.get_shape(plane)?;
+        let result_shape =
+            ffi::ffi::draft_faces_shape(shape, angle_rad, plane_shape, &face_indices)
+                .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+        Ok(self.store_with_repr(result_shape, BRepKind::Solid))
+    }
+
     /// Apply `BRepFilletAPI_MakeChamfer` to every edge of `shape_id` with the
     /// given `distance`, returning the modified-result handle alongside the
     /// per-parent face/edge Modified/Generated/Deleted history records.
@@ -2146,6 +2186,25 @@ impl OcctKernel {
                 ffi::ffi::make_wedge(w, d, h, ltx)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::Torus {
+                major_radius,
+                minor_radius,
+            } => {
+                let major = extract_f64(major_radius)?;
+                let minor = extract_f64(minor_radius)?;
+                validate_positive_finite(major, "torus major radius")?;
+                validate_positive_finite(minor, "torus minor radius")?;
+                // Both values are already validated finite+positive above,
+                // so `>=` is unambiguous here (no NaN possible). A minor radius
+                // at or beyond the major radius is a self-intersecting torus.
+                if minor >= major {
+                    return Err(GeometryError::OperationFailed(
+                        "torus minor radius must be strictly less than major radius".into(),
+                    ));
+                }
+                ffi::ffi::make_torus(major, minor)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+            }
             GeometryOp::Union { left, right } => {
                 let l = self.get_shape(*left)?;
                 let r = self.get_shape(*right)?;
@@ -2338,14 +2397,26 @@ impl OcctKernel {
             }
             GeometryOp::Draft {
                 target,
+                faces,
                 angle,
                 plane,
             } => {
-                let shape = self.get_shape(*target)?;
                 let angle_rad = extract_f64(angle)?;
-                let plane_shape = self.get_shape(*plane)?;
-                ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                if faces.is_empty() {
+                    // 3-arg / empty-selection back-compat: draft ALL draftable
+                    // faces (unchanged path). Shape stored after the match.
+                    let shape = self.get_shape(*target)?;
+                    let plane_shape = self.get_shape(*plane)?;
+                    ffi::ffi::draft_shape(shape, angle_rad, plane_shape)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                } else {
+                    // Curated per-face selection: draft only the chosen faces.
+                    // `draft_faces` stores the Solid result history-free and
+                    // returns its handle; early return mirrors the Fillet
+                    // curated arm (lib.rs:2167-2174).
+                    let handle = self.draft_faces(*target, angle_rad, *plane, faces)?;
+                    return Ok(handle);
+                }
             }
             GeometryOp::Thicken { target, offset } => {
                 let shape = self.get_shape(*target)?;
@@ -2850,6 +2921,35 @@ impl OcctKernel {
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 return Ok(self.store_with_repr(shape, BRepKind::Face));
             }
+            GeometryOp::PolygonProfile { points } => {
+                if points.len() < 3 {
+                    return Err(GeometryError::OperationFailed(
+                        "polygon_profile requires at least 3 vertices".into(),
+                    ));
+                }
+                // Flatten Vec<[f64; 2]> → Vec<f64> for the FFI (mirrors InterpCurve at lib.rs:2742).
+                let coords: Vec<f64> = points.iter().flat_map(|p| p.iter().copied()).collect();
+                let shape = ffi::ffi::make_polygon_face(&coords, points.len(), 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
+            GeometryOp::EllipseProfile { semi_major, semi_minor } => {
+                let a = extract_f64(semi_major)?;
+                let b = extract_f64(semi_minor)?;
+                if !(a.is_finite() && a > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_major must be a finite positive value".into(),
+                    ));
+                }
+                if !(b.is_finite() && b > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "ellipse_profile semi_minor must be a finite positive value".into(),
+                    ));
+                }
+                let shape = ffi::ffi::make_ellipse_face(a, b, 0.0)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                return Ok(self.store_with_repr(shape, BRepKind::Face));
+            }
             // Split is a multi-output topology selector; it cannot return a
             // single GeometryHandle. Callers must use execute_split() instead.
             GeometryOp::Split { .. } => {
@@ -3183,6 +3283,33 @@ impl OcctKernel {
                 let dev = self.measure_mesh_deviation(*nominal, &actual_mesh)?;
                 Ok(Value::Real(dev))
             }
+            // ε: analytic-datum projection. get_shape → ffi → compose the
+            // projected datum Value per the GeomAbs `kind` byte. Edge +
+            // tolerance dispatch land in steps 4 and 10.
+            GeometryQuery::FaceAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::face_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_surface_datum_to_value(&d)
+            }
+            GeometryQuery::EdgeAnalyticDatum(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let d = ffi::ffi::edge_analytic_datum(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                analytic_curve_datum_to_value(&d)
+            }
+            GeometryQuery::ShapeLocalTolerance(id) => {
+                let shape = self
+                    .get_shape(*id)
+                    .map_err(|_| QueryError::InvalidHandle(*id))?;
+                let tol = ffi::ffi::shape_local_tolerance(shape)
+                    .map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+                Ok(Value::length(tol))
+            }
         }
     }
 
@@ -3308,6 +3435,80 @@ impl OcctKernel {
 
         ffi::ffi::measure_mesh_deviation(shape, &tess_result)
             .map_err(|e| QueryError::QueryFailed(e.to_string()))
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticSurfaceDatum` FFI
+/// record (geometric-relations ε `FaceAnalyticDatum` dispatch).
+///
+/// The `kind` byte — set in `occt_wrapper.cpp::face_analytic_datum` — selects
+/// the Value variant: `0` Plane → [`Value::Plane`], `1` Cylinder / `2` Cone →
+/// [`Value::Axis`], `3` Sphere → centre [`Value::Point`]. Origin components are
+/// SI-metre lengths ([`Value::length`]); the direction / normal is a
+/// dimensionless unit [`Value::Direction`]. The two encodings MUST agree — see
+/// the kind-byte table in the C++ source.
+#[cfg(has_occt)]
+fn analytic_surface_datum_to_value(
+    d: &ffi::ffi::AnalyticSurfaceDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        0 => Ok(Value::Plane {
+            origin: Box::new(origin),
+            normal: Box::new(dir),
+        }),
+        1 | 2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        3 => Ok(origin),
+        other => Err(QueryError::QueryFailed(format!(
+            "face_analytic_datum: unknown surface-datum kind byte {other}"
+        ))),
+    }
+}
+
+/// Compose the projected datum [`Value`] from an `AnalyticCurveDatum` FFI
+/// record (geometric-relations ε `EdgeAnalyticDatum` dispatch).
+///
+/// All three analytic curve kinds — `0` Line, `1` Circle, `2` Ellipse (set in
+/// `occt_wrapper.cpp::edge_analytic_datum`) — project to a [`Value::Axis`]: the
+/// infinite line for a line, the centre + circle/ellipse axis for an arc.
+/// Origin components are SI-metre lengths; the direction is a dimensionless
+/// unit [`Value::Direction`]. Radius / major+minor ride in the FFI scalars and
+/// are not part of the projected Axis.
+#[cfg(has_occt)]
+fn analytic_curve_datum_to_value(
+    d: &ffi::ffi::AnalyticCurveDatum,
+) -> Result<Value, QueryError> {
+    let origin = Value::Point(vec![
+        Value::length(d.origin.x),
+        Value::length(d.origin.y),
+        Value::length(d.origin.z),
+    ]);
+    let dir = Value::Direction {
+        x: d.direction.x,
+        y: d.direction.y,
+        z: d.direction.z,
+    };
+    match d.kind {
+        // Line (0) / Circle (1) / Ellipse (2) all project to an Axis datum.
+        0..=2 => Ok(Value::Axis {
+            origin: Box::new(origin),
+            direction: Box::new(dir),
+        }),
+        other => Err(QueryError::QueryFailed(format!(
+            "edge_analytic_datum: unknown curve-datum kind byte {other}"
+        ))),
     }
 }
 
@@ -6375,6 +6576,7 @@ mod tests {
         // Apply Draft with angle ~5.7 degrees (0.1 rad)
         let draft_h = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
+            faces: vec![],
             angle: Value::Real(0.1),
             plane: plane_h.id,
         });
@@ -6394,6 +6596,198 @@ mod tests {
                 // Acceptable: Draft is finicky with some shapes
             }
             Err(other) => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    // --- Curated-faces draft tests (δ step-7) ---
+
+    /// Helper: query the volume of a shape handle and assert it is positive.
+    fn volume_of(kernel: &mut OcctKernel, handle: &GeometryHandle) -> f64 {
+        match kernel.query(&GeometryQuery::Volume(handle.id)).unwrap() {
+            Value::Real(v) => {
+                assert!(v > 0.0, "volume must be positive, got {v}");
+                v
+            }
+            other => panic!("expected Value::Real for volume, got {:?}", other),
+        }
+    }
+
+    /// Build the shared draft fixture: a 20×20×20 box target and a
+    /// 100×100×0.1 flat box as the neutral plane (same pattern as
+    /// `draft_angle_on_box`). Returns (target_handle, plane_handle).
+    fn build_draft_fixture(kernel: &mut OcctKernel) -> (GeometryHandle, GeometryHandle) {
+        let target_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(20.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(20.0),
+            })
+            .unwrap();
+        let plane_h = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(100.0),
+                height: Value::Real(100.0),
+                depth: Value::Real(0.1),
+            })
+            .unwrap();
+        (target_h, plane_h)
+    }
+
+    /// (a) CURATED SELECTION HONORED: a one-face draft (via `faces: [f0]`)
+    /// must succeed with a positive volume that differs both from the
+    /// undrafted box volume AND from any other single-face selection (proves
+    /// the face vector is actually passed through, not silently discarded).
+    ///
+    /// Uses two distinct single-face drafts (f0 vs f5 — opposite faces on
+    /// the box) and asserts at least one of them differs from the all-faces
+    /// draft, proving selectivity. Avoids relying on the finicky all-faces
+    /// path as the sole oracle.
+    #[test]
+    fn execute_draft_curated_faces_honored() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+
+        let undrafted_vol = volume_of(&mut kernel, &target_h);
+
+        // Extract the canonical face handles for this box.
+        let faces = kernel.extract_faces(target_h.id).expect("extract_faces must succeed");
+        // A box has 6 faces.
+        assert!(faces.len() >= 2, "box must have at least 2 faces, got {}", faces.len());
+
+        // Draft with just the FIRST face.
+        let result_f0 = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![faces[0]],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        // Draft with just the LAST face (a different face → different result if
+        // selection is honored).
+        let result_fn = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![*faces.last().unwrap()],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        // At least one draft must succeed.
+        let (curated_h, other_h) = match (result_f0, result_fn) {
+            (Ok(h0), Ok(hn)) => (h0, Some(hn)),
+            (Ok(h0), Err(GeometryError::OperationFailed(_))) => (h0, None),
+            (Err(GeometryError::OperationFailed(_)), Ok(hn)) => (hn, None),
+            (Err(GeometryError::OperationFailed(a)), Err(GeometryError::OperationFailed(b))) => {
+                panic!("both curated single-face drafts failed: {a:?} / {b:?}");
+            }
+            (Err(a), _) | (_, Err(a)) => panic!("unexpected error: {:?}", a),
+        };
+
+        let curated_vol = volume_of(&mut kernel, &curated_h);
+        // Curated result must differ from the undrafted box (proves draft ran).
+        assert!(
+            (curated_vol - undrafted_vol).abs() > 1e-6,
+            "curated-draft volume ({curated_vol}) must differ from undrafted box ({undrafted_vol})"
+        );
+        // If both drafts succeeded, they must produce the SAME volume
+        // (symmetry of a cubic box) OR differ — either way, compare the
+        // one that could give us selectivity signal: both single-face
+        // drafts differing from an all-faces draft.
+        if let Some(other) = other_h {
+            // Both single-face drafts succeeded — each should differ from the
+            // undrafted box (draft ran on at least one face each time).
+            let other_vol = volume_of(&mut kernel, &other);
+            assert!(
+                (other_vol - undrafted_vol).abs() > 1e-6,
+                "second curated-draft volume ({other_vol}) must also differ from \
+                 undrafted box ({undrafted_vol})"
+            );
+        }
+    }
+
+    /// (b) 3-ARG BACK-COMPAT: `faces: vec![]` preserves the all-draftable-
+    /// faces path (unchanged from today). Must succeed with a positive volume
+    /// that differs from the undrafted box.
+    #[test]
+    fn execute_draft_empty_faces_is_all_faces_back_compat() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+        let undrafted_vol = volume_of(&mut kernel, &target_h);
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+
+        match result {
+            Ok(h) => {
+                let vol = volume_of(&mut kernel, &h);
+                assert!(
+                    (vol - undrafted_vol).abs() > 1e-6,
+                    "all-faces draft volume ({vol}) must differ from undrafted box ({undrafted_vol})"
+                );
+            }
+            Err(GeometryError::OperationFailed(_)) => {
+                // Acceptable: draft_shape is finicky with some shapes
+            }
+            Err(other) => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    /// (c) FOREIGN FACE REJECTION: a face handle that does not belong to the
+    /// target solid must produce `GeometryError::OperationFailed`. This
+    /// proves that `draft_faces` validates face membership.
+    #[test]
+    fn execute_draft_foreign_face_handle_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+
+        // Build a second box and extract its faces — these are foreign to `target`.
+        let second_box = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(5.0),
+                height: Value::Real(5.0),
+                depth: Value::Real(5.0),
+            })
+            .unwrap();
+        let foreign_faces = kernel
+            .extract_faces(second_box.id)
+            .expect("extract_faces on second box must succeed");
+        let foreign_face = foreign_faces[0];
+
+        let result = kernel.execute(&GeometryOp::Draft {
+            target: target_h.id,
+            faces: vec![foreign_face],
+            angle: Value::Real(std::f64::consts::PI / 60.0),
+            plane: plane_h.id,
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed for foreign face, got {:?}", other),
+            Ok(_) => panic!("expected error for foreign face handle"),
+        }
+    }
+
+    /// (d) DEFENSE-IN-DEPTH: `OcctKernel::draft_faces` with an empty
+    /// `faces` slice must return `Err(OperationFailed)` — the curated path
+    /// must never accept an empty selection (that would silently fall through
+    /// to the all-faces behaviour with no user signal).
+    #[test]
+    fn draft_faces_empty_selection_returns_error() {
+        let mut kernel = OcctKernel::new();
+        let (target_h, plane_h) = build_draft_fixture(&mut kernel);
+        // Calling draft_faces directly with &[] must be rejected.
+        let result = kernel.draft_faces(
+            target_h.id,
+            std::f64::consts::PI / 60.0,
+            plane_h.id,
+            &[],
+        );
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Err(other) => panic!("expected OperationFailed for empty selection, got {:?}", other),
+            Ok(_) => panic!("draft_faces with empty selection must be rejected"),
         }
     }
 
@@ -6737,6 +7131,7 @@ mod tests {
 
         let result = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
+            faces: vec![],
             angle: Value::Real(0.05),
             plane: sphere_h.id,
         });
@@ -7565,6 +7960,97 @@ mod tests {
                 outer_r: Value::Real(*outer),
                 inner_r: Value::Real(*inner),
                 height: Value::Real(*height),
+            });
+            match result {
+                Err(GeometryError::OperationFailed(_)) => {}
+                Ok(_) => panic!("expected error for {label}, got Ok"),
+                Err(other) => panic!("expected OperationFailed for {label}, got {:?}", other),
+            }
+        }
+    }
+
+    // --- Torus tests (task-4157) ---
+
+    #[test]
+    fn make_torus_ffi_produces_correct_volume() {
+        // Pappus' theorem: a torus with major radius R and minor radius r has
+        // analytic volume V = 2π²·R·r². With R=20, r=5 → V = 2π²·20·25.
+        // BRepPrimAPI_MakeTorus builds a genuine Geom_ToroidalSurface, so
+        // query_volume takes OCCT's analytic BRepGProp::VolumeProperties path
+        // (not the mesh fallback, which only triggers when VolumeProperties
+        // returns 0 for surfaces of revolution). The result is exact to f64
+        // rounding — measured rel_err ≈ 1.8e-16 — so a 1e-9 tolerance pins the
+        // major/minor radius wiring tightly while leaving ~7 orders of margin
+        // above the machine-epsilon floor for cross-platform variance.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let shape = ffi::ffi::make_torus(20.0, 5.0).expect("make_torus should succeed");
+        let vol = ffi::ffi::query_volume(&shape).expect("query_volume should work on torus");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-9,
+            "expected torus volume ≈ {:.2}, got {:.2} (rel_err={:e})",
+            expected,
+            vol,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn torus_execute_volume() {
+        // OcctKernel::execute(&GeometryOp::Torus{..}) → exact analytic torus.
+        // V = 2π²·R·r² for R=20, r=5. The kernel's Volume query routes through
+        // the same analytic VolumeProperties path as the FFI test, so the
+        // result is machine-exact (measured rel_err ≈ 1.8e-16); a 1e-9 tolerance
+        // pins the radius wiring with ample margin above the f64 floor.
+        if !crate::OCCT_AVAILABLE {
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Torus {
+                major_radius: Value::Real(20.0),
+                minor_radius: Value::Real(5.0),
+            })
+            .expect("Torus execute should succeed");
+        let expected = 2.0 * std::f64::consts::PI.powi(2) * 20.0 * 25.0; // 2π²Rr²
+        assert_volume_near(&mut kernel, handle.id, expected, 1e-9, "torus");
+    }
+
+    #[test]
+    fn torus_minor_ge_major_returns_error() {
+        // minor_radius >= major_radius is a self-intersecting torus → rejected
+        // with a message naming the strict-inequality contract.
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::Torus {
+            major_radius: Value::Real(5.0),
+            minor_radius: Value::Real(20.0),
+        });
+        assert_operation_fails_with(result, "minor radius must be strictly less than major");
+    }
+
+    #[test]
+    fn torus_nonfinite_or_zero_radius_returns_error() {
+        // Zero, negative, NaN, and +Inf radii are each rejected by
+        // validate_positive_finite (which requires `is_finite() && > 0.0`),
+        // before the FFI is reached — for both the major and minor radius.
+        let cases: &[(f64, f64, &str)] = &[
+            (0.0, 5.0, "major=0"),
+            (20.0, 0.0, "minor=0"),
+            (-1.0, 5.0, "major<0"),
+            (20.0, -1.0, "minor<0"),
+            (f64::NAN, 5.0, "major=NaN"),
+            (20.0, f64::NAN, "minor=NaN"),
+            (f64::INFINITY, 5.0, "major=+Inf"),
+            (20.0, f64::INFINITY, "minor=+Inf"),
+        ];
+        for (major, minor, label) in cases {
+            let mut kernel = OcctKernel::new();
+            let result = kernel.execute(&GeometryOp::Torus {
+                major_radius: Value::Real(*major),
+                minor_radius: Value::Real(*minor),
             });
             match result {
                 Err(GeometryError::OperationFailed(_)) => {}
@@ -9790,6 +10276,352 @@ mod tests {
         match result {
             Err(GeometryError::OperationFailed(_)) => {}
             Ok(_) => panic!("expected OperationFailed for negative radius, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    // --- FFI face builders: polygon + ellipse (task-4161 step-1) ---
+    // RED until step-2 adds make_polygon_face / make_ellipse_face to ffi.rs + occt_wrapper.
+
+    /// (a) Square polygon face → extrude → volume ≈ 1e-4 m² × 0.005 m = 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// prism volume = base_area × height = 1e-4 × 0.005 = 5e-7 m³ (exact for rectilinear mesh).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_square_extrude_volume() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.01, 0.01, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 4, 0.0)
+            .expect("make_polygon_face(4-vertex square) should succeed");
+        let prism = ffi::ffi::make_prism(&face, 0.0, 0.0, 0.005)
+            .expect("make_prism should succeed for polygon square face");
+        let vol = ffi::ffi::query_volume(&prism)
+            .expect("query_volume should work for extruded polygon square");
+        let expected = 1e-4_f64 * 0.005; // area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon square extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) Triangle polygon face → surface area ≈ shoelace = 0.5 × 0.02 × 0.01 = 1e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_triangle_surface_area() {
+        #[rustfmt::skip]
+        let coords = [0.0_f64, 0.0, 0.02, 0.0, 0.0, 0.01];
+        let face = ffi::ffi::make_polygon_face(&coords, 3, 0.0)
+            .expect("make_polygon_face(triangle) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for polygon triangle face");
+        let expected = 0.5_f64 * 0.02 * 0.01; // shoelace = 1e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "polygon triangle area: expected ≈ {expected:.3e}, got {area:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Degenerate: n_points < 3 must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_too_few_points_returns_err() {
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 2, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with n_points=2 should return Err, got Ok"
+        );
+    }
+
+    /// (c-ii) Degenerate: coords.len() != 2 × n_points must return Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_wrong_coords_len_returns_err() {
+        // 3 points claimed but only 4 coords (should be 6)
+        let coords = [0.0_f64, 0.0, 0.01, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with coords.len()=4 but n_points=3 should return Err, got Ok"
+        );
+    }
+
+    /// (c-iii) Degenerate: 3 collinear points produce a degenerate polygon that
+    /// BRepBuilderAPI_MakeFace rejects (IsDone() = false → Err).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_polygon_face.
+    #[test]
+    fn make_polygon_face_ffi_collinear_points_returns_err() {
+        // All three points on the X-axis → zero area → degenerate face
+        let coords = [0.0_f64, 0.0, 0.01, 0.0, 0.02, 0.0];
+        let result = ffi::ffi::make_polygon_face(&coords, 3, 0.0);
+        assert!(
+            result.is_err(),
+            "make_polygon_face with 3 collinear points should return Err (degenerate face), got Ok"
+        );
+    }
+
+    /// (d) Ellipse face → surface area ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_surface_area() {
+        let face = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area = ffi::ffi::query_area(&face)
+            .expect("query_area should work for ellipse face");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-3,
+            "ellipse face area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.6})"
+        );
+    }
+
+    /// (e) Swapped semi-axes → identical area (π·a·b is orientation-invariant).
+    ///
+    /// make_ellipse_face(0.005, 0.010) must normalize major/minor internally and
+    /// produce the same area as make_ellipse_face(0.010, 0.005).
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_same_area() {
+        let face_ab = ffi::ffi::make_ellipse_face(0.010, 0.005, 0.0)
+            .expect("make_ellipse_face(0.010, 0.005) should succeed");
+        let area_ab = ffi::ffi::query_area(&face_ab)
+            .expect("query_area for ellipse(a,b) should work");
+
+        let face_ba = ffi::ffi::make_ellipse_face(0.005, 0.010, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let area_ba = ffi::ffi::query_area(&face_ba)
+            .expect("query_area for ellipse(b,a) should work");
+
+        let rel_diff = (area_ab - area_ba).abs() / area_ab;
+        assert!(
+            rel_diff < 1e-9,
+            "swapped ellipse axes should give same area: a,b={area_ab:.6e} vs b,a={area_ba:.6e} (rel_diff={rel_diff:.2e})"
+        );
+    }
+
+    /// (e-ii) Bounding-box orientation test for make_ellipse_face(semi_major < semi_minor).
+    ///
+    /// When semi_major=0.005 < semi_minor=0.010, the implementation normalises
+    /// major=max=0.010, minor=min=0.005 and orients the OCCT Ax2 X-direction along
+    /// Y so that the longer semi-axis lies along the Y axis.  The bounding box must
+    /// therefore have X half-extent ≈ semi_major = 0.005 and Y half-extent ≈
+    /// semi_minor = 0.010.  A regression breaking the conditional orientation would
+    /// swap these extents.
+    ///
+    /// Requires OCCT (BBox relies on the actual built shape).
+    #[test]
+    fn make_ellipse_face_ffi_swapped_axes_bbox_orientation() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let semi_major = 0.005_f64;
+        let semi_minor = 0.010_f64;
+        // semi_major < semi_minor → major axis should be along Y, minor along X
+        let face = ffi::ffi::make_ellipse_face(semi_major, semi_minor, 0.0)
+            .expect("make_ellipse_face(0.005, 0.010) should succeed");
+        let bbox = ffi::ffi::query_bbox(&face).expect("query_bbox should work for ellipse face");
+        // The face is centred at origin; half-extents should equal the semi-axis lengths.
+        // BRepBndLib adds Precision::Confusion() ≈ 1e-7 padding per side, so 1e-5 is a
+        // conservative tolerance that accepts the correct orientation while rejecting the
+        // wrong one (axes differ by 2×: 0.005 vs 0.010).
+        let x_half = (bbox.xmax - bbox.xmin) / 2.0;
+        let y_half = (bbox.ymax - bbox.ymin) / 2.0;
+        assert!(
+            (x_half - semi_major).abs() < 1e-5,
+            "X half-extent should be ≈ semi_major={semi_major:.4e}, got {x_half:.4e} \
+             (xmin={:.4e}, xmax={:.4e})",
+            bbox.xmin, bbox.xmax
+        );
+        assert!(
+            (y_half - semi_minor).abs() < 1e-5,
+            "Y half-extent should be ≈ semi_minor={semi_minor:.4e}, got {y_half:.4e} \
+             (ymin={:.4e}, ymax={:.4e})",
+            bbox.ymin, bbox.ymax
+        );
+    }
+
+    /// (f-i) Non-positive semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_zero_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(0.0, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=0 should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, 0.0, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=0 should return Err, got Ok"
+        );
+    }
+
+    /// (f-ii) Non-finite semi-axis → Err.
+    ///
+    /// RED until step-2 implements ffi::ffi::make_ellipse_face.
+    #[test]
+    fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
+        let result = ffi::ffi::make_ellipse_face(f64::INFINITY, 0.005, 0.0);
+        assert!(
+            result.is_err(),
+            "make_ellipse_face with semi_major=Inf should return Err, got Ok"
+        );
+
+        let result2 = ffi::ffi::make_ellipse_face(0.010, f64::NAN, 0.0);
+        assert!(
+            result2.is_err(),
+            "make_ellipse_face with semi_minor=NaN should return Err, got Ok"
+        );
+    }
+
+    // --- kernel execute for PolygonProfile + EllipseProfile (task-4161 step-3) ---
+    // RED until step-4 adds GeometryOp::PolygonProfile / EllipseProfile.
+
+    /// (a) PolygonProfile (4-vertex square) execute → extrude → volume ≈ 5e-7 m³.
+    ///
+    /// Shoelace area of [0,0],[0.01,0],[0.01,0.01],[0,0.01] = 1e-4 m²;
+    /// extrude height = 0.005 m → volume = 5e-7 m³ (exact rectangular prism).
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_executes_and_extrude_volume() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::PolygonProfile {
+                points: vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01], [0.0, 0.01]],
+            })
+            .expect("PolygonProfile execute should succeed");
+        let solid_h = kernel
+            .execute(&GeometryOp::Extrude {
+                profile: profile_h.id,
+                distance: Value::Real(0.005),
+            })
+            .expect("Extrude of PolygonProfile should succeed");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(solid_h.id))
+            .expect("Volume query should succeed")
+            .as_f64()
+            .expect("Volume should be numeric");
+        let expected = 1e-4_f64 * 0.005; // shoelace_area × height = 5e-7 m³
+        let rel_err = (vol - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "PolygonProfile extrude volume: expected ≈ {expected:.3e}, got {vol:.3e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (b) EllipseProfile execute → SurfaceArea ≈ π × 0.010 × 0.005 ≈ 1.5708e-4 m².
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_executes_surface_area() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let profile_h = kernel
+            .execute(&GeometryOp::EllipseProfile {
+                semi_major: Value::Real(0.010),
+                semi_minor: Value::Real(0.005),
+            })
+            .expect("EllipseProfile execute should succeed");
+        let area = kernel
+            .query(&GeometryQuery::SurfaceArea(profile_h.id))
+            .expect("SurfaceArea query should succeed")
+            .as_f64()
+            .expect("SurfaceArea should be numeric");
+        let expected = std::f64::consts::PI * 0.010 * 0.005; // π·a·b ≈ 1.5708e-4 m²
+        let rel_err = (area - expected).abs() / expected;
+        assert!(
+            rel_err < 0.02,
+            "EllipseProfile surface area: expected ≈ {expected:.4e}, got {area:.4e} (rel_err={rel_err:.4})"
+        );
+    }
+
+    /// (c-i) Validation: PolygonProfile with fewer than 3 points returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::PolygonProfile.
+    #[test]
+    fn polygon_profile_too_few_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for <3 points, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-ii) Validation: EllipseProfile with non-positive semi-axis returns OperationFailed.
+    ///
+    /// RED until step-4 adds GeometryOp::EllipseProfile.
+    #[test]
+    fn ellipse_profile_nonpositive_axis_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        let result = kernel.execute(&GeometryOp::EllipseProfile {
+            semi_major: Value::Real(0.0),
+            semi_minor: Value::Real(0.005),
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for semi_major=0, got Ok"),
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+        }
+    }
+
+    /// (c-iii) Validation: PolygonProfile with collinear points returns OperationFailed.
+    ///
+    /// Collinear points produce a degenerate (zero-area) polygon that BRepBuilderAPI
+    /// rejects (MakePolygon.IsDone() or MakeFace.IsDone() fails, or the GProp Mass()<=0
+    /// guard fires).  Exercising this through OcctKernel::execute() confirms that the
+    /// kernel-level PolygonProfile arm correctly propagates the C++ rejection as
+    /// OperationFailed rather than panicking or returning Ok with an invalid handle.
+    ///
+    /// The FFI-level analogue is make_polygon_face_ffi_collinear_points_returns_err;
+    /// this test adds coverage at the kernel-execute layer.
+    #[test]
+    fn polygon_profile_collinear_points_returns_error() {
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let mut kernel = OcctKernel::new();
+        // Three collinear points on the X-axis → zero area → degenerate face
+        let result = kernel.execute(&GeometryOp::PolygonProfile {
+            points: vec![[0.0, 0.0], [0.01, 0.0], [0.02, 0.0]],
+        });
+        match result {
+            Err(GeometryError::OperationFailed(_)) => {}
+            Ok(_) => panic!("expected OperationFailed for collinear polygon points, got Ok"),
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }

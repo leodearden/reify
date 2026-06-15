@@ -1,0 +1,11 @@
+// output_driver_single.ri — single Output occurrence drives one STL export.
+//
+// Backs the io-export δ CLI integration tests (B5 driver format+path, B7
+// design-file-relative path). Run with NO `-o`: the DSL `STLOutput` occurrence
+// drives both the format (STL) and the path ("o.stl", resolved relative to the
+// design file's directory).
+structure def D {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}

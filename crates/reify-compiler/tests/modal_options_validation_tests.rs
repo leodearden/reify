@@ -1932,19 +1932,22 @@ fn displacement_time_history_part_is_part_type() {
     }
 }
 
-/// LENIENCY pin-down: a string arg to `part : Part` must silently compile
-/// with zero Error-severity diagnostics (no nominal type-arg rejection for
-/// StructureRef params — verified in check_expr_struct_ctor_args and
-/// walk_param_against_arg_type).
+/// BOUNDARY test (rehomed from 4578 leniency pin-down — task 4584 flip):
+/// a string arg to `part : Part` must produce exactly one Error-severity
+/// diagnostic with code `TypeNotConformingToStructureRef`.
 ///
-/// Green-from-add characterization (the leniency holds BEFORE and AFTER the
-/// type switch; it cannot be made RED→GREEN by this task).
+/// Previously pinned as `string_arg_to_part_param_silently_accepted` with an
+/// `errors.is_empty()` assertion; flipped intentionally as required by that
+/// test's own contract ("update intentionally when task 4584 lands nominal
+/// StructureRef arg-rejection"). Task 4584 is the deliberate owner of this
+/// behaviour change.
 ///
-/// IMPORTANT: update this test intentionally when task 4584 (which
-/// depends_on task 4578) lands nominal StructureRef arg-rejection. That task
-/// is the deliberate owner of "string rejected for Part param" behaviour.
+/// RED until step-4 (entities_phase): `check_expr_struct_ctor_args` still
+/// `continue`-skips every param that is not `List<TraitObject>`, so the walker
+/// arm added in step-2 is never reached for the bare StructureRef `part` param.
+/// GREEN once step-4 broadens the gate to admit `Type::StructureRef(_)` params.
 #[test]
-fn string_arg_to_part_param_silently_accepted() {
+fn string_arg_to_part_param_rejected() {
     let source = r#"
 structure PartLeniencySmoke {
     let step = StepForce(
@@ -1958,15 +1961,119 @@ structure PartLeniencySmoke {
 "#;
     let module = compile_source_with_stdlib(source);
     let errors = errors_only(&module);
-    // pin-down: the compiler currently does NOT reject a string arg at a
-    // StructureRef-typed param slot. If task 4584 adds that rejection,
-    // update this assertion intentionally to reflect the new behaviour.
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+         for ForcingTimeHistory(part: \"beam\", ...) where part : Part; \
+         got {}: {:#?}",
+        errors.len(),
+        errors,
+    );
+    let d = &errors[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        d.code,
+    );
+}
+
+// ─── task-4584 step-5/step-6: StructureRef param default rejection ────────────
+
+/// RED until step-6 (impl): a structure declaring `param part : Part = "x"`
+/// (StructureRef param with a non-conforming String default) must produce
+/// exactly one Error-severity `TypeNotConformingToStructureRef` diagnostic.
+///
+/// Fails today: param defaults are not checked against their declared cell_type
+/// for structure params (only function params are, via fn_param_default_compatible).
+/// GREEN once step-6 adds check_param_default_conformance and wires it into
+/// phase_fn_arg_conformance.
+#[test]
+fn structureref_param_with_string_default_rejected() {
+    let source = r#"
+structure PartDefaultSmoke {
+    param part : Part = "x"
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+         for `param part : Part = \"x\"`; got {}: {:#?}",
+        errors.len(),
+        errors,
+    );
+    let d = &errors[0];
+    assert_eq!(d.severity, reify_core::Severity::Error);
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        d.code,
+    );
+}
+
+// ─── task-4584 step-9: no-false-positive guard tests ─────────────────────────
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// `param part : Part = Part()` — a StructureRef param with a valid StructureRef
+/// default — must produce ZERO Error-severity diagnostics after task 4584 lands.
+///
+/// The `check_param_default_conformance` StructureRef branch calls
+/// `walk_param_against_arg`, which promotes `Part()` (FunctionCall with scalar
+/// placeholder type) to `StructureRef("Part")` and then validates via
+/// `type_compatible(StructureRef("Part"), StructureRef("Part"))` → true → no emit.
+///
+/// Explicitly green-from-add: documents the "reject only genuine nominal mismatches;
+/// NO false positives" acceptance criterion. Fails if the StructureRef check
+/// incorrectly rejects a `Part()` default at a `Part`-typed param.
+#[test]
+fn structureref_param_with_valid_structureref_default_no_error() {
+    let source = r#"
+structure PartDefaultValid {
+    param part : Part = Part()
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
     assert!(
         errors.is_empty(),
-        "pin-down: expected zero Error-severity diagnostics for \
-         ForcingTimeHistory(part: \"beam\", ...) — string-arg leniency must hold. \
-         If errors appear, task 4584 likely landed nominal arg-rejection; \
-         update this test intentionally. Got {}: {:#?}",
+        "NO-FALSE-POSITIVE: `param part : Part = Part()` should produce ZERO Error-severity \
+         diagnostics (StructureRef identity is valid). Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// A structure with non-StructureRef and non-Geometry param defaults must produce
+/// ZERO Error-severity diagnostics. The `check_param_default_conformance` function
+/// has a `_ => continue` guard for all cell_types other than StructureRef and
+/// Geometry; this test documents that scalar/Int/Bool params are not affected.
+///
+/// Explicitly green-from-add: confirms the StructureRef and Geometry rejection checks
+/// do NOT broaden to other param types.
+#[test]
+fn non_structureref_param_defaults_not_rejected() {
+    let source = r#"
+structure ScalarParamDefaults {
+    param n : Real = 42.0
+    param count : Int = 10
+    param enabled : Bool = true
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "NO-FALSE-POSITIVE: scalar/Int/Bool param defaults should produce ZERO Error-severity \
+         diagnostics (check_param_default_conformance `_ => continue` guard). \
+         Got {}: {:#?}",
         errors.len(),
         errors
     );

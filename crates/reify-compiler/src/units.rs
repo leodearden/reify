@@ -51,6 +51,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "rotate",
     "scale",
     "rotate_around",
+    "apply_transform",
     "line_segment",
     "arc",
     "helix",
@@ -58,6 +59,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "bezier",
     "nurbs",
     "tube",
+    "torus",
     "pipe",
     "box_centered",
     "cylinder_centered",
@@ -65,6 +67,8 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "wedge",
     "rectangle",
     "circle",
+    "polygon",
+    "ellipse",
     "zone_slab",
     "zone_cylinder",
     "zone_annulus",
@@ -474,6 +478,50 @@ pub(crate) fn is_affine_map_constructor(name: &str) -> bool {
 pub(crate) fn affine_map_constructor_result_type(name: &str) -> Option<reify_core::Type> {
     if is_affine_map_constructor(name) {
         Some(reify_core::Type::AffineMap(3))
+    } else {
+        None
+    }
+}
+
+/// Tolerancing **marker** builtins (η/4480, PRD
+/// docs/prds/v0_6/gdt-geometric-zones-and-containment.md task η, contract C3).
+///
+/// `nominal()` is a zero-arg builtin returning an inert `Geometry`-typed marker
+/// — an INVALID-handle `Value::GeometryHandle`, evaluated in
+/// `reify_stdlib::tolerancing::eval_tolerancing`. It is the default for
+/// `Conforms.actual` (`param actual : Geometry = nominal()`): param defaults
+/// compile in a *neutral scope* (functions.rs:106-130), so a
+/// `= tolerance.feature` default cannot evaluate — an inert marker is the only
+/// way to keep the param `Geometry`-typed while the constraint body ignores it.
+///
+/// Single-name family, structurally parallel to the sibling builtin-name
+/// families above ([`AFFINE_MAP_CONSTRUCTOR_NAMES`], etc.). It exists for
+/// call-site classification in `expr.rs` (the `is_tolerancing_marker` arm in
+/// the `NoUserFunctions` ladder, before the zero-arg fallback). Registering it
+/// here replaces the wrong fallback — `nominal()` would otherwise reach the
+/// zero-arg fallback, typed `Real` with a "cannot infer return type of zero-arg
+/// function" warning.
+///
+/// The marker flows nowhere: the Conforms predicate never reads `actual`, and
+/// the η `measure_gdt_conformance` pass keys on an *explicit* `actual` binding,
+/// never this default — so the INVALID-handle sentinel never reaches a kernel.
+///
+/// Case-sensitive: Reify function names are snake_case.
+pub const TOLERANCING_MARKER_NAMES: &[&str] = &["nominal"];
+
+pub(crate) fn is_tolerancing_marker(name: &str) -> bool {
+    TOLERANCING_MARKER_NAMES.contains(&name)
+}
+
+/// Result type for tolerancing marker builtins: `Type::Geometry`.
+///
+/// Returns `None` for any name not in [`TOLERANCING_MARKER_NAMES`] (caller
+/// falls through to its default type-inference path). Mirrors
+/// [`affine_map_constructor_result_type`] — uniform result type, single
+/// membership check.
+pub(crate) fn tolerancing_marker_result_type(name: &str) -> Option<reify_core::Type> {
+    if is_tolerancing_marker(name) {
+        Some(reify_core::Type::Geometry)
     } else {
         None
     }
@@ -1421,6 +1469,10 @@ mod tests {
     // `crate::math_signatures`, imported here to pin disjointness from the five
     // geometry families, the dynamics-query family, AND the construction family.
     use crate::math_signatures::MATH_OPERATION_NAMES;
+    // §1.2 trig/transcendental family (task 4352) — third math sibling slice in
+    // `crate::math_signatures`, imported here to pin disjointness from every
+    // other name family (both directions).
+    use crate::math_signatures::MATH_TRANSCENDENTAL_NAMES;
     // §13 joint-constructor family (mechanism β, task 4311) — single source of
     // truth in `crate::joint_signatures`, imported here to pin disjointness from
     // all eight sibling families (regression-lock: catches any future colliding
@@ -1430,6 +1482,21 @@ mod tests {
     // of truth in `crate::analysis_signatures`, imported here to pin
     // disjointness from all sibling families.
     use crate::analysis_signatures::ANALYSIS_FN_NAMES;
+    // Geometric-relation vocabulary (geometric-relations γ, task 4383) — single
+    // source of truth in `crate::relation_signatures`, imported here to pin the
+    // PURE relation family disjoint from every sibling family. The shared-verb
+    // names `angle`/`distance` are deliberately NOT in this slice (they stay in
+    // GEOMETRY_QUERY_NAMES and are arity-gated into relations in expr.rs).
+    use crate::relation_signatures::RELATION_FN_NAMES;
+
+    // Local fixtures for name families that have no pub single-source slice —
+    // they are hardcoded match arms in `affine_map_algebra_result_type` and
+    // `infer_list_helper_return_type`. Keep in sync with those functions.
+    // Hoisted to module level so both the operation and transcendental
+    // disjointness tests share a single copy, and a future addition to either
+    // family only requires one edit here.
+    const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
+    const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
 
     // --- Step 21: Verify new geometry function names are recognized ---
 
@@ -1532,6 +1599,13 @@ mod tests {
     #[test]
     fn is_geometry_function_pipe_recognized() {
         assert!(is_geometry_function("pipe"));
+    }
+
+    // --- Torus primitive (task-4157 step-5) ---
+
+    #[test]
+    fn is_geometry_function_torus_recognized() {
+        assert!(is_geometry_function("torus"));
     }
 
     // --- Centred primitives (task-4159) ---
@@ -2158,6 +2232,12 @@ mod tests {
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
+                 constructors and transcendentals are disjoint slices)"
+            );
         }
     }
 
@@ -2185,13 +2265,8 @@ mod tests {
     /// disambiguated), so it is the documented exception.
     #[test]
     fn math_operation_fn_names_are_disjoint_from_other_families() {
-        // Affine ALGEBRA free-fn names (`affine_map_algebra_result_type`'s match
-        // arms) and list-helper names (`infer_list_helper_return_type`'s match
-        // arms) have no public single-source slice — they are hardcoded match
-        // arms — so these local fixtures mirror them. Keep in sync with those fns.
-        const AFFINE_ALGEBRA_NAMES: &[&str] = &["affine_compose", "affine_inverse", "determinant"];
-        const LIST_HELPER_NAMES: &[&str] = &["single", "flat_map"];
-
+        // AFFINE_ALGEBRA_NAMES / LIST_HELPER_NAMES are hoisted to module level
+        // (shared with `math_transcendental_fn_names_are_disjoint_from_other_families`).
         for name in MATH_OPERATION_NAMES {
             assert!(
                 !GEOMETRY_FUNCTION_NAMES.contains(name),
@@ -2270,6 +2345,113 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
+                 operations and transcendentals are disjoint slices)"
+            );
+        }
+    }
+
+    /// Disjointness invariant for the §1.2 trig/transcendental family (task
+    /// 4352). Every `MATH_TRANSCENDENTAL_NAMES` entry (`sin` / `cos` / `asin` /
+    /// `exp` / `log` / …) must be absent from every other name family — the five
+    /// geometry families, the dynamics-query family, the two other math families
+    /// (construction + operation), the joint / dynamics-constructor / analysis /
+    /// field-op / relation families, and the affine constructor / algebra /
+    /// list-helper ladder arms — so a name satisfies at most one classification
+    /// predicate in `expr.rs::resolve_function_overload`'s `NoUserFunctions`
+    /// ladder, and the transcendental/operation/construction split stays a
+    /// partition. This forward sweep is the substantive guard (it catches a
+    /// colliding name added to EITHER side); the converse asserts in the two
+    /// math-sibling tests pin the math partition's documented both-ways story.
+    /// Mirrors `math_operation_fn_names_are_disjoint_from_other_families`.
+    #[test]
+    fn math_transcendental_fn_names_are_disjoint_from_other_families() {
+        for name in MATH_TRANSCENDENTAL_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (§13 joint family, task 4311)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family — earlier \
+                 arm in the NoUserFunctions ladder would shadow it)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be an \
+                 affine-algebra free-fn (earlier arm would shadow it; unlike \
+                 `determinant`, no trig name has an intentional affine-algebra overlap)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be a \
+                 list-helper (`single` / `flat_map` — earlier arm would shadow it)"
             );
         }
     }
@@ -2741,6 +2923,73 @@ mod tests {
         }
     }
 
+    // ─── η/4480: tolerancing marker (`nominal()`) registration ────────────────
+
+    #[test]
+    fn is_tolerancing_marker_recognises_all_marker_names() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert!(
+                is_tolerancing_marker(name),
+                "{name} must be recognised as a tolerancing marker builtin"
+            );
+        }
+    }
+
+    #[test]
+    fn tolerancing_marker_result_type_is_geometry_for_all() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert_eq!(
+                tolerancing_marker_result_type(name),
+                Some(reify_core::Type::Geometry),
+                "{name} must resolve to Type::Geometry (zero-arg inert marker)"
+            );
+        }
+    }
+
+    #[test]
+    fn is_tolerancing_marker_rejects_unrelated_names() {
+        // Geometry constructors / queries are distinct families.
+        assert!(!is_tolerancing_marker("box"));
+        assert!(!is_tolerancing_marker("max_deviation"));
+        assert!(!is_tolerancing_marker("effective_tolerance_zone"));
+        assert!(!is_tolerancing_marker(""));
+        // Case-sensitive: Reify builtin names are snake_case.
+        assert!(!is_tolerancing_marker("Nominal"));
+        // `nominal` is a common *param* name (DimensionalTolerance.nominal,
+        // etc.) — but only the zero-arg call builtin is the marker here.
+        assert_eq!(tolerancing_marker_result_type("nominal_diameter"), None);
+    }
+
+    /// The marker family must be disjoint from the sibling builtin-name
+    /// families so a name cannot satisfy two classification predicates in the
+    /// `expr.rs` `NoUserFunctions` ladder (the same invariant the sibling
+    /// `*_are_disjoint_from_other_families` tests pin).
+    #[test]
+    fn tolerancing_marker_names_are_disjoint_from_other_families() {
+        for &name in TOLERANCING_MARKER_NAMES {
+            assert!(!is_geometry_function(name), "{name} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!is_geometry_query(name), "{name} in GEOMETRY_QUERY_NAMES");
+            assert!(
+                !is_geometry_query_helper(name),
+                "{name} in GEOMETRY_QUERY_HELPER_NAMES"
+            );
+            assert!(
+                !is_geometry_topology_selector(name),
+                "{name} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES"
+            );
+            assert!(!is_dynamics_query(name), "{name} in DYNAMICS_QUERY_NAMES");
+            assert!(
+                !is_dynamics_constructor(name),
+                "{name} in DYNAMICS_CONSTRUCTOR_NAMES"
+            );
+            assert!(
+                !is_affine_map_constructor(name),
+                "{name} in AFFINE_MAP_CONSTRUCTOR_NAMES"
+            );
+            assert!(!is_field_op(name), "{name} in FIELD_OP_NAMES");
+        }
+    }
+
     #[test]
     fn affine_map_constructor_result_type_returns_none_for_unknown() {
         assert_eq!(affine_map_constructor_result_type("box"), None);
@@ -2827,6 +3076,21 @@ mod tests {
     fn is_geometry_function_circle_recognized() {
         // RED until step-6 adds "circle" to GEOMETRY_FUNCTION_NAMES.
         assert!(is_geometry_function("circle"));
+    }
+
+    // --- 2-D profile face producers (task-4161) ---
+    // RED until step-6 adds "polygon" and "ellipse" to GEOMETRY_FUNCTION_NAMES.
+
+    #[test]
+    fn is_geometry_function_polygon_recognized() {
+        // RED until step-6 adds "polygon" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("polygon"));
+    }
+
+    #[test]
+    fn is_geometry_function_ellipse_recognized() {
+        // RED until step-6 adds "ellipse" to GEOMETRY_FUNCTION_NAMES.
+        assert!(is_geometry_function("ellipse"));
     }
 
     // --- split topology selector (task 4190, step-5 RED / step-6 GREEN) ---
@@ -3500,6 +3764,95 @@ mod tests {
                 "FIELD_OP_NAMES entry {name:?} must NOT also be a list-helper \
                  (`single` / `flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
+            );
+        }
+    }
+
+    /// Disjointness regression-lock for the geometric-relation vocabulary
+    /// (geometric-relations γ, task 4383). Every entry of `RELATION_FN_NAMES`
+    /// (the PURE relation family) must be absent from all sibling family slices
+    /// so a name satisfies at most one classification predicate in
+    /// `expr.rs::resolve_function_overload`'s `NoUserFunctions` ladder.
+    ///
+    /// The shared-verb names `angle`/`distance` are deliberately NOT in
+    /// `RELATION_FN_NAMES`: they stay in `GEOMETRY_QUERY_NAMES` (the arity-2
+    /// DERIVE form) and are claimed as relations only at arity 3 by the arg-aware
+    /// `relation_signatures::relation_fn_result_type` arm placed BEFORE the
+    /// geometry-query arm. Pinning the pure family disjoint keeps that single
+    /// arity gate the SOLE point where a relation name overlaps a sibling family.
+    ///
+    /// The 9 relation names are inherently disjoint from the existing families,
+    /// so this is GREEN on arrival — a regression lock that fails if a colliding
+    /// name is later added to EITHER the relation slice or a sibling slice.
+    /// Mirrors `field_op_names_are_disjoint_from_other_families`.
+    #[test]
+    fn relation_fn_names_are_disjoint_from_other_families() {
+        for name in RELATION_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family — the home of the \
+                 arity-2 angle/distance DERIVE forms)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family)"
             );
         }
     }

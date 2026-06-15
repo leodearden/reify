@@ -24,9 +24,11 @@
 //                          (task 2343) is retained for back-compat and is untouched.
 //   sample               — intercepting builtin (see above)
 //   restrict             — intercepting builtin; no `.ri` fn body (codomain unchanged)
-//   constant_field       — intercepting builtin; no `.ri` fn body yet (task 4223 ε)
+//   constant_field       — `.ri` fn body below (task 4223 ε): pub fn constant_field<D,C>
 //   fn_field             — intercepting builtin; wraps a lambda as Field{Analytical}
-//   from_samples         — intercepting builtin; no `.ri` fn body yet
+//   from_samples         — intercepting builtin; no `.ri` fn body (eval arm in reify-expr/src/lib.rs)
+//                          accepts (points: List<Real>, values: List<Real>, method: InterpolationMethod)
+//                          → Field<Real,Real>.  InterpolationMethod enum declared below (task γ).
 //
 //   NOTE (post-4220): a `pub fn` CAN now return a Field via fn_field. The prior
 //   restriction ("Field not constructible in a pub fn body") was lifted when
@@ -51,6 +53,41 @@
 
 pub fn through<T>(x: T) -> T { x }
 
+// ── InterpolationMethod enum (task 4221 γ — PRD §D3/D5) ─────────────────────
+//
+// Selects the interpolation algorithm used by `from_samples` (the γ-phase
+// intercepting builtin that constructs a Regular1D SampledField from explicit
+// sample points).
+//
+// Variant → InterpolationKind mapping (reify-expr eval_from_samples):
+//   Linear         → InterpolationKind::Linear         (supported)
+//   NearestNeighbor→ InterpolationKind::NearestNeighbor (supported)
+//   Cubic          → InterpolationKind::Cubic           (supported)
+//   RBF            → eval-time E_INTERP_METHOD_UNSUPPORTED (hard error in from_samples)
+//   Kriging        → eval-time E_INTERP_METHOD_UNSUPPORTED (hard error in from_samples)
+//
+// Note: RBF/Kriging diverge from `interp::resolve_method`'s
+// deferred-to-Linear fallback (W_INTERPOLATION_DEFERRED) used for
+// `sampled{}` config fields. from_samples is a new surface with no
+// back-compat obligation: it fails fast on unsupported methods.
+//
+// Prelude resolution: this enum is declared in std.fields (a registered
+// prelude module, stdlib_loader.rs:297). `enums_phase::flatten_prelude_enum_defs`
+// flattens it into the prelude `enum_defs`, so `InterpolationMethod.Linear`
+// resolves from any user file without an explicit import — same mechanism
+// as `InfillPattern` (fdm.ri) and `SignalKind` (ports).
+//
+// The `#no_prelude` directive at the top of this file only suppresses what
+// fields.ri ITSELF sees during its own compilation (pre_pass.rs:45-57); it
+// does NOT remove fields.ri's own declarations from the exported prelude.
+pub enum InterpolationMethod {
+    Linear,
+    NearestNeighbor,
+    Cubic,
+    RBF,
+    Kriging,
+}
+
 // ── compose<A,B,C> (task 4224 ζ — PRD §1 + §9 ζ) ────────────────────────────
 //
 // compose(f, g)(p) = f(g(p))  — field function composition
@@ -66,6 +103,52 @@ pub fn through<T>(x: T) -> T { x }
 
 pub fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C> {
     fn_field(|p| sample(f, sample(g, p)))
+}
+
+// ── ε spatial-op constructors (task 4223 ε — PRD §2/§6 B6/B7/B8) ─────────────
+//
+//   constant_field<D, C>(value: C) -> Field<D, C>   [step-2]
+//     Returns a uniform field that ignores its domain point and always
+//     evaluates to `value`.  D is nested-unbound at call sites but tolerated
+//     (B5) and type-erased at eval.  B6 gate: sample at any point == value.
+//
+//   clamp_field<D, Q: Dimension>(f, lo, hi) -> Field<D, Scalar<Q>>   [step-4]
+//     Clamps the scalar codomain of `f` to [lo, hi] per point.  Uses the
+//     3-arg scalar `clamp` builtin (numeric.rs:101).  B7 gate: an over-range
+//     input is clamped to the bound.
+//
+//   remap_field<D, Q: Dimension>(f, from_lo, from_hi, to_lo, to_hi) -> Field<D, Scalar<Q>>   [step-4]
+//     Linearly remaps the scalar codomain of `f` from [from_lo, from_hi] onto
+//     [to_lo, to_hi] per point, using the 5-arg scalar `remap` builtin
+//     (numeric.rs:219).  Design decision: 4 scalar bound params (not 2 Range
+//     params) because scalar `remap` is strictly 5-arg and Range.lower/upper
+//     return Value::Option, not bare scalars (see plan.json D1 decision).
+//     NOTE — same-dimension restriction: a single Q constrains BOTH the input
+//     range (from_lo/from_hi) and the output range (to_lo/to_hi) to the same
+//     dimension.  The underlying `remap` builtin supports distinct from/to
+//     dimensions, but remap_field intentionally restricts to same-Q remapping
+//     (e.g. Pressure → Pressure).  Cross-dimension remapping (e.g. Pressure →
+//     Temperature) would require a second type param
+//     <D, Qin: Dimension, Qout: Dimension> — deferred to a follow-up if needed.
+//
+//   threshold<D, Q: Dimension>(f, value) -> Field<D, Bool>   [step-6, landed]
+//     Produces a Bool field: true where `sample(f, p) > value`, false
+//     elsewhere.  B8 gate: above-threshold sample == true, below == false.
+
+pub fn constant_field<D, C>(value: C) -> Field<D, C> {
+    fn_field(|p| value)
+}
+
+pub fn clamp_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| clamp(sample(f, p), lo, hi))
+}
+
+pub fn remap_field<D, Q: Dimension>(f: Field<D, Scalar<Q>>, from_lo: Scalar<Q>, from_hi: Scalar<Q>, to_lo: Scalar<Q>, to_hi: Scalar<Q>) -> Field<D, Scalar<Q>> {
+    fn_field(|p| remap(sample(f, p), from_lo, from_hi, to_lo, to_hi))
+}
+
+pub fn threshold<D, Q: Dimension>(f: Field<D, Scalar<Q>>, value: Scalar<Q>) -> Field<D, Bool> {
+    fn_field(|p| sample(f, p) > value)
 }
 
 // ── Why no Field type alias ───────────────────────────────────────────────────

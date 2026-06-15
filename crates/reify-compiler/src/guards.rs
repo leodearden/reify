@@ -389,6 +389,20 @@ pub(crate) fn compile_guarded_members(
     let guard_ctx = Some(current_guard);
     for member in ast_members {
         match member {
+            // A member-level `relate {}` nested inside a `where {}` guarded block
+            // would need guarded relate-solve (ζ and beyond) to mean anything, and
+            // unlike the top-level home (entity.rs, where check_relate_relations
+            // enforces Relation-vs-Bool) its members would otherwise be a silent,
+            // unchecked no-op — a bare `relate { true }` would pass unflagged.
+            // Reject it explicitly, matching the Sub/Minimize/Maximize arms below,
+            // so the construct is a loud "not yet supported" (geometric-relations
+            // δ, task 4384).
+            reify_ast::MemberDecl::Relate(r) => {
+                diagnostics.push(
+                    Diagnostic::error("relate blocks in guarded blocks are not yet supported")
+                        .with_label(DiagnosticLabel::new(r.span, "not yet supported")),
+                );
+            }
             reify_ast::MemberDecl::Param(param) => {
                 let id = ValueCellId::new(entity_name, &param.name);
                 let cell_type = scope
@@ -524,6 +538,7 @@ pub(crate) fn compile_guarded_members(
                     span: constraint.span,
                     domain: None,
                     optimized_target: None,
+                    arg_bindings: Vec::new(),
                 });
                 *constraint_index += 1;
             }

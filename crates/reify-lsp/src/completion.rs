@@ -329,6 +329,60 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         doc: "Creates a sphere solid centred at the origin.",
         sort_group: "01-geometry",
     },
+    BuiltinFunctionInfo {
+        name: "box_centered",
+        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "cylinder_centered",
+        signature: "cylinder_centered(radius: Length, height: Length) -> Solid",
+        doc: "Creates a cylinder solid centred on the origin along the Z axis.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "cone",
+        signature: "cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid",
+        doc: "Creates a (truncated) cone solid along the Z axis; `top_radius` of 0 gives a pointed cone.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "torus",
+        signature: "torus(major_radius: Length, minor_radius: Length) -> Solid",
+        doc: "Creates a torus solid.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "wedge",
+        signature: "wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid",
+        doc: "Creates a wedge solid — a box with a sloped top of width `top_width`.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "rectangle",
+        signature: "rectangle(width: Length, height: Length) -> Surface",
+        doc: "Creates a rectangular 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "circle",
+        signature: "circle(radius: Length) -> Surface",
+        doc: "Creates a circular 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "polygon",
+        signature: "polygon(vertices: List<Point2<Length>>) -> Surface",
+        doc: "Creates a polygonal 2D profile from a list of vertices.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "ellipse",
+        signature: "ellipse(semi_major: Length, semi_minor: Length) -> Surface",
+        doc: "Creates an elliptical 2D profile.",
+        sort_group: "01-geometry",
+    },
     // --- 02-numeric: numeric / scalar math ---
     BuiltinFunctionInfo {
         name: "abs",
@@ -1788,6 +1842,42 @@ mod tests {
         assert!(
             func_labels.contains(&"bbox_center"),
             "should include 'bbox_center'"
+        );
+    }
+
+    // --- stdlib completions: new geometry primitives (task-4162) ---
+    #[test]
+    fn completions_include_new_geometry_primitives() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+        let func_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::FUNCTION))
+            .map(|f| f.label.as_str())
+            .collect();
+        assert!(func_labels.contains(&"cone"), "should include 'cone'");
+        assert!(func_labels.contains(&"torus"), "should include 'torus'");
+        assert!(func_labels.contains(&"wedge"), "should include 'wedge'");
+        assert!(
+            func_labels.contains(&"cylinder_centered"),
+            "should include 'cylinder_centered'"
+        );
+        assert!(
+            func_labels.contains(&"box_centered"),
+            "should include 'box_centered'"
+        );
+        assert!(
+            func_labels.contains(&"rectangle"),
+            "should include 'rectangle'"
+        );
+        assert!(func_labels.contains(&"circle"), "should include 'circle'");
+        assert!(
+            func_labels.contains(&"polygon"),
+            "should include 'polygon'"
+        );
+        assert!(
+            func_labels.contains(&"ellipse"),
+            "should include 'ellipse'"
         );
     }
 

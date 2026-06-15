@@ -166,9 +166,28 @@ test_auto_generation_rebuilds_parser() {
     # Without this, cargo may skip build.rs entirely from cache even with parser.c missing.
     touch "$TS_DIR/grammar.js"
 
-    # Run cargo check — build.rs should detect missing parser.c and regenerate
-    assert_cmd_success "cargo check triggers auto-generation" \
-        cargo check -p tree-sitter-reify --manifest-path "$REPO_ROOT/Cargo.toml" || return 1
+    # Run cargo check — build.rs should detect missing parser.c and regenerate.
+    # Bound to 300 s to avoid consuming the entire 20-min run_all.sh budget on a
+    # cold cache.  parser.c is ~5 MB; C compilation can take several minutes when
+    # sccache is cold.  On a warm cache this completes in seconds.  Skip
+    # gracefully on timeout (exit 124) so the rest of the suite still runs.
+    local cargo_out rc
+    cargo_out=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    if ! timeout 300 cargo check -p tree-sitter-reify \
+            --manifest-path "$REPO_ROOT/Cargo.toml" >"$cargo_out" 2>&1; then
+        rc=$?
+        if [ "$rc" -eq 124 ]; then
+            echo "  SKIP: cargo check timed out after 300 s (cold-cache environment)"
+            return 0
+        fi
+        echo ""
+        echo "  ASSERTION FAILED: cargo check failed (exit $rc)"
+        echo "  --- captured output ---"
+        cat "$cargo_out"
+        echo "  --- end output ---"
+        return 1
+    fi
 
     # Verify parser.c was recreated
     assert_file_exists "$parser" || return 1

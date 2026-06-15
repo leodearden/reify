@@ -71,7 +71,7 @@
 //! will fire automatically once the inference reports the missing
 //! `bounded` flag.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -224,8 +224,8 @@ impl InferredTraits {
         }
     }
 
-    /// A 2-D profile face (`rectangle`/`circle`). Bounded/connected/convex are
-    /// all true (a rectangle or circle face is finite, single-component, and
+    /// A 2-D profile face (`rectangle`/`circle`/`ellipse`). Bounded/connected/convex are
+    /// all true (a rectangle, circle, or ellipse face is finite, single-component, and
     /// convex). `dimension == GeomDim::Surface`, `planar == true`,
     /// `closed == true` — satisfying `violates_profile_requirement`'s
     /// Surface+closed+planar contract so extrude/revolve/loft accept them, and
@@ -235,6 +235,22 @@ impl InferredTraits {
             bounded: true,
             connected: true,
             convex: true,
+            dimension: GeomDim::Surface,
+            planar: true,
+            closed: true,
+        }
+    }
+
+    /// A 2-D profile face that may be non-convex (`polygon`). Identical to
+    /// [`surface()`] except `convex == false`. A general polygon may be
+    /// concave, so this variant is returned when the caller cannot guarantee
+    /// convexity. The profile precondition (Surface + closed + planar) is still
+    /// satisfied, so extrude/revolve/loft still accept a polygon face.
+    pub const fn surface_nonconvex() -> Self {
+        Self {
+            bounded: true,
+            connected: true,
+            convex: false,
             dimension: GeomDim::Surface,
             planar: true,
             closed: true,
@@ -255,8 +271,10 @@ impl InferredTraits {
 
 /// Look up the inferred traits for a primitive geometry kind.
 ///
-/// All five current variants (`Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`) are
-/// fully Bounded+Connected+Convex.
+/// `Box`, `Cylinder`, `Sphere`, `Tube`, `Cone`, and `Wedge` are fully
+/// Bounded+Connected+Convex (`InferredTraits::all()`). `Torus` is
+/// Bounded+Connected but **non-convex** (`InferredTraits::bounded_connected()`)
+/// — the first primitive that breaks the convex group, so it gets its own arm.
 ///
 /// # Future variants
 ///
@@ -273,6 +291,8 @@ pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
         | PrimitiveKind::Tube
         | PrimitiveKind::Cone
         | PrimitiveKind::Wedge => InferredTraits::all(),
+        // Torus is bounded + connected but NOT convex (a ring has a hole).
+        PrimitiveKind::Torus => InferredTraits::bounded_connected(),
     }
 }
 
@@ -573,7 +593,11 @@ fn infer_op(
         CompiledGeometryOp::Curve { .. } => InferredTraits::curve(),
 
         // 2-D profile face constructors → GeomDim::Surface (planar, closed).
-        CompiledGeometryOp::Profile { .. } => InferredTraits::surface(),
+        // Polygon may be concave → surface_nonconvex(); all others are convex.
+        CompiledGeometryOp::Profile { kind, .. } => match kind {
+            ProfileKind::Polygon => InferredTraits::surface_nonconvex(),
+            _ => InferredTraits::surface(),
+        },
     }
 }
 
@@ -667,6 +691,12 @@ pub fn try_infer_traits_for_function_call_in_env(
         // ─── Primitive constructors → all() ─────────────────────────────
         "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" | "wedge" => Some(InferredTraits::all()),
 
+        // ─── Torus → bounded + connected, NON-convex ────────────────────
+        // The first non-convex primitive: a ring has a hole, so it cannot
+        // join the `all()` group above. Mirrors the dedicated
+        // `PrimitiveKind::Torus => bounded_connected()` arm in `infer_primitive`.
+        "torus" => Some(InferredTraits::bounded_connected()),
+
         // ─── Boolean combinators → recurse + combine_* ──────────────────
         "union" => {
             let (a, b) = first_two_geometry_args_in_env(args, env);
@@ -697,7 +727,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         "intersection_all" => Some(fold_geometry_args_in_env(args, combine_intersection, env)),
 
         // ─── Transform combinators → recurse + combine_transform ────────
-        "translate" | "rotate" | "scale" | "rotate_around" => {
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_transform(t))
         }
@@ -736,7 +766,8 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Profile face constructors → surface() (2-D faces) ──────────
-        "rectangle" | "circle" => Some(InferredTraits::surface()),
+        "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
+        "polygon" => Some(InferredTraits::surface_nonconvex()),
 
         // Unknown function name → None. The private wrapper maps this to
         // `InferredTraits::all()` (default-Bounded). This is the single
@@ -839,6 +870,41 @@ mod tests {
             result,
             Some(InferredTraits::all()),
             "try_infer_traits_for_function_call(\"wedge\", ..) must return Some(all())"
+        );
+    }
+
+    /// `apply_transform` is dispatched as a `combine_transform` passthrough (same arm as
+    /// `translate`/`rotate`/`scale`/`rotate_around`), so its inferred traits must equal
+    /// what those combinators return for the same args.
+    ///
+    /// With no geometry-typed arg, `first_geometry_arg_in_env` returns the defensive default
+    /// `InferredTraits::all()`, and `combine_transform(all()) == all()`, so both
+    /// `apply_transform` and `translate` should return `Some(InferredTraits::all())`.
+    ///
+    /// This pins three invariants:
+    /// 1. The name IS dispatched (returns `Some`, not `None` = unknown).
+    /// 2. It falls into the `combine_transform` arm (same result as `translate`).
+    /// 3. `combine_transform` is an all-preserving identity — consistent with task 4164 §DD.
+    #[test]
+    fn apply_transform_is_dispatched_as_combine_transform_passthrough() {
+        let apply = try_infer_traits_for_function_call("apply_transform", &[]);
+        let translate = try_infer_traits_for_function_call("translate", &[]);
+
+        assert!(
+            apply.is_some(),
+            "apply_transform must be a dispatched name (Some), not unknown (None)"
+        );
+        assert_eq!(
+            apply,
+            Some(InferredTraits::all()),
+            "apply_transform with no geometry arg must return Some(all()) \
+             (combine_transform identity passthrough, defensive default)"
+        );
+        assert_eq!(
+            apply,
+            translate,
+            "apply_transform dispatch result must equal translate dispatch result \
+             (both are combine_transform passthroughs in the same match arm)"
         );
     }
 }

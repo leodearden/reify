@@ -368,6 +368,12 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
 /// The `match` is intentionally exhaustive (no `_` wildcard) so a future `Type`
 /// variant forces a compile-time decision here, in lock-step with the sibling
 /// `unify` / `substitute_type_params` walks.
+///
+/// See also [`type_carries_dim_param`] for the sibling predicate that covers
+/// dimension-kinded parameters (`Type::ScalarParam`). The two predicates are
+/// kept separate because dimension params are a distinct kind (D7) — they are
+/// NOT substituted by type-param logic. The overload-resolution wildcard ORs
+/// them together at two sites.
 pub(crate) fn type_carries_type_param(t: &Type) -> bool {
     match t {
         // The type-parameter leaf itself.
@@ -418,12 +424,93 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
         | Type::Plane
         | Type::Axis
         | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no type param.
+        | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
         | Type::AnySelector
-        // Dimension-param scalar: opaque leaf — carries no *type* param
-        // (dimension binding is ζ / D8, not type-param substitution).
+        // Dimension-param scalar: carries no *type* param; dimension binding is
+        // handled by the dedicated `unify` ScalarParam arm (ζ / D8) and by
+        // `type_carries_dim_param` — not by type-param substitution.
         | Type::ScalarParam(_)
+        | Type::Error => false,
+    }
+}
+
+/// Whether `t` (or any type nested within it) carries a dimension-kinded
+/// parameter (`Type::ScalarParam`).
+///
+/// This is the sibling of [`type_carries_type_param`] for dimension params.
+/// It uses the SAME constructor recursion (List/Set/Keyed/Option/Complex/Range;
+/// Map; Field; Function params+return; Point/Vector/Tensor/Matrix quantity;
+/// Union) and returns `true` at the `ScalarParam(_)` leaf, `false` at all
+/// other leaves.
+///
+/// The match is intentionally exhaustive (no `_` wildcard) so that a new
+/// `Type` variant forces a compile-time decision here, in lock-step with
+/// `type_carries_type_param`, `unify`, and `substitute_type_params`.
+///
+/// Wired into the generic-candidate wildcard in `resolve_function_overload`
+/// and `try_default_padding` (OR'd with `type_carries_type_param`) so that
+/// a `Scalar<Q>` parameter is recognised as a generic wildcard slot (task 4235
+/// ζ / D8).
+pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
+    match t {
+        // The dimension-parameter leaf itself.
+        Type::ScalarParam(_) => true,
+
+        // Single-inner-Type wrappers: recurse on the child.
+        Type::List(inner)
+        | Type::Set(inner)
+        | Type::Keyed(inner)
+        | Type::Option(inner)
+        | Type::Complex(inner)
+        | Type::Range(inner) => type_carries_dim_param(inner),
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => type_carries_dim_param(quantity),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => type_carries_dim_param(key) || type_carries_dim_param(val),
+        Type::Field { domain, codomain } => {
+            type_carries_dim_param(domain) || type_carries_dim_param(codomain)
+        }
+
+        // Function: any param, or the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => params.iter().any(type_carries_dim_param) || type_carries_dim_param(return_type),
+
+        // Union: any arm.
+        Type::Union(arms) => arms.iter().any(type_carries_dim_param),
+
+        // All remaining leaves carry no `ScalarParam`.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
+        // Relation directive (γ): an inner-Type-free leaf, carries no dim param.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        // Type-param leaf: carries no *dimension* param.
+        | Type::TypeParam(_)
         | Type::Error => false,
     }
 }
@@ -593,6 +680,23 @@ pub(crate) fn unify(
         | (Type::Matrix { .. }, _)
         | (Type::Union(_), _) => Ok(()),
 
+        // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
+        // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing
+        // re-bind = Err(TypeArgConflict)). For non-Scalar args the arm falls
+        // through to the leaves block and binds nothing (conservative per D8).
+        (Type::ScalarParam(p), Type::Scalar { .. }) => match subst.get(p) {
+            None => {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            Some(existing) if existing == arg => Ok(()),
+            Some(existing) => Err(TypeArgConflict {
+                param: p.clone(),
+                existing: existing.clone(),
+                incoming: arg.clone(),
+            }),
+        },
+
         // True leaves (no inner `Type` to bind):
         (Type::Bool, _)
         | (Type::Int, _)
@@ -609,11 +713,14 @@ pub(crate) fn unify(
         | (Type::Plane, _)
         | (Type::Axis, _)
         | (Type::Direction, _)
+        // Relation directive (γ): a leaf with no inner `Type` to bind.
+        | (Type::Relation, _)
         | (Type::BoundingBox, _)
         | (Type::Selector(_), _)
         | (Type::AnySelector, _)
-        // Dimension-param scalar: opaque leaf — binds nothing (dimension binding
-        // is ζ / D8; type-param substitution does not apply here).
+        // Dimension-param scalar against a non-Scalar arg: binds nothing (the
+        // ScalarParam vs Scalar{..} case is handled by the arm above; reaching
+        // this leaf means arg is not a concrete Scalar).
         | (Type::ScalarParam(_), _)
         | (Type::Error, _) => Ok(()),
     }
@@ -673,7 +780,9 @@ pub(crate) fn resolve_function_overload<'a>(
                     .zip(arg_types.iter())
                     .all(|((_, param_ty), arg_ty)| {
                         type_carries_trait_object(param_ty)
-                            || (is_generic && type_carries_type_param(param_ty))
+                            || (is_generic
+                                && (type_carries_type_param(param_ty)
+                                    || type_carries_dim_param(param_ty)))
                             || type_carries_type_param(arg_ty)
                             || param_ty == arg_ty
                     })
@@ -1014,7 +1123,9 @@ pub(crate) fn try_default_padding<'a>(
             .zip(arg_types[..provided].iter())
             .all(|((_, param_ty), arg_ty)| {
                 type_carries_trait_object(param_ty)
-                    || (is_generic && type_carries_type_param(param_ty))
+                    || (is_generic
+                        && (type_carries_type_param(param_ty)
+                            || type_carries_dim_param(param_ty)))
                     || type_carries_type_param(arg_ty)
                     || param_ty == arg_ty
             });
@@ -2374,5 +2485,213 @@ mod tests {
             right: Box::new(one_b),
         });
         assert!(!is_syntactic_zero_literal(&expr));
+    }
+
+    // ── task 4235 ζ: unify dimension-slot binding (D8) ───────────────────────
+
+    /// (a) `unify(ScalarParam("Q"), Scalar{LENGTH})` binds Q → Scalar{LENGTH}.
+    ///
+    /// RED until step-2: the leaf arm `(Type::ScalarParam(_), _) => Ok(())` binds
+    /// nothing, so subst stays empty.
+    #[test]
+    fn unify_scalar_param_binds_to_concrete_scalar() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(result.is_ok(), "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}");
+        assert_eq!(
+            subst.get("Q"),
+            Some(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "subst[\"Q\"] should be Scalar{{LENGTH}} after binding, got {:?}",
+            subst.get("Q")
+        );
+    }
+
+    /// (b) Re-unifying the SAME `(ScalarParam("Q"), Scalar{LENGTH})` after Q is
+    /// already bound to Scalar{LENGTH} is idempotent — no error.
+    ///
+    /// RED until step-2: the leaf arm binds nothing, so (a) never binds; the
+    /// idempotent check is vacuous before (a) passes — but (a) failing is itself
+    /// the RED signal, so (b) is an additional gate once (a) is green.
+    #[test]
+    fn unify_scalar_param_idempotent_rebind() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &mut subst,
+        );
+        assert!(
+            result.is_ok(),
+            "idempotent rebind of Q→Scalar{{LENGTH}} should be Ok, got {result:?}"
+        );
+    }
+
+    /// (c) After Q→Scalar{LENGTH}, unifying with Scalar{MASS} → TypeArgConflict.
+    ///
+    /// RED until step-2: the leaf arm never sets subst, so the conflict arm can
+    /// never fire.
+    #[test]
+    fn unify_scalar_param_conflict_emits_type_arg_conflict() {
+        let mut subst = HashMap::new();
+        subst.insert(
+            "Q".to_string(),
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        );
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Scalar { dimension: DimensionVector::MASS },
+            &mut subst,
+        );
+        match result {
+            Err(TypeArgConflict { param, existing, incoming }) => {
+                assert_eq!(param, "Q", "conflict param should be Q");
+                assert_eq!(
+                    existing,
+                    Type::Scalar { dimension: DimensionVector::LENGTH },
+                    "existing should be Scalar{{LENGTH}}"
+                );
+                assert_eq!(
+                    incoming,
+                    Type::Scalar { dimension: DimensionVector::MASS },
+                    "incoming should be Scalar{{MASS}}"
+                );
+            }
+            Ok(()) => panic!(
+                "expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"
+            ),
+        }
+    }
+
+    /// (d) Non-scalar arg (`Bool`) against `ScalarParam("Q")` binds nothing and
+    /// returns Ok (conservative per D8).
+    ///
+    /// GREEN even before step-2 (the leaf arm already returns Ok for any arg).
+    #[test]
+    fn unify_scalar_param_non_scalar_arg_binds_nothing() {
+        let mut subst = HashMap::new();
+        let result = unify(
+            &Type::ScalarParam("Q".to_string()),
+            &Type::Bool,
+            &mut subst,
+        );
+        assert!(result.is_ok(), "non-scalar arg against ScalarParam should be Ok, got {result:?}");
+        assert!(
+            subst.is_empty(),
+            "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
+        );
+    }
+
+    // ── task 4235 ζ: type_carries_dim_param + overload dim-param wildcard ─────
+
+    /// Helper: ScalarParam shorthand.
+    fn sp(name: &str) -> Type {
+        Type::ScalarParam(name.to_string())
+    }
+
+    /// `type_carries_dim_param(ScalarParam("Q"))` must return true.
+    ///
+    /// RED until step-6: the function does not exist (compile error).
+    #[test]
+    fn type_carries_dim_param_bare_scalar_param_is_true() {
+        assert!(
+            type_carries_dim_param(&sp("Q")),
+            "ScalarParam should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Vector3<ScalarParam("Q")>)` must return true
+    /// (dim-param in the quantity slot).
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_vector3_quantity_is_true() {
+        let vec3_q = Type::Vector { n: 3, quantity: Box::new(sp("Q")) };
+        assert!(
+            type_carries_dim_param(&vec3_q),
+            "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(Scalar{LENGTH})` must return false.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_concrete_scalar_is_false() {
+        assert!(
+            !type_carries_dim_param(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
+        );
+    }
+
+    /// `type_carries_dim_param(TypeParam("T"))` must return false — a type-param
+    /// is not a dimension-param.
+    ///
+    /// RED until step-6.
+    #[test]
+    fn type_carries_dim_param_type_param_is_false() {
+        assert!(
+            !type_carries_dim_param(&tp("T")),
+            "TypeParam should NOT carry a dim-param"
+        );
+    }
+
+    /// Overload wildcard for dim-param: `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real)`
+    /// called with `(Scalar{LENGTH}, Real)` must resolve to Resolved.
+    ///
+    /// RED until step-6: the wildcard predicate only checks type_carries_type_param,
+    /// which returns false for ScalarParam → NoMatch.
+    #[test]
+    fn overload_selects_generic_candidate_with_scalar_param() {
+        let scale_q = make_generic_fn(
+            "scale_q",
+            vec![("x", sp("Q")), ("k", Type::dimensionless_scalar())],
+            &["Q"],
+            sp("Q"),
+        );
+        let fns = vec![scale_q];
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_q",
+                    &[Type::Scalar { dimension: DimensionVector::LENGTH }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::Resolved(_)
+            ),
+            "generic scale_q<Q> should resolve against (Scalar{{LENGTH}}, Real)"
+        );
+    }
+
+    /// INV-6 regression: a non-generic all-concrete fn still resolves only on
+    /// exact match — adding the dim-param wildcard must not break this.
+    ///
+    /// GREEN before step-6 too (the non-generic branch is unaffected).
+    #[test]
+    fn overload_non_generic_concrete_fn_still_requires_exact_match() {
+        let concrete = make_fn(
+            "scale_concrete",
+            vec![("x", Type::Scalar { dimension: DimensionVector::LENGTH }), ("k", Type::dimensionless_scalar())],
+        );
+        let fns = vec![concrete];
+        // Calling with (MASS, Real) must NOT resolve — only (LENGTH, Real) is exact.
+        assert!(
+            matches!(
+                resolve_function_overload(
+                    "scale_concrete",
+                    &[Type::Scalar { dimension: DimensionVector::MASS }, Type::dimensionless_scalar()],
+                    &fns,
+                ),
+                OverloadResolution::NoMatch(_)
+            ),
+            "concrete fn must NOT resolve for wrong dimension arg — exact match only"
+        );
     }
 }

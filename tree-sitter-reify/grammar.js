@@ -34,6 +34,7 @@ function commonMembers($) {
     $.sub_declaration,
     $.minimize_declaration,
     $.maximize_declaration,
+    $.relate_block,
     $.guarded_block,
     $.port_declaration,
     $.connect_statement,
@@ -143,6 +144,7 @@ module.exports = grammar({
       $.unit_declaration,
       $.type_alias_declaration,
       $.default_declaration,
+      $.joint_definition,
       $.pragma,
       $.annotation,
     ),
@@ -609,10 +611,22 @@ module.exports = grammar({
     ),
 
     // ── Auto keyword (for solver-determined params) ───────
-    // Accepts bare `auto` or `auto(free)`.  The presence of the `modifier`
-    // field child indicates the free modifier is present.  The longer
-    // `auto(free)` form is given higher precedence to resolve the shift-reduce
-    // conflict that arises when `(` immediately follows `auto`.
+    // Accepts bare `auto`, `auto(free)`, or the parameterized
+    // `auto(name = value, …)` form (geometric-relations δ, task 4384).
+    // The presence of the `modifier` field child indicates the `free` modifier;
+    // an `auto_param_list` child carries the `seed`/component-fix params.
+    //
+    // Precedence ordering (highest first) resolves the shift-reduce conflict
+    // that arises when `(` immediately follows `auto`:
+    //   - `auto(free)` (prec 2): `free` is an anonymous string token, so by
+    //     tree-sitter's string-vs-regex tie-break it wins over `identifier` on
+    //     the text "free"; the higher prec keeps this arm preferred.
+    //   - `auto(name = value, …)` (prec 1): any other `(`-arm; `name` lexes as
+    //     `identifier` and the required `=` distinguishes it from `auto(free)`.
+    //   - bare `auto` (prec 0).
+    //
+    // δ only PRESERVES the seed/component-fix params in the CST; consuming them
+    // (root selection, partial-fix) is ζ's relate-solve.
     //
     // Uses $._auto_token (external scanner token) instead of the string
     // literal 'auto' so that the lexer-level reservation via the external
@@ -620,8 +634,26 @@ module.exports = grammar({
     // CST shape remains (auto_keyword) / (auto_keyword (modifier)) — no
     // (auto_keyword (auto_token)) wrapper node.
     auto_keyword: $ => choice(
-      prec(1, seq($._auto_token, '(', field('modifier', 'free'), ')')),
+      prec(2, seq($._auto_token, '(', field('modifier', 'free'), ')')),
+      prec(1, seq($._auto_token, '(', $.auto_param_list, ')')),
       $._auto_token,
+    ),
+
+    // Parameterized-auto argument list: `name = value, …` (trailing comma OK).
+    // Mirrors named_argument_list's comma-separated shape.
+    auto_param_list: $ => seq(
+      $.auto_param,
+      repeat(seq(',', $.auto_param)),
+      optional(','),
+    ),
+
+    // A single `name = value` parameterized-auto entry (`seed = …`, `x = …`,
+    // `orientation = …`).  `value` is a full `_expression` (e.g. `5mm`,
+    // `self.frame`, `orient_identity()`).
+    auto_param: $ => seq(
+      field('name', $.identifier),
+      '=',
+      field('value', $._expression),
     ),
 
     // ── Let ─────────────────────────────────────────────────
@@ -659,6 +691,104 @@ module.exports = grammar({
       optional(field('guard', $.where_clause)),
     ),
 
+    // ── Relate block (member-level) ─────────────────────────
+    // `relate { concentric(a, b)  flush(c, d) }` — a member-level block of
+    // geometric DRIVE relations (geometric-relations v0_6, PRD §1/§4/§7.3;
+    // design §4/§5; task δ 4384).  Each body member is a bare relation
+    // expression; the Relation-vs-Bool routing is enforced at type-check time
+    // (E_RELATE_EXPECTS_RELATION, step-14) — the block is the routing signal,
+    // not a name heuristic.
+    //
+    // `relate` is a PLAIN string token (contextual keyword), mirroring the
+    // proven `default`/`undef`/`unit`/`type` pattern: tree-sitter makes it a lex
+    // candidate ONLY where the parse state admits it (member-start positions via
+    // commonMembers()).  No member alternative begins with a bare identifier, so
+    // `'relate'` and `identifier` are never both valid at one state — everywhere
+    // else (operands, names, args) `relate` keeps lexing as `identifier`.
+    //
+    // Body shape mirrors constraint_def_predicate (repeat of bare expressions):
+    // GLR separates newline- and `;`-separated members with no explicit
+    // separator token.  Empty `relate { }` is admitted (repeat = zero-or-more).
+    relate_block: $ => seq(
+      'relate',
+      '{',
+      repeat($.relation_member),
+      '}',
+    ),
+
+    // A single relation entry inside a `relate { }` block or an inline
+    // `at … where { }` block (sub_relate_block).  Named node so the lowering
+    // code can identify it by kind; `expr` is the full relation expression.
+    relation_member: $ => field('expr', $._expression),
+
+    // ── Inline sub relate-block (`at … where { }`) ──────────
+    // The trailing inline form on a sub placement: `sub … at <pose> where {
+    // concentric(…)  flush(…) }` (geometric-relations v0_6, design §4/§5; task
+    // δ 4384).  Distinct from the sub's `where <expr>` guard (a where_clause,
+    // positionally BEFORE `at`) and from a member-level `where <expr> { }`
+    // guarded_block: a sub_relate_block has NO condition expression between
+    // `where` and `{`.  Because guarded_block REQUIRES a condition, a
+    // conditionless `where {` after a pose can ONLY be a sub_relate_block — the
+    // GLR keeps the error-free parse.  Body reuses relation_member (step-6).
+    sub_relate_block: $ => seq(
+      'where',
+      '{',
+      repeat($.relation_member),
+      '}',
+    ),
+
+    // ── Joint definition ─────────────────────────────────────
+    // `joint revolute(a: Axis, b: Axis, stop: Plane) with angle: Angle in 0deg..120deg = { coaxial(a, b)  on(a.point, stop) }`
+    // Top-level module-scope definition (not a structure/trait member).
+    // Grammar producer only (task α 4395); semantics (DOF self-check, body
+    // type-check) are deferred to task β.
+    //
+    // `joint` and `with` are PLAIN string tokens (contextual keywords), mirroring
+    // the proven `relate`/`default`/`undef` pattern. No top-level declaration
+    // alternative begins with the same keyword — zero regression: `joint` and
+    // `with` continue to lex as identifiers at all other parse positions.
+    joint_definition: $ => seq(
+      optional('pub'),
+      'joint',
+      field('name', $.identifier),
+      optional($.type_parameters),
+      '(',
+      optional($.fn_param_list),
+      ')',
+      'with',
+      field('dof', $.joint_dof),
+      '=',
+      field('body', $.joint_body),
+    ),
+
+    // The DOF specification following `with`.
+    // Single form: `with angle: Angle in 0deg..120deg` — bare joint_dof_field.
+    // Record form: `with { angle: Angle, travel: Length }` — braced, comma-separated.
+    // The braced arm mirrors enum_variant's named-field payload grammar.
+    joint_dof: $ => choice(
+      $.joint_dof_field,
+      seq('{', $.joint_dof_field, repeat(seq(',', $.joint_dof_field)), optional(','), '}'),
+    ),
+
+    // A single DOF field: `name: TypeExpr` with an optional `in <range>` clause.
+    // `'in'` is a contextual keyword here — valid only at this parse position.
+    joint_dof_field: $ => seq(
+      field('name', $.identifier),
+      ':',
+      field('type', $.type_expr),
+      optional(seq('in', field('range', $._expression))),
+    ),
+
+    // The body of a joint definition, introduced by `=` in joint_definition.
+    // Block form: `{ relation_member* }` — reuses δ's relation_member node so
+    // each body expression lowers via lower_relation_members (same as relate_block).
+    // Single-expr form: `result: _expression` — a single relation expression.
+    // `{` unambiguously selects the block arm (no _expression starts with bare `{`).
+    joint_body: $ => choice(
+      seq('{', repeat($.relation_member), '}'),
+      field('result', $._expression),
+    ),
+
     // ── Sub ─────────────────────────────────────────────────
     sub_declaration: $ => choice(
       // Instantiation form: sub name = StructName<TypeArgs>(args)
@@ -674,7 +804,7 @@ module.exports = grammar({
         optional($.named_argument_list),
         ')',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
       // Collection form: sub name : List<StructName>
       // The bare `'List'` token is reached only on exact-length matches —
@@ -698,7 +828,7 @@ module.exports = grammar({
         field('structure_name', $.identifier),
         '>',
         optional(field('guard', $.where_clause)),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
       // Specialization form: sub name : StructName <typeargs>? where? { body }?
       //
@@ -746,7 +876,7 @@ module.exports = grammar({
         optional(field('type_args', seq('<', $.type_arg_list, '>'))),
         optional(field('guard', $.where_clause)),
         optional(field('body', choice($.specialization_body, $.keyed_member_block))),
-        optional(seq('at', field('pose', $._expression))),
+        optional(seq('at', field('pose', choice($._expression, $.auto_keyword)), optional(field('relations', $.sub_relate_block)))),
       ),
     ),
 

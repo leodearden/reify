@@ -22,8 +22,10 @@ use std::path::Path;
 /// (a pub structure defined ONLY in `platform_linux`) in **type position**
 /// (`param marker : LinuxOnly`). A type-position reference is used because an
 /// unknown **type** is a hard `unresolved type` compile error — the signal these
-/// tests need — whereas an unknown structure in a `sub` occurrence is resolved
-/// leniently (deferred to eval) and emits no diagnostic.
+/// tests need.  Note: task 4528 added compile-time validation of sub
+/// `structure_name`s too, so a `sub w = LinuxOnly(...)` form would also emit an
+/// error when the import is inactive — but this fixture uses no `sub` and the
+/// type-position form is the cfg-import-gating signal.
 fn write_two_way_project(dir: &Path) -> String {
     let entry_src = "#cfg(target = \"linux\")\nimport platform_linux\n\
                      #cfg(target = \"wasm\")\nimport platform_wasm\n\
