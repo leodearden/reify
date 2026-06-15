@@ -1932,6 +1932,35 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
     })
 }
 
+/// Returns `true` when `module` contains at least one template whose
+/// [`reify_compiler::TopologyTemplate::trait_bounds`] includes `"DFMRule"`.
+///
+/// This is the CLI routing-gate counterpart of the engine's own
+/// `satisfies_trait_bound(&t.trait_bounds, "DFMRule", ...)` conformance check
+/// in `measure_dfm_rules` (engine_constraints.rs).  `DFMRule` is a terminal
+/// stdlib trait (process.ri: `trait DFMRule {}`; no refinements, no subtraits),
+/// so a direct name-equality match (`b == "DFMRule"`) is exact —
+/// `satisfies_trait_bound` itself short-circuits on name equality before any
+/// registry lookup.  A `: DFMRule` conformer is always compiled to a top-level
+/// `module.templates` entry regardless of instantiation site, so scanning
+/// templates catches both of `measure_dfm_rules`' discovery sources (A:
+/// top-level templates; B: sub-component instances).
+///
+/// When `true`, `cmd_check` routes through the kernel-backed
+/// `build(ExportFormat::Step)`-before-`check` path so that
+/// `realization_handles` is populated with live B-rep handles — `measure_dfm_rules`
+/// reads `self.realization_handles` to set each rule's `subject_handle`, and
+/// skips any rule where `subject_handle.is_none()` (the handle is only present
+/// after `build()`).  The C1 no-kernel no-op (default_kernel_name is None when
+/// OCCT is absent → `measure_dfm_rules` exits the guard at line 813) and C2
+/// byte-identical behavior for non-DFM modules are both preserved.
+fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module
+        .templates
+        .iter()
+        .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
+}
+
 /// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
 /// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
 /// explicit `actual` binding (η/4480).
