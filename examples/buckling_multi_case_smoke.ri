@@ -1,0 +1,50 @@
+// Multi-load-case buckling smoke test — task η (§13 η).
+//
+// Two LoadCases differing only in tip compressive load:
+//   "operating"  → 1 kN  (higher eigenvalue — less critical)
+//   "overload"   → 2 kN  (lower eigenvalue  — most critical)
+//
+// Physical sanity: P_cr = π²EI/L² is fixed by geometry; λ = P_cr/P_applied,
+// so 2× applied load ⇒ ~½× eigenvalue.  worst_buckling_case returns "overload".
+//
+// envelope_critical_load(mcbr, 1kN) = min-eigenvalue × 1kN
+//                                   = critical_load(result_for(mcbr, "overload"), 1kN).
+//
+// PRD reference: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
+
+structure BucklingMultiCaseSmoke {
+    // Geometry: 800 mm column, 20×20 mm cross-section (matches buckling_column_smoke.ri).
+    param length : Length = 800mm
+    param width  : Length = 20mm
+    param height : Length = 20mm
+
+    // Material: AISI 1045 steel (E = 205 GPa, ν = 0.3).
+    let material = Steel_AISI_1045()
+
+    // LoadCase "operating": 1 kN axial tip load.
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "top", force: 1000.0)],
+        supports: [FixedSupport(target: "base")],
+    )
+
+    // LoadCase "overload": 2 kN axial tip load — twice the operating load.
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "top", force: 2000.0)],
+        supports: [FixedSupport(target: "base")],
+    )
+
+    // Multi-load-case buckling solve.
+    let mcbr = solve_buckling_load_cases(
+        material, length, width, height, [lc1, lc2]
+    )
+
+    // Worst case: argmin over cases of modes[0].eigenvalue.
+    // Expected: "overload" (2× load ⇒ ~½× eigenvalue).
+    let worst = worst_buckling_case(mcbr)
+
+    // Envelope critical load: min over cases of eigenvalue × reference_load.
+    // Matches critical_load(result_for(mcbr, "overload"), 1kN).
+    let envelope = envelope_critical_load(mcbr, 1000.0 * 1N)
+}
