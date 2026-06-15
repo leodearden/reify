@@ -299,14 +299,14 @@ assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7: output file cont
     "
 
 # ---------------------------------------------------------------------------
-# Tests 13a–13c (task 4621): host-relative nproc bound (RED until step-2 impl).
+# Tests 13a–13c (task 4621): host-relative nproc bound (GREEN from step-2).
 #
 # REIFY_OCCT_NPROC injects the CPU count so the derivation is deterministically
 # testable on ANY host (workstation 32t or laptop 16t).  REIFY_OCCT_MEMTOTAL_GIB
-# is set high (999) so the RAM term (not yet implemented in step-2; added in step-4)
-# does not bind and confound these nproc-focused assertions.
+# is set high (999) so the RAM term (added in step-4) does not bind and confound
+# these nproc-focused assertions.
 #
-# Derivation (step-2 and beyond): cap = min(HARD_CAP=24, nproc, [ram_bound])
+# Derivation: cap = min(HARD_CAP=24, nproc, [ram_bound])
 #   HARD_CAP from REIFY_OCCT_NEXTEST_HARD_CAP (default 24).
 #   nproc from REIFY_OCCT_NPROC if valid, else system nproc.
 # ---------------------------------------------------------------------------
@@ -341,6 +341,81 @@ assert "gen-nextest-config.sh REIFY_OCCT_NEXTEST_MAX_THREADS=7 wins over REIFY_O
         val=\$(awk '/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match(\$0,/[0-9]+/);print substr(\$0,RSTART,RLENGTH);exit}' \"\$cfg\")
         rm -f \"\$cfg\"
         [ \"\$val\" = \"7\" ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 14a–14d (task 4621): host-relative RAM bound (RED until step-4 impl).
+#
+# Derivation: cap = min(HARD_CAP=24, nproc, floor(MemTotalGiB / GIB_PER_THREAD=2))
+#   GIB_PER_THREAD from REIFY_OCCT_GIB_PER_THREAD (default 2, strict digits-only).
+#   MemTotalGiB from REIFY_OCCT_MEMTOTAL_GIB (testability knob); fallback /proc/meminfo.
+#
+# Each test injects both REIFY_OCCT_NPROC and REIFY_OCCT_MEMTOTAL_GIB so the
+# result is an exact integer min() deterministic on any host.
+# RED against step-2 code (which has no RAM term: min(24, nproc) only).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 14a–14d (task 4621): host-relative RAM bound for OCCT cap ---"
+
+# Helper awk extractor (same pattern used in Tests 10–13).
+_OCCT_AWK='/^\[test-groups\]/{f=1;next}/^\[/{f=0}f&&/occt.*max-threads/{match($0,/[0-9]+/);print substr($0,RSTART,RLENGTH);exit}'
+
+# Test 14a: NPROC=16, MEMTOTAL_GIB=16, GIB_PER_THREAD=2
+#   ram_bound = floor(16/2) = 8 → min(24,16,8) = 8 (RAM binds).
+#   RED: step-2 returns min(24,16)=16.
+assert "gen-nextest-config.sh NPROC=16/MEM=16/GPT=2: [test-groups] occt max-threads = 8 (RAM binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=16 REIFY_OCCT_GIB_PER_THREAD=2 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"8\" ]
+    "
+
+# Test 14b: NPROC=16, MEMTOTAL_GIB=64, GIB_PER_THREAD=2 (default)
+#   ram_bound = floor(64/2) = 32 → min(24,16,32) = 16 (nproc binds, RAM slack).
+#   RED: step-2 returns min(24,16)=16 — happens to be correct, but for wrong reasons;
+#   step-4 must handle this correctly via the full three-term min().
+assert "gen-nextest-config.sh NPROC=16/MEM=64/GPT=2: [test-groups] occt max-threads = 16 (nproc binds, RAM slack)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=64 REIFY_OCCT_GIB_PER_THREAD=2 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"16\" ]
+    "
+
+# Test 14c: NPROC=32, MEMTOTAL_GIB=128, GIB_PER_THREAD=2 (workstation profile)
+#   ram_bound = floor(128/2) = 64 → min(24,32,64) = 24 (HARD_CAP binds).
+assert "gen-nextest-config.sh NPROC=32/MEM=128/GPT=2 (workstation profile): [test-groups] occt max-threads = 24 (HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 REIFY_OCCT_GIB_PER_THREAD=2 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"24\" ]
+    "
+
+# Test 14d: REIFY_OCCT_GIB_PER_THREAD=4 (wider-margin knob), two sub-cases.
+#   NPROC=16, MEMTOTAL_GIB=64: ram_bound=floor(64/4)=16 → min(24,16,16)=16 (nproc=RAM).
+#   NPROC=16, MEMTOTAL_GIB=16: ram_bound=floor(16/4)=4  → min(24,16,4)=4  (RAM binds).
+#   RED (second sub-case): step-2 returns min(24,16)=16, not 4.
+assert "gen-nextest-config.sh NPROC=16/MEM=64/GPT=4: [test-groups] occt max-threads = 16 (nproc=RAM=16)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=64 REIFY_OCCT_GIB_PER_THREAD=4 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"16\" ]
+    "
+
+assert "gen-nextest-config.sh NPROC=16/MEM=16/GPT=4: [test-groups] occt max-threads = 4 (RAM binds, GPT=4 knob honored)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=16 REIFY_OCCT_MEMTOTAL_GIB=16 REIFY_OCCT_GIB_PER_THREAD=4 \
+              env -u REIFY_OCCT_NEXTEST_MAX_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"4\" ]
     "
 
 test_summary
