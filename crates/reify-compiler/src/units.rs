@@ -3186,6 +3186,26 @@ mod tests {
         );
     }
 
+    /// Task 4536 (step-1 RED). `mid_surface(body)` is a topology selector that
+    /// builds a `Type::Selector(Face)` leaf addressing the shell-extract
+    /// `Role::MidSurfaceFace` attribute. It must be registered in the selector
+    /// names table and result-type map exactly like `faces` (which is also
+    /// `Selector(Face)`), so the compiler inserts the `ResolveSelector` coercion
+    /// at consumption sites. RED until step-2 registers the name + result-type arm.
+    #[test]
+    fn mid_surface_is_a_face_topology_selector() {
+        assert!(
+            GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&"mid_surface"),
+            "`mid_surface` must be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES (the \
+             shell-extract MidSurfaceFace selector, task 4536)"
+        );
+        assert!(is_geometry_topology_selector("mid_surface"));
+        assert_eq!(
+            topology_selector_result_type("mid_surface"),
+            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
+        );
+    }
+
     /// Guard: `body` must NOT be in GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
     /// `body` is the RBD mechanism constructor (JOINT_TYPED_FN_NAMES →
     /// StructureRef("Mechanism")); `solid_body` is the Named-leaf BodySelector
