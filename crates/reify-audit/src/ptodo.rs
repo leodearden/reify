@@ -690,8 +690,9 @@ pub fn resolve_inverse(
 /// nothing. Otherwise every dead cite is explained — a present terminal cite
 /// (done / cancelled) → one `orphaned` finding (summary carries `#id` +
 /// status); an absent cite → one `unknown-id` finding. All findings are
-/// [`Pattern::PTodo`] / [`Severity::Medium`] (§8.4) with `task_id = path` and a
-/// single [`EvidenceRef::File`] ref.
+/// [`Pattern::PTodo`] with `task_id = path` and a single [`EvidenceRef::File`]
+/// ref. Severity is per-kind (task η, #4559): `orphaned` → High; `unknown-id` →
+/// Medium (a DB-sync race must not hard-fail verify; PRD §8.4).
 ///
 /// A statement-prepare error (missing `tasks` table / corrupt DB) is propagated
 /// as `Err` so [`check`] degrades fail-soft (§6.7) instead of panicking.
@@ -748,13 +749,18 @@ fn resolve_liveness_keyed(
         for (id, status) in resolved {
             let finding = match status {
                 // Present and — since !any_live — necessarily terminal → orphaned.
+                // task η (#4559): orphaned is actionable source-marker debt → High.
                 Some(s) => liveness_finding(
                     path,
+                    Severity::High,
                     format!("orphaned: line {line}: #{id} status={s}: {text}"),
                 ),
                 // Absent → unknown-id.
+                // Stays Medium: a DB-sync race (freshly-filed cite not yet in tasks.db)
+                // must not hard-fail verify (PRD §8.4 D-unknown-id).
                 None => liveness_finding(
                     path,
+                    Severity::Medium,
                     format!("unknown-id: line {line}: #{id}: {text}"),
                 ),
             };
@@ -765,11 +771,15 @@ fn resolve_liveness_keyed(
     Ok(out)
 }
 
-/// Build a Medium PTODO liveness [`Finding`] at `path` with the given summary.
-fn liveness_finding(path: &str, summary: String) -> Finding {
+/// Build a PTODO liveness [`Finding`] at `path` with the given severity and summary.
+///
+/// `severity` is caller-supplied per-kind (task η, #4559): `orphaned` → High;
+/// `unknown-id` → Medium. `task-cites-deleted-path` (inverse lane) is always
+/// Medium and built directly in [`resolve_inverse`] without calling this helper.
+fn liveness_finding(path: &str, severity: Severity, summary: String) -> Finding {
     Finding {
         pattern: Pattern::PTodo,
-        severity: Severity::Medium,
+        severity,
         summary,
         task_id: path.to_string(),
         evidence: vec![EvidenceRef::File { path: path.to_string() }],
