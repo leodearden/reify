@@ -152,6 +152,9 @@ pub enum Pattern {
     /// breadcrumb and the structural lane still runs in full (exit class unchanged).
     /// See `docs/prds/reify-audit-ptodo-detector.md` §8 (grammar) / §6.3
     /// (inverse lane) / §6.7 (degradation).
+    ///
+    /// As of task ε (#4557) this pattern participates in the no-`--pattern`
+    /// default sweep at Medium severity (exit-neutral: exit code = High count).
     PTodo,
 }
 

@@ -91,7 +91,7 @@ invocation that travels over the MCP transport, not a shell command.
 $REIFY_AUDIT_BIN \
   [--task <id>] \
   [--since <iso-date>] \
-  [--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER] \
+  [--pattern P1|P2|P5|PTODO|PDEAD|PUNTESTED|PLAYER] \
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
   [--jcodemunch-repo <id>]   \  # default: leodearden/reify
   [--no-jcodemunch]          \  # force inert stub (offline/test); P1/P-* yield nothing
@@ -157,6 +157,8 @@ Each failure mode yields exit code 125. The skill should surface the human-reada
 | Literal 125 High findings (boundary) | tempfile contains a JSON array of 125 Finding objects | NOT an infra error — route as findings per §3.1 disambiguator |
 
 ### §4.1 jcodemunch unreachable — fail-soft (NOT an infra error)
+
+**PTODO is unaffected by jcodemunch outages.** `--pattern PTODO` (and PTODO's participation in the default sweep) uses only deterministic grep + read-only sqlite — it never opens a jcodemunch connection and never degrades on a down serve. Only its liveness lane degrades gracefully when `tasks.db` is absent (one stderr breadcrumb; structural lane still runs; exit class unchanged). See `references/modes.md` §4 PTODO notes for detail.
 
 When the jcodemunch MCP server is unreachable (the common case — jcodemunch is not in reify's `.mcp.json` and must be started separately), the default sweep, `--pattern P1`, and the advisory `--pattern PDEAD|PUNTESTED|PLAYER` do **not** exit 125. Instead:
 

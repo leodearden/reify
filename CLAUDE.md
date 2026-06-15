@@ -172,3 +172,45 @@ Landlock is FS-only — it bounds **writes**, not reads. `/etc/passwd` and other
 ### Tauri bundling
 
 `gui/src-tauri/tauri.conf.json` includes `bundle.resources: ["sandbox/landlock.py", "sandbox/landlock_exec.py"]` so packaged builds ship the helpers. In dev, the helpers resolve via `app.path().resource_dir()` → `target/<profile>/sandbox/`. In bundled builds they go into the AppImage/AppDir resource directory.
+
+## TODO citation convention
+
+Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` macro stub, and blocker `#[ignore]` reason in tracked source must cite a **live, non-terminal task** using the canonical form `#NNNN`:
+
+### Canonical forms
+
+```
+// TODO(#4593): brief description
+// FIXME(#4593): brief description
+// HACK(#4593): brief description
+todo!("brief description #4593")       // cite on the same line
+unimplemented!("brief description")    // cite on the line directly above: // TODO(#4593):
+#[ignore = "blocked on #4593 — brief description"]
+```
+
+For `todo!()`/`unimplemented!()` the cite goes **on the same macro line** or on the **line directly above** the macro call. For `#[ignore]` reasons the cite belongs inside the string.
+
+### Banned cite forms (resolve to `malformed-cite` in PTODO)
+
+| Form | Why banned |
+|------|-----------|
+| `task δ` / `task ε` / `task ζ` | Greek-letter alias — not a task ID |
+| `task-5` / `step-3` | PRD-relative index — ambiguous across PRDs |
+| `task 4553` / `task_4553` | Legacy prose/underscore — not the canonical `#NNNN` form |
+
+### The one-line invariant
+
+> Every tracked TODO/FIXME/HACK/todo!()/unimplemented!()/blocker-#[ignore] must cite a live, non-terminal task via `#NNNN`. Cited ≠ tracked — a done/cancelled cite is orphaned.
+
+### Inline escape
+
+When a source file legitimately contains a pattern string (e.g. a test that assembles `"TODO"` as a variable, or a detector source that matches `"TODO("`) that would falsely trip the PTODO sweep, add a trailing `// ptodo:allow` comment on the line:
+
+```rust
+let marker = "TODO(pending)"; // ptodo:allow — pattern-string, not a real stub
+```
+
+### References
+
+- **Grammar**: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar and violation taxonomy)
+- **Default sweep**: PTODO runs in the no-`--pattern` default `/audit` sweep at Medium severity (task ε, #4557); see `/audit` and `--pattern PTODO`
