@@ -3342,6 +3342,37 @@ mod tests {
         );
     }
 
+    // --- is_selector_expr: mid_surface selector classification (task 4536) ---
+
+    /// Task 4536 (step-3 RED). Single-arg `mid_surface(b)` must be classified as
+    /// a selector expression by `is_selector_expr` so a `let m = mid_surface(b)`
+    /// binding routes through the selector/ResolveSelector path, NOT CSG
+    /// geometry-let handling. Mirrors the `face`/`edge`/`solid_body` single-arg
+    /// constructor classification. RED until step-4 adds "mid_surface" to the
+    /// explicit name match.
+    #[test]
+    fn is_selector_expr_recognises_mid_surface() {
+        let functions: Vec<CompiledFunction> = vec![];
+        let known: HashSet<&str> = HashSet::new();
+        let expr = reify_ast::Expr {
+            kind: reify_ast::ExprKind::FunctionCall {
+                name: "mid_surface".to_string(),
+                arg_names: vec![None],
+                args: vec![reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Ident("b".to_string()),
+                    span: reify_core::SourceSpan::new(0, 1),
+                }],
+            },
+            span: reify_core::SourceSpan::new(0, 16),
+        };
+        assert!(
+            is_selector_expr(&expr, &functions, &known),
+            "mid_surface(b) must be classified as a selector expression so \
+             `let m = mid_surface(b)` routes through the selector path, not CSG \
+             geometry-let handling"
+        );
+    }
+
     // --- compile_geometry_call: Conditional emits Error (task 3395) ---
 
     /// `compile_geometry_call` must emit a clean Error diagnostic (and return
