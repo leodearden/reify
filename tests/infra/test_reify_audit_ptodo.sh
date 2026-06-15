@@ -46,15 +46,41 @@ echo "=== PTODO detector infra gate ==="
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
 # crates/reify-audit commit.
+#
+# Testability seam (task #4624): REIFY_AUDIT_BIN and REIFY_PTODO_GEN_BIN can
+# be overridden by environment variables for hermetic meta-tests that need to
+# exercise the budget-safe skip path without a real binary on disk.
 # -----------------------------------------------------------------------
-REIFY_AUDIT_BIN="$REPO_ROOT/target/release/reify-audit"
-GEN="$REPO_ROOT/target/release/ptodo-baseline-gen"
+REIFY_AUDIT_BIN="${REIFY_AUDIT_BIN:-$REPO_ROOT/target/release/reify-audit}"
+GEN="${REIFY_PTODO_GEN_BIN:-$REPO_ROOT/target/release/ptodo-baseline-gen}"
 
 source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
-reify_audit_guard "$REIFY_AUDIT_BIN" rebuild "$REPO_ROOT" || true
 
-# If the guard skipped or the gen binary is still absent, build explicitly.
+# Use rebuild-budget-safe mode (task #4624): when REIFY_AUDIT_NO_COLD_BUILD=1
+# and the binary is absent/stale, the guard returns 75 (EX_TEMPFAIL skip
+# sentinel) instead of invoking `cargo build` inside the 20m run_all.sh wall.
+# Map 75 → graceful SKIP (exit 0) so verify.sh does not record a test failure.
+# When REIFY_AUDIT_NO_COLD_BUILD is unset/0, the guard falls through to the
+# normal rebuild path (self-heals the binary as before).
+set +e
+reify_audit_guard "$REIFY_AUDIT_BIN" rebuild-budget-safe "$REPO_ROOT" 2>&1
+_guard_rc=$?
+set -e
+if [ "$_guard_rc" -eq 75 ]; then
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent/stale and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
+    exit 0
+fi
+
+# If the guard skipped or the gen binary is still absent, build explicitly —
+# but only when cold builds are permitted.  When REIFY_AUDIT_NO_COLD_BUILD=1
+# the pre-step in verify.sh should have pre-built the binary; if we reach here
+# with GEN still absent under the budget flag, degrade to graceful SKIP rather
+# than consuming the 20m wall budget.
 if [ ! -x "$GEN" ]; then
+    if [ "${REIFY_AUDIT_NO_COLD_BUILD:-0}" = "1" ]; then
+        echo "test_reify_audit_ptodo.sh: ptodo-baseline-gen absent and REIFY_AUDIT_NO_COLD_BUILD=1 — SKIP (budget-safe)" >&2
+        exit 0
+    fi
     echo "ptodo-baseline-gen not found after freshness guard; building..." >&2
     cargo build --release -q -p reify-audit 2>/dev/null
 fi

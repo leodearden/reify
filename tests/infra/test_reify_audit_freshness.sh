@@ -235,5 +235,93 @@ assert "is_stale emits a stderr warning in git repo with no crates/reify-audit h
 assert "is_stale is silent (no warning) for a non-git repo_root" \
     bash -c "source '$FRESHNESS_LIB'; warn=\$(reify_audit_is_stale '$NON_GIT_DIR/fake-bin' '$NON_GIT_DIR' 2>&1 >/dev/null); [ -z \"\$warn\" ]"
 
+# ==============================================================================
+# Check 13-15: reify_audit_guard rebuild-budget-safe mode (task #4624)
+#   13: REIFY_AUDIT_NO_COLD_BUILD=1 + stale bin → exit 75, cargo NOT invoked
+#   14: REIFY_AUDIT_NO_COLD_BUILD unset + stale bin + freshening shim → exit 0
+#   15: Fresh bin → exit 0 regardless of REIFY_AUDIT_NO_COLD_BUILD
+#
+# These three checks FAIL until impl-freshness-budget-mode adds the new mode
+# (unknown mode → guard returns 125 today, not 75/0).
+# Fake-cargo-on-PATH shim ensures NO real workspace compile ever runs.
+# ==============================================================================
+echo ""
+echo "--- Check 13: rebuild-budget-safe + REIFY_AUDIT_NO_COLD_BUILD=1 → exit 75, no cargo ---"
+
+# Setup: stale bin + shim cargo that touches the bin (freshens it) AND writes
+# a marker file when invoked.  If cargo is NOT invoked the marker is absent.
+BS_TMPDIR=$(mktemp -d /tmp/test-budget-safe-XXXXXX)
+trap 'rm -rf "$TMPDIR_FRESHNESS" "$NON_GIT_DIR" "$REBUILD_TMPDIR" "$GIT_NO_HIST_DIR" "$BS_TMPDIR"' EXIT
+
+BS_STALE_BIN="$TMPDIR_FRESHNESS/reify-audit-budget-safe-stale"
+touch "$BS_STALE_BIN"
+touch -t 200001010000 "$BS_STALE_BIN"
+
+BS_MARKER="$BS_TMPDIR/cargo-was-invoked"
+
+# Shim cargo: writes marker + freshens bin + exits 0.
+cat > "$BS_TMPDIR/cargo" <<EOF
+#!/usr/bin/env bash
+touch '$BS_MARKER'
+touch '$BS_STALE_BIN'
+exit 0
+EOF
+chmod +x "$BS_TMPDIR/cargo"
+
+# 13a: exit code must be 75
+set +e
+BS_RC=$(env PATH="$BS_TMPDIR:$PATH" REIFY_AUDIT_NO_COLD_BUILD=1 bash -c \
+    "source '$FRESHNESS_LIB' && reify_audit_guard '$BS_STALE_BIN' rebuild-budget-safe '$REPO_ROOT'" 2>/dev/null)
+BS_EXIT=$?
+set -e
+
+assert "rebuild-budget-safe: REIFY_AUDIT_NO_COLD_BUILD=1 + stale bin → exit 75" \
+    bash -c "[ '$BS_EXIT' -eq 75 ]"
+
+# 13b: cargo shim must NOT have been invoked (no marker, bin still stale)
+assert "rebuild-budget-safe: REIFY_AUDIT_NO_COLD_BUILD=1 → cargo NOT invoked (no marker file)" \
+    bash -c "[ ! -f '$BS_MARKER' ]"
+
+# 13c: bin timestamp must still be stale (cargo never freshened it)
+assert "rebuild-budget-safe: REIFY_AUDIT_NO_COLD_BUILD=1 → bin remains stale (not touched by cargo)" \
+    env PATH="$BS_TMPDIR:$PATH" bash -c "source '$FRESHNESS_LIB' && reify_audit_is_stale '$BS_STALE_BIN' '$REPO_ROOT'"
+
+# ==============================================================================
+echo ""
+echo "--- Check 14: rebuild-budget-safe + REIFY_AUDIT_NO_COLD_BUILD unset + freshening shim → exit 0 ---"
+
+BS_REBUILD_BIN="$TMPDIR_FRESHNESS/reify-audit-budget-safe-rebuild"
+touch "$BS_REBUILD_BIN"
+touch -t 200001010000 "$BS_REBUILD_BIN"
+
+# Shim cargo: freshens the bin and exits 0 (no cold build in practice, just a shim).
+cat > "$BS_TMPDIR/cargo-rebuild" <<EOF
+#!/usr/bin/env bash
+touch '$BS_REBUILD_BIN'
+exit 0
+EOF
+chmod +x "$BS_TMPDIR/cargo-rebuild"
+
+# Swap shim: replace cargo with the rebuild-freshening shim
+cp "$BS_TMPDIR/cargo-rebuild" "$BS_TMPDIR/cargo"
+chmod +x "$BS_TMPDIR/cargo"
+
+assert "rebuild-budget-safe: REIFY_AUDIT_NO_COLD_BUILD unset + freshening shim → exit 0 (falls through to rebuild)" \
+    env PATH="$BS_TMPDIR:$PATH" bash -c "unset REIFY_AUDIT_NO_COLD_BUILD; source '$FRESHNESS_LIB' && reify_audit_guard '$BS_REBUILD_BIN' rebuild-budget-safe '$REPO_ROOT' 2>/dev/null"
+
+# ==============================================================================
+echo ""
+echo "--- Check 15: rebuild-budget-safe + fresh bin → exit 0 regardless of REIFY_AUDIT_NO_COLD_BUILD ---"
+
+BS_FRESH_BIN="$TMPDIR_FRESHNESS/reify-audit-budget-safe-fresh"
+touch "$BS_FRESH_BIN"
+# Fresh bin: mtime is now, well after any historical commit.
+
+assert "rebuild-budget-safe: fresh bin + REIFY_AUDIT_NO_COLD_BUILD=1 → exit 0 (fast path)" \
+    bash -c "REIFY_AUDIT_NO_COLD_BUILD=1 bash -c \"source '$FRESHNESS_LIB' && reify_audit_guard '$BS_FRESH_BIN' rebuild-budget-safe '$REPO_ROOT' 2>/dev/null\""
+
+assert "rebuild-budget-safe: fresh bin + REIFY_AUDIT_NO_COLD_BUILD unset → exit 0 (fast path)" \
+    bash -c "unset REIFY_AUDIT_NO_COLD_BUILD; source '$FRESHNESS_LIB' && reify_audit_guard '$BS_FRESH_BIN' rebuild-budget-safe '$REPO_ROOT' 2>/dev/null"
+
 # -- Summary ------------------------------------------------------------------
 test_summary
