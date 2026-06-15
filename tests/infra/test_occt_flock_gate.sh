@@ -277,6 +277,72 @@ echo "--- Test 17b: release nextest pass uses unified 60m timeout (η/4521 floor
 assert "Test 17b: release nextest pass uses unified 60m outer timeout (not 75m, task 4520)" \
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
 
+# -- Tests T1–T7: host-relative compile timeout knobs (task 4621) ---------------
+# Pure hermetic plan-string assertions via `--print-plan` oracle + grep.
+# Each test runs verify.sh with a specific REIFY_VERIFY_*_TIMEOUT env and
+# checks that the rendered timeout token in the plan output matches.
+#
+# T1–T3: REIFY_VERIFY_TEST_TIMEOUT (test compile budget, default 60m)
+# T4–T5: REIFY_VERIFY_CLIPPY_TIMEOUT (clippy+gui-feature check budget, default 45m)
+# T6–T7: REIFY_VERIFY_CHECK_TIMEOUT (cargo check budget, default 30m)
+#
+# RED (T1, T4, T6) until step-6 impl; GREEN guards (T2, T3, T5, T7) already pass.
+echo ""
+echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
+
+# T1: REIFY_VERIFY_TEST_TIMEOUT=90m → both debug (--workspace) and release
+#     nextest passes render `timeout --kill-after=60 90m`.
+#     RED: current code always emits 60m regardless of this env.
+_T1_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=90m bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: debug nextest pass uses 90m outer timeout" \
+    bash -c "printf '%s\n' \"${_T1_PLAN}\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
+assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: release nextest pass uses 90m outer timeout" \
+    bash -c "printf '%s\n' \"${_T1_PLAN}\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
+
+# T2: REIFY_VERIFY_TEST_TIMEOUT unset → both passes use 60m (workstation default preserved).
+#     Guard: Tests 17/17b already check this via TEST_PLAN_SEGS; this is a direct re-check.
+assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: debug nextest pass uses default 60m" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses default 60m" \
+    bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
+
+# T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
+_T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
+    bash -c "printf '%s\n' \"${_T3_PLAN}\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+
+# T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m → cargo clippy AND gui-feature cargo check
+#     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
+#     RED: current code always emits 45m.
+_T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
+    --print-plan 2>/dev/null | grep -v '^#')"
+assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
+    bash -c "printf '%s\n' \"${_T4_PLAN}\" | grep -qE 'timeout --kill-after=60 70m .*cargo clippy'"
+assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: gui-feature cargo check uses 70m outer timeout" \
+    bash -c "printf '%s\n' \"${_T4_PLAN}\" | grep -qE 'timeout --kill-after=60 70m .*cargo check -p reify-gui'"
+
+# T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
+_T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
+    --print-plan 2>/dev/null | grep -v '^#')"
+assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
+    bash -c "printf '%s\n' \"${_T5_PLAN}\" | grep -qE 'timeout --kill-after=60 45m .*cargo clippy'"
+
+# T6: REIFY_VERIFY_CHECK_TIMEOUT=50m → cargo check --workspace --tests renders
+#     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
+#     RED: current code always emits 30m.
+_T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+    --print-plan 2>/dev/null | grep -v '^#')"
+assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
+    bash -c "printf '%s\n' \"${_T6_PLAN}\" | grep -qE 'timeout --kill-after=60 50m .*cargo check --workspace'"
+
+# T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
+_T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
+    --print-plan 2>/dev/null | grep -v '^#')"
+assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
+    bash -c "printf '%s\n' \"${_T7_PLAN}\" | grep -qE 'timeout --kill-after=60 30m .*cargo check --workspace'"
+
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
 # detached daemon by cargo via RUSTC_WRAPPER) inherited FD 9 and outlived
