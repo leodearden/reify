@@ -933,5 +933,141 @@ class TestBoundaryE2e(unittest.TestCase):
                          f"report: {bv.report}")
 
 
+# ---------------------------------------------------------------------------
+# step-14 (RED): Workflow .mjs injected-globals runtime contract
+# ---------------------------------------------------------------------------
+
+class TestMjsInjectedGlobalsContract(unittest.TestCase):
+    """Execute prd-decompose-verify.mjs under a faithful mock of Workflow's injected
+    globals and ONLY those: agent, parallel, pipeline, log, phase, args, budget, workflow.
+
+    The Workflow tool injects exactly this set; tmp_file and shell are NOT injected.
+    Against the CURRENT .mjs this FAILS: stage 2 calls writeTempJson/runHarness which
+    reference non-injected tmp_file/shell globals, throwing ReferenceError at import-eval.
+    Passes after step-15 rewrites the .mjs to use ONLY injected globals.
+    """
+
+    _SENTINEL = "WORKFLOW_CONTRACT_OK"
+
+    def _harness_source(self) -> str:
+        """Build the Node.js ESM harness script source."""
+        mjs_abs = _PDV_MJS.replace("\\", "\\\\")
+        return f"""\
+// Faithful mock of the Workflow tool's injected globals.
+// ONLY globals the Workflow tool injects are set — tmp_file and shell are NOT.
+
+const SENTINEL = "{self._SENTINEL}";
+const MJS_PATH = "{mjs_abs}";
+
+// ── mock: agent(prompt, opts) — returns canned shapes based on opts.phase ──────
+globalThis.agent = async (prompt, opts = {{}}) => {{
+    const phase = (opts.phase || "").toLowerCase();
+    if (phase === "enumerate") {{
+        return {{
+            premises: [{{
+                text: "revolute rejects non-axis arg",
+                assertion_kind: "rejection",
+                fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+                match: {{ exit_code: 1 }},
+                capability: "arg-vs-param rejection (mock)",
+            }}],
+        }};
+    }}
+    if (phase === "prove") {{
+        return {{
+            prover: [{{
+                capability: "arg-vs-param rejection (mock)",
+                probe_kind: "check",
+                verdict: "PASS",
+                command: ["reify", "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri"],
+                exit_code: 1,
+                stdout: "",
+                stderr: "type mismatch",
+            }}],
+            adversary: [],
+        }};
+    }}
+    if (phase === "adversary") {{
+        return {{ prover: [], adversary: [] }};
+    }}
+    if (phase === "synthesize") {{
+        return {{ blocks: false, blocking: [], report: "" }};
+    }}
+    // fallback
+    return {{}};
+}};
+
+// ── mock: pipeline(items, ...stages) — threads each item through stages in order ─
+globalThis.pipeline = async (items, ...stages) => {{
+    const results = [];
+    for (const item of items) {{
+        let val = item;
+        for (const stage of stages) {{
+            val = await stage(val, item, results.length);
+        }}
+        results.push(val);
+    }}
+    return results;
+}};
+
+// ── mock: parallel(thunks) — Promise.all of called thunks ────────────────────
+globalThis.parallel = async (thunks) => Promise.all(thunks.map(t => t()));
+
+// ── mock: log — no-op ─────────────────────────────────────────────────────────
+globalThis.log = (..._a) => {{}};
+
+// ── mock: phase — no-op ───────────────────────────────────────────────────────
+globalThis.phase = (..._a) => {{}};
+
+// ── mock: args — a single leaf to drive every phase (Enumerate→Prove‖Adversary→Synthesize)
+globalThis.args = [{{ signal: "revolute rejects a non-axis arg (mock leaf)", text: "mock leaf" }}];
+
+// ── mock: budget ──────────────────────────────────────────────────────────────
+globalThis.budget = {{ total: null, spent: () => 0, remaining: () => Infinity }};
+
+// ── mock: workflow ────────────────────────────────────────────────────────────
+globalThis.workflow = async () => {{}};
+
+// ── execute the .mjs ──────────────────────────────────────────────────────────
+try {{
+    await import(MJS_PATH);
+    console.log(SENTINEL);
+}} catch (e) {{
+    console.error("IMPORT_FAILED:", e.message);
+    process.exit(1);
+}}
+"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_mjs_runs_under_injected_globals_only(self):
+        """prd-decompose-verify.mjs runs to completion under ONLY Workflow-injected globals.
+
+        Fails against the current .mjs (writeTempJson/runHarness reference non-injected
+        tmp_file/shell globals → ReferenceError). Passes after step-15 rewrite.
+        """
+        harness_src = self._harness_source()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".mjs", delete=False) as f:
+            f.write(harness_src)
+            harness_path = f.name
+        try:
+            result = subprocess.run(
+                ["node", "--input-type=module"],
+                input=harness_src,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+            )
+            self.assertIn(
+                self._SENTINEL, result.stdout,
+                f"sentinel not found in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
+            )
+        finally:
+            os.unlink(harness_path)
+
+
 if __name__ == "__main__":
     unittest.main()
