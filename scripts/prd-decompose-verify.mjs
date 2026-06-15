@@ -8,19 +8,23 @@
 //   "a deterministic harness over stochastic agents: agents find+author probes,
 //   D1 adjudicates."  All load-bearing logic (negative-assertion binding,
 //   blocking synthesis, captured-output report) lives in the tested Python
-//   harness; this .mjs is a thin orchestration shell whose only CI-tested
-//   contract is node --check syntax validity.
+//   harness; this .mjs is a thin orchestration shell.
 //
 // Per-leaf pipeline:
 //   Enumerator  — extract premises from leaf signal; enforce negative-assertion
 //                 mandate; emit {premises:[...]} JSON
 //   Prover ‖ Adversary  — run concurrently:
-//     Prover:   author probe fixtures, invoke `prd-decompose-verify.py bind`
-//               then `prd-capability-check.py --json`, return result records
+//     Prover:   receive premises inline; write to temp file; invoke
+//               `prd-decompose-verify.py bind` then `prd-capability-check.py
+//               --json`; return result records via RESULTS_SCHEMA
 //     Adversary: independent lens — hunt unlisted premises + falsifications;
-//               return its own α result records
-//   Synthesize — call `prd-decompose-verify.py synthesize` (deterministic) on
-//               the combined Prover + Adversary results; extract BatchVerdict
+//               return its own α result records via RESULTS_SCHEMA
+//   Synthesize — agent receives combined records inline; writes to temp file;
+//               runs `prd-decompose-verify.py synthesize` (deterministic);
+//               returns BatchVerdict via VERDICT_SCHEMA
+//
+// Uses ONLY Workflow-injected globals: agent, parallel, pipeline, log, phase,
+// args, budget, workflow.  Does NOT use tmp_file or shell (not injected).
 //
 // Batch verdict: blocks on any FAIL/UNPROVABLE/HARNESS_ERROR from any leaf.
 // The script returns a summary object with per-leaf verdicts and aggregate
@@ -76,31 +80,15 @@ const RESULTS_SCHEMA = {
     },
 };
 
-// ---------------------------------------------------------------------------
-// Helpers (use Workflow-injected globals: agent, parallel, pipeline, log,
-// tmp_file, shell — undefined under node --check but valid ESM syntax)
-// ---------------------------------------------------------------------------
-
-/**
- * Write data to a temp file and return the path.
- * Uses the `tmp_file` workflow global injected by the harness.
- */
-async function writeTempJson(data) {
-    const json = JSON.stringify(data);
-    return await tmp_file({ content: json, extension: ".json" }); // eslint-disable-line no-undef
-}
-
-/**
- * Run `python3 scripts/prd-decompose-verify.py` with the given subcommand and
- * arguments, returning captured output.
- * Uses the `shell` workflow global injected by the harness.
- */
-async function runHarness(...cmdArgs) {
-    return await shell({ // eslint-disable-line no-undef
-        command: ["python3", "scripts/prd-decompose-verify.py", ...cmdArgs],
-        capture_output: true,
-    });
-}
+const VERDICT_SCHEMA = {
+    type: "object",
+    required: ["blocks", "blocking", "report"],
+    properties: {
+        blocks:   { type: "boolean" },
+        blocking: { type: "array", items: { type: "string" } },
+        report:   { type: "string" },
+    },
+};
 
 // ---------------------------------------------------------------------------
 // Main workflow body — wrapped in async IIFE so `return` is syntactically valid
@@ -165,50 +153,42 @@ Return a JSON object {premises: [...]} matching the schema.`,
         },
 
         // Stage 2: Prover ‖ Adversary (concurrent)
+        // Premises are passed INLINE as JSON. Each agent uses its own tools
+        // to write temp files and shell out — no tmp_file/shell globals needed.
         async ({ leaf, leafLabel, enumerated, idx }) => {
             if (!enumerated || !enumerated.premises || enumerated.premises.length === 0) {
                 log(`[${idx}] No premises enumerated for leaf: ${leafLabel} — skipping proof.`); // eslint-disable-line no-undef
                 return { leaf, leafLabel, idx, prover: [], adversary: [] };
             }
 
-            const premisesFile = await writeTempJson(enumerated);
-
-            const bindResult = await runHarness("bind", premisesFile);
-            if (bindResult.exit_code !== 0) {
-                log(`[${idx}] bind failed for leaf: ${leafLabel}`); // eslint-disable-line no-undef
-                return {
-                    leaf, leafLabel, idx,
-                    prover: [{ capability: leafLabel, probe_kind: "check",
-                                verdict: "HARNESS_ERROR", command: ["bind"],
-                                exit_code: bindResult.exit_code,
-                                stdout: bindResult.stdout || "",
-                                stderr: bindResult.stderr || "bind failed" }],
-                    adversary: [],
-                };
-            }
-
-            const probeSetFile = await writeTempJson(JSON.parse(bindResult.stdout));
+            const premisesJson = JSON.stringify(enumerated, null, 2);
 
             const [proverOut, adversaryOut] = await parallel([ // eslint-disable-line no-undef
-                // Prover: run probe-set through α
+                // Prover: write premises to temp file, bind, run α, return records
                 async () => agent( // eslint-disable-line no-undef
                     `You are the Prover for γ decompose-phase verification.
 
-Your task: run the committed probe-set through the α probe runner and return
-the result records.
+Your task: bind the enumerated premises to a probe-set and run it through the α
+probe runner, then return the result records.
 
 LEAF: ${leafLabel}
-PROBE-SET FILE: ${probeSetFile}
+PREMISES JSON:
+${premisesJson}
 
-Run: python3 scripts/prd-capability-check.py --json ${probeSetFile}
+Steps (use your own shell/file tools):
+1. Write the PREMISES JSON above to a temp file, e.g.:
+     echo '<premises_json>' > /tmp/pdv_premises_${idx}.json
+2. Run: python3 scripts/prd-decompose-verify.py bind /tmp/pdv_premises_${idx}.json
+   Capture stdout (the probe-set JSON). If exit code != 0, return a HARNESS_ERROR record.
+3. Write the probe-set JSON to another temp file, e.g.:
+     /tmp/pdv_probeset_${idx}.json
+4. Run: python3 scripts/prd-capability-check.py --json /tmp/pdv_probeset_${idx}.json
+   Capture the full stdout JSON. Parse the "results" array from it.
+5. Return {prover: [result_records...], adversary: []}.
 
-Capture the stdout JSON, parse it, and return the "results" array as the
-"prover" field.
-
-If any probe requires a .ri fixture that doesn't exist, note it in the result
-as a HARNESS_ERROR record rather than failing silently.
-
-Return JSON: {prover: [result_records...], adversary: []}`,
+If any step fails, return a single HARNESS_ERROR result record:
+  {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
+   command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA }
                 ),
 
@@ -223,11 +203,11 @@ LEAF SIGNAL:
 ${JSON.stringify(leaf, null, 2)}
 
 ENUMERATED PREMISES (what the Prover checked):
-${JSON.stringify(enumerated.premises, null, 2)}
+${premisesJson}
 
 Instructions:
 1. Are there any premises NOT listed above that should hold? If so, bind them
-   to probes and run them via prd-capability-check.py --json.
+   to probes and run them via prd-capability-check.py --json using your own tools.
 2. Are any of the enumerated premises stated with the WRONG polarity (e.g., a
    rejection premise bound to observation="absent" instead of "present")?
    Flag these as FAIL records.
@@ -246,33 +226,41 @@ Return JSON: {prover: [], adversary: [result_records...]}`,
             return { leaf, leafLabel, idx, prover: proverRecords, adversary: adversaryRecords };
         },
 
-        // Stage 3: Synthesize (deterministic)
+        // Stage 3: Synthesize — agent receives combined records inline, runs
+        // deterministic harness, returns BatchVerdict via VERDICT_SCHEMA.
         async ({ leaf, leafLabel, idx, prover, adversary }) => {
-            const resultsFile = await writeTempJson({ prover, adversary });
+            const resultsJson = JSON.stringify({ prover, adversary }, null, 2);
 
-            const synResult = await runHarness("synthesize", resultsFile);
+            const synthesized = await agent( // eslint-disable-line no-undef
+                `You are the Synthesize step for γ decompose-phase verification.
 
-            let verdict;
-            if (synResult.exit_code === 0 || synResult.exit_code === 1) {
-                try {
-                    verdict = JSON.parse(synResult.stdout);
-                } catch (e) {
-                    verdict = {
-                        blocks: true,
-                        blocking: [leafLabel],
-                        report: `synthesize parse error: ${e.message}\n${synResult.stdout}`,
-                    };
-                }
-            } else {
-                verdict = {
-                    blocks: true,
-                    blocking: [leafLabel],
-                    report: `synthesize error (exit ${synResult.exit_code}): ${synResult.stderr}`,
-                };
-            }
+Your task: run the deterministic synthesis harness and return the BatchVerdict.
+
+LEAF: ${leafLabel}
+COMBINED RESULTS JSON:
+${resultsJson}
+
+Steps (use your own shell/file tools):
+1. Write the COMBINED RESULTS JSON above to a temp file, e.g.:
+     /tmp/pdv_results_${idx}.json
+2. Run: python3 scripts/prd-decompose-verify.py synthesize /tmp/pdv_results_${idx}.json
+   Capture stdout VERBATIM.
+3. Parse the stdout as JSON — it is a BatchVerdict object {blocks, blocking, report}.
+4. Return that object directly. Do NOT summarize or alter the report field.
+
+If the command fails or stdout is not valid JSON, return:
+  {blocks: true, blocking: ["${leafLabel}"], report: "<error from synthesize>"}`,
+                { label: `synthesize:${idx}`, phase: "Synthesize", schema: VERDICT_SCHEMA }
+            );
+
+            const verdict = synthesized || {
+                blocks: true,
+                blocking: [leafLabel],
+                report: `synthesize agent returned null for leaf: ${leafLabel}`,
+            };
 
             log(`[${idx}] ${leafLabel}: ${verdict.blocks ? "BLOCKS" : "PASS"}` // eslint-disable-line no-undef
-                + (verdict.blocking.length > 0 ? ` — ${verdict.blocking.join(", ")}` : ""));
+                + (verdict.blocking && verdict.blocking.length > 0 ? ` — ${verdict.blocking.join(", ")}` : ""));
 
             return { leafLabel, ...verdict };
         },
