@@ -1415,7 +1415,7 @@ assert "pressure_decide(): (d) None fail-open (never hold)" \
     test "$_b14_exit" -eq 0
 assert "pressure_decide(): (e) MERGE-SAFE (no free_merge param)" \
     test "$_b14_exit" -eq 0
-assert "module constants PRESSURE_HOLD_THRESHOLD/RELEASE_THRESHOLD/MAX_HELD_BACK" \
+assert "pressure_decide(): (f) constants (HOLD/RELEASE threshold floats, MAX_HELD_BACK int>=0)" \
     test "$_b14_exit" -eq 0
 
 # ── (g) env-validation (Block 12 discipline) ─────────────────────────────
@@ -1454,5 +1454,87 @@ assert "REIFY_JOBSERVER_MAX_HELD_BACK=-1 exits 1 (negative)" \
 
 # Cleanup temp paths (in case RED daemon created them before timeout)
 rm -f "$_b14_tmp_merge" "$_b14_tmp_task"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 15: suppress_giveback() unit test via importlib heredoc (test-15)
+#   Pure-function test: suppress_giveback(avg10, release_threshold, held_back) -> bool.
+#
+#   Suppression logic (prevents merge→task give-back from refilling a drained
+#   task pool while the reservoir has tokens, which would be immediately clawed
+#   back → back-door merge drain):
+#
+#   (a) avg10 >= release_threshold, held_back=0 → True (pressure active)
+#   (b) avg10 < release_threshold,  held_back=0 → False (pressure gone, no reservoir)
+#   (c) avg10 < release_threshold,  held_back>0 → True (reservoir non-empty keeps suppression)
+#   (d) avg10=None, held_back=0 → False (fail-open: no suppression without reservoir)
+#   (e) avg10=None, held_back>0 → True (reservoir non-empty overrides fail-open)
+#
+#   RED: suppress_giveback does not exist → AttributeError → exit 1.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 15: suppress_giveback() unit test ---"
+
+_b15_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+RELEASE = 40.0
+
+def sg(avg10, held_back):
+    return mod.suppress_giveback(avg10, RELEASE, held_back)
+
+# ── (a) avg10 >= release, held_back=0 → True (pressure active) ────────────
+for avg10 in (40.0, 45.0, 99.0, 50.0):
+    result = sg(avg10, 0)
+    if result is not True:
+        errors.append(f"(a) avg10={avg10},held=0: got {result!r}, want True")
+
+# ── (b) avg10 < release, held_back=0 → False (no pressure, no reservoir) ──
+for avg10 in (0.0, 10.0, 39.9):
+    result = sg(avg10, 0)
+    if result is not False:
+        errors.append(f"(b) avg10={avg10},held=0: got {result!r}, want False")
+
+# ── (c) avg10 < release, held_back>0 → True (reservoir guards merge refill) ─
+for avg10 in (0.0, 10.0, 39.9):
+    for hb in (1, 3, 8):
+        result = sg(avg10, hb)
+        if result is not True:
+            errors.append(f"(c) avg10={avg10},held={hb}: got {result!r}, want True")
+
+# ── (d) avg10=None, held_back=0 → False (fail-open, no suppression) ───────
+result = sg(None, 0)
+if result is not False:
+    errors.append(f"(d) avg10=None,held=0: got {result!r}, want False")
+
+# ── (e) avg10=None, held_back>0 → True (reservoir non-empty suppresses) ───
+for hb in (1, 3, 8):
+    result = sg(None, hb)
+    if result is not True:
+        errors.append(f"(e) avg10=None,held={hb}: got {result!r}, want True")
+
+if errors:
+    sys.stderr.write("FAIL suppress_giveback():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: suppress_giveback()")
+PY
+} || _b15_exit=$?
+
+assert "suppress_giveback(): (a) avg10>=release, held=0 → True (pressure active)" \
+    test "$_b15_exit" -eq 0
+assert "suppress_giveback(): (b) avg10<release, held=0 → False (pressure gone)" \
+    test "$_b15_exit" -eq 0
+assert "suppress_giveback(): (c) avg10<release, held>0 → True (reservoir guards)" \
+    test "$_b15_exit" -eq 0
+assert "suppress_giveback(): (d) avg10=None, held=0 → False (fail-open)" \
+    test "$_b15_exit" -eq 0
+assert "suppress_giveback(): (e) avg10=None, held>0 → True (reservoir suppresses)" \
+    test "$_b15_exit" -eq 0
 
 test_summary
