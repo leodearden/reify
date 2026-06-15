@@ -17,10 +17,6 @@
 //!   (e) MultiLoadBracket.peak_stress is Value::Scalar{PRESSURE}, positive and finite.
 //!   (f) MultiLoadBracket.within_yield is Value::Bool.
 //!
-//! Assertions (e) and (f) are RED until step-4 adds `let peak_stress = max(envelope)`,
-//! `let yield_limit = 310MPa`, and `let within_yield = peak_stress < yield_limit`
-//! to the example.
-//!
 //! Does NOT assert `within_yield == true` or any absolute `< 310 MPa` bound —
 //! the synthetic solve magnitude for these loads is not known a-priori, and a
 //! guessed threshold would be an unfounded numeric assertion.
@@ -71,12 +67,6 @@ fn extract_max_von_mises_f64(result: &Value, case_name: &str) -> f64 {
 /// solve engine and produces a populated MultiCaseResult, a non-vacuous
 /// Sampled envelope, a callable peak_stress Scalar<Pressure>, and a
 /// within_yield Bool.
-///
-/// # RED until step-4
-///
-/// Assertions (e) and (f) fail until step-4 adds `let peak_stress = max(envelope)`,
-/// `let yield_limit = 310MPa`, and `let within_yield = peak_stress < yield_limit`
-/// to `examples/multi_load_bracket.ri`.
 #[test]
 fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
     let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
@@ -278,8 +268,6 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
     );
 
     // ── (e) MultiLoadBracket.peak_stress is Scalar<PRESSURE>, positive, finite
-    //
-    // RED until step-4 adds `let peak_stress = max(envelope)`.
 
     let peak_stress_cell = ValueCellId::new("MultiLoadBracket", "peak_stress");
     let peak_stress_val = eval_result
@@ -324,7 +312,6 @@ fn multi_load_bracket_e2e_real_solve_and_design_predicate() {
 
     // ── (f) MultiLoadBracket.within_yield is Value::Bool ────────────────────
     //
-    // RED until step-4 adds `let within_yield = peak_stress < yield_limit`.
     // Does NOT assert the boolean value — the synthetic solve magnitude is not
     // known a-priori, so asserting true/false would be an unfounded threshold.
 
