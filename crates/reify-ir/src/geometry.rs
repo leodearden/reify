@@ -1718,8 +1718,13 @@ pub enum ExportFormat {
 /// IR crate stays free of OCCT implementation details.
 ///
 /// The default is [`StepSchema::Ap214`], matching `STEPOutput.version`'s
-/// DSL default, so an absent `version` writes exactly what OCCT writes
-/// today.
+/// DSL default, so an absent `version` writes the canonical AP214
+/// `AUTOMOTIVE_DESIGN` schema. The OCCT writer pins this to the `AP214DIS`
+/// token explicitly on every call — including the default path, for
+/// per-call determinism (see `occt_wrapper.cpp`) — rather than inheriting
+/// OCCT's compiled-in default (`AP214CD`, the first-registered enum value).
+/// The FILE_SCHEMA *name* (`AUTOMOTIVE_DESIGN`) is unchanged, but its
+/// version identifier is now deterministic rather than build-dependent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum StepSchema {
     /// AP203 — Configuration Controlled 3D Design (OCCT EXPRESS schema
