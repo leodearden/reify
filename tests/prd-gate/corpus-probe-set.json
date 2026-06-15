@@ -50,6 +50,28 @@
                 "observation": "present",
                 "match": {}
             }
+        },
+        {
+            "capability": "4358 cross-sub geometry reference CrossSubGeometryRef panic",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/cross_sub_geometry_ref.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "CrossSubGeometryRef should be consumed by entity.rs"
+                }
+            }
+        },
+        {
+            "capability": "4375 Scalar codomain mismatch in field definition",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/scalar_codomain_mismatch.ri",
+            "expected": {
+                "observation": "absent",
+                "match": {
+                    "stderr_contains": "codomain mismatch"
+                }
+            }
         }
     ]
 }
