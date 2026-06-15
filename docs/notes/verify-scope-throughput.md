@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 12 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 12 | 12 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 12 | 12 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 12 | 3 |
+| (a) docs-only | `docs/note.md` | — | 15 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 15 | 15 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 15 | 15 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 15 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 13 |  0 |
-| reify-doc  | 13 | 13 |
-| reify-eval | 13 | 13 |
-| gui-only   | 13 |  3 |
+| docs-only  | 15 |  0 |
+| reify-doc  | 15 | 15 |
+| reify-eval | 15 | 15 |
+| gui-only   | 15 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 ## Heavy-Work Narrowed Markers
