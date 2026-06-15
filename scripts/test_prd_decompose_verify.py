@@ -1068,6 +1068,91 @@ try {{
         finally:
             os.unlink(harness_path)
 
+    _RESULT_MARK = "WF_RESULT_JSON:"
+
+    def _result_capturing_source(self) -> str:
+        """Build a Node ESM harness that captures the .mjs body's COMPLETION VALUE.
+
+        The Workflow harness surfaces a script's result as its body's completion
+        value (top-level `return` is illegal in ESM, so the .mjs leaves its IIFE as
+        a bare trailing expression statement). We faithfully model that capture by
+        reading the .mjs source, stripping the `export` keyword off `export const
+        meta` (so the body is valid inside a function), turning the trailing bare
+        expression into a `return`, and evaluating the whole body as the source of
+        an AsyncFunction whose return value IS the completion value. If the result
+        were instead bound to a dead `const` (the regression this guards against),
+        the captured value would be `undefined` and the shape assertions below fail.
+        """
+        # Reuse the same injected-globals mocks (which already declare MJS_PATH),
+        # then capture the completion value.
+        globals_setup = self._harness_source().split("// ── execute the .mjs")[0]
+        return globals_setup + f"""\
+// ── capture the .mjs body's completion value ──────────────────────────────────
+import {{ readFileSync }} from "node:fs";
+const RESULT_MARK = "{self._RESULT_MARK}";
+let src = readFileSync(MJS_PATH, "utf8");
+// Strip the ESM `export` so the body is legal inside a function.
+src = src.replace("export const meta", "const meta");
+// Turn the trailing bare-expression IIFE into a `return` so AsyncFunction yields
+// the completion value (faithful model of the harness's completion-value capture).
+src = src.replace("\\nawait (async function runWorkflow()",
+                  "\\nreturn await (async function runWorkflow()");
+const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
+const body = new AsyncFunction(src);
+const result = await body();
+console.log(RESULT_MARK + JSON.stringify(result));
+"""
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs contract test")
+    def test_mjs_surfaces_aggregate_verdict_shape(self):
+        """The .mjs body's completion value is the aggregate verdict, not undefined.
+
+        Guards the robustness_result_propagation review issue: a prior revision bound
+        the workflow IIFE to a dead `const _workflowResult` that was never returned,
+        so the script resolved to `undefined` and the {blocks, leaf_verdicts, summary}
+        batch verdict — the whole point of γ — was silently dropped. This asserts the
+        completion value is a well-formed aggregate object.
+        """
+        harness_src = self._result_capturing_source()
+        result = subprocess.run(
+            ["node", "--input-type=module"],
+            input=harness_src,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"node exited {result.returncode}; stderr: {result.stderr!r}; stdout: {result.stdout!r}",
+        )
+        marker_lines = [ln for ln in result.stdout.splitlines()
+                        if ln.startswith(self._RESULT_MARK)]
+        self.assertTrue(
+            marker_lines,
+            f"no result marker in stdout; stdout: {result.stdout!r}; stderr: {result.stderr!r}",
+        )
+        payload = marker_lines[-1][len(self._RESULT_MARK):]
+        self.assertNotEqual(
+            payload, "undefined",
+            "workflow body completion value is undefined — result was dropped "
+            "(dead-const regression: IIFE bound to an unreturned variable)",
+        )
+        verdict = json.loads(payload)
+        self.assertIsInstance(verdict, dict,
+                              f"aggregate verdict must be an object; got {verdict!r}")
+        # Aggregate-verdict shape (the contract β/D4 consumes).
+        for key in ("blocks", "leaf_verdicts", "summary"):
+            self.assertIn(key, verdict,
+                          f"aggregate verdict missing '{key}'; got keys {sorted(verdict)}")
+        self.assertIsInstance(verdict["blocks"], bool)
+        self.assertIsInstance(verdict["leaf_verdicts"], list)
+        self.assertIsInstance(verdict["summary"], str)
+        # The mock drives one leaf through to a non-blocking synthesize verdict.
+        self.assertFalse(verdict["blocks"],
+                         f"mock leaf must not block; got verdict {verdict!r}")
+        self.assertEqual(len(verdict["leaf_verdicts"]), 1,
+                         f"one mock leaf → one leaf verdict; got {verdict['leaf_verdicts']!r}")
+
 
 if __name__ == "__main__":
     unittest.main()

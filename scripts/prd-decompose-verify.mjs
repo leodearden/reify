@@ -93,10 +93,18 @@ const VERDICT_SCHEMA = {
 // ---------------------------------------------------------------------------
 // Main workflow body — wrapped in async IIFE so `return` is syntactically valid
 // (top-level `return` is illegal in ESM; `node --check` enforces this).
-// The Workflow harness resolves the returned Promise as the script's result.
+//
+// The IIFE is the LAST statement of the module and is left as a BARE EXPRESSION
+// STATEMENT (not bound to a variable). The Workflow harness captures the script's
+// result as the module body's completion value, so the resolved aggregate verdict
+// {blocks, leaf_verdicts, summary} returned by runWorkflow() becomes the script's
+// result. Binding it to a `const` (as a prior revision did) would discard it —
+// a `const` declaration has an empty completion value — silently dropping the
+// whole point of γ. Top-level `return` is not an option here because `node --check`
+// rejects it as illegal in ESM, so completion-value surfacing is the only path.
 // ---------------------------------------------------------------------------
 
-const _workflowResult = await (async function runWorkflow() {
+await (async function runWorkflow() {
 
     // `args` is injected by the Workflow harness.
     const leaves = Array.isArray(args) ? args : (args ? [args] : []); // eslint-disable-line no-undef
