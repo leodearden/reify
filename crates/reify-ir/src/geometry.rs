@@ -7860,4 +7860,42 @@ mod tests {
             "MaxDeviation kind_name must be the canonical string \"MaxDeviation\""
         );
     }
+
+    // ── Export-options surface (task ε: STEPVersion → schema selection) ──────
+
+    /// Pins the kernel-neutral export-options surface introduced for STEP
+    /// schema selection. `StepSchema` is a kernel-agnostic enum whose
+    /// `as_str()` yields the DSL `STEPVersion` variant names ("AP203" /
+    /// "AP214" / "AP242"); the OCCT-private token mapping (AP214→AP214DIS,
+    /// AP242→AP242DIS) lives in `occt_wrapper.cpp`, NOT here. The default
+    /// schema is AP214, matching the DSL `STEPOutput.version` default.
+    #[test]
+    fn step_schema_default_and_as_str() {
+        // Default schema is AP214 (mirrors STEPOutput.version's DSL default).
+        assert_eq!(StepSchema::default(), StepSchema::Ap214);
+
+        // as_str() yields the DSL variant names (kernel-neutral), NOT the
+        // OCCT-private write.step.schema tokens.
+        assert_eq!(StepSchema::Ap203.as_str(), "AP203");
+        assert_eq!(StepSchema::Ap214.as_str(), "AP214");
+        assert_eq!(StepSchema::Ap242.as_str(), "AP242");
+    }
+
+    /// `ExportOptions` carries per-export knobs; its `Default` selects the
+    /// default STEP schema (AP214), so an absent DSL `version` round-trips to
+    /// the same schema OCCT would write today.
+    #[test]
+    fn export_options_default_is_ap214() {
+        let opts = ExportOptions::default();
+        assert_eq!(opts.step_schema, StepSchema::Ap214);
+    }
+
+    /// `ExportWarning` is the kernel-neutral signal the OCCT writer raises on
+    /// honest AP242→AP214 degradation; the reify-eval driver translates it
+    /// into a user-facing diagnostic. It must be constructible and `Eq`.
+    #[test]
+    fn export_warning_is_constructible_and_eq() {
+        let w = ExportWarning::StepAp242Fallback;
+        assert_eq!(w, ExportWarning::StepAp242Fallback);
+    }
 }
