@@ -635,6 +635,20 @@ fn cmd_check(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
 
+        // Escalate to FAILURE when any DFM Error-severity diagnostic is present
+        // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
+        // DFM diagnostics carry no DiagnosticCode, so `d.code.is_none()` prevents
+        // double-catching any coded diagnostic already handled above.
+        // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
+        // exit 0, never a false positive (C1 graceful degradation).
+        if result
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.code.is_none())
+        {
+            return ExitCode::FAILURE;
+        }
+
         exit
     } else {
         // --purpose path: replicates the canonical
@@ -1951,13 +1965,28 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
 /// Returns `true` when `module` contains at least one template whose
 /// [`reify_compiler::TopologyTemplate::trait_bounds`] includes `"DFMRule"`.
 ///
-/// This is the CLI routing-gate counterpart of the engine's own
-/// `satisfies_trait_bound(&t.trait_bounds, "DFMRule", ...)` conformance check
-/// in `measure_dfm_rules` (engine_constraints.rs).  `DFMRule` is a terminal
-/// stdlib trait (process.ri: `trait DFMRule {}`; no refinements, no subtraits),
-/// so a direct name-equality match (`b == "DFMRule"`) is exact —
-/// `satisfies_trait_bound` itself short-circuits on name equality before any
-/// registry lookup.  A `: DFMRule` conformer is always compiled to a top-level
+/// This gate keys on the `: DFMRule` trait declaration as a deliberate static
+/// *proxy* for the engine's duck-typed DFM rule recognition.  The engine's
+/// `measure_dfm_rules` (engine_constraints.rs) discovers DFM rules entirely by
+/// duck-typing on field shape via `dfm_rule_spec` — it requires a
+/// `severity : DFMSeverity` enum field, an `applies_to` struct instance carrying
+/// an overhang/draft angle scalar, and a `subject` field — and does **not**
+/// reference `trait_bounds` or `satisfies_trait_bound`.  The two predicates are
+/// intentionally different: this gate is a static pre-eval check on declarations
+/// (no evaluated values are available at routing time), whereas the engine's
+/// recognition fires at measurement time on evaluated field shapes.
+///
+/// **Accepted limitation:** a structure that duck-types as a DFM rule (matching
+/// `dfm_rule_spec`) but omits the `: DFMRule` declaration would make this gate
+/// return `false`, silently keeping the lightweight `Engine::new(None)`+`check()`
+/// path, never calling `build()`, and therefore leaving `realization_handles`
+/// unpopulated — `measure_dfm_rules` would emit nothing.  By convention all DFM
+/// rule structures in the stdlib and user code declare `: DFMRule` explicitly, so
+/// this case is out of scope for the routing gate.
+///
+/// `DFMRule` is a terminal stdlib trait (process.ri: `trait DFMRule {}`; no
+/// refinements, no subtraits), so a direct name-equality match (`b == "DFMRule"`)
+/// is exact.  A `: DFMRule` conformer is always compiled to a top-level
 /// `module.templates` entry regardless of instantiation site, so scanning
 /// templates catches both of `measure_dfm_rules`' discovery sources (A:
 /// top-level templates; B: sub-component instances).
@@ -1967,9 +1996,9 @@ fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> 
 /// `realization_handles` is populated with live B-rep handles — `measure_dfm_rules`
 /// reads `self.realization_handles` to set each rule's `subject_handle`, and
 /// skips any rule where `subject_handle.is_none()` (the handle is only present
-/// after `build()`).  The C1 no-kernel no-op (default_kernel_name is None when
-/// OCCT is absent → `measure_dfm_rules` exits the guard at line 813) and C2
-/// byte-identical behavior for non-DFM modules are both preserved.
+/// after `build()`).  The C1 no-kernel no-op (the `default_kernel_name` None
+/// guard in `measure_dfm_rules` fires when OCCT is absent, emitting nothing)
+/// and C2 byte-identical behavior for non-DFM modules are both preserved.
 fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
     module
         .templates
