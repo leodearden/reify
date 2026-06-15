@@ -1470,7 +1470,8 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
 mod tests {
     use super::*;
     use reify_ir::{
-        ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryOp, Mesh, TessError,
+        ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp, Mesh, Role,
+        TessError, TopologyAttribute, TopologyAttributeTable,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1509,6 +1510,11 @@ mod tests {
         /// of `Ok(mesh)`. Use in tests that verify the tessellate-error-is-no-op
         /// path.
         fail_tessellate: bool,
+        /// Invocation counters for the bulk sub-shape extractors (task 4536).
+        /// A `ByRole` leaf resolves purely from the `TopologyAttributeTable`,
+        /// so its resolve test asserts both stay zero (no kernel extraction).
+        extract_faces_calls: AtomicUsize,
+        extract_edges_calls: AtomicUsize,
     }
 
     impl CountingKernel {
@@ -1521,6 +1527,8 @@ mod tests {
                 responses: HashMap::new(),
                 mesh: Mesh { vertices: vec![], indices: vec![], normals: None },
                 fail_tessellate: false,
+                extract_faces_calls: AtomicUsize::new(0),
+                extract_edges_calls: AtomicUsize::new(0),
             }
         }
 
@@ -1560,6 +1568,14 @@ mod tests {
 
         fn query_many_calls(&self) -> usize {
             self.query_many_calls.load(Ordering::SeqCst)
+        }
+
+        fn extract_faces_calls(&self) -> usize {
+            self.extract_faces_calls.load(Ordering::SeqCst)
+        }
+
+        fn extract_edges_calls(&self) -> usize {
+            self.extract_edges_calls.load(Ordering::SeqCst)
         }
 
         /// Look up the staged response for `query`, returning a clone or an
@@ -1631,6 +1647,7 @@ mod tests {
             &mut self,
             _handle: GeometryHandleId,
         ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_edges_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.edges.clone())
         }
 
@@ -1638,6 +1655,7 @@ mod tests {
             &mut self,
             _handle: GeometryHandleId,
         ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            self.extract_faces_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.faces.clone())
         }
     }
@@ -3222,6 +3240,130 @@ mod tests {
         let mut diags = Vec::new();
         let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
         assert_eq!(got, edge_ids, "All/Edge yields the extract_edges order");
+    }
+
+    // (b') ByRole leaves resolve against the TopologyAttributeTable ───────────
+    //
+    // Task 4536: `resolve_with_attributes()` is the table-threaded twin of
+    // `resolve()`. A `ByRole(role)` leaf filters the attribute table by role
+    // (kernel-free — the synthetic mid-surface ids are not enumerable via
+    // `extract_faces`) and returns the matching ids sorted by
+    // `(local_index, id)`. The legacy `resolve()` wrapper delegates with an
+    // empty default table, so a `ByRole` leaf resolves to empty there.
+
+    /// Build a `TopologyAttribute` with the given role + local_index, keyed to
+    /// a fixed feature so only `role`/`local_index` vary across a fixture.
+    fn role_attr(role: Role, local_index: u32) -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::new("body"),
+            role,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        }
+    }
+
+    #[test]
+    fn resolve_with_attributes_byrole_filters_table_kernel_free() {
+        // Two MidSurfaceFace entries (recorded in REVERSE local_index order),
+        // one MidSurfaceEdge, one unrelated Side role.
+        let face_a = GeometryHandleId(5001); // local_index 0
+        let face_b = GeometryHandleId(5002); // local_index 1
+        let edge = GeometryHandleId(5003);
+        let other = GeometryHandleId(5004);
+        let mut table = TopologyAttributeTable::default();
+        // Record face_b (local_index 1) BEFORE face_a (local_index 0) so the
+        // output order is governed by the (local_index, id) sort, not by the
+        // (unspecified) HashMap iteration / insertion order.
+        table.record(face_b, role_attr(Role::MidSurfaceFace, 1));
+        table.record(face_a, role_attr(Role::MidSurfaceFace, 0));
+        table.record(edge, role_attr(Role::MidSurfaceEdge, 0));
+        table.record(other, role_attr(Role::Side, 0));
+
+        // Disjoint sentinel sub-shapes: if the ByRole arm wrongly fell through
+        // to extract_faces/extract_edges, the result would contain these.
+        let mut kernel = CountingKernel::new()
+            .with_faces(vec![GeometryHandleId(9001)])
+            .with_edges(vec![GeometryHandleId(9002)]);
+
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByRole(Role::MidSurfaceFace),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve_with_attributes(&sv, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+
+        assert_eq!(
+            got,
+            vec![face_a, face_b],
+            "ByRole(MidSurfaceFace) returns exactly the two MidSurfaceFace ids, \
+             ordered by (local_index, id) — excludes the edge/other-role ids"
+        );
+        assert!(
+            diags.is_empty(),
+            "the kernel-free table filter pushes no diagnostics"
+        );
+        assert_eq!(
+            kernel.extract_faces_calls(),
+            0,
+            "ByRole must not call extract_faces"
+        );
+        assert_eq!(
+            kernel.extract_edges_calls(),
+            0,
+            "ByRole must not call extract_edges"
+        );
+        assert_eq!(kernel.query_calls(), 0, "ByRole issues no kernel query");
+        assert_eq!(
+            kernel.query_many_calls(),
+            0,
+            "ByRole issues no kernel query_many"
+        );
+    }
+
+    #[test]
+    fn resolve_with_attributes_byrole_empty_table_is_empty_ok() {
+        let table = TopologyAttributeTable::default();
+        let mut kernel = CountingKernel::new();
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByRole(Role::MidSurfaceFace),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve_with_attributes(&sv, &mut kernel, &table, &mut diags)
+            .expect("resolve_with_attributes ok");
+        assert!(got.is_empty(), "ByRole over an empty table resolves to empty");
+        assert!(
+            diags.is_empty(),
+            "the empty→Undef decision lives in resolve_selector_to_list, not in resolve_leaf"
+        );
+    }
+
+    #[test]
+    fn resolve_backcompat_wrapper_byrole_resolves_empty() {
+        // The legacy resolve() (no table param) delegates with an empty default
+        // table, so a ByRole leaf resolves to empty — harmless for the
+        // external/legacy callers (tests/selector_boundary_gate.rs,
+        // eval_selector_feature_datum), which never build ByRole leaves.
+        let mut kernel = CountingKernel::new();
+        let sv = SelectorValue::leaf(
+            SelectorKind::Face,
+            target_ref(1),
+            LeafQuery::ByRole(Role::MidSurfaceFace),
+        )
+        .expect("leaf");
+        let mut diags = Vec::new();
+        let got = resolve(&sv, &mut kernel, &mut diags).expect("resolve ok");
+        assert!(
+            got.is_empty(),
+            "back-compat resolve() sees the empty default table for a ByRole leaf"
+        );
+        assert!(diags.is_empty());
     }
 
     // (c) composites set-combine with K3 dedup in first-seen order ───────────
