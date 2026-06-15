@@ -62,6 +62,57 @@ Prefer the orchestrator's merge queue (`/merge-queue`) to land a task branch. Wh
 
 **Per-worktree core.hooksPath isolation:** Claude Code's native worktree feature rewrites the SHARED `.git/config` `core.hooksPath` to git's inert `.git/hooks` samples dir on every worktree enter, which would otherwise darken the gate. Two complementary defenses are wired in by `scripts/setup-dev.sh`: **(A)** a `<common-git-dir>/hooks → ../hooks` symlink so that even linked worktrees lacking a `config.worktree` override resolve the absolute `.git/hooks` fallback to the real gate; **(B)** `scripts/setup-main-gate-worktree-config.sh` enables `extensions.worktreeConfig` and seeds main's `.git/config.worktree` with `core.hooksPath = hooks`. Git reads `config.worktree` first, so the per-worktree value beats any shared-config clobber — the gate stays live even when Claude Code owns the shared value. The dark-factory `create_worktree` per-worktree write (so dispatched agents' worktrees also get the override) is a cross-repo seam handled separately.
 
+## Deploying the orchestrator (config/code changes)
+
+The orchestrator loads `orchestrator.yaml` **ONCE at startup** — there is no hot-reload, SIGHUP, or file-watch. It also enforces a **dirty-start guard**: it refuses to start with uncommitted tracked changes in `project_root` (the `--config` path, i.e. `/home/leo/src/reify`). A crash-loop self-arrests after `StartLimitBurst=10` in 600s, then stays DOWN.
+
+**Invariant: COMMIT/LAND FIRST, then restart.** Any config or code change must be committed and landed on `main` (via `/merge-queue` or `scripts/land.sh`) before the orchestrator is restarted. Restarting with a dirty `project_root` causes a crash-loop outage.
+
+**A task running under the orchestrator must NOT `systemctl restart orchestrator-reify.service` directly** — that sends SIGTERM to its own agent mid-run (self-kill), leaving incomplete state.
+
+### Safe restart procedure: `scripts/orchestrator-redeploy-restart.sh`
+
+Use `scripts/orchestrator-redeploy-restart.sh` from a task agent to schedule a safe detached restart:
+
+```bash
+scripts/orchestrator-redeploy-restart.sh
+```
+
+**What it does:**
+
+1. **Schedule mode (default):** Checks `project_root` is clean (`git status --porcelain --untracked-files=no`). If dirty, exits non-zero immediately with a "commit/land first" message — schedules NOTHING. If clean, best-effort pre-cleans any stale transient unit, then invokes:
+
+   ```
+   systemd-run --user --on-active=<ORCH_RESTART_DELAY> --unit=<ORCH_TRANSIENT_UNIT> \
+     --collect --setenv=ORCH_UNIT=… --setenv=ORCH_PROJECT_ROOT=… \
+     <script> --exec-restart
+   ```
+
+   The transient unit is a child of the **USER systemd manager** (not the orchestrator), so it fires **after the triggering agent has exited** — no self-kill.
+
+2. **Exec mode (`--exec-restart`, run by the transient unit at fire time):** Re-checks `project_root` is clean. If clean → blocking `systemctl --user stop <unit>` THEN `systemctl --user start <unit>`. **NEVER `systemctl restart`** — the unit's `TimeoutStopSec=90` graceful-stop window (cancel in-flight tasks, reap agents, release the fcntl lock) causes `systemctl restart`'s start-half to be cancelled mid-window, leaving the service down. If dirty at fire time → leaves the old orchestrator RUNNING, logs a warning, exits 0 (not stopping avoids a crash-loop outage).
+
+### `project_root` is the MAIN checkout
+
+The dirty-start guard targets `/home/leo/src/reify` (the `--config` project_root, i.e. the main checkout) — NOT the task worktree. Task worktrees are always dirty with WIP; the clean-check uses `--untracked-files=no` to mirror the orchestrator's "uncommitted tracked changes" semantics and avoid false-positives from benign untracked files.
+
+### Merge worker fast-path for config-only changes
+
+The merge worker's **trivial-pass** fast-path (scope=config, diff touches only non-Rust/non-TS files) lands config-only changes (e.g. `orchestrator.yaml` tweaks) without a full `--scope all` verify. This makes the commit/land-first step fast for pure config deploys.
+
+### Env knobs
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCH_UNIT` | `orchestrator-reify.service` | Orchestrator systemd unit |
+| `ORCH_PROJECT_ROOT` | `/home/leo/src/reify` | Main checkout to guard |
+| `ORCH_RESTART_DELAY` | `60s` | on-active delay before restart fires |
+| `ORCH_TRANSIENT_UNIT` | `orch-redeploy-restart` | Name of the transient systemd-run unit |
+
+### Origin
+
+This mechanism was introduced in the 2026-06-15 agent-cargo-jobserver deploy (task 4620) as the vehicle for deploying dark-factory follow-ups (agent CPU de-prioritization, merge-verify log archival) that required an orchestrator restart. The failure mode of `systemctl restart` under `TimeoutStopSec=90` was learned on that deploy.
+
 ## Test concurrency
 
 The verify pipeline is governed by three admission controls that layer in order: **`compile_gate()`** (compile-phase PSI backpressure, task 4618) → **`psi_gate()`** (test-phase PSI backoff) → **held-slot semaphore** (hard test×test cap) → run passes.
