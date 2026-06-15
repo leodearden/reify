@@ -108,9 +108,12 @@ fn build_vc_bolt_pattern_clearance_satisfied() {
         out.stdout,
         out.stderr
     );
+    // reify build prints "  OK <struct>#constraint[N]" for each satisfied constraint;
+    // there is no "All constraints satisfied." summary for all-OK results — only
+    // "Some constraints violated." is printed when violations exist.
     assert!(
-        out.stdout.contains("All constraints satisfied"),
-        "stdout should contain 'All constraints satisfied' (hole r=5.2mm > VC r=5.075mm → clr≈0.125mm);\n\
+        out.stdout.contains("OK "),
+        "stdout should contain 'OK ' (constraint[0] satisfied — hole r=5.2mm > VC r=5.075mm → clr≈0.125mm);\n\
          stdout:\n{}\nstderr:\n{}",
         out.stdout,
         out.stderr

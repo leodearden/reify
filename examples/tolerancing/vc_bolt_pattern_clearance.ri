@@ -1,0 +1,90 @@
+// vc_bolt_pattern_clearance.ri — B8 conformant bolt-pattern clearance (SATISFIED)
+// (task 4478 ε, GD&T geometric-zones PRD docs/prds/v0_6/gdt-geometric-zones-and-containment.md).
+//
+// Demonstrates the worst-case functional-gauge assembleability proof via OCCT:
+//   VC boundary cylinder (Ø10.15mm, radius 5.075mm) vs a plate with a through-hole
+//   (radius 5.2mm > VC radius 5.075mm) → radial clearance ≈ 0.125mm > 0mm → SATISFIED.
+//
+// EXTERNAL-feature-of-size GD&T:
+//   pin_size = symmetric_tolerance(10mm, 0.05mm)  → upper_limit=10.05mm, lower_limit=9.95mm
+//   pos tolerance_value = 0.1mm
+//   VC = upper_limit + tol = 10.05mm + 0.1mm = 10.15mm  (radius 5.075mm)
+//
+// Mating part geometry:
+//   plate  = box(40mm, 40mm, 20mm)  (centred; z ∈ [-10mm, +10mm])
+//   hole   = translate(cylinder(5.2mm, 40mm), 0mm, 0mm, -20mm)
+//            cylinder(r,h) is base-at-origin (z ∈ [0,h]); translate by -20mm
+//            → z ∈ [-20mm, +20mm]: fully penetrates the 20mm-tall plate.
+//   mating = difference(plate, hole)  (plate with TRUE through-hole)
+//
+// Clearance: radial gap = hole_r − VC_r = 5.2mm − 5.075mm = 0.125mm > 0mm → Satisfied.
+// See vc_bolt_pattern_interference.ri for the under-clearanced (Violated) variant.
+//
+// `reify build` (OCCT required) must: exit 0, stdout contains "All constraints satisfied".
+//
+// OCCT-gated via cli_vc_clearance.rs: build_vc_bolt_pattern_clearance_satisfied.
+// This file is also the VC-boundary-clearance e2e (VC boundary solid + mating geometry +
+// min_clearance constraint all wired together under one `reify build` call).
+
+structure def VcBoltPatternClearance {
+    // ── Dimensional tolerance for the pin/bolt (external FOS) ───────────────
+    // symmetric_tolerance(10mm, 0.05mm): upper_limit=10.05mm, lower_limit=9.95mm
+    let pin_size = symmetric_tolerance(10mm, 0.05mm)
+
+    // ── Geometric tolerance callout (position at MMC) ─────────────────────
+    // material_condition: MaterialCondition.MMC explicit per esc-4474-102.
+    let pos = Position(
+        tolerance_value: 0.1mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm),
+        material_condition: MaterialCondition.MMC
+    )
+
+    // ── Virtual Condition: VC = MMC + Tg = 10.05mm + 0.1mm = 10.15mm ─────
+    let vc = virtual_condition(pin_size, pos.tolerance_value)
+
+    // ── Feature axis wire (30mm length centred on Z) ─────────────────────
+    let axis = line_segment(0mm, 0mm, -15mm, 0mm, 0mm, 15mm)
+
+    // ── VC boundary solid: zone_cylinder at VC diameter ──────────────────
+    // zone_cylinder(axis, width) → Sweep{Pipe(axis, radius = width/2)}
+    // width = vc = 10.15mm → radius = 5.075mm
+    // Named "vc_boundary" so the mechanism picks it up by cell name.
+    let vc_boundary = zone_cylinder(axis, vc)
+
+    // ── Mating plate with TRUE through-hole ──────────────────────────────
+    // plate: 40mm×40mm×20mm box centred at origin (z ∈ [-10mm, +10mm]).
+    let plate = box(40mm, 40mm, 20mm)
+
+    // hole: cylinder(r=5.2mm, h=40mm) base-at-origin (z ∈ [0mm, 40mm]);
+    //   translated -20mm on Z → z ∈ [-20mm, +20mm] → fully penetrates plate.
+    //   Radius 5.2mm > VC radius 5.075mm: radial clearance = 0.125mm > 0.
+    let hole = translate(cylinder(5.2mm, 40mm), 0mm, 0mm, -20mm)
+
+    // mating: plate minus through-hole (Boolean subtraction).
+    // Named "mating" so the mechanism picks it up by cell name.
+    let mating = difference(plate, hole)
+
+    // ── Kinematic mechanism ───────────────────────────────────────────────
+    // Two fixed bodies: the VC boundary cylinder and the mating plate.
+    let m0 = mechanism()
+    let m1 = body(m0, "vc_boundary", fixed())
+    let m2 = body(m1, "mating", fixed())
+
+    // Body IDs — resolved by the mechanism registry at build time.
+    let id_vc     = body_id_of(m2, "vc_boundary")
+    let id_mating = body_id_of(m2, "mating")
+
+    // Single home-position snapshot (no joints to bind).
+    let s = snapshot(m2, [])
+
+    // ── Clearance measurement and constraint ─────────────────────────────
+    // min_clearance must be a LET binding first so the kinematic post-processor
+    // resolves it to a Length via OCCT before the constraint evaluates the
+    // comparison. Embedding the call directly in `constraint <call> > 0mm`
+    // bypasses kinematic dispatch and yields Indeterminate (Int vs Map error).
+    //
+    // Radial clearance ≈ hole_r − VC_r = 5.2mm − 5.075mm = 0.125mm > 0mm → Satisfied.
+    let clr = min_clearance(s, id_vc, id_mating)
+    constraint clr > 0mm
+}
