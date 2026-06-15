@@ -1406,11 +1406,12 @@ mod cli {
             .output()
             .expect("invoke reify-audit --pattern PTODO on fixture tree");
 
-        // All findings are Medium → exit 0.
+        // untracked (scenario01) and blocker-prose untracked (scenario07) are now High
+        // (task η, #4559) → exit code = 2 (High-severity count).
         assert_eq!(
             out.status.code(),
-            Some(0),
-            "PTODO fixture sweep must exit 0 (all Medium, no High); got {:?}\nstderr: {}",
+            Some(2),
+            "PTODO fixture sweep must exit 2 (2 High untracked findings); got {:?}\nstderr: {}",
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
@@ -1426,19 +1427,46 @@ mod cli {
             serde_json::Value::Array(findings.clone())
         );
 
-        // Every fixture finding is Pattern::PTodo / Severity::Medium.
+        // Every fixture finding is Pattern::PTodo.
         for f in &findings {
             assert_eq!(
                 f["pattern"].as_str(),
                 Some("PTodo"),
                 "every fixture finding must be PTodo; got:\n{f:#}"
             );
-            assert_eq!(
-                f["severity"].as_str(),
-                Some("Medium"),
-                "every fixture finding must be Medium; got:\n{f:#}"
-            );
         }
+        // Per-kind severity (task η, #4559): untracked→High; malformed-cite/phantom-tracking→Medium.
+        let severity_of = |path: &str, kind_prefix: &str| -> Option<&str> {
+            findings.iter().find_map(|f| {
+                if f["task_id"].as_str() == Some(path)
+                    && f["summary"].as_str().is_some_and(|s| s.starts_with(kind_prefix))
+                {
+                    f["severity"].as_str()
+                } else {
+                    None
+                }
+            })
+        };
+        assert_eq!(
+            severity_of("scenario01_untracked.rs", "untracked:"),
+            Some("High"),
+            "untracked must be High"
+        );
+        assert_eq!(
+            severity_of("scenario07_ignore_blocker_prose.rs", "untracked:"),
+            Some("High"),
+            "blocker-prose untracked must be High"
+        );
+        assert_eq!(
+            severity_of("scenario04_malformed_cite.rs", "malformed-cite:"),
+            Some("Medium"),
+            "malformed-cite must stay Medium"
+        );
+        assert_eq!(
+            severity_of("scenario05_phantom_tracking.rs", "phantom-tracking:"),
+            Some("Medium"),
+            "phantom-tracking must stay Medium"
+        );
 
         // Each expected scenario: task_id = root-relative path, summary begins
         // with the §8.3 kind token, evidence[0] is a File ref at the same path.
@@ -1547,11 +1575,13 @@ mod cli {
 
         let stderr = String::from_utf8_lossy(&out.stderr);
 
-        // (3) Fail-soft: all findings Medium → exit 0, never 125.
+        // (3) Fail-soft: untracked finding is High → exit 1 (never 125, which is IO misconfig).
+        // Task η (#4559) flipped untracked to High; degradation still exits non-0 for the right
+        // reason (High-count exit) not 125 (misconfig sentinel).
         assert_eq!(
             out.status.code(),
-            Some(0),
-            "DB-absent degradation must exit 0, never 125; got {:?}\nstderr:\n{stderr}",
+            Some(1),
+            "untracked is High → exit 1 (not 0, not 125); got {:?}\nstderr:\n{stderr}",
             out.status.code()
         );
 
@@ -1640,10 +1670,12 @@ mod cli {
             .expect("invoke reify-audit --pattern PTODO with seeded default tasks.db");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
+        // untracked finding is High → exit 1; orphaned is still Medium (task η step-4 flips it to
+        // High which will make this exit 2).
         assert_eq!(
             out.status.code(),
-            Some(0),
-            "orphaned finding is Medium → exit 0; got {:?}\nstderr:\n{stderr}",
+            Some(1),
+            "untracked finding is High → exit 1; got {:?}\nstderr:\n{stderr}",
             out.status.code()
         );
 

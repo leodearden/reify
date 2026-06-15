@@ -359,6 +359,21 @@ impl Kind {
             Kind::BareIgnore => "bare-ignore",
         }
     }
+
+    /// Per-kind severity mapping (task η, #4559): structural violations that
+    /// represent actionable source-marker debt → High (non-zero exit, hard gate);
+    /// advisory or citation-style findings → Medium.
+    fn severity(self) -> Severity {
+        match self {
+            // Source-marker debt: a real untracked TODO or bare #[ignore] must
+            // be fixed before the code is correct — these are High so they
+            // hard-fail verify via reify-audit's exit-code = High-count gate.
+            Kind::Untracked | Kind::BareIgnore => Severity::High,
+            // Advisory: malformed cites and phantom-tracking phrases are noisy
+            // but do not indicate code that is definitively broken — stay Medium.
+            Kind::MalformedCite | Kind::PhantomTracking => Severity::Medium,
+        }
+    }
 }
 
 /// The unified per-line classification produced by [`scan_file`]. A given line
@@ -901,7 +916,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         .map(|(path, line_no, kind, text)| {
             let finding = Finding {
                 pattern: Pattern::PTodo,
-                severity: Severity::Medium,
+                severity: kind.severity(),
                 summary: format!("{}: line {}: {}", kind.as_str(), line_no, text),
                 task_id: path.clone(),
                 evidence: vec![EvidenceRef::File { path: path.clone() }],
