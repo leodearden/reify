@@ -1191,4 +1191,89 @@ REIFY_JOBSERVER_IDLE_RESET_TICKS=abc python3 "$BALANCER" 2>/dev/null || _b12_irt
 assert "REIFY_JOBSERVER_IDLE_RESET_TICKS=abc exits 1 (not an integer)" \
     test "$_b12_irtabc" -eq 1
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 13: read_pressure() unit test via importlib heredoc (test-13)
+#   Mirrors Blocks 7-10 importlib style: load the module, call the pure function.
+#
+#   (a) PSI fixture with avg10=73.21 → returns float ≈73.21 (within 1e-6).
+#   (b) Non-existent path → returns None (fail-open).
+#   (c) File present but no 'some' line → returns None (fail-open).
+#   (d) Module exposes PSI_PROC_PATH str defaulting to /proc/pressure/cpu.
+#
+#   RED: read_pressure() and PSI_PROC_PATH do not exist yet → AttributeError.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 13: read_pressure() unit test ---"
+
+_b13_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys, tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── (a) well-formed PSI fixture → float ≈73.21 ────────────────────────────
+psi_file = tempfile.mktemp(prefix="/tmp/test-psi-fixture-")
+try:
+    with open(psi_file, 'w') as f:
+        f.write("some avg10=73.21 avg60=12.34 avg300=5.00 total=123456\n")
+        f.write("full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+    result = mod.read_pressure(psi_file)
+    if result is None:
+        errors.append("(a) returned None for valid PSI file, want ~73.21")
+    elif not isinstance(result, float):
+        errors.append(f"(a) returned {type(result).__name__}, want float")
+    elif abs(result - 73.21) > 1e-6:
+        errors.append(f"(a) returned {result}, want 73.21 (diff={abs(result-73.21)})")
+finally:
+    try: os.unlink(psi_file)
+    except FileNotFoundError: pass
+
+# ── (b) non-existent path → None (fail-open) ─────────────────────────────
+result_b = mod.read_pressure("/tmp/does-not-exist-test-psi-99999")
+if result_b is not None:
+    errors.append(f"(b) non-existent path returned {result_b!r}, want None")
+
+# ── (c) garbage file (no 'some' line) → None (fail-open) ─────────────────
+psi_garbage = tempfile.mktemp(prefix="/tmp/test-psi-garbage-")
+try:
+    with open(psi_garbage, 'w') as f:
+        f.write("this is not a psi file\nno some line here\n")
+    result_c = mod.read_pressure(psi_garbage)
+    if result_c is not None:
+        errors.append(f"(c) garbage file returned {result_c!r}, want None")
+finally:
+    try: os.unlink(psi_garbage)
+    except FileNotFoundError: pass
+
+# ── (d) module exposes PSI_PROC_PATH (str), default /proc/pressure/cpu ───
+if not hasattr(mod, 'PSI_PROC_PATH'):
+    errors.append("(d) PSI_PROC_PATH constant not found in module")
+else:
+    ppi = mod.PSI_PROC_PATH
+    if not isinstance(ppi, str):
+        errors.append(f"(d) PSI_PROC_PATH is {type(ppi).__name__}, want str")
+    elif ppi != "/proc/pressure/cpu":
+        errors.append(f"(d) PSI_PROC_PATH default is {ppi!r}, want '/proc/pressure/cpu'")
+
+if errors:
+    sys.stderr.write("FAIL read_pressure():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: read_pressure()")
+PY
+} || _b13_exit=$?
+
+assert "read_pressure(): (a) valid PSI file → float ~73.21" \
+    test "$_b13_exit" -eq 0
+assert "read_pressure(): (b) non-existent path → None (fail-open)" \
+    test "$_b13_exit" -eq 0
+assert "read_pressure(): (c) garbage file (no 'some' line) → None (fail-open)" \
+    test "$_b13_exit" -eq 0
+assert "module exposes PSI_PROC_PATH str defaulting to /proc/pressure/cpu" \
+    test "$_b13_exit" -eq 0
+
 test_summary
