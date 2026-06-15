@@ -261,7 +261,7 @@ fn concentric_in_relate_block_is_accepted() {
     );
 }
 
-// ── (c) stdlib registration check ────────────────────────────────────────────
+// ── (d) stdlib registration check ────────────────────────────────────────────
 
 /// `std.joints` must be registered as a prelude stdlib module — `load_stdlib()`
 /// returns a compiled module whose `path` display is `std/joints`.
