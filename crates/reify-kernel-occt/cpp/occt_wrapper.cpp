@@ -4927,6 +4927,16 @@ ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
         Standard_Boolean set_ok =
             Interface_Static::SetCVal("write.step.schema", token);
 
+        // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
+        // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
+        // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
+        // OCCT build, so SetCVal for those tokens cannot fail here — a failure
+        // would mean no STEP controller exists at all, in which case
+        // export_step itself could not run. They also have no safer fallback
+        // target, so reading back set_ok for them would be dead code. AP242DIS
+        // is the only token whose availability varies across OCCT builds/configs
+        // (it can be compiled out of older/minimal builds), so it is the only
+        // one that needs the rejection readback + honest AP214 fallback below.
         if (want_ap242) {
             // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
             // (SetCVal failed, or the static did not actually take the value),
