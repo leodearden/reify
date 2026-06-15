@@ -229,7 +229,7 @@ mod tests {
         let orphaned = find_for("cited.rs")
             .unwrap_or_else(|| panic!("expected orphaned finding; findings={findings:?}"));
         assert_eq!(orphaned.pattern, Pattern::PTodo);
-        assert_eq!(orphaned.severity, Severity::Medium);
+        assert_eq!(orphaned.severity, Severity::High); // task η: orphaned → High
         assert!(
             orphaned.summary.starts_with("orphaned:"),
             "summary: {}",
@@ -340,7 +340,7 @@ mod tests {
         );
         let f = &findings[0];
         assert_eq!(f.pattern, Pattern::PTodo);
-        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.severity, Severity::High); // task η: orphaned → High
         assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
         assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
         assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
@@ -1029,7 +1029,7 @@ mod liveness {
         assert_eq!(findings.len(), 1, "one orphaned finding; got {findings:?}");
         let f = &findings[0];
         assert_eq!(f.pattern, Pattern::PTodo);
-        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.severity, Severity::High); // task η: orphaned → High
         assert!(f.summary.starts_with("orphaned:"), "summary: {}", f.summary);
         assert!(f.summary.contains("#4444"), "summary must carry id: {}", f.summary);
         assert!(f.summary.contains("done"), "summary must carry status: {}", f.summary);
@@ -1050,6 +1050,7 @@ mod liveness {
         let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
 
         assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::High); // task η: orphaned → High
         assert!(findings[0].summary.starts_with("orphaned:"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("cancelled"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("#10"), "{}", findings[0].summary);
@@ -1078,6 +1079,7 @@ mod liveness {
         let findings = reify_audit::ptodo::resolve_liveness(&conn, &cited).expect("resolve");
 
         assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].severity, Severity::Medium); // task η: unknown-id stays Medium (DB-sync race must not hard-fail)
         assert!(findings[0].summary.starts_with("unknown-id:"), "{}", findings[0].summary);
         assert!(findings[0].summary.contains("#999"), "{}", findings[0].summary);
     }
