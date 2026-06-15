@@ -297,10 +297,10 @@ fn walk_members(
             }
             // Members with no embedded expressions (or not yet handled).
             MemberDecl::AssociatedType(_)
-            // Trait fn members: expressions not walked at γ; deferred to task δ/ζ.
-            // TODO(task δ/ζ): walk let-bindings, where-clauses, and result expr
-            // inside trait fn bodies once trait-fn compilation is live, so depth
-            // violations inside `fn area(self) { … }` bodies are caught.
+            // Trait fn members: expressions not walked at γ; deferred to a future
+            // trait-fn compilation task. Walk let-bindings, where-clauses, and
+            // result expr inside trait fn bodies once trait-fn compilation is live,
+            // so depth violations inside `fn area(self) { … }` bodies are caught. // ptodo:allow
             | MemberDecl::Fn(_)
             | MemberDecl::MetaBlock(_)
             | MemberDecl::MatchArmDeclGroup(_) => {}

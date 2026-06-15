@@ -30,8 +30,8 @@
 //   structures (Revolute, Prismatic, etc.) land in KCC-ζ (task 3845,
 //   in-progress). Same placeholder posture as
 //   `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real` with
-//   TODO(mechanism-type) — retargets to `DrivingJoint` trait (or
-//   `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the
+//   TODO(mechanism-type) — retargets to `DrivingJoint` trait (or // ptodo:allow type-placeholder awaiting future type-system PRD
+//   `Joint` marker) when KCC-ζ lands. See TODO(joint-type) on the // ptodo:allow type-placeholder awaiting future type-system PRD
 //   accessor's joint parameter.
 //
 // Cache-on-joint convention (consumed by λ — task 3821):
@@ -56,7 +56,7 @@
 // row α), which has not been filed yet. β's only formal prereq is SIR-α
 // 3540 (REPORT-ONLY), so we ship the placeholder spelling now and retarget
 // later — exact mirror of the trajectory.ri:56 convention
-// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting
+// (`pub type JointValue = Real` with `TODO(joint-value-type)` retargeting // ptodo:allow type-placeholder awaiting future type-system PRD
 // comment), and analysis.ri:13 (`pub type Stress = Pressure`).
 //
 // `pub` so downstream modules and user code can reference the canonical
@@ -64,7 +64,7 @@
 // line propagates the type tightening to every consumer (in-file +
 // downstream) without touching any structure_def or fn body.
 //
-// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and
+// TODO(stiffness-type): retarget to the proper `RotationalStiffness` (and // ptodo:allow type-placeholder awaiting future type-system PRD
 // add the sibling `TranslationalStiffness` / `RotationalDamping` /
 // `TranslationalDamping` aliases) as dimensioned types when the compliant-
 // joints-flexures α task lands the Joint surface extension.
@@ -87,7 +87,7 @@ pub type RotationalStiffness = Real
 //                           PRB primitive in PRD §5). `RotationalStiffness`
 //                           alias resolves to Real today; retargets to the
 //                           dimensioned type when the compliant-joints-
-//                           flexures α task lands (see TODO(stiffness-type)
+//                           flexures α task lands (see TODO(stiffness-type) // ptodo:allow type-placeholder awaiting future type-system PRD
 //                           on the alias declaration).
 //   max_stress            — peak bending stress at the declared range
 //                           endpoint (PRD §5.1: σ_max = E·(t/2)·θ/L for a
@@ -214,7 +214,7 @@ structure def FlexureCompliance {
 // as `pub fn STANDARD_GRAVITY()` in `units.ri:82` and `pub fn
 // standard_bolt_lengths()` in `standard_stock.ri:10`.
 //
-// TODO(joint-type): the `joint` parameter is typed `Length` purely so the
+// TODO(joint-type): the `joint` parameter is typed `Length` purely so the // ptodo:allow type-placeholder awaiting future type-system PRD
 // accessor overload-matches a PRB-ctor result — a constructed joint is a
 // runtime `Value::Map`, but the compiler infers a bare-builtin call's return
 // type from its first `Length` argument, so `Length` is the only static type
@@ -224,7 +224,7 @@ structure def FlexureCompliance {
 // a type error — a non-joint argument is statically indistinguishable from a
 // real joint. Same placeholder posture as
 // `trajectory.ri::PiecewisePolynomialProfile.mechanism : Real`
-// (TODO(mechanism-type)).
+// (TODO(mechanism-type)). // ptodo:allow type-placeholder awaiting future type-system PRD
 //
 // Retarget to a real joint type (the `DrivingJoint` marker trait, or a
 // per-kind `Joint` structure) once joints carry a static type. NOTE: KCC-ζ

@@ -292,9 +292,9 @@ fn mass_propagation_aluminum_plate() {
 /// dependency order so that downstream aggregates like `total_mass` fold after
 /// their per-entity `mass` inputs are resolved.
 #[test]
-#[ignore = "Blocked on task 4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
+#[ignore = "Blocked on #4358 (unified-dag ε): total_mass = all_masses.sum stays Undef — post_process_geometry_queries does not re-evaluate cross-cell/cross-entity dependent cells (geometry_ops.rs documented limitation)"]
 fn total_mass_computed() {
-    // TODO(task 4358): when unified-dag ε lands, remove #[ignore], call
+    // TODO(#4358): when unified-dag ε lands, remove #[ignore], call
     // build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
     // The Undef invariant is regression-pinned by cross_cell_factored_dependent_stays_undef.
 }
@@ -353,7 +353,7 @@ fn purpose_activation_simulation_ready() {
 
 /// Full pipeline (read + parse + compile_with_stdlib + eval) should complete in < 15 seconds.
 // Performance benchmark — run explicitly with `cargo test -- --ignored`.
-#[ignore]
+#[ignore = "performance benchmark; run explicitly with --ignored"]
 #[test]
 fn eval_full_pipeline_benchmark() {
     let start = Instant::now();

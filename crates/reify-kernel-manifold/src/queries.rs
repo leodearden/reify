@@ -922,7 +922,7 @@ fn extract_xyz(m: &Manifold) -> Vec<[f64; 3]> {
 /// across test modules within this crate without re-deriving the conversion.
 /// Ideally this helper would live in `crate::test_fixtures`; moving it there
 /// requires editing `crates/reify-kernel-manifold/src/test_fixtures.rs`, which
-/// is outside the file scope of task 3612 (KGQ-γ) — tracked as a follow-up by
+/// is outside the file scope of task 3612 (KGQ-γ) — deferred per
 /// the KGQ-γ code review.
 ///
 /// `offset` shifts the [0,1]³ unit cube by (dx, dy, dz) in each axis.

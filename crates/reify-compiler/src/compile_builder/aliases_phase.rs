@@ -17,7 +17,7 @@
 //!    resolution wins without producing a duplicate-alias diagnostic.
 //!
 //! 2. **Parametric skip** — prelude aliases with non-empty `type_params` are
-//!    skipped (TODO: cross-module parametric propagation requires carrying
+//!    skipped (TODO: cross-module parametric propagation requires carrying // ptodo:allow cross-module parametric propagation is a known deferred design decision
 //!    `TypeExpr` across the module boundary, which is deferred).  Skipped names
 //!    that are not shadowed by a user alias are recorded in the registry via
 //!    [`TypeAliasRegistry::mark_skipped_parametric_prelude`]; at every use site
@@ -77,7 +77,7 @@ pub(crate) fn phase_aliases(
 
     // Seed prelude aliases first (non-parametric only; user names take precedence).
     for pa in prelude_aliases {
-        // TODO: cross-module parametric propagation is deferred; skip for now.
+        // TODO: cross-module parametric propagation is deferred; skip for now. // ptodo:allow cross-module parametric propagation is a known deferred design decision
         // Mark unshadowed names for use-site Info emission (shadow guard: user alias wins).
         if !pa.type_params.is_empty() {
             // Shadowing is name-only — even if the user's alias fails resolution

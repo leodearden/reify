@@ -1005,12 +1005,12 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_SINGULARITY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
-    /// (snapshot evaluator integration) — `reify-stdlib::snapshot` and the
-    /// eval engine do not yet call the wrapper. The variant is reserved now so
-    /// downstream tooling (LSP / MCP / IDE error UIs) can match on the typed code
-    /// identifier from the moment the diagnostic is first emitted, with no further
-    /// enum churn at integration time.
+    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
+    /// integration lands — `reify-stdlib::snapshot` and the eval engine do not
+    /// yet call the wrapper. The variant is reserved now so downstream tooling
+    /// (LSP / MCP / IDE error UIs) can match on the typed code identifier from
+    /// the moment the diagnostic is first emitted, with no further enum churn
+    /// at integration time.
     KinematicSingularity,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1029,9 +1029,9 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_KINEMATIC_OVERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
-    /// (snapshot evaluator integration). Reserved now for typed-code matching
-    /// at the moment the diagnostic is first emitted.
+    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
+    /// integration lands. Reserved now for typed-code matching at the moment
+    /// the diagnostic is first emitted.
     KinematicOverconstrained,
     /// Origin: `crates/reify-stdlib/src/loop_closure_solver.rs::solve_loop_closure_with_diagnostics`
     /// (task 2677 — PRD `docs/prds/v0_2/kinematic-constraints.md`
@@ -1051,9 +1051,9 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_KINEMATIC_UNDERCONSTRAINED`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     ///
-    /// TODO: surfaced through the snapshot / sweep API in PRD task 10
-    /// (snapshot evaluator integration). Reserved now for typed-code matching
-    /// at the moment the diagnostic is first emitted.
+    /// Note: surfaced through the snapshot/sweep API once snapshot-evaluator
+    /// integration lands. Reserved now for typed-code matching at the moment
+    /// the diagnostic is first emitted.
     KinematicUnderconstrained,
     /// Origin: `crates/reify-eval/src/tolerance_promise.rs::imported_tolerance_promise_diagnostic`
     /// (task 2651 — PRD `docs/prds/v0_2/per-purpose-tolerance.md`

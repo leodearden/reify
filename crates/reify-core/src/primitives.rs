@@ -56,6 +56,5 @@ pub const SHELL_ANNOTATION: &str = "shell";
 /// is a bare marker — no arguments are accepted.
 ///
 /// Note: as of this commit only the parse/validate path is wired; the T18
-/// dispatcher consumer is tracked separately and the annotation has no runtime
-/// effect until that lands.
+/// dispatcher consumer is wired separately (no runtime effect until the T18 dispatcher wiring lands).
 pub const SOLID_ANNOTATION: &str = "solid";

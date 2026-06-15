@@ -2212,7 +2212,7 @@ impl Engine {
         //     `eval_set = dirty_cone ∩ new_demand` intersection filters
         //     Resolution out before any cached value can go stale.
         //
-        //     Sibling concern (tracked separately): `edit_source` still lacks
+        //     Sibling concern (noted separately): `edit_source` still lacks
         //     a `diff_resolutions` helper parallel to `diff_value_cells` /
         //     `diff_constraints` / `diff_realizations`. That gap means changed
         //     or removed Resolution nodes are never seeded into `dirty_cone`

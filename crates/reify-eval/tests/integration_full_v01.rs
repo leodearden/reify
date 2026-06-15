@@ -800,7 +800,7 @@ fn test_runner_all_pass() {
 // ── Test 26: purpose follow-up comments are precise ──────────────────────────
 
 /// Assert that the .ri file's purpose comments have been upgraded from the
-/// old generic "tracked as a follow-up task" phrasing to precise scoped
+/// old generic "tracked as a follow-up task" phrasing to precise scoped // ptodo:allow test code quoting the banned phrase for assertion purposes
 /// references citing task #1904.
 ///
 /// Self-expiring scaffolding: delete this test when task #1904 lands and
@@ -822,9 +822,9 @@ fn purpose_follow_up_comment_is_precise() {
         "Old generic follow-up phrase found in .ri — must be replaced with precise task #1904 reference"
     );
 
-    // 2. Old vague "tracked as a follow-up task" phrase must be gone.
+    // 2. Old vague "tracked as a follow-up task" phrase must be gone. // ptodo:allow test code quoting the banned phrase
     assert!(
-        !src.contains("tracked as a follow-up task"),
+        !src.contains("tracked as a follow-up task"), // ptodo:allow string literal in assertion, not a tracking claim
         "Vague 'tracked as a follow-up task' phrase found — must be replaced with 'task #1904' reference"
     );
 

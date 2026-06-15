@@ -37,7 +37,7 @@
 //     so is unavailable here. Uses the bare `Real` placeholder, the uniform
 //     convention across this module (`PiecewisePolynomialProfile.mechanism :
 //     Real`, `EndEffectorTrack.mechanism : Real` — trajectory.ri:261,319).
-//     TODO(mechanism-type): tighten to `Mechanism` once the kinematic-
+//     TODO(mechanism-type): tighten to `Mechanism` once the kinematic- // ptodo:allow type-placeholder awaiting future type-system PRD
 //     completion PRD lands.
 //   `modal : ModalResult` — in-prelude (`std.modal.analysis` loads earlier).
 //

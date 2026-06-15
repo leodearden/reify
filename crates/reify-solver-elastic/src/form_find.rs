@@ -308,7 +308,7 @@ pub fn form_find_anchored_surfaces(
     let mut current = nodes.to_vec();
     let mut converged = false;
     let max_iters = if surfaces.is_empty() { 1 } else { MAX_SURFACE_ITERS };
-    // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense
+    // TODO(perf, scalability ceiling): each iteration re-allocates a fresh dense // ptodo:allow permanent perf note, no live owner task
     // n×n `D` in `assemble_d` (via `Mat::zeros`) and re-factors a fresh nf×nf
     // partial-pivot LU in `solve_reduced`. That is O(iters·n²) allocation churn
     // and O(iters·nf³) factorization — fine for the small DSL-level examples and

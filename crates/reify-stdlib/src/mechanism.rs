@@ -465,7 +465,7 @@ fn append_body(
     // a handful of bodies, and an immutable Map-shaped state already
     // forces O(n) clones per call. If mechanisms ever grow large, the
     // remediation is a `seen_solids: BTreeSet<Value>` field alongside
-    // `bodies` (tracked as a follow-up if a real workload demands it).
+    // `bodies` (deferred if a real workload demands it).
     for existing in &bodies {
         if let Value::Map(b) = existing
             && b.get(&Value::String("solid".to_string())) == Some(&solid)

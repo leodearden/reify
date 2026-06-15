@@ -499,8 +499,8 @@ fn walk_members_depth(
             }
             MemberDecl::AssociatedType(_)
             // Trait fn members: no expressions to walk for shadow lint at γ.
-            // Fn compilation is deferred to task δ/ζ.
-            // TODO(task δ/ζ): add shadow-lint walking for trait fn body
+            // Fn compilation is deferred to task δ/ζ (trait-assoc-fn ζ = #3941).
+            // TODO(#3941): add shadow-lint walking for trait fn body
             // expressions (let-bindings, where-clauses, result expr) once
             // trait-fn compilation is live.
             | MemberDecl::Fn(_)
@@ -563,7 +563,7 @@ fn walk_expr_depth(
             if let Some(parent_span) = frames.and_then(|f| f.lookup(variable)) {
                 push_shadow_diagnostic(diagnostics, variable, expr.span, parent_span);
             }
-            // TODO(suggestion #3): once `reify_syntax::ExprKind::Quantifier`
+            // TODO(quantifier-variable-span): once `reify_syntax::ExprKind::Quantifier` // ptodo:allow — UX improvement (no current owner task); see original code-review suggestion
             // carries a separate `variable_span` field, replace `expr.span`
             // here with that span so editor squigglies highlight only the
             // bound variable rather than the entire `forall x in coll: pred`

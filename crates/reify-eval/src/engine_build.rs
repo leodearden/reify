@@ -77,7 +77,7 @@ use crate::{BuildResult, Engine, MeshSurface, TessellateResult};
 /// fallback must harden into a hard error so a stray name fails loudly — and the
 /// mock kernels in the routing tests must be renamed to canonical names (the
 /// same rename the dispatcher tests already took when `dispatch()` started
-/// rejecting non-canonical names). Tracked as a follow-up alongside the
+/// rejecting non-canonical names). Deferred alongside the
 /// reify-ir / reify-config `KernelId` consolidation.
 fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
@@ -2138,7 +2138,7 @@ impl Engine {
                 // docstring for the full contract. Mirrored in `build` and
                 // `tessellate_from_values` — keep all four call sites in
                 // sync (follow-up: the broader build/build_snapshot
-                // realization-loop duplication is tracked separately).
+                // realization-loop duplication is noted separately).
                 Engine::post_process_conformance_queries(
                     template,
                     &named_steps,
@@ -2569,7 +2569,7 @@ impl Engine {
                 // `build_snapshot` and `tessellate_from_values` — keep all
                 // four call sites in sync (follow-up: the broader
                 // build/build_snapshot realization-loop duplication is
-                // tracked separately).
+                // noted separately).
                 Engine::post_process_conformance_queries(
                     template,
                     &named_steps,
@@ -13709,8 +13709,8 @@ mod dispatch_volume_mesh_tests {
     #[allow(dead_code, unreachable_code)]
     fn _surface_pin() {
         // Name both variants — a rename or variant removal breaks compilation.
-        let _: VolumeMeshOutcome = VolumeMeshOutcome::Tet(todo!());
-        let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!());
+        let _: VolumeMeshOutcome = VolumeMeshOutcome::Tet(todo!()); // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        let _: VolumeMeshOutcome = VolumeMeshOutcome::Swept(todo!()); // ptodo:allow exhaustiveness/stub arm - not tracked debt
         // Verify the full signature including the new ops/handles slice parameters
         // via function-item to function-pointer coercion.
         type DispatchVolumeMeshFn = fn(

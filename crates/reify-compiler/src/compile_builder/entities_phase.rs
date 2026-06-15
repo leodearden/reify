@@ -1059,7 +1059,7 @@ fn check_expr_fn_calls(
 /// params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally
 /// excluded — those are either already covered by the fn-call/sub-component paths,
 /// or are deliberate type-coercion escape hatches pending trait-coerce support
-/// (e.g. `ConstitutiveLawInput`, task δ/3780 `TODO(trait-coerce)`).  Extending
+/// (e.g. `ConstitutiveLawInput`, TODO(#4547): trait-coerce).  Extending
 /// to bare `TraitObject` would regress those escape-hatch call sites and is
 /// deferred to a follow-up once the coercion story is settled.
 ///

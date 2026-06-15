@@ -299,11 +299,18 @@ const ALLOWLIST_PREFIXES: &[&str] = &[
     "crates/reify-test-support/src/ignore_hygiene.rs",
     // … and that tool's tests, which embed `#[ignore]` attributes as fixtures.
     "crates/reify-test-support/tests/ignore_reason_hygiene.rs",
+    // δ migration sweep (task #4556) confirmed this set is FINAL: the ~198
+    // swept findings from the pre-1 inventory all come from real non-self-
+    // referential code sites. No additional prefix is warranted — scattered
+    // legitimate pattern-string sites across other crates use the inline
+    // `ptodo:allow` escape (§6.8) rather than a broad path-prefix exemption.
 ];
 
 /// §6.8 allowlist check: `true` when `path` (root-relative) starts with any
-/// [`ALLOWLIST_PREFIXES`] entry.
-fn is_allowlisted(path: &str) -> bool {
+/// [`ALLOWLIST_PREFIXES`] entry. Reused by `tests/ptodo_baseline.rs` (separate
+/// crate — cannot use `pub(crate)`). Mirrors `resolve_liveness`/`fingerprint`.
+// G-allow: reused by tests/ptodo_baseline.rs well-formedness test (separate crate; pub(crate) would break it).
+pub fn is_allowlisted(path: &str) -> bool {
     ALLOWLIST_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }
 
@@ -311,7 +318,8 @@ fn is_allowlisted(path: &str) -> bool {
 /// `.rs .ri .sh .py .ts .tsx .js`. Non-code/config files (`.md`, `.toml`,
 /// `.yaml`, `.json`, …) carry prose, not tracked-work markers, and are skipped
 /// (PRD §13 Q1 defers `.toml`/`.yml`/`.yaml` to θ).
-fn is_swept_ext(path: &str) -> bool {
+// G-allow: reused by tests/ptodo_baseline.rs well-formedness test.
+pub fn is_swept_ext(path: &str) -> bool {
     let lower = path.to_lowercase();
     lower.ends_with(".rs")
         || lower.ends_with(".ri")
@@ -754,6 +762,88 @@ fn liveness_finding(path: &str, summary: String) -> Finding {
 }
 
 // -----------------------------------------------------------------------
+// §6.6 baseline fingerprint derivation
+// -----------------------------------------------------------------------
+
+/// §6.6 baseline fingerprint: the canonical one-line representation of a
+/// PTODO finding used to key the committed `ptodo-baseline.txt` ratchet.
+///
+/// Shape: `{path} :: {kind} :: {text}`
+///
+/// - `path` = `finding.task_id` (root-relative file path for all PTODO kinds).
+/// - `kind` = the summary prefix up to the first `':'` (e.g. `"untracked"`,
+///   `"orphaned"`, `"unknown-id"`, `"phantom-tracking"`, …).
+/// - `text` = the remainder of the summary after `"{kind}: "`, with an
+///   optional leading `"line <digits>: "` segment removed, then internal runs
+///   of whitespace folded to a single space and the result trimmed.
+///
+/// This is the SINGLE canonical derivation that both generates the committed
+/// baseline (δ step-11) and computes live fingerprints for the ε ratchet
+/// check — keeping the two lock-step and preventing the drift warned about
+/// in PRD §6.6.
+// G-allow: sole callers are tests/ptodo_baseline.rs (separate crate, cannot use pub(crate)) and check(); mirrors resolve_liveness/resolve_inverse pub-for-integration-test pattern.
+pub fn fingerprint(finding: &Finding) -> String {
+    let path = &finding.task_id;
+    let summary = &finding.summary;
+
+    // Extract `kind`: everything up to the first ':'.
+    let (kind, after_kind) = match summary.split_once(':') {
+        Some((k, rest)) => (k.trim(), rest),
+        None => {
+            // Malformed summary — return a best-effort fingerprint rather than
+            // panicking; ε's well-formedness test will catch any ill-formed
+            // baseline entry.
+            return format!("{path} :: {summary} :: ");
+        }
+    };
+
+    // Strip a leading space after the ':' separator.
+    let after_kind = after_kind.strip_prefix(' ').unwrap_or(after_kind);
+
+    // Strip an optional "line <digits>: " prefix (present in structural and
+    // liveness findings; absent in inverse `task-cites-deleted-path` findings).
+    let text_raw = if let Some(rest) = after_kind.strip_prefix("line ") {
+        // Consume the digit run and the ": " that follows.
+        let end = rest
+            .bytes()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let after_digits = &rest[end..];
+        after_digits.strip_prefix(": ").unwrap_or(after_digits)
+    } else {
+        after_kind
+    };
+
+    // Fold internal whitespace runs to a single space, then trim.
+    let text = fold_whitespace(text_raw);
+
+    format!("{path} :: {kind} :: {text}")
+}
+
+/// Fold every internal run of ASCII whitespace in `s` to a single space and
+/// trim leading/trailing whitespace. Returns an owned `String`.
+fn fold_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_ws = true; // treat leading whitespace as if preceded by space
+    for c in s.chars() {
+        if c.is_ascii_whitespace() {
+            if !in_ws {
+                out.push(' ');
+                in_ws = true;
+            }
+        } else {
+            out.push(c);
+            in_ws = false;
+        }
+    }
+    // Trim trailing space (produced when `s` ends with whitespace).
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    out
+}
+
+// -----------------------------------------------------------------------
 // §5 detector entry point — working-tree sweep
 // -----------------------------------------------------------------------
 
@@ -1093,6 +1183,20 @@ mod tests {
         ));
         // An ordinary crate source path is NOT allowlisted.
         assert!(!is_allowlisted("crates/reify-ast/src/decl.rs"));
+
+        // δ migration sweep (pre-1) confirmed: no new ALLOWLIST_PREFIXES entries
+        // are needed. All 198 swept findings come from real non-self-referential
+        // code sites (stdlib/*.ri type-placeholders, legacy-cite Rust files,
+        // phantom-tracking prose, uncited markers) — none carry the detector's
+        // own pattern-strings programmatically in a way that would self-match.
+        // Scattered legitimate sites use `ptodo:allow` inline (§6.8 escape) rather
+        // than a broad path-prefix exemption. Regression pin: representative real
+        // swept files below the migration surface are NOT allowlisted (they must
+        // appear in detector findings, not be silently skipped).
+        assert!(!is_allowlisted("crates/reify-compiler/stdlib/dynamics.ri"));
+        assert!(!is_allowlisted("crates/reify-eval/src/dispatcher.rs"));
+        assert!(!is_allowlisted("crates/reify-eval/src/geometry_ops.rs"));
+        assert!(!is_allowlisted("gui/src-tauri/src/tests/engine_tests.rs"));
     }
 
     // -------------------------------------------------------------------
@@ -1277,5 +1381,173 @@ mod tests {
             (4, Kind::PhantomTracking, "tracked separately".to_string()),
         ];
         assert_eq!(got, expected);
+    }
+
+    // -------------------------------------------------------------------
+    // §6.6 fingerprint() — baseline fingerprint derivation
+    // -------------------------------------------------------------------
+
+    /// (a) Structural finding: line-N stripped, internal whitespace folded.
+    #[test]
+    fn fingerprint_structural_untracked() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "untracked: line 12:    // TODO: wire   this".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/foo/bar.rs :: untracked :: // TODO: wire this",
+        );
+    }
+
+    /// (b) Malformed-cite finding: same stripping/folding rules as structural.
+    #[test]
+    fn fingerprint_structural_malformed_cite() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/dispatcher.rs".to_string(),
+            summary: "malformed-cite: line 5: // TODO(task-3445): some  text".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/dispatcher.rs :: malformed-cite :: // TODO(task-3445): some text",
+        );
+    }
+
+    /// (c) Liveness finding: kind up to first ':', `line N: ` stripped, rest kept verbatim
+    /// modulo whitespace folding. The `orphaned` kind has additional structure
+    /// (`#id status=done: <text>`) that must be preserved.
+    #[test]
+    fn fingerprint_liveness_orphaned() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/engine_purposes.rs".to_string(),
+            summary: "orphaned: line 7: #4551 status=done: // FIXME(#4551): x".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/engine_purposes.rs :: orphaned :: #4551 status=done: // FIXME(#4551): x",
+        );
+    }
+
+    /// Unknown-id liveness finding: `unknown-id` kind, `line N: #id: <text>`.
+    #[test]
+    fn fingerprint_liveness_unknown_id() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-solver/src/lib.rs".to_string(),
+            summary: "unknown-id: line 99: #9999: // TODO(#9999): placeholder".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-solver/src/lib.rs :: unknown-id :: #9999: // TODO(#9999): placeholder",
+        );
+    }
+
+    /// `phantom-tracking` taxonomy kind (structural lane, `line N:` prefix).
+    #[test]
+    fn fingerprint_phantom_tracking() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-core/src/primitives.rs".to_string(),
+            summary: "phantom-tracking: line 59: // work   tracked separately".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-core/src/primitives.rs :: phantom-tracking :: // work tracked separately",
+        );
+    }
+
+    /// `bare-ignore` taxonomy kind (structural lane, `line N:` prefix).
+    #[test]
+    fn fingerprint_bare_ignore() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/tests/connect_eval.rs".to_string(),
+            summary: "bare-ignore: line 12: #[ignore]".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/tests/connect_eval.rs :: bare-ignore :: #[ignore]",
+        );
+    }
+
+    /// Non-`line ` branch: a summary whose post-kind text does NOT carry a
+    /// `line <digits>: ` prefix is folded and kept verbatim (no stripping).
+    /// (Inverse `task-cites-deleted-path` findings take this branch; they are
+    /// excluded from the source-marker baseline by the convergence test's
+    /// swept-ext gate, but `fingerprint()` must still derive a stable string.)
+    #[test]
+    fn fingerprint_no_line_prefix() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/reify-eval/src/dispatcher.rs".to_string(),
+            summary: "orphaned: #4592   status=done: x".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/reify-eval/src/dispatcher.rs :: orphaned :: #4592 status=done: x",
+        );
+    }
+
+    /// Malformed (no-colon) summary: the best-effort branch returns
+    /// `"{path} :: {summary} :: "` with an EMPTY text field. This fingerprint is
+    /// intentionally ill-formed — `baseline_is_well_formed` (tests/ptodo_baseline.rs)
+    /// rejects an empty text field, so such a finding can never silently enter the
+    /// committed baseline. Pinning the contract here documents that boundary.
+    #[test]
+    fn fingerprint_no_colon_summary_yields_empty_text() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "weird summary with no colon".to_string(),
+            evidence: vec![],
+        };
+        let fp = fingerprint(&finding);
+        assert_eq!(fp, "crates/foo/bar.rs :: weird summary with no colon :: ");
+        // The text field (after the second ` :: `) is empty by construction.
+        assert!(fp.ends_with(" :: "), "no-colon branch must leave an empty text field");
+    }
+
+    // -------------------------------------------------------------------
+    // fold_whitespace() — internal whitespace normalization
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn fold_whitespace_folds_internal_runs() {
+        // Mixed internal whitespace (spaces, tab, newline) folds to single spaces.
+        assert_eq!(fold_whitespace("a\t\n  b   c"), "a b c");
+    }
+
+    #[test]
+    fn fold_whitespace_trims_leading_and_trailing() {
+        // Leading whitespace is dropped; trailing whitespace is popped.
+        assert_eq!(fold_whitespace("   abc"), "abc");
+        assert_eq!(fold_whitespace("abc   "), "abc");
+        assert_eq!(fold_whitespace("  abc  "), "abc");
+    }
+
+    #[test]
+    fn fold_whitespace_all_whitespace_and_empty() {
+        // All-whitespace input collapses to the empty string (no trailing space left).
+        assert_eq!(fold_whitespace("    "), "");
+        assert_eq!(fold_whitespace("\t\n "), "");
+        assert_eq!(fold_whitespace(""), "");
     }
 }

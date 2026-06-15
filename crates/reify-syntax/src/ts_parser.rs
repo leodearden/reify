@@ -636,7 +636,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_field_decl" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): tree-sitter error-recovery may produce a
+                    // TODO(#3942): tree-sitter error-recovery may produce a
                     // `variant_field_decl` without the expected 'field' child.
                     // Silently elide the affected field rather than panic; a
                     // Named variant whose fields all elide collapses to Unit —
@@ -645,7 +645,7 @@ impl<'a> Lowering<'a> {
                 };
                 let type_node = match child.child_by_field_name("type") {
                     Some(n) => n,
-                    // TODO(δ/3942): same — missing 'type' child from error recovery.
+                    // TODO(#3942): same — missing 'type' child from error recovery.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
@@ -4138,18 +4138,18 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_construction_field" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'field' child — elide.
+                    // TODO(#3942): error-recovery node missing 'field' child — elide.
                     None => continue,
                 };
                 let value_node = match child.child_by_field_name("value") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'value' child — elide.
+                    // TODO(#3942): error-recovery node missing 'value' child — elide.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
                 let value_expr = match self.lower_expr(value_node) {
                     Some(e) => e,
-                    // TODO(δ/3942): lower_expr returned None for the field value
+                    // TODO(#3942): lower_expr returned None for the field value
                     // (unsupported or error-recovery expression kind) — elide rather
                     // than panic; task δ adds a diagnostic once VariantConstruct is
                     // fully resolved.

@@ -49,7 +49,7 @@
 //      are not yet surface types (Range<T>, bare Point3, Joint, Body, JointParent,
 //      LoopClosureRecord, BodySnapshot, ConvergenceReport) are represented with
 //      Real / alias (Vec3, JointValue) / Map<String,_> placeholders + TODO comments.
-//      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`).
+//      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`). // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //      Field tightening is deferred to the future joints→SIR-α migration.
 //   4. `Vec3` (= `Vector3<Length>`, tightened by task #4575) resolves because
 //      kinematic.ri is registered after std.trajectory. `JointValue` (= Real alias)
@@ -180,7 +180,7 @@ structure def Twist { }
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
 // BodyId — opaque identifier for a body within a Mechanism.
-// TODO(body-id-type): will become a proper nominal type once bodies are
+// TODO(body-id-type): will become a proper nominal type once bodies are // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // promoted to SIR-α entities. Declared now so KCC-θ/KCC-ι consumers can
 // reference the type name without introducing a stub in their own modules.
 structure def BodyId { }
@@ -220,7 +220,7 @@ structure def LoopClosure {
 
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
-//   bodies        : List<Real>             — TODO(body-type): List<BodyId> placeholder
+//   bodies        : List<Real>             — TODO(body-type): List<BodyId> placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                                           (DO NOT TOUCH — owned by kinematic-
 //                                            completion/BodyId promotion line)
 //   joint_parents : Map<BodyId, JointParent> — spanning-tree parent edges, keyed
@@ -230,7 +230,7 @@ structure def LoopClosure {
 //                                           spanning tree; tightened from
 //                                           List<Real> by task 4579 (M)
 structure def Mechanism {
-    param bodies        : List<Real>               // TODO(body-type): List<BodyId> placeholder
+    param bodies        : List<Real>               // TODO(body-type): List<BodyId> placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
     param joint_parents : Map<BodyId, JointParent> // tightened by task 4579 (M)
     param loop_closures : List<LoopClosure>         // tightened by task 4579 (M)
 }
@@ -247,13 +247,13 @@ structure def Snapshot {
 
 // SweepDim — one dimension of a kinematic sweep study (PRD §7.1).
 //
-//   joint  : Real          — TODO(joint-type): the swept joint (DrivingJoint placeholder)
+//   joint  : Real          — TODO(joint-type): the swept joint (DrivingJoint placeholder) // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //   range  : Range<JointValue> — swept joint-coordinate interval (task 4576).
 //                              JointValue = Real = dimensionless; the runtime per-joint
 //                              LENGTH/ANGLE dimension check stays in sweep.rs::validate_range_with_dimension.
 //   steps  : Int           — number of discrete steps across the range
 structure def SweepDim {
-    param joint : Real             // TODO(joint-type): DrivingJoint placeholder
+    param joint : Real             // TODO(joint-type): DrivingJoint placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
     param range : Range<JointValue> // tightened from Real (task 4576)
     param steps : Int
 }

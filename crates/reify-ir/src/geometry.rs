@@ -3290,7 +3290,7 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **TODO:** wire this counter into error reporting so that a non-zero count
+    /// **TODO:** wire this counter into error reporting so that a non-zero count // ptodo:allow doc design note - not tracked debt
     /// surfaces as a warning log or `QueryError::QueryFailed` from
     /// `propagate_attributes_via_brepalgoapi_history`, rather than being silently
     /// recorded. Until that follow-up lands, callers must inspect this field
@@ -3396,10 +3396,9 @@ pub struct SweepOpHistoryRecords {
     /// canonical happy-path integration tests. A dedicated test exercising
     /// the non-zero path (e.g. a synthetic input that triggers the
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
-    /// tracked in project memory under
-    /// `"SweepOpHistory silent_drop_count non-zero path test"`.
+    /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **TODO (follow-up — tracked in project memory "SweepOpHistory
+    /// **TODO (follow-up — tracked in project memory "SweepOpHistory // ptodo:allow wiring TODO with in-memory tracking reference
     /// silent_drop_count error reporting"):** wire this counter into error
     /// reporting so that a non-zero count surfaces as a warning log, rather
     /// than being silently recorded. Until that follow-up lands, callers
@@ -4006,7 +4005,7 @@ mod tests {
 
         impl GeometryKernel for CountingKernel {
             fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-                unimplemented!("CountingKernel only supports query")
+                unimplemented!("CountingKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -4020,7 +4019,7 @@ mod tests {
                 _format: ExportFormat,
                 _writer: &mut dyn std::io::Write,
             ) -> Result<(), ExportError> {
-                unimplemented!("CountingKernel only supports query")
+                unimplemented!("CountingKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn tessellate(
@@ -4028,7 +4027,7 @@ mod tests {
                 _handle: GeometryHandleId,
                 _tolerance: f64,
             ) -> Result<Mesh, TessError> {
-                unimplemented!("CountingKernel only supports query")
+                unimplemented!("CountingKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
         }
 
@@ -4092,7 +4091,7 @@ mod tests {
 
         impl GeometryKernel for FailAfterKernel {
             fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-                unimplemented!("FailAfterKernel only supports query")
+                unimplemented!("FailAfterKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
@@ -4113,7 +4112,7 @@ mod tests {
                 _format: ExportFormat,
                 _writer: &mut dyn std::io::Write,
             ) -> Result<(), ExportError> {
-                unimplemented!("FailAfterKernel only supports query")
+                unimplemented!("FailAfterKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn tessellate(
@@ -4121,7 +4120,7 @@ mod tests {
                 _handle: GeometryHandleId,
                 _tolerance: f64,
             ) -> Result<Mesh, TessError> {
-                unimplemented!("FailAfterKernel only supports query")
+                unimplemented!("FailAfterKernel only supports query") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
         }
 
@@ -4958,7 +4957,7 @@ mod tests {
             }
 
             fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-                unimplemented!("ExecuteOnlyKernel only supports execute")
+                unimplemented!("ExecuteOnlyKernel only supports execute") // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn export(
@@ -4967,7 +4966,7 @@ mod tests {
                 _format: ExportFormat,
                 _writer: &mut dyn std::io::Write,
             ) -> Result<(), ExportError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn tessellate(
@@ -4975,7 +4974,7 @@ mod tests {
                 _handle: GeometryHandleId,
                 _tolerance: f64,
             ) -> Result<Mesh, TessError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
         }
 
@@ -5026,7 +5025,7 @@ mod tests {
             }
 
             fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn export(
@@ -5035,7 +5034,7 @@ mod tests {
                 _format: ExportFormat,
                 _writer: &mut dyn std::io::Write,
             ) -> Result<(), ExportError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn tessellate(
@@ -5043,7 +5042,7 @@ mod tests {
                 _handle: GeometryHandleId,
                 _tolerance: f64,
             ) -> Result<Mesh, TessError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
         }
 
@@ -5365,7 +5364,7 @@ mod tests {
             }
 
             fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn export(
@@ -5374,7 +5373,7 @@ mod tests {
                 _format: ExportFormat,
                 _writer: &mut dyn std::io::Write,
             ) -> Result<(), ExportError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
 
             fn tessellate(
@@ -5382,7 +5381,7 @@ mod tests {
                 _handle: GeometryHandleId,
                 _tolerance: f64,
             ) -> Result<Mesh, TessError> {
-                unimplemented!()
+                unimplemented!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
             }
         }
 

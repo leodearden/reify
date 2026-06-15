@@ -216,13 +216,13 @@ impl FidgetKernel {
     /// compilation is acceptable for v0.2 — a `Mutex<HashMap<GeometryHandleId,
     /// JitShape>>` cache layer is a non-breaking optimisation later.
     ///
-    /// TODO(#4592): callers that evaluate the same handle many times
+    /// TODO(#4593): callers that evaluate the same handle many times
     /// (e.g. per-pixel raster sampling) currently pay one full JIT
     /// compilation per call. A per-handle `JitShape` cache (keyed on the
     /// `GeometryHandleId`, invalidated when the Tree changes — which it
     /// never does today since handles are immutable post-insert) is
     /// non-breaking and should be the next optimisation. When a caller
-    /// starts hot-looping this path, re-check this trigger under #4592
+    /// starts hot-looping this path, re-check this trigger under #4593
     /// (land the per-handle cache or graduate to a dedicated task).
     ///
     /// `f32` mirrors fidget's native float width; reify's `f64` callers

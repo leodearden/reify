@@ -356,7 +356,7 @@ fn spherical_has_no_params() {
 /// `joint_parents` (tightened to `Map<BodyId,JointParent>` by task 4579/M),
 /// and `loop_closures` (tightened to `List<LoopClosure>` by task 4579/M).
 ///
-/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED —
+/// `bodies : List<Real>` (TODO(body-type)) is INTENTIONALLY UNCHANGED — // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// owned by the kinematic-completion/BodyId promotion line.
 ///
 /// Resolution guards at the top verify that `BodyId` and `JointParent` are
@@ -387,7 +387,7 @@ fn mechanism_has_three_params_with_tightened_collection_types() {
         bodies.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
         "Mechanism.bodies should be Type::List(Real) (List<BodyId> placeholder, \
-         TODO(body-type) owned by kinematic-completion line)"
+         TODO(body-type) owned by kinematic-completion line)" // ptodo:allow doc reference to a placeholder marker - not tracked debt
     );
 
     // joint_parents: tightened to Map<BodyId, JointParent> by task 4579 (M).

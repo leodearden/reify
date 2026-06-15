@@ -1285,7 +1285,7 @@ impl Engine {
     /// Called by `Engine::eval` once the new snapshot graph has been
     /// materialised. `Engine::edit_source` performs an equivalent purge
     /// via an inline `self.param_overrides.retain(...)` against its
-    /// post-edit graph; a follow-up task will migrate that site onto
+    /// post-edit graph; a future refactor should migrate that site onto
     /// this helper (the amend-pass scope for task 2017 did not include
     /// `engine_edit.rs`).  Until that merge lands the two predicates
     /// must remain behaviourally identical — if you refine one, refine

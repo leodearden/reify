@@ -307,7 +307,7 @@ fn canonical_subhandle_ids(
 // the cross-solid membership gate. The full cross-solid resolver is consumed by
 // engine-unified-build-dag η/ε, whose in-loop driver has the realized parent
 // handle. Exercised now by the `resolve_subhandle_list_*` unit tests below.
-// TODO(tasks 4360/4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
+// TODO(#4360, #4358): drop this `#[allow(dead_code)]` once η/ε's in-loop
 // driver calls `resolve_subhandle_list` from production code.
 #[allow(dead_code)]
 pub(crate) fn resolve_subhandle_list(
@@ -1136,7 +1136,7 @@ pub(crate) fn compile_geometry_op(
                     axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     angle_rad: f64_arg("angle")?,
                 }),
                 reify_compiler::TransformKind::Scale => {
@@ -1172,7 +1172,7 @@ pub(crate) fn compile_geometry_op(
                         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
                         // NOTE: bare numeric angle is passed through as-is (radians).
                         // circular_pattern converts bare numbers as degrees; aligning
-                        // rotate/rotate_around/revolve is tracked as a follow-up task.
+                        // rotate/rotate_around/revolve is deferred (no live task assigned).
                         angle_rad: f64_arg("angle")?,
                     })
                 }
@@ -1575,7 +1575,7 @@ pub(crate) fn compile_geometry_op(
                     }
                     // NOTE: bare numeric angle is passed through as-is (radians).
                     // circular_pattern converts bare numbers as degrees; aligning
-                    // rotate/rotate_around/revolve is tracked as a follow-up task.
+                    // rotate/rotate_around/revolve is deferred (no live task assigned).
                     let angle_rad = f64_arg("angle")?;
                     // Reject sub-picoradian angles as degenerate: an angle at
                     // the f64 rounding floor cannot produce a meaningful
@@ -10815,7 +10815,7 @@ mod tests {
         );
     }
 
-    // TODO(tasks 4360/4358): Once engine-unified-build-dag η/ε lands and the
+    // TODO(#4360): Once engine-unified-build-dag η/ε lands and the
     // 4-arg `draft(solid, faces, angle, neutral_plane)` face selector can
     // resolve on the active pipeline, add an end-to-end .ri-source test that
     // compiles a 4-arg draft, runs it through eval, and asserts the resulting
