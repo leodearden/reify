@@ -60,6 +60,7 @@ if [ "${REIFY_TEST_SPAWN_BALANCER:-0}" = "1" ]; then
                 REIFY_JOBSERVER_TASK_FIFO="$_REIFY_TEST_TASK_FIFO" \
                 REIFY_JOBSERVER_TOKENS="${REIFY_JOBSERVER_TOKENS:-4}" \
                 REIFY_JOBSERVER_POLL_INTERVAL=0.05 \
+                REIFY_JOBSERVER_PRESSURE_DISABLE=1 \
                     python3 "$_REIFY_TEST_BALANCER_SCRIPT" &
                 [ -n "${_REIFY_TEST_BALANCER_PID_FILE:-}" ] \
                     && echo $! > "$_REIFY_TEST_BALANCER_PID_FILE"
@@ -189,20 +190,26 @@ PY
 # ──────────────────────────────────────────────────────────────────────────────
 run_canary() {
     local build_active_cmd="${1:-echo 0}"
-    # Optional held-back file seam (Block E): when _HELD_BACK_FILE is non-empty,
-    # pass REIFY_JOBSERVER_HELD_BACK_FILE to the canary so it reads held_back
-    # from the per-case fixture instead of the default /tmp path.
-    local _hbf_pair=()
-    [ -n "${_HELD_BACK_FILE:-}" ] && \
-        _hbf_pair=("REIFY_JOBSERVER_HELD_BACK_FILE=$_HELD_BACK_FILE")
+    # Always pass REIFY_JOBSERVER_HELD_BACK_FILE for hermetic isolation from
+    # /tmp/reify-jobserver-held-back (which may be non-zero if a live balancer
+    # daemon is running on the host).
+    # Block E sets _HELD_BACK_FILE to a per-case fixture with specific content.
+    # Other blocks leave _HELD_BACK_FILE empty → use a guaranteed-absent path
+    # (mktemp -u) so the canary defaults held_back to 0 without reading the
+    # live system file.
+    local _hbf="${_HELD_BACK_FILE:-}"
+    if [ -z "$_hbf" ]; then
+        _hbf="$(mktemp -u /tmp/test-canary-hb-default-XXXXXX)"
+    fi
     REIFY_JOBSERVER_MERGE_FIFO="$_MERGE_FIFO" \
     REIFY_JOBSERVER_TASK_FIFO="$_TASK_FIFO" \
     REIFY_JOBSERVER_TOKENS="$_FIXTURE_TOKENS" \
     REIFY_JOBSERVER_BUILD_ACTIVE_CMD="$build_active_cmd" \
     REIFY_JOBSERVER_CANARY_SETTLE_SLEEP=0 \
     SYSTEMCTL_CALLS="$_CALLS_FILE" \
+    REIFY_JOBSERVER_HELD_BACK_FILE="$_hbf" \
     PATH="$_STUB_DIR:$PATH" \
-        env "${_hbf_pair[@]}" bash "$CANARY"
+        bash "$CANARY"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
