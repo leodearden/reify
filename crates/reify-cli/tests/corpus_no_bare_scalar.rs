@@ -1,12 +1,19 @@
-//! Corpus-cleanliness guard: zero bare `: Scalar` type annotations (task δ).
+//! Corpus-cleanliness guard: zero bare `: Scalar` type annotations and bare
+//! `-> Scalar` return codomains (tasks δ + δ-completion).
 //!
-//! Signal: `: *Scalar([^<a-zA-Z]|$)` with `::Scalar` excluded.
+//! Signal: `: *Scalar([^<a-zA-Z]|$)` (annotation) or `-> Scalar([^<a-zA-Z]|$)`
+//! (codomain), with pure-comment lines and `::Scalar` excluded.
 //!
 //! Walks:
 //!   * `examples/**/*.ri`          — design example files
 //!   * `crates/**/*.ri`            — standalone fixture .ri files
 //!   * `crates/**/*.rs`            — inline .ri fixtures + doc-prose in Rust sources
+//!   * `gui/src-tauri/**/*.rs`     — GUI inline DSL test sources
 //!   * `gui/test/**/*.ri`          — GUI fixture files
+//!
+//! Excluded from scan (parse-only, pin literal "Scalar", never type-resolve):
+//!   * `crates/reify-syntax/tests/`
+//!   * `crates/reify-ast/tests/`
 //!
 //! This test is GREEN (δ migration complete). It becomes compiler-redundant
 //! once γ adds `E_BARE_SCALAR`, but protects the δ→γ window as a regression
@@ -18,6 +25,8 @@
 //!     renamed by δ.
 //!   * `Scalar<…>` and `Scalar` followed by a letter (e.g. `Scalars`) are
 //!     not matched — they are either qualified or not the plain keyword.
+//!   * Pure comment lines (trimmed starts with `//`) are skipped — doc-prose
+//!     that quotes `-> Scalar` or `: Scalar` in comments must not be flagged.
 
 use std::path::{Path, PathBuf};
 
@@ -49,12 +58,23 @@ fn collect_files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Returns `true` when `line` contains a bare `: Scalar` type annotation that
-/// must be migrated.
+/// Returns `true` when `line` contains a bare `: Scalar` type annotation or a
+/// bare `-> Scalar` return codomain that must be migrated.
 ///
-/// Matches: `: *Scalar([^<a-zA-Z]|$)` where the introducing `:` is **not**
-/// preceded by another `:` (i.e., `::Scalar` Rust enum paths are excluded).
+/// Matches:
+///   * `: *Scalar([^<a-zA-Z]|$)` where the introducing `:` is **not**
+///     preceded by another `:` (i.e., `::Scalar` Rust enum paths excluded).
+///   * `-> Scalar([^<a-zA-Z]|$)` — bare return codomain.
+///
+/// Pure comment lines (trimmed starts with `//`) are always skipped — only
+/// real source / inline-DSL string content is examined.
 fn line_has_bare_scalar(line: &str) -> bool {
+    // Skip pure comment lines — doc-prose mentioning `-> Scalar` or `: Scalar`
+    // in comments must not be treated as migration violations.
+    if line.trim_start().starts_with("//") {
+        return false;
+    }
+
     let mut search_start = 0;
     while let Some(rel) = line[search_start..].find("Scalar") {
         let abs = search_start + rel;
@@ -67,12 +87,17 @@ fn line_has_bare_scalar(line: &str) -> bool {
 
         if after_ok {
             // 2. Scan backwards from `abs`, skipping spaces, to find the
-            //    preceding non-space character.  It must be a single `:` that
-            //    is NOT itself preceded by another `:`.
+            //    preceding non-space character.  It must be:
+            //    (a) a single `:` NOT preceded by another `:` → bare annotation, OR
+            //    (b) `->` → bare return codomain.
             let before = &line[..abs];
             let before_trimmed = before.trim_end_matches(' ');
-            // ends_with(':') but NOT ends_with("::") → bare colon annotation
+            // (a) annotation: ends_with(':') but NOT ends_with("::") → bare colon annotation
             if before_trimmed.ends_with(':') && !before_trimmed.ends_with("::") {
+                return true;
+            }
+            // (b) codomain: ends_with("->") → bare return type
+            if before_trimmed.ends_with("->") {
                 return true;
             }
         }
@@ -83,7 +108,7 @@ fn line_has_bare_scalar(line: &str) -> bool {
 }
 
 #[test]
-fn corpus_has_zero_bare_scalar_annotations() {
+fn corpus_has_zero_bare_scalar() {
     let root = workspace_root();
     let mut files: Vec<PathBuf> = Vec::new();
 
@@ -94,7 +119,10 @@ fn corpus_has_zero_bare_scalar_annotations() {
     collect_files(&root.join("crates"), "ri", &mut files);
     collect_files(&root.join("crates"), "rs", &mut files);
 
-    // GUI fixture .ri files
+    // E. gui/src-tauri/**/*.rs — GUI inline DSL test sources (δ-completion)
+    collect_files(&root.join("gui").join("src-tauri"), "rs", &mut files);
+
+    // F. GUI fixture .ri files
     let gui_fixtures = root.join("gui").join("test");
     collect_files(&gui_fixtures, "ri", &mut files);
 
@@ -103,10 +131,18 @@ fn corpus_has_zero_bare_scalar_annotations() {
     files.sort();
     files.dedup();
 
-    // Exclude this guard-test file itself — it contains `: Scalar` in its own
-    // comments, strings, and unit-test literals.  Scanning it would create
+    // Exclude this guard-test file itself — it contains `: Scalar` and `-> Scalar`
+    // in its own comments, strings, and unit-test literals.  Scanning it would create
     // self-referential false positives that prevent the test from ever going GREEN.
     files.retain(|p| p.file_name().and_then(|f| f.to_str()) != Some("corpus_no_bare_scalar.rs"));
+
+    // Exclude parse-only test directories — they pin the LITERAL PARSED name
+    // "Scalar" (never reach type resolution, can never be E_BARE_SCALAR violators).
+    //   * crates/reify-syntax/tests/ — field_tests.rs:30,64 assert codomain_type.to_string()=="Scalar"
+    //   * crates/reify-ast/tests/   — api_surface.rs:70 asserts name=="Scalar"
+    let syntax_tests = root.join("crates").join("reify-syntax").join("tests");
+    let ast_tests = root.join("crates").join("reify-ast").join("tests");
+    files.retain(|p| !p.starts_with(&syntax_tests) && !p.starts_with(&ast_tests));
 
     let mut violations: Vec<String> = Vec::new();
 
@@ -130,7 +166,8 @@ fn corpus_has_zero_bare_scalar_annotations() {
 
     assert!(
         violations.is_empty(),
-        "Found {} bare `: Scalar` annotation(s). Migrate each to `: Length`:\n\n{}",
+        "Found {} bare `Scalar` annotation(s) or codomain(s). \
+         Migrate each `: Scalar` -> `: Length` and `-> Scalar` -> `-> Length`:\n\n{}",
         violations.len(),
         violations.join("\n")
     );
@@ -142,7 +179,7 @@ fn corpus_has_zero_bare_scalar_annotations() {
 mod predicate_tests {
     use super::line_has_bare_scalar;
 
-    // Should match (violations)
+    // Should match (violations) — annotation cases
     #[test]
     fn detects_bare_scalar_with_space() {
         assert!(line_has_bare_scalar("    param width: Scalar = 10mm"));
@@ -177,6 +214,25 @@ mod predicate_tests {
         ));
     }
 
+    // Should match (violations) — codomain cases
+    #[test]
+    fn detects_return_scalar() {
+        // `-> Scalar` IS a bare return codomain (δ-completion migrates it)
+        assert!(line_has_bare_scalar("    fn area(w: Length) -> Scalar"));
+    }
+
+    #[test]
+    fn detects_return_scalar_with_brace() {
+        assert!(line_has_bare_scalar(
+            "    field def temp : Point3 -> Scalar { 1.0m }"
+        ));
+    }
+
+    #[test]
+    fn detects_return_scalar_at_end_of_line() {
+        assert!(line_has_bare_scalar("    fn foo() -> Scalar"));
+    }
+
     // Should NOT match (correctly excluded)
     #[test]
     fn excludes_double_colon_scalar() {
@@ -196,18 +252,32 @@ mod predicate_tests {
     }
 
     #[test]
+    fn excludes_return_scalar_parameterized() {
+        // `-> Scalar<Q>` is NOT bare — parameterized, not a migration target
+        assert!(!line_has_bare_scalar("    fn foo() -> Scalar<Length>"));
+    }
+
+    #[test]
     fn excludes_scalar_followed_by_letter() {
         assert!(!line_has_bare_scalar("    // Scalars and tensors"));
     }
 
     #[test]
-    fn excludes_return_scalar() {
-        // `-> Scalar` is NOT a colon-introduced annotation (δ does not migrate it)
-        assert!(!line_has_bare_scalar("    fn area(w: Length) -> Scalar"));
+    fn excludes_comment_only_double_colon() {
+        assert!(!line_has_bare_scalar("    // see Type::Scalar for details"));
     }
 
     #[test]
-    fn excludes_comment_only_double_colon() {
-        assert!(!line_has_bare_scalar("    // see Type::Scalar for details"));
+    fn excludes_comment_line_with_return_scalar() {
+        // Pure comment lines are skipped entirely
+        assert!(!line_has_bare_scalar(
+            "    // field def area(w: Length) -> Scalar"
+        ));
+    }
+
+    #[test]
+    fn excludes_comment_line_with_annotation_scalar() {
+        // Pure comment lines are skipped even for annotation form
+        assert!(!line_has_bare_scalar("    // param x: Scalar = 10mm"));
     }
 }
