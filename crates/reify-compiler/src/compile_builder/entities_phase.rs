@@ -119,10 +119,10 @@ pub(crate) fn phase_entities(
     // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
     // (defaults apply file-wide and may appear lexically after the structures
     // they fill). This pass also emits the per-scope duplicate (DD5) and
-    // declaration-site type-mismatch (DD4) diagnostics. The table itself is
-    // threaded into the entity-compile loop for top-level structure injection in
-    // a later step; for now it is built for its diagnostic side effects.
-    let _ambient_defaults = collect_file_ambient_defaults(
+    // declaration-site type-mismatch (DD4) diagnostics. The table is threaded
+    // into each top-level structure's conformance check below (DD6: file-scope
+    // injection → top-level structures only; `purpose = None`).
+    let ambient_defaults = collect_file_ambient_defaults(
         parsed,
         &prelude_template_registry,
         &structure_names,
@@ -150,6 +150,7 @@ pub(crate) fn phase_entities(
                         &constraint_def_registry,
                         &ctx.unit_registry,
                         &ctx.alias_registry,
+                        &ambient_defaults,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -211,6 +212,7 @@ pub(crate) fn phase_entities(
                         &constraint_def_registry,
                         &ctx.unit_registry,
                         &ctx.alias_registry,
+                        &ambient_defaults,
                         &mut ctx.pending_bound_checks,
                         &mut ctx.pending_auto_resolutions,
                         &mut ctx.pending_sub_override_autos,
@@ -629,6 +631,11 @@ fn compile_entity_decl(
     constraint_def_registry: &HashMap<String, &CompiledConstraintDef>,
     unit_registry: &UnitRegistry,
     alias_registry: &TypeAliasRegistry,
+    // task 4497 (ambient-default-material B): file-level ambient-default table,
+    // forwarded into `compile_entity` → `check_trait_conformance` so a top-level
+    // structure's unfilled Material-typed params are injected from file scope
+    // (DD6 → `purpose = None`).
+    ambient: &AmbientDefaults,
     pending_bound_checks: &mut Vec<PendingBoundCheck>,
     pending_auto_resolutions: &mut Vec<AutoResolutionRequest>,
     pending_sub_override_autos: &mut Vec<PendingSubOverrideAuto>,
@@ -648,6 +655,7 @@ fn compile_entity_decl(
         constraint_def_registry,
         unit_registry,
         alias_registry,
+        ambient,
         pending_bound_checks,
         pending_auto_resolutions,
         pending_sub_override_autos,
