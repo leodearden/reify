@@ -60,13 +60,13 @@ Reify's substrate verifier has three probe vectors, all empirically grounded in 
 
 2. **Semantic/behavioral premises — `reify check <fixture.ri>`**. Observes arg-vs-param rejection, type-name resolution, and member-access lowering. **Negative-assertion sentinel:** `reify check` exits 0 + `All constraints satisfied.` + no diagnostic where a rejection was asserted = silent-accept = FAIL (example: `revolute("not-an-axis", …)` — task 4575).
 
-3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` panics in `eval_expr` (`crates/reify-compiler/src/expr.rs:374`); authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic).
+3. **Eval/IR probe (eval-error-signature)** — where `check` is insufficient. `CompiledExprKind::CrossSubGeometryRef` emission in `crates/reify-compiler/src/expr.rs` panics in `eval_expr`; authoring the scenario and running `reify eval` reveals the real IR shape via the panic signature (example: task 4358 — assumed IndexAccess, real shape betrayed by CrossSubGeometryRef panic).
 
 **Four semantic-substrate worked examples (PRD §3/§10):**
 - **4575 — arg-vs-param rejection (silent-accept):** `reify check` on `revolute("not-an-axis", …)` exits 0 + `All constraints satisfied.` + no rejection diagnostic. The negative-assertion sentinel fires — the compiler does **no** nominal arg-vs-param rejection for concrete params.
 - **4577 — resolve_type_name:** `param t : Transform3` → `reify check` exits 1, diagnostic `error: unresolved type: Transform3`.
 - **4437 — member-access lowering-to-ValueRef:** member access on a TypeParam-typed param → poison literal (not ValueRef); surfaces as a diagnostic at `reify check` time.
-- **4358 — constraint-IR shape via eval-error proxy:** NOT reachable via `check`; `reify eval` surfaces the CrossSubGeometryRef panic in `eval_expr` (`crates/reify-compiler/src/expr.rs:374`), betraying the real IR shape vs the assumed IndexAccess.
+- **4358 — constraint-IR shape via eval-error proxy:** NOT reachable via `check`; `reify eval` surfaces the `CompiledExprKind::CrossSubGeometryRef` panic in `eval_expr` (`crates/reify-compiler/src/expr.rs`), betraying the real IR shape vs the assumed IndexAccess.
 
 ## Decompose mode — run the substrate-verification workflow
 
