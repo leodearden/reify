@@ -3206,7 +3206,7 @@ mod build_is_success_tests {
 #[cfg(test)]
 mod dfm_error_escalation_tests {
     use super::dfm_has_error_diagnostic;
-    use reify_core::{Diagnostic, Severity};
+    use reify_core::Diagnostic;
 
     /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
     /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
