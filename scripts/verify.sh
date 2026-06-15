@@ -175,6 +175,19 @@ usage() {
 # PSI gate — throttle per-task test phases under multi-worktree verify bursts
 # ---------------------------------------------------------------------------
 
+# _psi_read_avg10 <proc_path>
+# Parse the avg10 value from a /proc/pressure/cpu-formatted file.
+# Echoes the numeric avg10 string (e.g. "42.50") on success; echoes the empty
+# string on parse failure, missing file, or any awk error.
+# Shared by psi_gate() (via _psi_should_pass) and compile_gate().
+_psi_read_avg10() {
+    awk '/^some/ {
+        for (i=1; i<=NF; i++) {
+            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+        }
+    }' "$1" 2>/dev/null || echo ""
+}
+
 # _psi_should_pass() — helper for psi_gate().
 # Returns 0 if both PSI and window conditions are satisfied (safe to dispatch
 # now), or 1 otherwise.  Reads PROC_PATH, THRESHOLD, WINDOW, DISPATCH from
@@ -185,11 +198,7 @@ _psi_should_pass() {
     local _ts="$1" _mtime _age _avg10
     _mtime=$(stat -c %Y "$DISPATCH" 2>/dev/null || echo 0)
     _age=$(( _ts - _mtime ))
-    _avg10=$(awk '/^some/ {
-        for (i=1; i<=NF; i++) {
-            if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
-        }
-    }' "$PROC_PATH" 2>/dev/null || echo "")
+    _avg10="$(_psi_read_avg10 "$PROC_PATH")"
     [ -n "$_avg10" ] && \
         awk -v p="$_avg10" -v t="$THRESHOLD" 'BEGIN{exit !(p<t)}' && \
         [ "$_age" -ge "$WINDOW" ]
