@@ -1,0 +1,21 @@
+// Historical false premise: task 4358
+// CrossSubGeometryRef (self.inner.body where inner is a sub-component) triggers
+// an unreachable!-panic: "internal error: entered unreachable code: CrossSubGeometryRef
+// should be consumed by entity.rs bare-let drop site (task-3508)".
+//
+// NOTE: probe_kind=check (NOT ir) — the process EXITS 0 (panic is swallowed
+// per-realization), so alpha's ir vector returns ABSENT unconditionally.
+// The check vector's stderr-substring predicate observes the signature regardless
+// of exit code. expected {absent, stderr_contains: "CrossSubGeometryRef..."} →
+// PRESENT → FAIL, with correct flip semantics.
+//
+// Expected verdict: FAIL (PRESENT → expected absent, match.stderr_contains matches).
+
+pub structure Inner {
+    let body = box(10mm, 20mm, 30mm)
+}
+
+pub structure Outer {
+    sub inner = Inner()
+    let copy = self.inner.body
+}
