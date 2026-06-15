@@ -263,6 +263,10 @@ For `todo!()`/`unimplemented!()` the cite goes **on the same macro line** or on 
 
 > Every tracked TODO/FIXME/HACK/todo!()/unimplemented!()/blocker-#[ignore] must cite a live, non-terminal task via `#NNNN`. Cited ≠ tracked — a done/cancelled cite is orphaned.
 
+### Hard gate (as of task η, #4559)
+
+The invariant is enforced by a **hard gate**: an `untracked`, `orphaned`, or `bare-ignore` violation makes `reify-audit --pattern PTODO` exit non-zero (exit code = High-severity count) and hard-fails the `tests/infra` verify step. `malformed-cite`, `phantom-tracking`, and `unknown-id` remain Medium (advisory, exit-neutral). `task-cites-deleted-path` stays advisory.
+
 ### Inline escape
 
 When a source file legitimately contains a pattern string (e.g. a test that assembles `"TODO"` as a variable, or a detector source that matches `"TODO("`) that would falsely trip the PTODO sweep, add a trailing `// ptodo:allow` comment on the line:
@@ -274,4 +278,4 @@ let marker = "TODO(pending)"; // ptodo:allow — pattern-string, not a real stub
 ### References
 
 - **Grammar**: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar and violation taxonomy)
-- **Default sweep**: PTODO runs in the no-`--pattern` default `/audit` sweep at Medium severity (task ε, #4557); see `/audit` and `--pattern PTODO`
+- **Default sweep**: PTODO runs in the no-`--pattern` default `/audit` sweep (task ε, #4557). `untracked`/`orphaned`/`bare-ignore` emit High (hard gate, task η #4559); `malformed-cite`/`phantom-tracking`/`unknown-id` emit Medium; `task-cites-deleted-path` stays advisory. See `/audit` and `--pattern PTODO`
