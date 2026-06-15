@@ -1276,4 +1276,183 @@ assert "read_pressure(): (c) garbage file (no 'some' line) → None (fail-open)"
 assert "module exposes PSI_PROC_PATH str defaulting to /proc/pressure/cpu" \
     test "$_b13_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 14: pressure_decide() unit test + constants + env-validation (test-14)
+#   Pure-function tests via importlib heredoc (Blocks 7-10 / Block 13 style).
+#   hold=50, release=40, max_held_back=8 throughout.
+#
+#   (a) HIGH avg10=99 (>=hold): ("hold", min(free_task, max-held_back)) for
+#       valid (free_task>0, headroom>0); headroom==0 or free_task==0 → ("none",0).
+#   (b) LOW avg10=10 (<release): ("release", held_back); held_back==0 → ("none",0).
+#   (c) BAND 40<=avg10<50: ("none",0) for any held_back.
+#   (d) avg10=None (fail-open): acts as low pressure (release held_back); NEVER hold.
+#   (e) MERGE-SAFE: inspect.signature(pressure_decide) params do NOT contain 'free_merge'.
+#   (f) Constants: PRESSURE_HOLD_THRESHOLD/RELEASE_THRESHOLD floats, release<hold;
+#       MAX_HELD_BACK int>=0.
+#   (g) Env-validation (Block 12 discipline): bad env → exit 1.
+#       Hermeticity guard: each spawn uses timeout + temp FIFO paths (not live).
+#   RED: function + constants absent → AttributeError/exit-1 mismatch.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 14: pressure_decide() unit test + constants + env-validation ---"
+
+_b14_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, os, sys, inspect
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+HOLD = 50.0; RELEASE = 40.0; MAX = 8
+
+def pd(avg10, free_task, held_back, max_hb=MAX):
+    return mod.pressure_decide(avg10, HOLD, RELEASE, free_task, held_back, max_hb)
+
+# ── (f) constants exist with correct types ────────────────────────────────
+for cname in ('PRESSURE_HOLD_THRESHOLD', 'PRESSURE_RELEASE_THRESHOLD'):
+    if not hasattr(mod, cname):
+        errors.append(f"(f) {cname} missing")
+    elif not isinstance(getattr(mod, cname), float):
+        errors.append(f"(f) {cname} is {type(getattr(mod,cname)).__name__}, want float")
+if not hasattr(mod, 'MAX_HELD_BACK'):
+    errors.append("(f) MAX_HELD_BACK missing")
+elif not isinstance(mod.MAX_HELD_BACK, int):
+    errors.append(f"(f) MAX_HELD_BACK is {type(mod.MAX_HELD_BACK).__name__}, want int")
+elif mod.MAX_HELD_BACK < 0:
+    errors.append(f"(f) MAX_HELD_BACK={mod.MAX_HELD_BACK} < 0")
+if (hasattr(mod, 'PRESSURE_HOLD_THRESHOLD') and
+        hasattr(mod, 'PRESSURE_RELEASE_THRESHOLD') and
+        isinstance(mod.PRESSURE_HOLD_THRESHOLD, float) and
+        isinstance(mod.PRESSURE_RELEASE_THRESHOLD, float)):
+    if mod.PRESSURE_RELEASE_THRESHOLD >= mod.PRESSURE_HOLD_THRESHOLD:
+        errors.append(f"(f) release({mod.PRESSURE_RELEASE_THRESHOLD}) >= hold({mod.PRESSURE_HOLD_THRESHOLD})")
+
+# ── (e) MERGE-SAFE: pressure_decide has no 'free_merge' parameter ─────────
+try:
+    sig = inspect.signature(mod.pressure_decide)
+    if 'free_merge' in sig.parameters:
+        errors.append("(e) pressure_decide has 'free_merge' param — MERGE-SAFE violated")
+except Exception as _e:
+    errors.append(f"(e) inspect.signature failed: {_e}")
+
+# ── (a) HIGH pressure (avg10>=hold) — hold behavior ──────────────────────
+high_cases = [
+    # (free_task, held_back, expected_action, expected_count)
+    (5, 3, "hold", min(5, MAX - 3)),   # headroom=5, grab min(5,5)=5
+    (3, 5, "hold", min(3, MAX - 5)),   # headroom=3, grab min(3,3)=3
+    (2, 7, "hold", min(2, MAX - 7)),   # headroom=1, grab min(2,1)=1
+    (0, 3, "none", 0),                  # free_task=0 → no grab possible
+    (5, 8, "none", 0),                  # headroom=0 (max reached) → none
+    (0, 8, "none", 0),                  # both 0 and max → none
+]
+for (ft, hb, exp_a, exp_c) in high_cases:
+    action, count = pd(99.0, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(a) HIGH free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+
+# ── (b) LOW pressure (avg10<release) — release behavior ──────────────────
+low_cases = [
+    (5, 3, "release", 3),
+    (5, 5, "release", 5),
+    (5, 0, "none",    0),   # nothing to release
+    (0, 3, "release", 3),   # free_task irrelevant for release
+]
+for (ft, hb, exp_a, exp_c) in low_cases:
+    action, count = pd(10.0, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(b) LOW free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+
+# ── (c) BAND (release<=avg10<hold) — no action ───────────────────────────
+for avg10 in (40.0, 44.5, 49.0):
+    for hb in (0, 3, 8):
+        action, count = pd(avg10, 5, hb)
+        if (action, count) != ("none", 0):
+            errors.append(
+                f"(c) BAND avg10={avg10},held={hb}: got ({action!r},{count}), "
+                f"want ('none',0)"
+            )
+
+# ── (d) avg10=None (fail-open) — release behavior, never hold ────────────
+none_cases = [
+    (5, 3, "release", 3),
+    (0, 5, "release", 5),
+    (5, 0, "none",    0),
+]
+for (ft, hb, exp_a, exp_c) in none_cases:
+    action, count = pd(None, ft, hb)
+    if (action, count) != (exp_a, exp_c):
+        errors.append(
+            f"(d) None free_task={ft},held={hb}: got ({action!r},{count}), "
+            f"want ({exp_a!r},{exp_c})"
+        )
+    if action == "hold":
+        errors.append(f"(d) None returned 'hold' — NEVER hold on fail-open")
+
+if errors:
+    sys.stderr.write("FAIL pressure_decide():\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: pressure_decide()")
+PY
+} || _b14_exit=$?
+
+assert "pressure_decide(): (a) HIGH pressure hold behavior" \
+    test "$_b14_exit" -eq 0
+assert "pressure_decide(): (b) LOW pressure release behavior" \
+    test "$_b14_exit" -eq 0
+assert "pressure_decide(): (c) BAND → none" \
+    test "$_b14_exit" -eq 0
+assert "pressure_decide(): (d) None fail-open (never hold)" \
+    test "$_b14_exit" -eq 0
+assert "pressure_decide(): (e) MERGE-SAFE (no free_merge param)" \
+    test "$_b14_exit" -eq 0
+assert "module constants PRESSURE_HOLD_THRESHOLD/RELEASE_THRESHOLD/MAX_HELD_BACK" \
+    test "$_b14_exit" -eq 0
+
+# ── (g) env-validation (Block 12 discipline) ─────────────────────────────
+# Hermeticity guard: temp FIFO paths + timeout so the script can't fall through
+# to main() and block on creating/opening live FIFOs in the RED state.
+_b14_tmp_merge="$(mktemp -u /tmp/test-b14-merge-XXXXXX)"
+_b14_tmp_task="$(mktemp -u /tmp/test-b14-task-XXXXXX)"
+
+# bad float for HOLD_THRESHOLD
+_b14_hold_abc=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=abc \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_hold_abc=$?
+assert "REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=abc exits 1 (not a float)" \
+    test "$_b14_hold_abc" -eq 1
+
+# release >= hold (50 == 50 → release not < hold)
+_b14_rel_ge=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_PRESSURE_HOLD_THRESHOLD=50.0 \
+REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD=50.0 \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_rel_ge=$?
+assert "REIFY_JOBSERVER_PRESSURE_RELEASE_THRESHOLD=50 (>=hold=50) exits 1" \
+    test "$_b14_rel_ge" -eq 1
+
+# negative MAX_HELD_BACK
+_b14_max_neg=0
+REIFY_JOBSERVER_MERGE_FIFO="$_b14_tmp_merge" \
+REIFY_JOBSERVER_TASK_FIFO="$_b14_tmp_task" \
+REIFY_JOBSERVER_MAX_HELD_BACK=-1 \
+    timeout 5 python3 "$BALANCER" 2>/dev/null || _b14_max_neg=$?
+assert "REIFY_JOBSERVER_MAX_HELD_BACK=-1 exits 1 (negative)" \
+    test "$_b14_max_neg" -eq 1
+
+# Cleanup temp paths (in case RED daemon created them before timeout)
+rm -f "$_b14_tmp_merge" "$_b14_tmp_task"
+
 test_summary
