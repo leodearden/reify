@@ -1,0 +1,24 @@
+{
+    "probes": [
+        {
+            "capability": "3979 arrow-type grammar production",
+            "probe_kind": "grammar",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {
+                "observation": "present",
+                "match": {}
+            }
+        },
+        {
+            "capability": "4575 arg-vs-param nominal rejection",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            "expected": {
+                "observation": "present",
+                "match": {
+                    "exit_code": 1
+                }
+            }
+        }
+    ]
+}
