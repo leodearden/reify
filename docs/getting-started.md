@@ -72,6 +72,7 @@ The 50+ files under `examples/` exercise different language features:
 | `large_assembly.ri` | Multi-part assembly |
 | `kinematic/` | Kinematic linkages (closed chains, joints) |
 | `topology_selectors/` | Persistent face/edge naming |
+| `multi_load_bracket.ri` | Multi-load-case FEA: 3 load cases, stress envelope, LRFD superposition |
 
 If one fails to parse or check, that's a real bug — please report it (see [README "Feedback"](../README.md#feedback)).
 
@@ -80,6 +81,7 @@ If one fails to parse or check, that's a real bug — please report it (see [REA
 - [Language spec](reify-language-spec.md) — full grammar and semantics
 - [Stdlib reference](reify-stdlib-reference.md) — built-in geometry, types, traits
 - [Implementation architecture](reify-implementation-architecture.md) — how the engine fits together
+- [Multi-load-case FEA](stdlib/multi-load-fea.md) — multi-case solver, stress envelopes, `linear_combine` superposition
 
 ## Common issues
 
