@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_shows_signature_and_doc() {
-        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Scalar { w * h }";
+        let source = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(1, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn hover_on_fn_name_without_doc_shows_signature() {
-        let source = "fn area(w: Length, h: Length) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
         let position = Position::new(0, 4); // on 'area'
         let md = hover_markdown(source, position).expect("hover should return info");
         assert!(

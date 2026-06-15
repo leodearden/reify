@@ -2311,7 +2311,7 @@ mod tests {
     #[test]
     fn compute_document_symbols_fn_and_excludes_non_symbol_decls() {
         use tower_lsp::lsp_types::SymbolKind;
-        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Scalar { w }";
+        let source = "import std.math\nunit meter : Length\nfn area(w: Length) -> Length { w }";
         let symbols = compute_document_symbols(source, &test_uri());
         // import + unit are NOT navigable symbols; only the fn is.
         assert_eq!(
@@ -2399,7 +2399,7 @@ trait Rigid {
     param mass : Length = 5mm
 }
 enum Shape { Circle, Square }
-fn area(w: Length) -> Scalar { w }"#;
+fn area(w: Length) -> Length { w }"#;
         let uri = test_uri();
 
         let parsed = reify_compiler::parse_with_stdlib(
