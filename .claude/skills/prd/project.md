@@ -68,6 +68,20 @@ Reify's substrate verifier has three probe vectors, all empirically grounded in 
 - **4437 — member-access lowering-to-ValueRef:** member access on a TypeParam-typed param → poison literal (not ValueRef); surfaces as a diagnostic at `reify check` time.
 - **4358 — constraint-IR shape via eval-error proxy:** NOT reachable via `check`; `reify eval` surfaces the CrossSubGeometryRef panic in `eval_expr` (`crates/reify-compiler/src/expr.rs:374`), betraying the real IR shape vs the assumed IndexAccess.
 
+## Decompose mode — run the substrate-verification workflow
+
+At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**:
+
+```
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
+```
+
+Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results. The deterministic harness is `scripts/prd-decompose-verify.py`.
+
+**Blocks the batch** on any `FAIL`/`UNPROVABLE`/`HARNESS_ERROR` with captured command output attached — instead of tabulating an unexecuted promise. (`UNPROVABLE` blocks the same as `FAIL`: "no probe vector can currently observe this" is as dangerous as "the premise is false".)
+
+The script is at `scripts/prd-decompose-verify.mjs` (committed to git — **not** `.claude/workflows/`, which is `.gitignored`), so the path is stable and D4 can re-run it at dispatch time.
+
 ## G4 — known contested-ownership pairs
 
 From `docs/architecture-audit/phase-3-breadcrumb-map.md` §3 — three genuinely contested seams (don't introduce a fourth without resolving ownership):
