@@ -1076,6 +1076,7 @@ trait Adding : Process {
     param layer_thickness : Length
     param min_feature_size : Length
     param build_volume : Solid
+    param max_overhang_angle : Angle
 }
 trait Forming : Process {
     param min_bend_radius : Length
@@ -1103,11 +1104,34 @@ trait HeatTreating : Process {
 **DFM framework:**
 
 ```
+enum DFMSeverity { Info, Warning, Error }
+
 trait DFMRule {
-    param subject : Structure
-    param process : Process
+    param rule_name  : String
+    param severity   : DFMSeverity
+    param applies_to : Process
+    param subject    : Solid
 }
 ```
+
+At `reify check` time (with a geometry kernel), the engine realizes each
+`DFMRule.subject : Solid` and auto-measures it against the bound process
+capability — no hand-declared measured feature:
+
+- **`Adding.max_overhang_angle`** → emits `{I,W,E}_DFM_OVERHANG` at the
+  rule's declared `severity` when the solid has unsupported faces dipping
+  beyond the threshold. Default build direction: +Z.
+- **`Forming.draft_angle`** → emits `{I,W,E}_DFM_DRAFT` at the rule's
+  declared `severity` when wall-face draft is insufficient. Also emits
+  `E_DFM_UNDERCUT` (always `Error`, regardless of rule severity) when a
+  re-entrant wall is detected. Default pull direction: +Z.
+
+When no geometry kernel is present, the pass is a safe no-op — Indeterminate,
+never a false violation.
+
+See `examples/process/std_process_dfm_metrology.ri` for a complete worked
+example covering overhang, draft, undercut, and a conforming rule that emits
+nothing.
 
 ---
 
