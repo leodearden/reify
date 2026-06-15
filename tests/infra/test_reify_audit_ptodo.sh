@@ -200,7 +200,17 @@ echo "--- (c) Exit-code hard gate: untracked → High → non-zero exit ---"
 # already git-tracked.  Provide a separate empty runs-db (touch = 0-byte file).
 FIX2_RUNS="$(mktemp)"
 
-# (c-dirty) marker present → at least 1 High finding → exit non-zero.
+# Guard: assert the precondition inherited from (b).  $FIX must be set and
+# src/fresh.rs must be git-tracked.  A failed precondition means (b) was
+# skipped or reordered, not a product regression — fail early with a clear
+# message rather than exercising an absent/empty repo and getting a
+# misleading exit-code result.
+assert "(c-dirty) precondition: \$FIX set and src/fresh.rs git-tracked" \
+    bash -c 'git -C "$1" ls-files --error-unmatch src/fresh.rs >/dev/null 2>&1' -- "$FIX"
+
+# (c-dirty) marker present → exactly 1 High finding → exit 1 (exit code = High count).
+# Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
+# (e.g. IO misconfig exits 125, Rust panic exits 101).
 set +e
 env -u REIFY_PTODO_TASKS_DB \
     "$REIFY_AUDIT_BIN" \
@@ -212,8 +222,8 @@ env -u REIFY_PTODO_TASKS_DB \
 _exit_dirty=$?
 set -e
 
-assert "(c-dirty) untracked marker → reify-audit exits non-zero (High count ≥ 1)" \
-    bash -c '[ "$1" -ne 0 ]' -- "$_exit_dirty"
+assert "(c-dirty) untracked marker → reify-audit exits 1 (exactly 1 High finding)" \
+    bash -c '[ "$1" -eq 1 ]' -- "$_exit_dirty"
 
 # (c-clean) replace fresh.rs with marker-free content → no High findings → exit 0.
 FIX2="$(mktemp -d)"
