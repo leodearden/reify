@@ -77,13 +77,26 @@ BASELINE="$REPO_ROOT/crates/reify-audit/ptodo-baseline.txt"
 echo ""
 echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
 
+# Single EXIT trap covers all temp paths (ratchet + scenario).  Registering
+# two separate traps would silently replace the first with the second, leaking
+# LIVE_TMP on exit.
+LIVE_TMP=""
+FIX=""
+FIX_LIVE=""
+cleanup_all() {
+    [ -n "$LIVE_TMP" ] && rm -f "$LIVE_TMP"
+    [ -n "$FIX" ]      && rm -rf "$FIX"
+    [ -n "$FIX_LIVE" ] && rm -f "$FIX_LIVE"
+}
+trap cleanup_all EXIT
 LIVE_TMP="$(mktemp)"
-cleanup_ratchet() { rm -f "$LIVE_TMP"; }
-trap cleanup_ratchet EXIT
 
 # Run the generator in degraded-structural mode (no task DB).
 # Stderr may emit a breadcrumb about missing DB — that is expected and ignored.
-env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null || true
+# Do NOT use || true here: a non-zero exit from the generator signals a broken
+# detector binary, not a missing DB.  The generator exits 0 regardless of
+# finding count; a non-zero exit is an infrastructure failure that must go red.
+env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
 
 # comm -23 requires both inputs sorted; the generator sorts internally but
 # sort -u here is defensive.
@@ -105,8 +118,6 @@ echo "--- (b) Scenario 13: hermetic fixture detects fresh untracked marker ---"
 
 FIX="$(mktemp -d)"
 FIX_LIVE="$(mktemp)"
-cleanup_scenario() { rm -rf "$FIX" "$FIX_LIVE"; }
-trap cleanup_scenario EXIT
 
 git -C "$FIX" init -q
 mkdir -p "$FIX/src"
