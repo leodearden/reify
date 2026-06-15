@@ -1267,13 +1267,10 @@ print("OK: read_pressure()")
 PY
 } || _b13_exit=$?
 
-assert "read_pressure(): (a) valid PSI file → float ~73.21" \
-    test "$_b13_exit" -eq 0
-assert "read_pressure(): (b) non-existent path → None (fail-open)" \
-    test "$_b13_exit" -eq 0
-assert "read_pressure(): (c) garbage file (no 'some' line) → None (fail-open)" \
-    test "$_b13_exit" -eq 0
-assert "module exposes PSI_PROC_PATH str defaulting to /proc/pressure/cpu" \
+# All sub-cases share _b13_exit (single heredoc aggregates a-d into one exit
+# code); a failure in any sub-case fails them all.  For per-case attribution
+# the heredoc stderr output names the failing sub-case.
+assert "read_pressure(): all sub-cases (valid→float, missing→None, garbage→None, PSI_PROC_PATH constant)" \
     test "$_b13_exit" -eq 0
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1405,17 +1402,9 @@ print("OK: pressure_decide()")
 PY
 } || _b14_exit=$?
 
-assert "pressure_decide(): (a) HIGH pressure hold behavior" \
-    test "$_b14_exit" -eq 0
-assert "pressure_decide(): (b) LOW pressure release behavior" \
-    test "$_b14_exit" -eq 0
-assert "pressure_decide(): (c) BAND → none" \
-    test "$_b14_exit" -eq 0
-assert "pressure_decide(): (d) None fail-open (never hold)" \
-    test "$_b14_exit" -eq 0
-assert "pressure_decide(): (e) MERGE-SAFE (no free_merge param)" \
-    test "$_b14_exit" -eq 0
-assert "pressure_decide(): (f) constants (HOLD/RELEASE threshold floats, MAX_HELD_BACK int>=0)" \
+# All sub-cases a-f share _b14_exit; per-case attribution is in the heredoc
+# stderr output.
+assert "pressure_decide(): all sub-cases (HIGH/LOW/BAND/None, MERGE-SAFE, constants)" \
     test "$_b14_exit" -eq 0
 
 # ── (g) env-validation (Block 12 discipline) ─────────────────────────────
@@ -1526,15 +1515,9 @@ print("OK: suppress_giveback()")
 PY
 } || _b15_exit=$?
 
-assert "suppress_giveback(): (a) avg10>=release, held=0 → True (pressure active)" \
-    test "$_b15_exit" -eq 0
-assert "suppress_giveback(): (b) avg10<release, held=0 → False (pressure gone)" \
-    test "$_b15_exit" -eq 0
-assert "suppress_giveback(): (c) avg10<release, held>0 → True (reservoir guards)" \
-    test "$_b15_exit" -eq 0
-assert "suppress_giveback(): (d) avg10=None, held=0 → False (fail-open)" \
-    test "$_b15_exit" -eq 0
-assert "suppress_giveback(): (e) avg10=None, held>0 → True (reservoir suppresses)" \
+# All sub-cases a-e share _b15_exit; per-case attribution is in the heredoc
+# stderr output.
+assert "suppress_giveback(): all sub-cases (pressure-active, no-pressure, reservoir-guards, fail-open)" \
     test "$_b15_exit" -eq 0
 
 # ──────────────────────────────────────────────────────────────────────────────

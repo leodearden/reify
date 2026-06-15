@@ -623,8 +623,29 @@ def main() -> None:
             )
             _prev_hb = held_back
             if p_action == "hold":
+                # ORDER NOTE: _grab_burst drains task_fd HERE, but write_held_back()
+                # runs below (after the re-sense).  There is a sub-millisecond
+                # window where FIONREAD(task) has already dropped by k but the
+                # state file still reflects _prev_hb.  A canary sample landing
+                # in that window sees sum + held_back_file = TOKENS - k, which
+                # would look like a k-token leak.  In practice this is
+                # unreachable: the canary's 15 s idle-only guard means it only
+                # evaluates C2 after build_active==0 for 15 continuous seconds,
+                # whereas this window closes within POLL_INTERVAL (< 1 s).
+                # The transient is intentionally accepted rather than pre-
+                # announcing held_back (which would add a second write on every
+                # hold tick and would overshoot if _grab_burst absorbs fewer
+                # than p_count due to early EAGAIN).
                 held_back += _grab_burst(task_fd, p_count)
             elif p_action == "release":
+                # seed_fifo is safe without a try/except here: p_count <=
+                # held_back <= MAX_HELD_BACK <= task_baseline << 64 KB pipe
+                # buffer, and task_fd had exactly these bytes drained during
+                # earlier "hold" ticks, so that capacity is now free for re-
+                # injection.  An OSError would crash the daemon (acceptable —
+                # service restart re-seeds); held_back is decremented AFTER the
+                # write so a crash-before-decrement preserves the C1 invariant
+                # (held_back is never decremented for tokens that weren't written).
                 seed_fifo(task_fd, p_count)
                 held_back -= p_count
             # Re-sense free_task: pressure stage may have moved tokens
@@ -633,8 +654,13 @@ def main() -> None:
                 write_held_back(HELD_BACK_FILE, held_back)
 
         # ── Maintain idle_ticks counter ────────────────────────────────────
-        # Include held_back so a quiet box with a non-empty reservoir still
-        # counts as globally idle for baseline-reset purposes (design §6).
+        # Include held_back so idle_ticks keeps accumulating while the
+        # reservoir is non-empty.  Note: decide()'s own idle predicate uses
+        # sum_free = free_merge + free_task (held_back excluded), so decide()
+        # cannot reach the baseline-reset branch while held_back > 0 —
+        # baseline-reset is intentionally deferred until the reservoir drains:
+        # pressure eases → "release" ticks → held_back → 0 →
+        # sum_free == TOKENS → decide() takes the IDLE branch normally.
         if free_merge + free_task + held_back == TOKENS:
             idle_ticks += 1
         else:
