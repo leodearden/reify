@@ -7,11 +7,11 @@
 //! 1. **Positive path** — compiling `seal.thickness` where `seal : T` and the
 //!    bound trait `Seal` declares `param thickness : Length` must produce:
 //!    (a) zero `Severity::Error` diagnostics (no "member access not yet
-//!   supported" message, no `TypeParamMemberNotInBound`),
+//!    supported" message, no `TypeParamMemberNotInBound`),
 //!    (b) a flat `ValueRef(ValueCellId("seal","thickness"))` in the constraint
-//!   expr (not an `IndexAccess` over the param cell), and
+//!    expr (not an `IndexAccess` over the param cell), and
 //!    (c) the node's `result_type == Type::length()` (the bound-trait-declared
-//!   field type).
+//!    field type).
 //!
 //! 2. **Negative / soundness path** — when the bound trait does NOT declare
 //!    the accessed member, exactly one `Severity::Error` with code
