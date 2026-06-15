@@ -791,7 +791,8 @@ fn check_profile_preconditions(
         }
         // Lowering arm `"pipe"`: arg0 is the Curve path; arg1 is the radius (scalar).
         // Lowering arm `"zone_cylinder"`: arg0 is the Curve axis path; arg1 is the width (scalar).
-        "pipe" | "zone_cylinder" => {
+        // Lowering arm `"zone_annulus"`: arg0 is the Curve axis path; args 1-3 are scalars.
+        "pipe" | "zone_cylinder" | "zone_annulus" => {
             check_profile_arg(compiled_args, ast_args, 0, &PATH_SLOT, diagnostics);
         }
         // Lowering arm `"loft"`: every argument is a Surface profile.

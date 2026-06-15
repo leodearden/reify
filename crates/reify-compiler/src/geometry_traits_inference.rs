@@ -703,8 +703,13 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Modify combinators → recurse + combine_modify ──────────────
+        // zone_profile lowers to [Thicken(+w/2), Thicken(-w/2), Boolean{Difference}] on
+        // a solid target — a boolean-of-modifies result, not a sweep — so it belongs here
+        // rather than in the sweep arm. combine_modify and combine_sweep happen to produce
+        // identical InferredTraits for any solid input, but grouping by lowering semantics
+        // keeps the arm comments accurate.
         "fillet" | "fillet_all" | "chamfer" | "shell" | "draft" | "thicken" | "offset_solid"
-        | "zone_slab" => {
+        | "zone_slab" | "zone_profile" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_modify(t))
         }
@@ -717,8 +722,10 @@ pub fn try_infer_traits_for_function_call_in_env(
         }
 
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
+        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
+        // so they belong here. zone_profile is in the modify arm above.
         "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" | "zone_profile" => {
+        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
             let t = first_geometry_arg_in_env(args, env);
             Some(combine_sweep(t))
         }
