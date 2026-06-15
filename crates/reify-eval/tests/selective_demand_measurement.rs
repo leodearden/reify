@@ -23,7 +23,7 @@
 //! as the data source for the summarizer that prints distributions under
 //! `--nocapture`.
 
-use reify_core::{RealizationNodeId, ValueCellId};
+use reify_core::RealizationNodeId;
 use reify_eval::cache::NodeId;
 use reify_eval::{DemandPruneMeasurement, Engine, EvalResult};
 use reify_ir::Value;
