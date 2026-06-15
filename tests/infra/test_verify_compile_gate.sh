@@ -176,4 +176,22 @@ assert "W7: compile-gate line has no nice/ionice prefix" \
 assert "W7: compile-gate line contains no 'cargo' token" \
     bash -c '! printf "%s\n" "$1" | grep -qE "(^| )cargo( |$)"' _ "$CG_LINE"
 
+# ---------------------------------------------------------------------------
+# W8: CLAUDE.md doc-sync — the operative doc documents the compile-gate
+# ---------------------------------------------------------------------------
+# Keeps the doc that dispatched agents read in sync with the new gate,
+# mirroring the existing "Test concurrency" subsection's treatment of
+# psi_gate/semaphore knobs. This is an existence/substring check on operative
+# doc content, not a prose-wording pin.
+echo ""
+echo "--- W8: CLAUDE.md doc-sync ---"
+
+CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
+
+assert "W8: CLAUDE.md mentions REIFY_COMPILE_GATE_THRESHOLD knob" \
+    grep -q "REIFY_COMPILE_GATE_THRESHOLD" "$CLAUDE_MD"
+
+assert "W8: CLAUDE.md mentions compile-gate merge-exempt or admit-on-timeout" \
+    bash -c 'grep -qiE "compile.gate|compile_gate" "$1"' _ "$CLAUDE_MD"
+
 test_summary
