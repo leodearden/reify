@@ -382,7 +382,7 @@ purpose my_purpose(s : Structure) {
     constraint 1 > 0
 }
 
-field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }
+field def temp : Point3 -> Length { source = analytical { |p| 1.0m } }
 
 constraint def Positive {
     param v : Real
