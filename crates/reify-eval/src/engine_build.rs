@@ -7281,7 +7281,7 @@ mod tests {
         );
     }
 
-    /// step-09 (ε / task 4288, RED): the `build_outputs` driver threads each
+    /// step-09 (ε / task 4288): the `build_outputs` driver threads each
     /// STEPOutput occurrence's STEP schema — read off its `version` field by
     /// `extract_output_export_spec` — into the kernel via `export_with_options`,
     /// proving the DSL `version`, not a hardcoded default, reaches the
@@ -7291,10 +7291,6 @@ mod tests {
     /// `export_with_options` call whose recorded `step_schema == Ap203`; a
     /// STEPOutput with no `version` field defaults to `Ap214` (the DSL default
     /// `version : STEPVersion = STEPVersion.AP214`).
-    ///
-    /// RED until step-10: the driver still calls plain `export`, and
-    /// `ExportRecordingKernel` records no per-call options (`exported_options`
-    /// and `warnings_to_return` do not yet exist).
     #[test]
     fn build_outputs_threads_step_version_into_export_options() {
         use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
@@ -7362,7 +7358,7 @@ mod tests {
         );
     }
 
-    /// step-11 (ε / task 4288, RED): when the kernel reports an AP242→AP214
+    /// step-11 (ε / task 4288): when the kernel reports an AP242→AP214
     /// fallback (`ExportWarning::StepAp242Fallback`), the driver surfaces it as
     /// exactly one warning-severity diagnostic carrying the
     /// `W_STEP_AP242_FALLBACK` code and naming the occurrence — *without*
@@ -7370,10 +7366,6 @@ mod tests {
     /// degradation, not a failure). The live OCCT AP242 fallback cannot be
     /// triggered in this build (it supports AP242DIS), so the warning is
     /// injected via the recording kernel's `warnings_to_return`.
-    ///
-    /// RED until step-12: the driver currently discards the
-    /// `Vec<ExportWarning>` that `export_with_options` returns, so the artifact
-    /// carries no fallback diagnostic.
     #[test]
     fn build_outputs_surfaces_ap242_fallback_warning() {
         use reify_core::Severity;
