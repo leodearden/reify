@@ -94,6 +94,78 @@ fn check_dfm_overhang_emits_one_w_dfm_overhang_under_occt() {
     );
 }
 
+/// OCCT-gated: `reify check fixtures/dfm_with_repr_within.ri` on a module
+/// combining a DFMRule(Warning) with a RepresentationWithin assertion.
+///
+/// This exercises the single kernel-backed arm in `cmd_check` with TWO
+/// kernel-dependent constraint kinds present simultaneously:
+///
+/// - `has_dfm_rule = true`  → `engine.build(ExportFormat::Step)` must fire
+///   to populate `realization_handles` for `measure_dfm_rules`.
+/// - `has_representation_within = true` → `set_capture_repr_tol(true)` +
+///   `tessellate_realizations()` must fire to populate `achieved_repr_tol`.
+///
+/// Both side effects touch DISJOINT engine maps, so the combined module gets
+/// correct verdicts for both kinds in one `check()` call.
+///
+/// Under OCCT: exactly one `W_DFM_OVERHANG` on stderr (box bottom face dips
+/// 90° with max_overhang_angle=0deg); RepresentationWithin Satisfied (1m sphere
+/// at #precision(0.1mm) ≪ 1mm bound); no `VIOLATED` on stdout; exit 0.
+///
+/// Stub mode (no OCCT): exit 0, no `W_DFM_OVERHANG`, no `VIOLATED` (C1).
+#[test]
+fn check_dfm_plus_repr_within_combined_arm() {
+    let path = common::fixture_path("dfm_with_repr_within.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    // Both OCCT and stub: must exit 0.
+    // DFM Warning + RepresentationWithin (Satisfied or Indeterminate) are non-fatal.
+    assert!(
+        status.success(),
+        "combined DFM+RepresentationWithin module should exit 0 \
+         (DFM Warning + Satisfied Repr → non-fatal).\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // RepresentationWithin must be Satisfied (not VIOLATED) in both modes.
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "RepresentationWithin should be Satisfied (not VIOLATED) in both OCCT \
+         and stub mode.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Stub mode: no kernel → measure_dfm_rules C1 no-op → no DFM diagnostic;
+        // tessellate skipped → RepresentationWithin Indeterminate.
+        assert!(
+            !stderr.contains("W_DFM_OVERHANG"),
+            "stub mode: must not emit W_DFM_OVERHANG (C1 no-op).\nstderr: {stderr}"
+        );
+        eprintln!(
+            "skipping DFM+RepresentationWithin combined OCCT assertions: \
+             OCCT unavailable (stub-mode build)"
+        );
+        return;
+    }
+
+    // OCCT: build() + tessellate() sequence must both fire in the combined arm.
+
+    // DFM: box bottom face (normal -Z, 90°) violates max_overhang_angle=0deg →
+    // exactly one W_DFM_OVERHANG (Warning severity → non-fatal).
+    let dfm_count = stderr.matches("W_DFM_OVERHANG").count();
+    assert_eq!(
+        dfm_count,
+        1,
+        "OCCT mode: exactly one W_DFM_OVERHANG expected from the DFMRule.\n\
+         got {dfm_count} occurrences.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("E_DFM_OVERHANG"),
+        "OCCT mode: no E_DFM_OVERHANG (severity is Warning, not Error).\n\
+         stderr: {stderr}"
+    );
+}
+
 /// OCCT-gated: `reify check fixtures/dfm_overhang_error.ri` on a DFMRule(Error)
 /// module whose box subject has a 90° downward face (violating `max_overhang_angle=0deg`)
 /// exits non-zero (Error severity → fatal → non-zero exit) and emits exactly one

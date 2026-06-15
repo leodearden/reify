@@ -637,19 +637,14 @@ fn cmd_check(args: &[String]) -> ExitCode {
 
         // Escalate to FAILURE when any DFM Error-severity diagnostic is present
         // (e.g. E_DFM_OVERHANG, E_DFM_UNDERCUT from DFMSeverity.Error rules).
-        // DFM diagnostics carry no DiagnosticCode, so `d.code.is_none()` prevents
-        // double-catching any coded diagnostic already handled above.
-        // Gated on `has_dfm_rule` to avoid escalating unrelated Error-severity
-        // code-less diagnostics (e.g. FEA "no registered compute trampoline"
-        // from modules without DFMRule — those must remain exit 0 under check).
+        // `dfm_has_error_diagnostic` matches on the `E_DFM_` message prefix so
+        // unrelated code-less Error diagnostics co-resident in a DFM module
+        // (e.g. FEA "no registered compute trampoline") are NOT escalated.
+        // Gated on `has_dfm_rule` as a first-pass guard so non-DFM modules
+        // remain byte-identical (C2).
         // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
         // exit 0, never a false positive (C1 graceful degradation).
-        if has_dfm_rule
-            && result
-                .diagnostics
-                .iter()
-                .any(|d| d.severity == Severity::Error && d.code.is_none())
-        {
+        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
             return ExitCode::FAILURE;
         }
 
@@ -2010,6 +2005,27 @@ fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
         .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
 }
 
+/// Returns `true` when `diagnostics` contains at least one DFM Error-severity
+/// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
+///
+/// All DFM Error diagnostics embed their code prefix `E_DFM_` at the start of
+/// the [`reify_core::Diagnostic::message`] field (the format is
+/// `"E_DFM_<KIND>: <human description>"`).  Matching on the message substring
+/// is more precise than `d.code.is_none()`: it avoids escalating unrelated
+/// code-less Error diagnostics (e.g. FEA "no registered compute trampoline",
+/// build-volume usage errors) that may co-reside with a DFMRule in the same
+/// module.
+///
+/// Note: `E_DFM_UNDERCUT` is always [`Severity::Error`] regardless of the
+/// rule's declared `DFMSeverity` (a re-entrant wall is a hard manufacturability
+/// failure per PRD §2.3), so this predicate correctly captures it alongside
+/// `E_DFM_OVERHANG` / `E_DFM_DRAFT` from `DFMSeverity::Error` rules.
+fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
+    diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
+}
+
 /// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
 /// whose compiled [`reify_compiler::CompiledConstraint::arg_bindings`] include an
 /// explicit `actual` binding (η/4480).
@@ -3184,5 +3200,79 @@ mod build_is_success_tests {
     #[test]
     fn some_violated_with_error_is_failure() {
         assert!(!build_is_success(&ConstraintOutcome::SomeViolated, true));
+    }
+}
+
+#[cfg(test)]
+mod dfm_error_escalation_tests {
+    use super::dfm_has_error_diagnostic;
+    use reify_core::{Diagnostic, Severity};
+
+    /// Non-OCCT test: `dfm_has_error_diagnostic` must return `true` only for
+    /// diagnostics whose message contains `E_DFM_`, distinguishing DFM Error
+    /// violations from unrelated code-less Error diagnostics.
+    ///
+    /// This exercises the escalation predicate (used in `cmd_check`'s
+    /// `has_dfm_rule && dfm_has_error_diagnostic(...)` gate) without requiring
+    /// OCCT or a CLI exec — the gate logic is tested at the unit level with
+    /// synthetic [`reify_core::Diagnostic`] values.
+    ///
+    /// Covers the reviewer concern (amend: robustness_error_handling) that a
+    /// module carrying BOTH a DFMRule and an unrelated code-less Error diagnostic
+    /// (e.g. FEA "no registered compute trampoline") must NOT escalate to FAILURE:
+    /// the `E_DFM_` prefix match is keyed to the DFM diagnostic, not to mere
+    /// code-lessness.
+    #[test]
+    fn dfm_error_escalation_requires_e_dfm_prefix() {
+        // E_DFM_ prefix Error → escalates (DFM violation)
+        let diag_e_dfm =
+            Diagnostic::error("E_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_dfm]),
+            "E_DFM_ prefix Error must trigger escalation (DFM violation)"
+        );
+
+        // Another DFM Error code variant → also escalates
+        let diag_e_undercut =
+            Diagnostic::error("E_DFM_UNDERCUT: re-entrant wall — part cannot release");
+        assert!(
+            dfm_has_error_diagnostic(&[diag_e_undercut]),
+            "E_DFM_UNDERCUT Error must trigger escalation"
+        );
+
+        // Code-less Error WITHOUT E_DFM_ prefix (e.g. FEA) → must NOT escalate
+        let diag_fea = Diagnostic::error("no registered compute trampoline");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_fea]),
+            "non-DFM code-less Error must NOT trigger escalation \
+             (FEA 'no registered compute trampoline' must remain exit 0 under check)"
+        );
+
+        // W_DFM_ Warning → must NOT escalate (only Errors escalate)
+        let diag_w_dfm =
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
+        assert!(
+            !dfm_has_error_diagnostic(&[diag_w_dfm]),
+            "W_DFM_ Warning must NOT trigger escalation (non-fatal by design)"
+        );
+
+        // Empty slice → no escalation
+        assert!(
+            !dfm_has_error_diagnostic(&[]),
+            "empty diagnostics must not trigger escalation"
+        );
+
+        // Mixed: FEA Error + W_DFM_ Warning → must NOT escalate
+        // (the mix that triggered the reviewer concern: a DFM module
+        // co-resident with an unrelated FEA Error must stay exit 0)
+        let mixed: Vec<Diagnostic> = vec![
+            Diagnostic::error("no registered compute trampoline"),
+            Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit"),
+        ];
+        assert!(
+            !dfm_has_error_diagnostic(&mixed),
+            "FEA Error + W_DFM_ Warning must NOT trigger escalation \
+             (only E_DFM_ Errors are fatal)"
+        );
     }
 }
