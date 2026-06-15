@@ -8,7 +8,7 @@
 //!   * `examples/**/*.ri`          — design example files
 //!   * `crates/**/*.ri`            — standalone fixture .ri files
 //!   * `crates/**/*.rs`            — inline .ri fixtures in Rust sources
-//!                                   (comment/doc-prose lines are excluded — see predicate)
+//!     (comment/doc-prose lines are excluded — see predicate)
 //!   * `gui/src-tauri/**/*.rs`     — GUI inline DSL test sources
 //!   * `gui/test/**/*.ri`          — GUI fixture files
 //!
