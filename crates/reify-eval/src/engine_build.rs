@@ -7212,6 +7212,87 @@ mod tests {
         );
     }
 
+    /// step-09 (ε / task 4288, RED): the `build_outputs` driver threads each
+    /// STEPOutput occurrence's STEP schema — read off its `version` field by
+    /// `extract_output_export_spec` — into the kernel via `export_with_options`,
+    /// proving the DSL `version`, not a hardcoded default, reaches the
+    /// serializer.
+    ///
+    /// `version: STEPVersion.AP203` → the recording kernel observes exactly one
+    /// `export_with_options` call whose recorded `step_schema == Ap203`; a
+    /// STEPOutput with no `version` field defaults to `Ap214` (the DSL default
+    /// `version : STEPVersion = STEPVersion.AP214`).
+    ///
+    /// RED until step-10: the driver still calls plain `export`, and
+    /// `ExportRecordingKernel` records no per-call options (`exported_options`
+    /// and `warnings_to_return` do not yet exist).
+    #[test]
+    fn build_outputs_threads_step_version_into_export_options() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::Path;
+        use std::sync::{Arc, Mutex};
+
+        // Run build_outputs on `src` and return the per-call `step_schema`s the
+        // kernel recorded via `export_with_options`, in call order.
+        let run = |src: &str| -> Vec<reify_ir::StepSchema> {
+            let module = parse_and_compile_with_stdlib(src);
+            let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let exported: Arc<
+                Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>,
+            > = Arc::new(Mutex::new(Vec::new()));
+            let exported_options: Arc<
+                Mutex<
+                    Vec<(
+                        reify_ir::GeometryHandleId,
+                        reify_ir::ExportFormat,
+                        reify_ir::StepSchema,
+                    )>,
+                >,
+            > = Arc::new(Mutex::new(Vec::new()));
+            let kernel = ExportRecordingKernel {
+                inner: reify_test_support::mocks::MockGeometryKernel::new(),
+                executed: Arc::clone(&executed),
+                exported: Arc::clone(&exported),
+                exported_options: Arc::clone(&exported_options),
+                warnings_to_return: Vec::new(),
+            };
+            let mut engine = crate::Engine::new(
+                Box::new(MockConstraintChecker::new()),
+                Some(Box::new(kernel)),
+            );
+            engine.build_outputs(&module, Path::new("/tmp/d"), None);
+            let recorded = exported_options.lock().unwrap().clone();
+            recorded.into_iter().map(|(_, _, schema)| schema).collect()
+        };
+
+        // version: STEPVersion.AP203 → exactly one export_with_options call, Ap203.
+        let ap203 = run(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub s = STEPOutput(subject: part, version: STEPVersion.AP203, path: "p.step")
+}"#,
+        );
+        assert_eq!(
+            ap203,
+            vec![reify_ir::StepSchema::Ap203],
+            "the DSL `version: STEPVersion.AP203` must thread Ap203 into export_with_options"
+        );
+
+        // No `version` field → DSL default Ap214.
+        let default = run(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub d = STEPOutput(subject: part, path: "def.step")
+}"#,
+        );
+        assert_eq!(
+            default,
+            vec![reify_ir::StepSchema::Ap214],
+            "a STEPOutput with no `version` defaults to Ap214 (the DSL default)"
+        );
+    }
+
     /// step-09 (RED): `build_outputs` emits one [`crate::ExportArtifact`] per
     /// recognized `Output` occurrence, in declaration order (B6).
     ///
