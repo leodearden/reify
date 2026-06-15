@@ -956,28 +956,15 @@ mod tests {
     /// is dominated by legitimate technical usage — recognising them would replicate the
     /// P2/P5 alert-fatigue failure that PRD §6.2 exists to prevent.
     ///
-    /// Measured FP rates (git grep over the 2044 tracked swept-extension files,
-    /// excluding `crates/reify-audit/`, 2026-06-15):
+    /// The authoritative per-vocabulary evidence table (occurrence counts, measured FP
+    /// rates, dominant benign classes) and §13-Q1 reassessment resolutions are in
+    /// `docs/prds/reify-audit-ptodo-detector.md` §14 — that is the single source of
+    /// record.  Summary: `XXX`/`placeholder`/`stub` ≈100% FP; `"not yet implemented"`
+    /// ≈89% FP; `"for now"`/`"workaround"` high FP.
     ///
-    /// | Vocabulary          | Occ / Files | FP Rate   | Dominant benign class                         |
-    /// |---------------------|-------------|-----------|-----------------------------------------------|
-    /// | `"XXX"`             | 84 / 18     | ~100%     | `mktemp …XXXXXX` shell template placeholders  |
-    /// | `"placeholder"`     | 864 / 212   | ~100%     | type/UI placeholder domain vocabulary          |
-    /// | `"stub"`            | 1391 / 224  | ~100%     | stub-mode architectural concept (OCCT/OpenVDB) |
-    /// | `"not yet implemented"` | 46 / 26 | ~89%      | doc comments, diagnostic strings, test-assertions asserting the phrase's _absence_ |
-    /// | `"for now"`         | 26 / 23     | high      | deliberate current-design comments              |
-    /// | `"workaround"`      | 31 / 23     | high      | documented/resolved workarounds, many already citing tasks |
-    ///
-    /// A deterministic substring marker cannot separate the handful of true positives
-    /// from the dominating legitimate usage — enforcing any of these unreviewed would
-    /// replicate the P2 (~all-FP) / P5 (~96%-benign) alert-fatigue failure.
-    ///
-    /// The detailed evidence record and §13-Q1 reassessment resolutions live in
-    /// `docs/prds/reify-audit-ptodo-detector.md` §14.  This const is the in-code
-    /// witness that the non-recognition is deliberate, not an oversight.
-    ///
-    /// Mirrors [`PHANTOM_PHRASES`] / [`BLOCKER_PROSE`] / [`ALLOWLIST_PREFIXES`] in
-    /// form; test-scoped so no dead-code lint (the structural lane intentionally never
+    /// This const is the in-code witness that the non-recognition is deliberate, not an
+    /// oversight.  Mirrors [`PHANTOM_PHRASES`] / [`BLOCKER_PROSE`] / [`ALLOWLIST_PREFIXES`]
+    /// in form; test-scoped so no dead-code lint (the structural lane intentionally never
     /// consults this slice).
     const ASSESSED_REJECTED_VOCAB: &[&str] = &[
         "not yet implemented",
@@ -1618,6 +1605,20 @@ mod tests {
                 scan_file(&non_rust_line, false),
                 vec![],
                 "vocab {:?} must not trigger the detector in a non-Rust comment",
+                vocab,
+            );
+        }
+
+        // Also check each vocab in a *marker-like* position — the first word after `//`,
+        // mirroring the TODO/FIXME/HACK syntax.  This catches a narrower regression where
+        // a vocab is wired into the marker position but not yet into the generic comment
+        // path (the loop above).
+        for vocab in ASSESSED_REJECTED_VOCAB {
+            let marker_like = format!("// {vocab}: some description");
+            assert_eq!(
+                scan_file(&marker_like, true),
+                vec![],
+                "vocab {:?} in marker-like position must not trigger the detector",
                 vocab,
             );
         }
