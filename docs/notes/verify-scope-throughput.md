@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 12 |  0 |
-| reify-doc  | 12 | 12 |
-| reify-eval | 12 | 12 |
-| gui-only   | 12 |  3 |
+| docs-only  | 13 |  0 |
+| reify-doc  | 13 | 13 |
+| reify-eval | 13 | 13 |
+| gui-only   | 13 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 ## Heavy-Work Narrowed Markers
