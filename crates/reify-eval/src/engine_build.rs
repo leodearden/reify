@@ -3081,27 +3081,50 @@ impl Engine {
                         "no default geometry kernel registered".to_string(),
                     )),
                 };
-                if let Err(e) = export_result {
-                    artifacts.push(crate::ExportArtifact {
-                        path: path.clone(),
-                        format: export_format,
-                        bytes: Vec::new(),
-                        diagnostics: vec![Diagnostic::error(format!(
-                            "Output occurrence `{}.{}` failed to export to {}: {}",
-                            template.name,
-                            sub.name,
-                            path.display(),
-                            e
-                        ))],
-                    });
-                    continue;
-                }
+                let warnings = match export_result {
+                    Ok(warnings) => warnings,
+                    Err(e) => {
+                        artifacts.push(crate::ExportArtifact {
+                            path: path.clone(),
+                            format: export_format,
+                            bytes: Vec::new(),
+                            diagnostics: vec![Diagnostic::error(format!(
+                                "Output occurrence `{}.{}` failed to export to {}: {}",
+                                template.name,
+                                sub.name,
+                                path.display(),
+                                e
+                            ))],
+                        });
+                        continue;
+                    }
+                };
+
+                // Translate each kernel-neutral ExportWarning into a user-facing
+                // warning diagnostic (honest AP242→AP214 degradation, PRD §4.4).
+                // The bytes were written successfully — a fallback is a warning,
+                // not a failure — so they survive on the artifact alongside the
+                // diagnostic.
+                let diagnostics = warnings
+                    .into_iter()
+                    .map(|w| match w {
+                        reify_ir::ExportWarning::StepAp242Fallback => {
+                            Diagnostic::warning(format!(
+                                "{}: STEPOutput occurrence `{}.{}` requested AP242 but the \
+                                 linked OCCT rejected it; wrote AP214 instead",
+                                crate::W_STEP_AP242_FALLBACK,
+                                template.name,
+                                sub.name
+                            ))
+                        }
+                    })
+                    .collect();
 
                 artifacts.push(crate::ExportArtifact {
                     path,
                     format: export_format,
                     bytes,
-                    diagnostics: Vec::new(),
+                    diagnostics,
                 });
             }
         }
