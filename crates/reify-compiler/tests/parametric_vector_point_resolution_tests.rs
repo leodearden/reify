@@ -306,32 +306,54 @@ structure def UseArity {
 "#;
 
 /// When a `structure def Vector3 {}` is declared in the same module,
-/// `Vector3<Force, Length>` fails the new arm's `type_args.len() == 1` guard and
-/// silently falls through to `resolve_type_with_aliases`, which returns
-/// `Type::StructureRef("Vector3")` — type args are dropped without a diagnostic.
-/// This silent-fallthrough behavior is consistent with all other parameterized
-/// builtins (List, Set, Map, Option, Scalar, Tensor, Matrix); emitting an explicit
-/// arity-mismatch diagnostic only for Vector3/Point3 was rejected in favor of
-/// cross-builtin consistency.
+/// `Vector3<Force, Length>` fails the `resolve_parameterized_builtin_type` arm's
+/// `type_args.len() == 1` guard, but is then caught by the task-4603-γ
+/// structure-with-args arm (since `Vector3 ∈ structure_names && type_args non-empty`)
+/// and resolved to `Type::Applied { name: "Vector3", args: [Scalar<Force>, Scalar<Length>] }`.
+/// Prior to γ, the type args were silently dropped and `Type::StructureRef("Vector3")`
+/// was returned — this test was flipped from StructureRef to Applied as part of γ.
 #[test]
 fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
     assert_param_type(
         ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
         "UseArity",
         "v",
-        &Type::StructureRef("Vector3".into()),
+        &Type::Applied {
+            name: "Vector3".into(),
+            args: vec![
+                Type::Scalar {
+                    dimension: DimensionVector::FORCE,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ],
+        },
     );
 }
 
 /// Parallel to `vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists`
-/// for `Point3`: `Point3<Force, Length>` silently falls through to
-/// `Type::StructureRef("Point3")` when a `structure def Point3 {}` is in scope.
+/// for `Point3`: with `structure def Point3 {}` in scope, `Point3<Force, Length>` is
+/// caught by the γ structure-with-args arm and resolves to
+/// `Type::Applied { name: "Point3", args: [Scalar<Force>, Scalar<Length>] }`.
+/// Flipped from StructureRef to Applied as part of task-4603-γ (same reasoning as
+/// the Vector3 variant above).
 #[test]
 fn point3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
     assert_param_type(
         ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
         "UseArity",
         "p",
-        &Type::StructureRef("Point3".into()),
+        &Type::Applied {
+            name: "Point3".into(),
+            args: vec![
+                Type::Scalar {
+                    dimension: DimensionVector::FORCE,
+                },
+                Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ],
+        },
     );
 }
