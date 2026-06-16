@@ -17,9 +17,10 @@
 mod differential;
 
 use differential::{
-    CROSS_LET_4275_SRC, CorpusCase, Divergence, SEED_CORPUS, assert_equivalent_or_allowed,
-    assert_unified_byte_identical, build_under, build_under_keep_engine, build_with_kernel_stdlib,
-    project_build_result, residue_for, seeded_build_volume_kernel,
+    CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS,
+    assert_equivalent_or_allowed, assert_unified_byte_identical, build_under,
+    build_under_keep_engine, build_with_kernel_stdlib, project_build_result, residue_for,
+    seeded_build_volume_kernel,
 };
 use reify_core::DiagnosticCode;
 use reify_eval::BuildScheduler;
@@ -221,6 +222,67 @@ fn acyclic_corpus_residue_is_empty() {
             !codes.contains(&Some(DiagnosticCode::EvalUnresolved)),
             "acyclic case `{}`: UnifiedDag emitted a spurious EvalUnresolved (the auto-read \
              guard fired without an auto-driven geometry-backed constraint)",
+            case.name,
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-9 (RED): the `tests/golden` source idioms — the five committed CLI/build
+// golden programs (structure_instance, tensegrity_t_prism,
+// tensegrity_membrane_patch, materials_starter_library, spec_shape_physical),
+// plus a handful of language-breadth entries — must be equivalent-or-reasoned
+// under BOTH schedulers AND pass the residue==∅ and 2× byte-identical gates. This
+// discharges the "+ tests/golden corpus" clause of the task: the safety gate
+// covers the real user-facing programs, not only the hand-rolled seed primitives.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// For every `GOLDEN_CORPUS` idiom: build under BOTH `LegacyMultiPass` and
+/// `UnifiedDag` and assert equivalence admitting ONLY the per-case reasoned
+/// allow-list (`assert_equivalent_or_allowed`), then run it through the
+/// 2×-byte-identical determinism gate and (for acyclic cases) the Stage-1
+/// residue==∅ gate. An UNREASONED divergence surfaced here is a real ε defect —
+/// the gate fails hard (then escalate `design_concern`), never blanket-allow.
+///
+/// RED until step-10: `GOLDEN_CORPUS` is not yet populated (the golden `.ri`
+/// idioms have not been lifted into corpus entries), so this fails to compile.
+#[test]
+fn golden_idioms_equivalent_under_both_schedulers() {
+    assert!(
+        !GOLDEN_CORPUS.is_empty(),
+        "GOLDEN_CORPUS must carry the committed golden idioms + language-breadth entries",
+    );
+    for case in GOLDEN_CORPUS {
+        // (1) equivalence-or-reasoned across the two schedulers.
+        let legacy = build_under(case.source, BuildScheduler::LegacyMultiPass, case.needs_stdlib);
+        let unified = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+        assert_equivalent_or_allowed(case, &legacy, &unified);
+
+        // (2) 2× byte-identical determinism gate (δ guarantee) on every idiom.
+        assert_unified_byte_identical(case);
+
+        // (3) Stage-1 residue==∅ gate on every acyclic idiom (observed directly).
+        if case.expects_cycle {
+            continue;
+        }
+        let (engine, result) =
+            build_under_keep_engine(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+        let residue = residue_for(&engine);
+        assert!(
+            residue.is_empty(),
+            "golden idiom `{}`: Stage-1 residue MUST be ∅ under UnifiedDag — a non-empty \
+             residue is a false-positive cycle or a stranded-without-SCC node (left Undef, \
+             emitting NO diagnostic). Got {} unpopped node(s): {:?}",
+            case.name,
+            residue.len(),
+            residue,
+        );
+        let codes: Vec<Option<DiagnosticCode>> =
+            result.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            !codes.contains(&Some(DiagnosticCode::EvalCycle)),
+            "golden idiom `{}`: UnifiedDag emitted a spurious EvalCycle (false-positive cycle) \
+             on an acyclic module",
             case.name,
         );
     }
