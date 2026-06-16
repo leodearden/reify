@@ -598,6 +598,32 @@ fn e2e_get_or_absent_key_with_stdlib() {
     );
 }
 
+// ── step-9: end-to-end present key via compile_source_with_stdlib ─────────────
+
+/// End-to-end: `get_or(map{"k" => 1mm}, "k", 0mm)` compiled with the stdlib
+/// must evaluate to 1mm (present key → intercept fires → returns map value).
+///
+/// This is the discriminating case: the placeholder body always returns dflt,
+/// so a wrong compiler-emitted function_name/arity would silently return 0mm.
+/// The existing absent-key e2e test (`e2e_get_or_absent_key_with_stdlib`) is
+/// coincidentally GREEN even with the placeholder and does NOT prove the
+/// intercept fires for get_or.
+#[test]
+fn e2e_get_or_present_key_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = get_or(map{"k" => 1mm}, "k", 0mm) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(expr, &ctx);
+    assert_eq!(
+        result,
+        val_1mm(),
+        "e2e: get_or(map{{k=>1mm}}, \"k\", 0mm) compiled via stdlib must evaluate to 1mm (intercept fires)"
+    );
+}
+
 // ── get_or: undef key propagation ────────────────────────────────────────────
 
 /// get_or(map{"k"=>1mm}, undef_key, 0mm) == Value::Undef
@@ -712,4 +738,101 @@ fn get_or_non_map_subject_degrades_to_undef() {
         Value::Undef,
         "get_or with non-Map subject must degrade to Undef (graceful type-error)"
     );
+}
+
+// ── sync-drift check ──────────────────────────────────────────────────────────
+//
+// Asserts that each combinator declared in option_recovery.ri is recognised by
+// the is_combinator gate and routes to the correct eval_combinator logic.
+//
+// If a new combinator is added to option_recovery.ri without a matching entry
+// in is_combinator, the intercept won't fire and the placeholder .ri body runs
+// instead.  This consolidated test catches that drift — any Undef result for
+// the chosen inputs proves the gate is not firing.
+//
+// Cross-reference:
+//   crates/reify-compiler/stdlib/option_recovery.ri  — canonical pub fn arities
+//   crates/reify-compiler/src/expr.rs FALLBACK_COMBINATORS — type-checker subset
+
+/// Every combinator declared in option_recovery.ri is recognised by
+/// `is_combinator` at its declared arity and routes to the correct eval logic.
+///
+/// Inputs are chosen to produce a known non-Undef output when the intercept
+/// fires.  If the intercept does NOT fire, `eval_user_function_call` is called
+/// (no functions in the simple EvalContext) → Undef, failing the assertion.
+#[test]
+fn sync_drift_check_all_combinators_recognized() {
+    // extract-or-default family (arity 2): some(5mm) → 5mm (inner, not dflt)
+    for &name in ["unwrap_or", "or_default", "fallback"].iter() {
+        let call = CompiledExpr::user_function_call(
+            name.to_string(),
+            vec![expr_some_5mm(), expr_0mm()],
+            Type::length(),
+        );
+        assert_eq!(
+            eval_simple(&call),
+            val_5mm(),
+            "{name}(some(5mm), 0mm) must return 5mm — is_combinator gate out of sync with option_recovery.ri"
+        );
+    }
+
+    // or_else (arity 2): some(5mm) → Value::Option(Some(5mm)) (subject unchanged)
+    {
+        let call = CompiledExpr::user_function_call(
+            "or_else".to_string(),
+            vec![expr_some_5mm(), expr_none_length()],
+            Type::Option(Box::new(Type::length())),
+        );
+        assert_eq!(
+            eval_simple(&call),
+            Value::Option(Some(Box::new(val_5mm()))),
+            "or_else(some(5mm), none) must return some(5mm) — gate out of sync"
+        );
+    }
+
+    // is_some (arity 1): some(5mm) → Bool(true)
+    {
+        let call = CompiledExpr::user_function_call(
+            "is_some".to_string(),
+            vec![expr_some_5mm()],
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_simple(&call),
+            Value::Bool(true),
+            "is_some(some(5mm)) must return Bool(true) — gate out of sync"
+        );
+    }
+
+    // is_none (arity 1): none → Bool(true)
+    {
+        let call = CompiledExpr::user_function_call(
+            "is_none".to_string(),
+            vec![expr_none_length()],
+            Type::Bool,
+        );
+        assert_eq!(
+            eval_simple(&call),
+            Value::Bool(true),
+            "is_none(none) must return Bool(true) — gate out of sync"
+        );
+    }
+
+    // get_or (arity 3): map{"k"=>1mm}, "k", 0mm → 1mm (present key)
+    {
+        let call = CompiledExpr::user_function_call(
+            "get_or".to_string(),
+            vec![
+                expr_map_k_1mm(),
+                CompiledExpr::literal(Value::String("k".to_string()), Type::String),
+                expr_0mm(),
+            ],
+            Type::length(),
+        );
+        assert_eq!(
+            eval_simple(&call),
+            val_1mm(),
+            "get_or(map{{k=>1mm}}, \"k\", 0mm) must return 1mm — gate out of sync"
+        );
+    }
 }

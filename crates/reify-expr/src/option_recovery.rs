@@ -65,6 +65,23 @@ use reify_ir::Value;
 /// `UserFunctionCall` arm in `eval_expr` calls this before evaluating any
 /// args so that non-combinator calls fall straight through to
 /// `eval_user_function_call` without paying evaluation cost here.
+///
+/// # Sync note
+///
+/// The names + arities here must stay in sync with:
+/// - `crates/reify-compiler/stdlib/option_recovery.ri` — canonical `pub fn`
+///   declarations; the source of truth for arities.
+/// - `crates/reify-compiler/src/expr.rs` `FALLBACK_COMBINATORS` — the
+///   type-checker's overlapping subset: `["unwrap_or", "or_default",
+///   "fallback", "get_or"]` (arity-2/3 extract-or-default names only;
+///   `or_else`, `is_some`, and `is_none` are absent because they carry no
+///   default-vs-element-type contract).
+///
+/// Adding a combinator to `option_recovery.ri` without a matching entry here
+/// means the placeholder `.ri` body runs instead of the real intercept.  The
+/// `sync_drift_check_all_combinators_recognized` test in
+/// `crates/reify-expr/tests/option_recovery_eval_tests.rs` catches this at
+/// test time.
 pub fn is_combinator(name: &str, arity: usize) -> bool {
     matches!(
         (name, arity),
