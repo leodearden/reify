@@ -50,7 +50,7 @@ _priority_for_file() {
         /^\[\[/ { in_block = 0 }
         /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
         in_block && /^priority[[:space:]]*=/ {
-            match($0, /[0-9]+/)
+            match($0, /-?[0-9]+/)
             print substr($0, RSTART, RLENGTH)
             in_block = 0
         }
