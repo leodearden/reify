@@ -180,12 +180,16 @@ structure S {
 /// `get_or(m, "key", 0mm)` where `m : Map<String, Length>` must resolve and the
 /// result type must be `Type::length()` (the map's V type). Zero Error diagnostics.
 ///
+/// Uses a non-empty map literal default `map{"k" => 1mm}` so the inferred type
+/// is exactly `Map<String, Length>` with no empty-map warning and no
+/// default-vs-annotation mismatch.
+///
 /// RED: std/option_recovery does not exist → unresolved name.
 #[test]
 fn get_or_resolves_to_value_type() {
     let source = r#"
 structure S {
-    param m : Map<String, Length> = {}
+    param m : Map<String, Length> = map{"k" => 1mm}
     let v = get_or(m, "key", 0mm)
 }
 "#;
