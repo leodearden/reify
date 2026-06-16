@@ -22,7 +22,13 @@
 #   anchor:   scripts/verify.sh (always load-bearing)
 #   manifest: all non-comment/non-blank lines in scripts/verify-pipeline-paths.txt
 #   sourced:  scripts/<lib> for each 'source "$SCRIPT_DIR/<lib>"' line in verify.sh
-#             (auto-derived live — see REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH knob)
+#             (auto-derived live; self-healing — future sourced libs are
+#             automatically load-bearing without any manifest edit)
+#
+# Environment knobs:
+#   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
+#             live sourced-lib derivation (testability / operator override; mirrors
+#             the REIFY_* knob idiom used throughout verify.sh and its libs).
 #
 # Usage by the dark-factory merge worker (cross-repo seam — wiring tracked
 # separately; reify ships the oracle, dark-factory does the wiring):
@@ -55,6 +61,22 @@ if [ -f "$_MANIFEST" ]; then
         esac
         _SET="${_SET}"$'\n'"${_line}"
     done < "$_MANIFEST"
+fi
+
+# 3. Live sourced-lib derivation: append scripts/<lib> for each
+#    'source "$SCRIPT_DIR/<lib>"' statement in verify.sh.
+#    The anchored grep matches real source STATEMENTS only (not comment
+#    mentions), inheriting the same hardening as make_branch_fixture's preflight
+#    in tests/infra/test_verify_throughput.sh.
+#    REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH overrides the verify.sh path
+#    for testability (synthetic-lib injection) and operator use.
+_verify_sh="${REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH:-$SCRIPT_DIR/verify.sh}"
+if [ -f "$_verify_sh" ]; then
+    while IFS= read -r _lib; do
+        [ -z "$_lib" ] && continue
+        _SET="${_SET}"$'\n'"scripts/${_lib}"
+    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$_verify_sh" \
+             | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p')
 fi
 
 # Sort and deduplicate the set (a lib in both the manifest and sourced is fine).
