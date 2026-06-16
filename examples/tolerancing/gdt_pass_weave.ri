@@ -1,0 +1,117 @@
+// gdt_pass_weave.ri — B9 pass ordering / weave (task 4481 θ, GD&T §9 B9)
+//
+// Proves the C5 caller-order weave contract: three constraints declared in
+// sequence — scalar Conforms [0] (Satisfied), geometric Conforms [1] (VIOLATED
+// under OCCT / INDETERMINATE stub), RepresentationWithin [2] (Satisfied under
+// OCCT / INDETERMINATE stub) — produce results in that order, with neither
+// pass perturbing the others' verdicts.
+//
+// Under OCCT (`reify check`):
+//   exit non-zero; "Some constraints violated."
+//   GdtPassWeave#constraint[0]  → OK          (scalar, kernel-independent)
+//   GdtPassWeave#constraint[1]  → VIOLATED     (geometric, 0.5mm > 0.1mm zone)
+//   WeaveSphereCheck#constraint[0] → OK        (fine sphere ≪ 1mm bound)
+//   Exactly one VIOLATED — proving neither the η geometric pass nor the
+//   RepresentationWithin pass perturbs the other's verdict (C5).
+//
+// Stub mode (no OCCT, `reify check`):
+//   exit 0; no VIOLATED
+//   GdtPassWeave#constraint[0]  → OK          (scalar path: kernel-free)
+//   GdtPassWeave#constraint[1]  → INDETERMINATE (no kernel → C1)
+//   WeaveSphereCheck#constraint[0] → INDETERMINATE (no tessellation → C1)
+//
+// Constraint layout:
+//   GdtPassWeave:
+//     [0] scalar Conforms: tolerance=WeaveScalarTol(0.1mm RFS), dev=0.05mm → Satisfied
+//     [1] geometric Conforms: inline FlatnessCallout, actual=translate(part,0.5mm) → VIOLATED
+//   WeaveSphereCheck:
+//     [0] RepresentationWithin(subject, 1mm) over #precision(0.1mm) sphere(10mm) → Satisfied
+
+// Module-level precision directive: affects all tessellation in this file.
+// #precision(0.1mm) ensures the WeaveSphere tessellation chord deviation is
+// far below the RepresentationWithin 1mm bound → Satisfied under OCCT.
+#precision(0.1mm)
+
+// ── Local tolerance type declarations ─────────────────────────────────────────
+
+// MaterialCondition enum (re-declared locally; mirrors gdt_conformance_violated.ri:40).
+enum MaterialCondition { MMC, LMC, RFS }
+
+// WeaveScalarTol: tolerance type for GdtPassWeave constraint[0] (scalar path).
+// `: GeometricTolerance` bound ensures the η satisfies_trait_bound check passes.
+// tolerance_value=0.1mm, RFS (no bonus) → effective zone = 0.1mm for any
+// feature_departure=0.
+structure def WeaveScalarTol : GeometricTolerance {
+    param tolerance_value    : Length            = 0.1mm
+    param feature            : Geometry          = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// WeaveFlatnessCallout: tolerance type for GdtPassWeave constraint[1] (geometric path).
+// Must be used as an INLINE ctor (not a let-cached instance): inline ctor is
+// re-evaluated by the η pass against the post-build value map, resolving
+// `feature: part` to the live realization handle (per gdt_conformance_violated.ri §4).
+structure def WeaveFlatnessCallout : GeometricTolerance {
+    param tolerance_value    : Length            = 0mm
+    param feature            : Geometry          = box(1mm, 1mm, 1mm)
+    param material_condition : MaterialCondition = MaterialCondition.RFS
+}
+
+// ── GdtPassWeave: the two GD&T Conforms constraints ──────────────────────────
+
+structure GdtPassWeave {
+    // Nominal feature: 10 mm cube centered at origin.
+    let part     = box(10mm, 10mm, 10mm)
+    // As-built (deviated) actual: translate +0.5mm in X → max_deviation = 0.5mm exactly.
+    let measured = translate(part, 0.5mm, 0mm, 0mm)
+
+    // Sub-instance for the scalar Conforms (tolerance_value=0.1mm, RFS).
+    sub scalar_tol = WeaveScalarTol()
+
+    // constraint[0] — SCALAR Conforms (no explicit `actual` → η must NOT intercept,
+    // per C3).  zone = efz(0.1mm, RFS, 0mm) = 0.1mm; dev = 0.05mm < 0.1mm → Satisfied.
+    // Kernel-independent: passes in both OCCT and stub modes.
+    constraint Conforms(
+        tolerance: self.scalar_tol,
+        measured_deviation: 0.05mm,
+        feature_departure: 0mm
+    )
+
+    // constraint[1] — GEOMETRIC Conforms (explicit `actual:` binding → η intercepts).
+    // max_deviation(measured, part) = 0.5mm > tolerance_value = 0.1mm → VIOLATED (OCCT).
+    // No kernel → INDETERMINATE (C1, never a false Violated).
+    // INLINE ctor required: WeaveFlatnessCallout(feature: part, tolerance_value: 0.1mm).
+    constraint Conforms(
+        tolerance: WeaveFlatnessCallout(feature: part, tolerance_value: 0.1mm),
+        actual: measured,
+        measured_deviation: 0mm,
+        feature_departure: 0mm
+    )
+}
+
+// ── WeaveSphere: tessellation subject for the RepresentationWithin assertion ──
+
+// Small sphere (10 mm radius) at module-level #precision(0.1mm).
+// At #precision(0.1mm) the sampled facet-chord deviation (sagitta ≈ 0.1mm) is
+// far below the 1mm RepresentationWithin bound → Satisfied, same as the
+// bt7/representation_within_satisfied.ri reference.
+// Using 10mm (vs 1000mm) reduces the triangle count by ~100× (≈200 vs ≈20000
+// triangles), cutting test runtime from ~30s to ~0.5s while preserving the C5
+// non-perturbation proof — sphere size is irrelevant to that invariant.
+structure WeaveSphere {
+    let r = sphere(10mm)
+}
+
+// ── WeaveSphereCheck: RepresentationWithin assertion ──────────────────────────
+
+// WeaveSphereCheck: proves cross-pass non-perturbation (C5 — the η VIOLATED on
+// GdtPassWeave#constraint[1] must NOT clobber this verdict).
+//
+// Under OCCT: tessellate_realizations populates achieved_repr_tol["WeaveSphere#realization[0]"]
+//   with a value ≪ 1mm → RepresentationWithin → Satisfied → constraint[0] = OK.
+// Stub mode: no tessellation → achieved_repr_tol map stays empty → Indeterminate (C1).
+structure WeaveSphereCheck {
+    param subject : WeaveSphere
+    // constraint[0] — RepresentationWithin(subject, 1mm): Satisfied (OCCT) / Indeterminate (stub).
+    constraint RepresentationWithin(subject, 1mm)
+}
