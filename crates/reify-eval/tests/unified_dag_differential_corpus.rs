@@ -15,3 +15,41 @@
 
 #[path = "common/differential.rs"]
 mod differential;
+
+use differential::{SEED_CORPUS, build_under, project_build_result};
+use reify_eval::BuildScheduler;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-1 (RED): the core ζ contract — on the equivalence overlap, UnifiedDag's
+// BuildResult projection is byte-equal to LegacyMultiPass's.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// PRIMARY (must-pass) — iterate the SEED corpus (plainly-equivalent programs,
+/// EMPTY allow-lists), build each under BOTH `LegacyMultiPass` and `UnifiedDag`
+/// on fresh engines, and assert the two canonical projections are equal. This
+/// pins the core equivalence guarantee the ι default-flip relies on: on the
+/// scheduler-overlap domain, the unified driver is observationally identical to
+/// the legacy multi-pass build.
+///
+/// RED until step-2: `project_build_result` is not implemented yet (the type
+/// exists but the projection fn does not), so this fails to compile.
+#[test]
+fn differential_corpus_is_equivalent_on_overlap() {
+    for case in SEED_CORPUS {
+        assert!(
+            case.allowed.is_empty(),
+            "seed case `{}` must carry an EMPTY allow-list (it is plainly equivalent); \
+             reasoned-divergence cases belong in their own steps",
+            case.name,
+        );
+        let legacy = build_under(case.source, BuildScheduler::LegacyMultiPass, case.needs_stdlib);
+        let unified = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+        assert_eq!(
+            project_build_result(&unified),
+            project_build_result(&legacy),
+            "UnifiedDag must be projection-equivalent to LegacyMultiPass on the \
+             equivalence-overlap seed case `{}`",
+            case.name,
+        );
+    }
+}
