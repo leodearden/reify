@@ -1934,6 +1934,53 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_ASSOC_TYPE`
     /// (see task 3974; trait-assoc-type iota-ε).
     AmbiguousAssocType,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`check_applied_type_arg_bounds`, called from
+    /// `phase_pending_bound_checks` in `entities_phase.rs` after all entities
+    /// compile).
+    ///
+    /// Emitted as a `Severity::Error` when a structure type-annotation of the
+    /// form `name<args…>` supplies a number of type arguments that does not
+    /// match the declared arity of the named structure's type-param list.
+    /// Covers both too-many-args and too-few-args, as well as zero declared
+    /// type-params being given args (non-generic structure used with args).
+    ///
+    /// Canonical message form:
+    ///   `"type '<name>' expects <N> type argument(s) but <M> were supplied"`
+    /// with a label at the annotation span.
+    ///
+    /// Distinct from [`UnresolvedType`] (which fires when the name itself is
+    /// unknown) and [`AmbiguousAssocType`] (associated-type resolution
+    /// ambiguity). This code is ONLY emitted on the structure-member-annotation
+    /// path (value_cells); sub-component and fn-call paths emit code-less
+    /// diagnostics per PRD §7.3.
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_ARITY`.
+    /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
+    TypeArgArity,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`check_applied_type_arg_bounds`, called from
+    /// `phase_pending_bound_checks` in `entities_phase.rs` after all entities
+    /// compile).
+    ///
+    /// Emitted as a `Severity::Error` when a type argument supplied to a
+    /// generic structure (`name<arg>`) does not satisfy the declared bound on
+    /// the corresponding type parameter (e.g. `Coupling<NotMotion>` when
+    /// `Coupling<P: HasMotion>` requires `P` to conform to `HasMotion`).
+    ///
+    /// Canonical message form:
+    ///   `"type argument '<arg>' for '<name>' does not satisfy bound '<Trait>'"`.
+    /// with a label at the annotation span.
+    ///
+    /// Distinct from [`UnresolvedType`] / [`AmbiguousAssocType`]; those codes
+    /// address name-resolution failures rather than bound violations.
+    /// This code is ONLY emitted on the structure-member-annotation path
+    /// (value_cells); sub-component and fn-call paths keep code-less
+    /// diagnostics per PRD §7.3.
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_BOUND`.
+    /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
+    TypeArgBound,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
