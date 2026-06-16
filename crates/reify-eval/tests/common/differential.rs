@@ -22,7 +22,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, BuildScheduler, Engine};
-use reify_ir::{ExportFormat, GeometryKernel, Satisfaction};
+use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, Value};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,3 +264,66 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
         expects_cycle: false,
     },
 ];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared boundary fixtures — geometry-backed-constraint cases that need a SEEDED
+// kernel (so a constraint reaches a DEFINITE verdict without OCCT). Reused by the
+// allow-list matcher test (corpus binary, step-3) AND the 4275 boundary
+// differential (boundary binary, step-16). They are NOT in `SEED_CORPUS` (which
+// is the unseeded plainly-equivalent sweep).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The 4275 SINGLE-instance cross-`let` source: a `let proc = FdmPrinter()`
+/// structure instance whose `Adding`-trait `build_volume` geometry member feeds a
+/// geometry-backed `FitsBuildVolume` constraint
+/// (`fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))`).
+///
+/// Under `UnifiedDag`, ε folds the cross-`let` `bounding_box(proc.build_volume)`
+/// leaf POST-geometry (PRD §3.3) → the constraint reaches a DEFINITE verdict;
+/// `LegacyMultiPass` leaves the inline geometry-query leaf unresolved → freezes it
+/// `Indeterminate`. `FdmPrinter` MUST be declared before `SmallPart` (declaration
+/// order is topological for the cross-`let` snapshot seed — same forward-ref
+/// limitation as `cross_sub_geometry_e2e.rs`).
+///
+/// COUNT == 1 deliberately: the multi-instance same-def form is declined to
+/// `Indeterminate` (#4628, def-name-keyed snapshot cannot disambiguate instances)
+/// and must NOT be used as a definite-verdict case. Lifted from
+/// `tests/unified_dag_geometry_executors.rs:442`.
+pub const CROSS_LET_4275_SRC: &str = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+
+structure SmallPart {
+    let proc = FdmPrinter()
+    let part = box(50mm, 50mm, 50mm)
+    constraint FitsBuildVolume(proc: proc, part: part)
+}
+"#;
+
+/// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
+/// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
+/// DEFINITE verdict, never undecidable — proving the unified fold, not mere
+/// decidability). Boxed for direct use with [`build_with_kernel_stdlib`]; a fresh
+/// kernel per call (each build consumes its kernel). Lifted from
+/// `tests/unified_dag_geometry_executors.rs:468-480`.
+pub fn seeded_build_volume_kernel() -> Box<dyn GeometryKernel> {
+    let bbox = |hi: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
+              \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
+        ))
+    };
+    let mut k = MockGeometryKernel::new();
+    for i in 1..=4u64 {
+        k = k.with_bbox_result(GeometryHandleId(i), bbox(if i == 1 { 0.20 } else { 0.05 }));
+    }
+    Box::new(k)
+}
