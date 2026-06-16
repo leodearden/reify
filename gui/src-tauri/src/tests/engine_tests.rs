@@ -12414,3 +12414,82 @@ fn build_constraints_sorts_constraints_by_node_id() {
          regardless of constraint_results insertion order"
     );
 }
+
+// ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
+
+/// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
+/// seam (`compile_single_file_with_stdlib` at `engine.rs:730`, which hardcodes
+/// `SimpleConstraintChecker`) selects the unique constraint-satisfying survivor
+/// under the real checker rather than emitting `AutoTypeParamAmbiguous`.
+///
+/// Under the STUB checker (`CompileTimeIndeterminateChecker`), the
+/// `bearing_constraint_select` fixture resolves to `Ambiguous` (both ThinSeal
+/// and ThickSeal are stub-feasible) → compile Error → `load_from_source`
+/// returns `Err`.  Under the REAL checker (`SimpleConstraintChecker`):
+///   ThinSeal: thickness = 1mm < bore_radius = 3mm → Satisfied → feasible
+///   ThickSeal: thickness = 5mm > bore_radius = 3mm → Violated → rejected
+/// → `Selected("ThinSeal")` → no Errors → `load_from_source` returns `Ok`.
+///
+/// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
+/// an `Ok` can only arise if the real checker is wired into `EngineSession`.
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
+#[test]
+fn auto_type_param_real_checker_selects_in_gui_engine() {
+    // Inline const mirroring examples/auto/bearing_constraint_select.ri.
+    // Kept inline so the test is self-contained (no filesystem access required).
+    const BEARING_CONSTRAINT_SELECT_SOURCE: &str = r#"
+trait Seal {
+    param thickness : Length
+}
+structure def ThinSeal : Seal {
+    param thickness : Length = 1mm
+}
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    constraint seal.thickness < bore_radius
+}
+structure def BearingAssembly {
+    sub bearing = Bearing<auto: Seal>()
+}
+"#;
+
+    // Mirrors the GUI binary's construction at gui/src-tauri/src/main.rs:651.
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let result = session
+        .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
+
+    // Under the stub the compile would emit AutoTypeParamAmbiguous → has_errors → Err.
+    // Under the real checker only ThinSeal survives → Selected → no Errors → Ok.
+    assert!(
+        result.is_ok(),
+        "load_from_source should succeed when SimpleConstraintChecker selects ThinSeal; \
+         under the stub checker this fixture emits AutoTypeParamAmbiguous (Error) and \
+         returns Err — so Ok proves the real checker is wired. Got: {:?}",
+        result.err()
+    );
+
+    let state = result.unwrap();
+    // Defensive: confirm no Ambiguous diagnostic leaked into the GUI state.
+    let ambiguous_diags: Vec<&str> = state
+        .compile_diagnostics
+        .iter()
+        .filter(|d| {
+            d.message.contains("multiple feasible") || d.message.contains("Ambiguous")
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        ambiguous_diags.is_empty(),
+        "expected no Ambiguous diagnostics in GUI state after real-checker selection; \
+         got: {:?}",
+        ambiguous_diags
+    );
+}
