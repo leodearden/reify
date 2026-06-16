@@ -726,6 +726,31 @@ fn emit_structure_ref_mismatch(
     );
 }
 
+/// Emit a single `Diagnostic::error` with
+/// [`DiagnosticCode::TypeNotConformingToVector`] when an arg is not vector-shaped
+/// for a `Type::Vector`-typed param (task-4622).
+///
+/// Conformance is SHAPE-based: any `Type::Vector { .. }` or `Type::Tensor { rank: 1, .. }`
+/// arg is accepted regardless of quantity (the quantity slot is intentionally loose per
+/// the ty.rs Point/Vector quantity-slot convention). A bare scalar, string, bool, or any
+/// other non-vector kind is rejected here.
+///
+/// Modelled on [`emit_structure_ref_mismatch`]: one diagnostic, one label at `ctx.span`,
+/// message names the required vector type and the offending arg type.
+fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires vector type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToVector)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -831,6 +856,30 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         {
             if !type_compatible(param_type, arg_ty) {
                 emit_structure_ref_mismatch(param_type, arg_ty, ctx);
+            }
+        }
+        // Leaf: param type is a Vector (task-4622). SHAPE-BASED: accept any
+        // vector-shaped arg (Type::Vector | Type::Tensor{rank:1}) regardless of
+        // quantity — the quantity slot is intentionally loose (ty.rs convention).
+        // Reject bare scalars, strings, bools, and any other non-vector kind.
+        //
+        // Skip args that are Error (anti-cascade), TypeParam (unresolved generic —
+        // conformance decided at instantiation), Geometry (unverifiable here), or
+        // TraitObject (may resolve to a vector-producing type). For all other concrete
+        // arg types, reject unless the arg itself is vector-shaped.
+        //
+        // NOT type_compatible: implicitly_converts_to has no Vector<->Vector
+        // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
+        // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
+        // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
+        (Type::Vector { .. }, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            if !matches!(arg_ty, Type::Vector { .. } | Type::Tensor { rank: 1, .. }) {
+                emit_vector_mismatch(param_type, arg_ty, ctx);
             }
         }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
