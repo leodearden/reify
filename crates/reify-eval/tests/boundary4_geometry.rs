@@ -288,6 +288,7 @@ mod occt_tests {
         let chamfered = kernel
             .execute(&GeometryOp::Chamfer {
                 target: handle.id,
+                edges: vec![],
                 distance: mm(2.0),
             })
             .unwrap();

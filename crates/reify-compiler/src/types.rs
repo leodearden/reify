@@ -1313,6 +1313,11 @@ impl std::fmt::Display for BooleanOp {
 pub enum ModifyKind {
     Fillet,
     Chamfer,
+    /// Per-edge two-distance chamfer `chamfer_asymmetric(solid, edges, d1, d2)`
+    /// (β, task 4185). Distinct from `Chamfer` because it carries two setbacks
+    /// (`d1`/`d2`) and a per-edge reference-face requirement at the kernel.
+    /// Collapses to `Operation::ModifyChamfer` (same BRep kernel capability).
+    ChamferAsymmetric,
     Shell,
     Draft,
     Thicken,
@@ -1334,9 +1339,10 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Fillet,
         Self::Chamfer,
+        Self::ChamferAsymmetric,
         Self::Shell,
         Self::Draft,
         Self::Thicken,
@@ -1357,6 +1363,7 @@ impl std::fmt::Display for ModifyKind {
         match self {
             ModifyKind::Fillet => f.write_str("fillet"),
             ModifyKind::Chamfer => f.write_str("chamfer"),
+            ModifyKind::ChamferAsymmetric => f.write_str("chamfer_asymmetric"),
             ModifyKind::Shell => f.write_str("shell"),
             ModifyKind::Draft => f.write_str("draft"),
             ModifyKind::Thicken => f.write_str("thicken"),
@@ -1694,6 +1701,7 @@ mod kind_display_tests {
         check(&[
             (ModifyKind::Fillet, "fillet"),
             (ModifyKind::Chamfer, "chamfer"),
+            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric"),
             (ModifyKind::Shell, "shell"),
             (ModifyKind::Draft, "draft"),
             (ModifyKind::Thicken, "thicken"),

@@ -612,9 +612,30 @@ pub enum GeometryOp {
         radius: Value,
     },
     /// Chamfer edges by distance.
+    ///
+    /// `edges` is the curated selection of edges to chamfer. An **empty** list
+    /// is the all-edges back-compat path (legacy 2-arg `chamfer(solid, distance)`);
+    /// a non-empty list names the specific edges to chamfer (3-arg
+    /// `chamfer(solid, edges, distance)`). Mirrors `Fillet`.
     Chamfer {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         distance: Value,
+    },
+    /// Chamfer edges with two distinct setbacks (asymmetric chamfer).
+    ///
+    /// `d1` is applied to the reference face of each selected edge and `d2` to
+    /// the other adjacent face (`BRepFilletAPI_MakeChamfer::Add(d1, d2, E, F)`).
+    /// `edges` is the curated selection (4-arg `chamfer_asymmetric(solid, edges,
+    /// d1, d2)`); an **empty** list is the all-edges back-compat path
+    /// (reachable only via direct IR — the .ri surface always carries an
+    /// explicit edge selection). Mirrors `Chamfer`'s edge contract but carries
+    /// distinct d1/d2 and a per-edge reference face at the kernel.
+    ChamferAsymmetric {
+        target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
+        d1: Value,
+        d2: Value,
     },
     /// Translate by vector (dx, dy, dz in meters).
     Translate {
@@ -918,6 +939,7 @@ impl GeometryOp {
             GeometryOp::Intersection { .. } => "Intersection",
             GeometryOp::Fillet { .. } => "Fillet",
             GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
             GeometryOp::Translate { .. } => "Translate",
             GeometryOp::Rotate { .. } => "Rotate",
             GeometryOp::Scale { .. } => "Scale",
@@ -6678,7 +6700,17 @@ mod tests {
                 "Chamfer",
                 GeometryOp::Chamfer {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     distance: Value::Real(0.001),
+                },
+            ),
+            (
+                "ChamferAsymmetric",
+                GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(1),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
                 },
             ),
             (
@@ -6954,7 +6986,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 47;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -7887,6 +7919,81 @@ mod tests {
                 );
             }
             _ => panic!("expected GeometryOp::Fillet"),
+        }
+    }
+
+    /// `GeometryOp::Chamfer` records a curated `edges` selection alongside
+    /// `target`/`distance`. A non-empty list names the specific edges to chamfer;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg chamfer).
+    /// β parallel of `fillet_records_curated_edges_selection` (task 4185).
+    #[test]
+    fn chamfer_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            distance: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated chamfer must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+
+        // Back-compat: empty edges = all-edges chamfer.
+        let all_edges = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            distance: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat chamfer must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+    }
+
+    /// `GeometryOp::ChamferAsymmetric` records all four fields: `target`, a
+    /// curated `edges` selection, and the two distinct setbacks `d1`/`d2`. The
+    /// asymmetric op always carries an explicit edge selection at the .ri
+    /// surface; an empty list is the all-edges back-compat path (direct-IR
+    /// only). β (task 4185).
+    #[test]
+    fn chamfer_asymmetric_records_fields() {
+        let op = GeometryOp::ChamferAsymmetric {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            d1: Value::Real(0.001),
+            d2: Value::Real(0.002),
+        };
+        match op {
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                assert_eq!(target, GeometryHandleId(1), "target must round-trip");
+                assert_eq!(edges.len(), 4, "asymmetric chamfer must record all 4 edges");
+                assert_eq!(d1, Value::Real(0.001), "d1 setback must round-trip");
+                assert_eq!(d2, Value::Real(0.002), "d2 setback must round-trip");
+            }
+            _ => panic!("expected GeometryOp::ChamferAsymmetric"),
         }
     }
 

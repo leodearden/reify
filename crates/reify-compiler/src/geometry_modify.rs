@@ -148,17 +148,72 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
-        // chamfer(target, distance)
-        "chamfer" => compile_modify_2arg(
-            "chamfer",
-            ModifyKind::Chamfer,
-            "distance",
-            compiled_args,
-            target,
-            expr_span,
-            diagnostics,
-            sub_ops,
-        ),
+        // chamfer(target, distance)        — 2-arg all-edges back-compat
+        // chamfer(target, edges, distance) — 3-arg curated edge selection
+        "chamfer" => match compiled_args.len() {
+            2 => compile_modify_2arg(
+                "chamfer",
+                ModifyKind::Chamfer,
+                "distance",
+                compiled_args,
+                target,
+                expr_span,
+                diagnostics,
+                sub_ops,
+            ),
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Chamfer,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("edges".to_string(), it.next().unwrap()),
+                        ("distance".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // chamfer accepts only the 2-arg all-edges form or the 3-arg
+            // curated-edges form; the 4-arg asymmetric form is chamfer_asymmetric.
+            // Emit a labeled diagnostic mirroring fillet's range-arity message.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!("chamfer() expects 2 or 3 arguments, got {got}"))
+                        .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
+        // chamfer_asymmetric(target, edges, d1, d2) — 4-arg per-edge two-distance
+        // chamfer (β, task 4185). Unlike chamfer, this form ALWAYS carries an
+        // explicit `edges` selector and the two distinct setbacks `d1`/`d2`; it
+        // lowers to ModifyKind::ChamferAsymmetric → GeometryOp::ChamferAsymmetric.
+        "chamfer_asymmetric" => {
+            if !check_arg_count_exact(
+                "chamfer_asymmetric",
+                compiled_args.len(),
+                4,
+                expr_span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Modify {
+                kind: ModifyKind::ChamferAsymmetric,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("edges".to_string(), it.next().unwrap()),
+                    ("d1".to_string(), it.next().unwrap()),
+                    ("d2".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // fillet(target, radius)             — 2-arg all-edges back-compat
         // fillet(target, edges, radius)      — 3-arg curated edge selection
         "fillet" => match compiled_args.len() {
@@ -432,6 +487,221 @@ mod tests {
         }
     }
 
+    /// 3-arg `chamfer(solid, edges, distance)` is recognised by `compile_modify_op`
+    /// and lowered to named args `[target, edges, distance]` (curated edge
+    /// selection), mirroring the 3-arg fillet form.
+    #[test]
+    fn compile_modify_op_chamfer_3arg_builds_curated_edge_args() {
+        let args: Vec<CompiledExpr> =
+            vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("chamfer", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op chamfer (3-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "edges", "distance"]);
+            }
+            other => panic!("expected Modify(Chamfer) with 3 args, got {:?}", other),
+        }
+    }
+
+    /// 2-arg `chamfer(solid, distance)` through `compile_modify_op` is unchanged
+    /// (back-compat): named args `[target, distance]`, no `edges` slot.
+    #[test]
+    fn compile_modify_op_chamfer_2arg_back_compat() {
+        let args: Vec<CompiledExpr> = vec![scalar_literal(1.0), scalar_literal(2.0)];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result =
+            compile_modify_op("chamfer", args, target.clone(), span, &mut diagnostics, vec![]);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op chamfer (2-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::Chamfer,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "distance"]);
+            }
+            other => panic!("expected Modify(Chamfer) with 2 args, got {:?}", other),
+        }
+    }
+
+    /// `chamfer` accepts only 2 or 3 args: a 1-arg and a 4-arg call each return
+    /// None and emit ≥1 arity diagnostic (the 4-arg form is `chamfer_asymmetric`).
+    #[test]
+    fn compile_modify_op_chamfer_rejects_1arg_and_4arg() {
+        let span = SourceSpan::new(10, 20);
+        // 1 arg → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 1-arg chamfer");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 1-arg chamfer"
+            );
+        }
+        // 4 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 4-arg chamfer");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 4-arg chamfer"
+            );
+        }
+    }
+
+    /// 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` is recognised by
+    /// `compile_modify_op` and lowered to named args `[target, edges, d1, d2]`
+    /// with `ModifyKind::ChamferAsymmetric` (the NEW per-edge two-distance form,
+    /// β / task 4185). The asymmetric op always carries an explicit `edges` arg.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` and the
+    /// `chamfer_asymmetric` dispatch arm.
+    #[test]
+    fn compile_modify_op_chamfer_asymmetric_4arg_builds_args() {
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+            scalar_literal(4.0),
+        ];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "chamfer_asymmetric",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op chamfer_asymmetric (4-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::ChamferAsymmetric,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "edges", "d1", "d2"]);
+            }
+            other => panic!(
+                "expected Modify(ChamferAsymmetric) with 4 args, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `chamfer_asymmetric` accepts ONLY the exact 4-arg form: a 3-arg and a
+    /// 5-arg call each return None and emit ≥1 arity diagnostic.
+    ///
+    /// RED until step-12 adds the `chamfer_asymmetric` arm (today the name hits
+    /// the `_ => unreachable!()` fallthrough in `compile_modify_op`).
+    #[test]
+    fn compile_modify_op_chamfer_asymmetric_rejects_3arg_and_5arg() {
+        let span = SourceSpan::new(10, 20);
+        // 3 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> =
+                vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer_asymmetric",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 3-arg chamfer_asymmetric");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 3-arg chamfer_asymmetric"
+            );
+        }
+        // 5 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+                scalar_literal(5.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer_asymmetric",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 5-arg chamfer_asymmetric");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 5-arg chamfer_asymmetric"
+            );
+        }
+    }
+
     #[test]
     fn compile_modify_2arg_rejects_wrong_arg_count_with_label() {
         let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)]; // only 1 arg, need 2
@@ -599,6 +869,7 @@ mod tests {
     {
         static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
+            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric", &["edges", "d1", "d2"]),
             (ModifyKind::Fillet, "fillet", &["radius"]),
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
@@ -617,6 +888,7 @@ mod tests {
         // ModifyKind variant causes a compile error here, requiring an explicit update.
         let _ = |k: ModifyKind| match k {
             ModifyKind::Chamfer
+            | ModifyKind::ChamferAsymmetric
             | ModifyKind::Fillet
             | ModifyKind::Thicken
             | ModifyKind::Shell

@@ -656,6 +656,32 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
     const OcctShape& shape, double distance);
 
+/// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance` applied
+/// to ONLY the selected edges, identified by 0-based `edge_indices` into the
+/// canonical `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration (the same order
+/// `get_edges` / `OcctShape::edge_map()` use, so a `GeometryHandleId` resolved
+/// via `extract_edges` maps to the matching index). Materializes the result
+/// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
+/// identically to `make_chamfer_with_history` — the curated path preserves the
+/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// function requires a non-empty `edge_indices`.
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
+    const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
+
+/// Run `BRepFilletAPI_MakeChamfer` on `shape` applying ASYMMETRIC setbacks to
+/// ONLY the selected edges via `MakeChamfer::Add(d1, d2, E, F)`: `d1` lands on
+/// the reference face F (the first adjacent face from the edge→face ancestor
+/// map), `d2` on the other adjacent face. `edge_indices` are 0-based positions
+/// into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration (the
+/// same order as `make_chamfer_edges_with_history`). Materializes the result
+/// shape AND the Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
+/// preserving the persistent-naming seam. Both `d1` and `d2` must be finite
+/// positive; `edge_indices` must be non-empty (the Rust wrapper enumerates all
+/// parent edges for the empty=all-edges path).
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_asymmetric_edges_with_history(
+    const OcctShape& shape, double d1, double d2,
+    const rust::Vec<uint32_t>& edge_indices);
+
 /// Move the result shape out of the local-feature-history wrapper for
 /// registration in the kernel's shape table. Subsequent calls observe
 /// an empty `unique_ptr`.

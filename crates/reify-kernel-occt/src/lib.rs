@@ -1665,6 +1665,116 @@ impl OcctKernel {
         })
     }
 
+    /// Apply `BRepFilletAPI_MakeChamfer` to ONLY the selected `edges` of
+    /// `shape_id` (a curated subset) with the given `distance`, returning the
+    /// modified-result handle alongside the per-parent face/edge
+    /// Modified/Generated/Deleted history records.
+    ///
+    /// `distance` must be finite and strictly positive. Result handle is
+    /// registered with `BRepKind::Solid`. `parent_index` in every record is `0`.
+    ///
+    /// Curated edge-selection seam (task 4185, β). The persistent-naming history
+    /// seam is preserved identically to the all-edges path. An empty `edges`
+    /// slice is rejected — the all-edges path is `chamfer_with_history` /
+    /// `chamfer_all_edges`.
+    pub fn chamfer_edges_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        distance: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        validate_positive_finite(distance, "chamfer distance")?;
+        if edges.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "chamfer_edges_with_history: edge selection must be non-empty \
+                 (the all-edges path is chamfer_with_history / chamfer_all_edges)"
+                    .into(),
+            ));
+        }
+        // Map each selected edge handle → its 0-based position in the parent's
+        // canonical edge enumeration. `extract_edges`, `get_edges`, and
+        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
+        // so the position is exactly the index the kernel-side FFI expects.
+        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "chamfer_edges_with_history: failed to enumerate parent edges of \
+                 {shape_id:?}: {e:?}"
+            ))
+        })?;
+        let mut edge_indices: Vec<u32> = Vec::with_capacity(edges.len());
+        for e in edges {
+            let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
+                GeometryError::OperationFailed(format!(
+                    "chamfer_edges_with_history: edge {e:?} does not belong to \
+                     solid {shape_id:?}"
+                ))
+            })?;
+            edge_indices.push(pos as u32);
+        }
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_chamfer_edges_with_history(shape, distance, &edge_indices)
+        })
+    }
+
+    /// Apply `BRepFilletAPI_MakeChamfer` with ASYMMETRIC setbacks (`d1` on one
+    /// adjacent face, `d2` on the other) to a curated subset of `edges` of
+    /// `shape_id`, via `MakeChamfer::Add(d1, d2, E, F)` per edge. Returns the
+    /// modified-result handle alongside the per-parent face/edge
+    /// Modified/Generated/Deleted history records.
+    ///
+    /// Both `d1` and `d2` must be finite and strictly positive. Result handle
+    /// is registered with `BRepKind::Solid`. `parent_index` in every record is
+    /// `0`.
+    ///
+    /// An empty `edges` slice means ALL edges (back-compat, mirroring the
+    /// symmetric/Fillet contract): the wrapper enumerates every parent edge
+    /// index, so the kernel still receives a non-empty selection (there is no
+    /// separate asymmetric all-edges FFI). The reference face F for each edge is
+    /// chosen kernel-side (first adjacent face); see
+    /// `make_chamfer_asymmetric_edges_with_history`.
+    ///
+    /// Curated edge-selection seam (task 4185, β).
+    pub fn chamfer_asymmetric_edges_with_history(
+        &mut self,
+        shape_id: GeometryHandleId,
+        d1: f64,
+        d2: f64,
+        edges: &[GeometryHandleId],
+    ) -> Result<(GeometryHandle, LocalFeatureOpHistoryRecords), GeometryError> {
+        validate_positive_finite(d1, "chamfer d1")?;
+        validate_positive_finite(d2, "chamfer d2")?;
+        // Map each selected edge handle → its 0-based position in the parent's
+        // canonical edge enumeration. `extract_edges`, `get_edges`, and
+        // `OcctShape::edge_map()` all share one `TopExp::MapShapes(EDGE)` order,
+        // so the position is exactly the index the kernel-side FFI expects.
+        let parent_edges = self.extract_edges(shape_id).map_err(|e| {
+            GeometryError::OperationFailed(format!(
+                "chamfer_asymmetric_edges_with_history: failed to enumerate parent \
+                 edges of {shape_id:?}: {e:?}"
+            ))
+        })?;
+        // Empty selection = all edges: enumerate every parent edge index so the
+        // empty=all-edges back-compat holds without a dedicated all-edges FFI.
+        let edge_indices: Vec<u32> = if edges.is_empty() {
+            (0..parent_edges.len() as u32).collect()
+        } else {
+            let mut indices: Vec<u32> = Vec::with_capacity(edges.len());
+            for e in edges {
+                let pos = parent_edges.iter().position(|h| h == e).ok_or_else(|| {
+                    GeometryError::OperationFailed(format!(
+                        "chamfer_asymmetric_edges_with_history: edge {e:?} does not \
+                         belong to solid {shape_id:?}"
+                    ))
+                })?;
+                indices.push(pos as u32);
+            }
+            indices
+        };
+        self.run_local_feature_with_history(shape_id, |shape| {
+            ffi::ffi::make_chamfer_asymmetric_edges_with_history(shape, d1, d2, &edge_indices)
+        })
+    }
+
     /// Extrude `profile` along the +Z direction by `distance` metres via
     /// `BRepPrimAPI_MakePrism`, returning the swept-result handle alongside
     /// the per-parent face/edge Modified/Generated/Deleted history records
@@ -2251,16 +2361,55 @@ impl OcctKernel {
                     return Ok(handle);
                 }
             }
-            GeometryOp::Chamfer { target, distance } => {
-                let shape = self.get_shape(*target)?;
+            GeometryOp::Chamfer {
+                target,
+                edges,
+                distance,
+            } => {
                 let d = extract_f64(distance)?;
                 if !(d.is_finite() && d > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "chamfer distance must be a finite positive value".into(),
                     ));
                 }
-                ffi::ffi::chamfer_all_edges(shape, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                if edges.is_empty() {
+                    // 2-arg / empty-selection back-compat: chamfer ALL edges
+                    // (unchanged path). Yields a shape stored after the match.
+                    let shape = self.get_shape(*target)?;
+                    ffi::ffi::chamfer_all_edges(shape, d)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                } else {
+                    // Curated per-edge selection: chamfer only the chosen edges.
+                    // `chamfer_edges_with_history` stores the Solid result and
+                    // returns its handle (mirroring the Fillet arm); the history
+                    // is captured for the persistent-naming seam but not surfaced
+                    // through execute().
+                    let (handle, _history) =
+                        self.chamfer_edges_with_history(*target, d, edges)?;
+                    return Ok(handle);
+                }
+            }
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                let d1 = extract_f64(d1)?;
+                let d2 = extract_f64(d2)?;
+                if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "asymmetric chamfer distances must be finite positive values".into(),
+                    ));
+                }
+                // Asymmetric chamfer always routes to the per-edge primitive
+                // (empty `edges` = all-edges, enumerated inside the kernel
+                // wrapper). `chamfer_asymmetric_edges_with_history` stores the
+                // Solid result and returns its handle; the history is captured
+                // for the persistent-naming seam but not surfaced through execute().
+                let (handle, _history) =
+                    self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)?;
+                return Ok(handle);
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
@@ -5059,6 +5208,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(0.0),
         });
         match result {
@@ -5080,6 +5230,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(-1.0),
         });
         match result {
@@ -5101,6 +5252,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(f64::NAN),
         });
         match result {
@@ -5122,6 +5274,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(f64::INFINITY),
         });
         match result {

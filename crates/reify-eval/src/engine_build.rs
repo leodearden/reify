@@ -724,11 +724,13 @@ fn populate_attribute_history(
         AttributeHistory::LocalFeature(history) => {
             // Local-feature ops (fillet / chamfer): one target shape.
             let target_handle = match geom_op {
-                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                GeometryOp::Fillet { target, .. }
+                | GeometryOp::Chamfer { target, .. }
+                | GeometryOp::ChamferAsymmetric { target, .. } => *target,
                 _ => {
                     return Err(reify_ir::QueryError::QueryFailed(format!(
-                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
-                         GeometryOp: {:?}",
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer/\
+                         ChamferAsymmetric GeometryOp: {:?}",
                         geom_op
                     )));
                 }
@@ -1189,6 +1191,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1263,6 +1266,7 @@ fn substitute_op_parents(
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1420,6 +1424,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Modify
         GeometryOp::Fillet { .. } => Operation::ModifyFillet,
         GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
+        // Asymmetric chamfer reuses the ModifyChamfer capability — both execute
+        // via BRepFilletAPI_MakeChamfer on BRep (same kernel op + repr). See
+        // task β (#4185) design decision.
+        GeometryOp::ChamferAsymmetric { .. } => Operation::ModifyChamfer,
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
@@ -1601,6 +1609,9 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Modify { kind, .. } => match kind {
             ModifyKind::Fillet => Operation::ModifyFillet,
             ModifyKind::Chamfer => Operation::ModifyChamfer,
+            // Asymmetric chamfer shares the symmetric chamfer's BRep kernel
+            // capability (BRepFilletAPI_MakeChamfer) — same Operation (β, task 4185).
+            ModifyKind::ChamferAsymmetric => Operation::ModifyChamfer,
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
@@ -11714,6 +11725,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: GeometryHandleId(82),
+                    edges: vec![],
                     distance: Value::Real(0.001),
                 },
                 expected: vec![GeometryHandleId(82)],
@@ -12119,6 +12131,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: h(1),
+                    edges: vec![],
                     distance: r(0.001),
                 },
                 expected: Operation::ModifyChamfer,
@@ -13990,6 +14003,7 @@ mod populate_local_feature_tests {
 
         let geom_op = GeometryOp::Chamfer {
             target,
+            edges: vec![],
             distance: Value::Real(0.001),
         };
 
