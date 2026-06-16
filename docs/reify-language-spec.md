@@ -1736,7 +1736,7 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent.
+The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent. This equivalence extends to all locally-scoped names: a bare reference to a single-instance sub (`bolt`) resolves identically to `self.bolt` — a `StructureRef` value — and a bare reference to a collection sub (`bolts`) resolves identically to `self.bolts` — a `List<T>` value.
 
 `self` never refers to the module. The module is not an entity.
 
