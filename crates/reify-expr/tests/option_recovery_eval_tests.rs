@@ -370,3 +370,113 @@ fn or_else_undef_subject_returns_undef() {
         "or_else(undef, some(3mm)) must propagate Undef (INV-2)"
     );
 }
+
+// ── step-7: is_some / is_none presence predicates ─────────────────────────────
+//
+// Kleene three-valued: some->true/false, none->false/true, undef->Undef.
+// Result type is Type::Bool.
+//
+// RED today: is_some/is_none not yet in is_combinator → falls through →
+// eval_user_function_call → function not found (simple ctx) → Undef.
+
+/// is_some(some(5mm)) == Bool(true)
+///
+/// RED today: is_some not intercepted → Undef.
+#[test]
+fn is_some_some_returns_true() {
+    let call = CompiledExpr::user_function_call(
+        "is_some".to_string(),
+        vec![expr_some_5mm()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Bool(true),
+        "is_some(some(5mm)) must return Bool(true)"
+    );
+}
+
+/// is_some(none) == Bool(false)
+///
+/// RED today: is_some not intercepted → Undef.
+#[test]
+fn is_some_none_returns_false() {
+    let call = CompiledExpr::user_function_call(
+        "is_some".to_string(),
+        vec![expr_none_length()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Bool(false),
+        "is_some(none) must return Bool(false)"
+    );
+}
+
+/// is_some(undef) == Value::Undef  (INV-2 Kleene three-valued)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn is_some_undef_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "is_some".to_string(),
+        vec![expr_undef_option_length()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "is_some(undef) must return Undef (Kleene three-valued, INV-2)"
+    );
+}
+
+/// is_none(some(5mm)) == Bool(false)
+///
+/// RED today: is_none not intercepted → Undef.
+#[test]
+fn is_none_some_returns_false() {
+    let call = CompiledExpr::user_function_call(
+        "is_none".to_string(),
+        vec![expr_some_5mm()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Bool(false),
+        "is_none(some(5mm)) must return Bool(false)"
+    );
+}
+
+/// is_none(none) == Bool(true)
+///
+/// RED today: is_none not intercepted → Undef.
+#[test]
+fn is_none_none_returns_true() {
+    let call = CompiledExpr::user_function_call(
+        "is_none".to_string(),
+        vec![expr_none_length()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Bool(true),
+        "is_none(none) must return Bool(true)"
+    );
+}
+
+/// is_none(undef) == Value::Undef  (INV-2 Kleene three-valued)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn is_none_undef_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "is_none".to_string(),
+        vec![expr_undef_option_length()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "is_none(undef) must return Undef (Kleene three-valued, INV-2)"
+    );
+}
