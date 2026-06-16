@@ -90,7 +90,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(29, 35),
@@ -113,7 +113,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(60, 66),
@@ -136,7 +136,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(95, 101),
@@ -159,7 +159,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(132, 138),
@@ -182,7 +182,7 @@ pub fn bracket_parsed_module() -> ParsedModule {
                 is_priv: false,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(169, 175),

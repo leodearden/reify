@@ -1,0 +1,67 @@
+#no_prelude
+// Stdlib: Option Recovery Combinators (task α — PRD docs/prds/v0_6/result-and-fallback.md §8 Phase 1)
+//
+// Seven generic free-functions for extracting values from Option<T> and
+// Map<K,V> with a supplied default.  All bodies are typecheck-only
+// placeholders: result_type is derived from generic-signature substitution
+// at the call site (expr.rs resolve_function_overload → type_compat::unify →
+// substitute_type_params), independent of the body.
+//
+// Real tag-driven recovery eval is task β (intercept in reify-expr per §11
+// Q1).  WARNING: the placeholder bodies return INCORRECT runtime values —
+// unwrap_or/or_default/fallback/get_or always return the supplied default
+// (ignoring a present value), is_some always returns true, is_none always
+// returns false.  Until task β lands, evaluating these functions yields
+// wrong results.  The bodies are placeholders only to let the module parse
+// and load clean; result_type is derived from call-site signature
+// substitution, independent of the body.
+//
+// map_or<T,U> is intentionally OMITTED — it requires an arrow-type grammar
+// production (type_expr → f:(T)->U) that does not exist.  It is owned by
+// task 4595 ("arrow-type production in type_expr + Type::Function lowering +
+// map_or as first consumer").  Do NOT add it or any `(T)->U` annotation here.
+//
+// Registration: stdlib_loader.rs::stdlib_sources() inserts this module
+// immediately before std.determinacy.purposes (which must remain LAST) and
+// after std.fields.  No import edges → compile_modules_topo keeps order
+// unchanged (identity permutation).  PreludeContext::from_slice(load_stdlib())
+// includes all modules, so these functions are callable from any .ri file
+// without an explicit import.
+
+/// Extract the inner value of `o`, or return `dflt` if `o` is none.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Option<T>'s element type T.
+pub fn unwrap_or<T>(o: Option<T>, dflt: T) -> T { dflt }
+
+/// Return `o` if it holds a value, otherwise return `alt`.
+///
+/// Both arguments must be `Option<T>` for the same T.
+pub fn or_else<T>(o: Option<T>, alt: Option<T>) -> Option<T> { o }
+
+/// Extract the inner value of `o`, or return `dflt` if `o` is none.
+/// Alias of `unwrap_or` (PRD fork F2-a, decision D6).
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Option<T>'s element type T.
+pub fn or_default<T>(o: Option<T>, dflt: T) -> T { dflt }
+
+/// Extract the inner value of `o`, or return `dflt` if `o` is none.
+/// Free-function alias of `unwrap_or` (PRD fork F2-a, decision D6).
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Option<T>'s element type T.
+pub fn fallback<T>(o: Option<T>, dflt: T) -> T { dflt }
+
+/// Return true if `o` holds a value (some), false if it is none.
+pub fn is_some<T>(o: Option<T>) -> Bool { true }
+
+/// Return true if `o` holds no value (none), false if it holds a value.
+pub fn is_none<T>(o: Option<T>) -> Bool { false }
+
+/// Retrieve the value associated with `key` in map `m`, or return `dflt`
+/// if the key is absent.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with the map's value type V.
+pub fn get_or<K, V>(m: Map<K, V>, key: K, dflt: V) -> V { dflt }

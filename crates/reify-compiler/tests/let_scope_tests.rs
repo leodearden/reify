@@ -2297,7 +2297,7 @@ fn geometry_valued_if_then_else_chain_lowers_to_single_conditional_primitive() {
     param p: Length = 10mm
     param q: Length = 20mm
     param r: Length = 30mm
-    param axis: Length = 0
+    param axis: Int = 0
     let body = if axis == 0 then box(p, p, p) else if axis == 1 then box(q, q, q) else box(r, r, r)
 }"#;
 

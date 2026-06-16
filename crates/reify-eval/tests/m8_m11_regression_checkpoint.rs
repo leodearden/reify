@@ -416,6 +416,10 @@ fn assert_all_type_variants_listed(t: &reify_core::Type) {
         Type::ScalarParam(_) => true,
         // DOF-removal directive: compile-time-only, no truth value (geometric-relations γ / task 4383)
         Type::Relation => true,
+        // Generic-structure applied to type args: compile-time/phantom only (type-args β / task 4602)
+        Type::Applied { .. } => true,
+        // Assoc-type projection held until base is concrete (type-args β / task 4602)
+        Type::Projection { .. } => true,
     };
 }
 

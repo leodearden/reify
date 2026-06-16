@@ -152,6 +152,24 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// One ordered action in a template's per-build schedule walk (task 4358 ε).
+///
+/// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
+/// realization loop is driven by `run_unified_pass`'s Kahn order rather than
+/// declaration order, so a curated selector value-cell (e.g. `edges_at_height`)
+/// is hydrated at its scheduled slot BEFORE the realization that consumes it
+/// (the curated `fillet(solid, edges, radius)`). Under `LegacyMultiPass` the
+/// walk is simply `[Realize(0), Realize(1), …]` in declaration order with no
+/// interleaved `HydrateCell` steps (selectors resolve in the post-process block,
+/// exactly as before) — so the legacy path stays byte-identical.
+enum BuildStep {
+    /// Run `execute_realization_ops` for `template.realizations[usize]`.
+    Realize(usize),
+    /// Hydrate the named value cell at its scheduled slot (selector / geometry
+    /// query) so a later realization in the schedule sees its resolved value.
+    HydrateCell(reify_core::ValueCellId),
+}
+
 /// Task 3441 / 3814: seed compound-key entries `<sub>.<member> → handle` from
 /// each non-collection sub's completed snapshot in `module_named_steps`.
 ///
@@ -2384,6 +2402,60 @@ impl Engine {
         let registry_owned = crate::kernel_registry::collect_registry();
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
+
+        // Task 4358 ε: compute the unified build-DAG plan ONCE, up front, when the
+        // active scheduler is UnifiedDag. δ previously materialized this AFTER the
+        // realization loop purely for its cycle/unresolved diagnostics (and then
+        // discarded `schedule`). ε consumes `pass.schedule` to drive the
+        // realization loop below in Kahn order (so a curated selector cell is
+        // hydrated before its consuming realization), while still appending
+        // `pass.diagnostics` at the SAME later site to keep the diagnostic vector
+        // byte-identical to δ. `run_unified_pass` returns an OWNED triple and
+        // reads only `snapshot.graph` + `trace_map` (neither mutated by the
+        // realization loop, which only patches `produced_repr`/`produced_kernel`
+        // node fields), so hoisting the call here is behaviour-preserving. The
+        // call is skipped entirely under LegacyMultiPass (the default), so that
+        // path pays nothing and stays byte-unchanged.
+        let unified_pass: Option<crate::engine_fixpoint::UnifiedPassResult> =
+            if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag {
+                self.eval_state.as_ref().map(|state| {
+                    crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map)
+                })
+            } else {
+                None
+            };
+
+        // Task 4358 ε: the value cells read by ANY realization (the union of every
+        // realization trace's `reads`). A selector cell in this set is consumed as
+        // a curated fillet/chamfer/draft edge/face list, so
+        // `hydrate_value_cell_in_loop` resolves it one step past its
+        // `Value::Selector` descriptor to a concrete `List<Geometry>`; selector
+        // cells consumed only by selector-composition value cells are absent here
+        // and keep their descriptor form (so `reconstruct_selector_value` still
+        // sees a `Value::Selector` child). Empty under LegacyMultiPass — the whole
+        // schedule-driven hydration is gated on `unified_pass.is_some()`.
+        let realization_read_cells: HashSet<reify_core::ValueCellId> = self
+            .eval_state
+            .as_ref()
+            .filter(|_| unified_pass.is_some())
+            .map(|state| {
+                state
+                    .trace_map
+                    .iter()
+                    .filter(|(node, _)| matches!(node, NodeId::Realization(_)))
+                    .flat_map(|(_, tr)| tr.reads.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Task 4358 ε (step-8): hoisted out of the `geometry_output` block so the
+        // realization-produced per-template handle maps survive to the
+        // post-geometry Constraint re-check below (the folding source for INLINE
+        // geometry-query constraints under UnifiedDag). Populated by
+        // `snapshot_named_steps` inside the realization loop on EITHER scheduler;
+        // only READ post-loop under UnifiedDag, so LegacyMultiPass is unaffected.
+        let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
+
         let geometry_output = if let Some(name) = default_kernel_name.as_deref()
             && self.geometry_kernels.contains_key(name)
         {
@@ -2423,8 +2495,9 @@ impl Engine {
             // Helper invocations (`seed_cross_sub_named_steps`,
             // `snapshot_named_steps`) factor the per-template seed/snapshot
             // logic out so the three eval loop sites stay in sync.
-            let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> =
-                HashMap::new();
+            // `module_named_steps` is declared above the `geometry_output` block
+            // (task 4358 ε step-8) so it survives to the post-geometry Constraint
+            // re-check; it is still populated here by `snapshot_named_steps`.
             for (t_idx, template) in module.templates.iter().enumerate() {
                 // `named_steps` is scoped per-template so that two structures
                 // that each declare `let body = …` cannot clobber each other's
@@ -2447,7 +2520,94 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
-                for (r_idx, realization) in template.realizations.iter().enumerate() {
+                // Task 4358 ε: order this template's realizations + selector/query
+                // value-cells for the build walk. Under UnifiedDag the order is
+                // `run_unified_pass`'s global Kahn schedule filtered to THIS
+                // template's nodes (so a curated selector cell is hydrated before
+                // the realization that consumes it); any realization not covered by
+                // the schedule (e.g. residue downstream of a cycle, or a node with
+                // no trace entry) is appended in declaration order so every
+                // realization still runs exactly as legacy would. Under
+                // LegacyMultiPass the order is simply declaration order with NO
+                // interleaved HydrateCell steps — byte-identical to before.
+                let build_steps: Vec<BuildStep> = match unified_pass.as_ref() {
+                    Some(pass) => {
+                        let mut steps: Vec<BuildStep> = Vec::new();
+                        let mut realized: HashSet<usize> = HashSet::new();
+                        for node in &pass.schedule {
+                            match node {
+                                NodeId::Realization(rid) if rid.entity == template.name => {
+                                    if let Some(r_idx) =
+                                        template.realizations.iter().position(|r| r.id == *rid)
+                                    {
+                                        steps.push(BuildStep::Realize(r_idx));
+                                        realized.insert(r_idx);
+                                    }
+                                }
+                                NodeId::Value(vid) if vid.entity == template.name => {
+                                    steps.push(BuildStep::HydrateCell(vid.clone()));
+                                }
+                                _ => {}
+                            }
+                        }
+                        for r_idx in 0..template.realizations.len() {
+                            if !realized.contains(&r_idx) {
+                                steps.push(BuildStep::Realize(r_idx));
+                            }
+                        }
+                        steps
+                    }
+                    None => (0..template.realizations.len())
+                        .map(BuildStep::Realize)
+                        .collect(),
+                };
+                for build_step in &build_steps {
+                    let (r_idx, realization) = match build_step {
+                        BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
+                        BuildStep::HydrateCell(cell_id) => {
+                            // ε: hydrate this selector / geometry-query value cell at
+                            // its scheduled slot (UnifiedDag only — Legacy emits no
+                            // HydrateCell steps) so a later consuming realization
+                            // (e.g. a curated fillet) reads its resolved value rather
+                            // than `Undef`. Re-borrow the default kernel from the map
+                            // (the per-realization execute call's `&mut` borrow has
+                            // ended); the post-process block below re-runs the same
+                            // passes over all cells, so this is an additive early
+                            // hydration, not the sole resolution site.
+                            //
+                            // Robustness (reviewer): degrade to SKIPPING this early
+                            // hydration rather than aborting the whole build if the
+                            // default kernel is somehow absent mid-walk. The invariant
+                            // holds today — `name` was `contains_key`-checked at the top
+                            // of this geometry_output block — so a miss is only reachable
+                            // via a future refactor that removes a kernel mid-walk, not a
+                            // runtime condition; `debug_assert!` surfaces it in dev/test.
+                            // Skipping is safe precisely because the hydration is additive:
+                            // the whole-template post-process below re-runs the same passes
+                            // over every cell, so the cell still resolves before export —
+                            // only the in-loop timing is lost (a downstream curated fillet
+                            // would fall back to its all-edges path, the pre-ε behaviour).
+                            let Some(kernel) = self.geometry_kernels.get_mut(name) else {
+                                debug_assert!(
+                                    false,
+                                    "default kernel must remain in the map across the schedule walk"
+                                );
+                                continue;
+                            };
+                            Engine::hydrate_value_cell_in_loop(
+                                template,
+                                cell_id,
+                                &named_steps,
+                                &mut values,
+                                &self.functions,
+                                &self.meta_map,
+                                kernel.as_mut(),
+                                &realization_read_cells,
+                                &mut diagnostics,
+                            );
+                            continue;
+                        }
+                    };
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
                     // ReprKind::BRep, demanded_tol)`. The Vec is precomputed
@@ -2540,6 +2700,44 @@ impl Engine {
                             &mut self.journal,
                             &realization.id,
                             error,
+                            version_id,
+                        );
+                    }
+                    // Task 4358 ε: per-realization geometry-handle hydration slice
+                    // (UnifiedDag only). `post_process_geometry_handle_cells` skips
+                    // realizations whose name is not yet in `named_steps`, so calling
+                    // it after EACH realization hydrates only the just-completed
+                    // ones — making a freshly-produced body's `values` cell visible
+                    // to a selector / geometry-query cell scheduled next (the
+                    // HydrateCell step above). It writes no diagnostics and re-inserts
+                    // the same handle, so it is idempotent with the whole-template
+                    // call in the post-process block below. Skipped under
+                    // LegacyMultiPass (`unified_pass` is `None`), so that path keeps
+                    // its single post-loop hydration and stays byte-identical.
+                    //
+                    // COST (reviewer): the helper loops over ALL of the template's
+                    // realizations each call (short-circuiting those not yet in
+                    // `named_steps`), so invoking it after every Realize makes the
+                    // per-realization hydration O(R²)-over-realizations across a
+                    // template with R realizations, vs. Legacy's single O(R) post-loop
+                    // call. The re-work is purely idempotent (re-inserting already
+                    // resolved handles + re-recording the same freshness cache nodes),
+                    // so it is correctness-neutral, and acceptable for the typical
+                    // small-R template. If profiling ever shows it dominating on a
+                    // many-realization, many-handle-cell template, restrict this call
+                    // to the just-completed realization (the helper would need a
+                    // single-realization filter param threaded through its 3 call
+                    // sites — build / build_snapshot / tessellate_from_values) rather
+                    // than rescanning the full realization list each iteration.
+                    if unified_pass.is_some() {
+                        Engine::post_process_geometry_handle_cells(
+                            template,
+                            &named_steps,
+                            &mut values,
+                            &self.functions,
+                            &self.meta_map,
+                            &mut self.cache,
+                            &mut self.realization_handles,
                             version_id,
                         );
                     }
@@ -2748,50 +2946,29 @@ impl Engine {
             );
         }
 
-        // Task 4357 δ: unified build-DAG cycle contract. When the active
-        // scheduler is UnifiedDag, run the pure structural planner
-        // (`run_unified_pass`) over α's forward dependency-trace graph and append
-        // its E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics to the build result.
+        // Task 4357 δ / 4358 ε: unified build-DAG cycle contract. The planner
+        // (`run_unified_pass`) was materialized up front as `unified_pass` so ε's
+        // realization-loop driver could consume `pass.schedule` in Kahn order
+        // (hydrating curated selector cells before their consuming realizations).
+        // Here we append the SAME E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics at
+        // the SAME point δ did, so the diagnostic vector stays byte-identical to δ
+        // (the planner reads only `snapshot.graph` + `trace_map`, neither
+        // structurally mutated by the realization loop, so an up-front vs.
+        // here-recomputed pass yields identical diagnostics).
         //
-        // UNLIKE the β assert block above, this is deliberately NOT
-        // `#[cfg(debug_assertions)]`-gated: the driver emits real user-facing
-        // diagnostics that must surface in RELEASE builds too. On an acyclic
-        // module the driver's residue is empty and it emits zero diagnostics, so
-        // the BuildResult stays byte-identical to the LegacyMultiPass default.
-        // No-op when eval_state is None (empty module or compile-only build) or
-        // when the scheduler is LegacyMultiPass (the default). The driver is a
-        // pure planner — it executes no nodes; ε wires executors onto the
-        // schedule and retires the legacy loop.
+        // `unified_pass` is `Some` iff the active scheduler is UnifiedDag AND
+        // `eval_state` is present, so this is a no-op under LegacyMultiPass (the
+        // default — byte-unchanged) and adds zero diagnostics on an acyclic module
+        // (empty residue ⇒ zero cycle diagnostics; no auto-reaching constraint ⇒
+        // zero unresolved diagnostics).
         //
-        // KNOWN δ behaviour — cyclic modules carry TWO cycle reports. On a cyclic
-        // input the legacy `detect_let_cycle` (engine_eval.rs) has already pushed
-        // its own UN-CODED "circular let-binding dependency" diagnostic into this
-        // same Vec via check()/eval(), so under UnifiedDag the structured
-        // `DiagnosticCode::EvalCycle` is ADDITIVE alongside it — one user cycle
-        // surfaces both a legacy (code-less) and a unified (coded) report. This is
-        // intentional for δ's additive, byte-preserving-on-acyclic wiring: the
-        // driver itself emits exactly ONE EvalCycle per SCC (pinned by the
-        // integration test), and de-duplicating against / retiring the legacy
-        // emission belongs to ε, which replaces the legacy build loop wholesale.
-        // Acyclic inputs are unaffected (residue == ∅ ⇒ zero added diagnostics).
-        if self.build_scheduler == crate::engine_fixpoint::BuildScheduler::UnifiedDag
-            && let Some(state) = self.eval_state.as_ref()
-        {
-            let pass = crate::engine_fixpoint::run_unified_pass(
-                &state.snapshot.graph,
-                &state.trace_map,
-            );
-            // δ consumes ONLY `pass.diagnostics` here; `pass.schedule`
-            // (`Vec<NodeId>`) and `pass.residue` (`HashSet<NodeId>`) are
-            // intentionally materialized then dropped. In δ the driver is purely
-            // the cycle-contract gate — the schedule is consumed by ε's executors
-            // once they replace the legacy build loop, so it is built now to keep
-            // `run_unified_pass` a single (schedule, residue, diagnostics) entry
-            // point across both stages. The discard cost is O(V+E) and rides the
-            // UnifiedDag path ONLY, which is gated OFF by default (LegacyMultiPass
-            // ⇒ this whole block is skipped), so the production default pays
-            // nothing. A diagnostics-only entry point was weighed and declined: it
-            // would fork the driver right before ε needs the full triple back.
+        // KNOWN δ behaviour — cyclic modules carry TWO cycle reports: the legacy
+        // `detect_let_cycle` (engine_eval.rs) un-coded "circular let-binding
+        // dependency" string coexists with the driver's structured
+        // `DiagnosticCode::EvalCycle`. De-duplicating / retiring the legacy
+        // emission is deferred to ι (per δ's intentional additive wiring); ε does
+        // not touch it.
+        if let Some(pass) = unified_pass {
             diagnostics.extend(pass.diagnostics);
         }
 
@@ -2815,8 +2992,51 @@ impl Engine {
             .any(|e| e.satisfaction == reify_ir::Satisfaction::Indeterminate)
         {
             let determinacy = self.eval_state.as_ref().map(|s| &s.snapshot.values);
-            let (recheck_results, recheck_diags) =
-                self.check_constraints_against_templates(module, &values, determinacy);
+            // Task 4358 ε (step-8): under UnifiedDag, supersede the kernel-less
+            // 4229 re-check SOURCE with the post-geometry Constraint executor. It
+            // folds each active constraint's INLINE geometry-query leaves
+            // (`bounding_box(part)` / `volume(part)` / …) against the live kernel +
+            // the realization-produced `module_named_steps` BEFORE the kernel-less
+            // `SimpleConstraintChecker` runs, so an inline leaf resolves to a
+            // DEFINITE verdict (un-freezing "C7") instead of staying
+            // `Indeterminate`. The downstream merge loop (which only upgrades
+            // `Indeterminate` entries and drops the matching stale "undefined
+            // inputs" warning) is reused verbatim. LegacyMultiPass — and the
+            // no-default-kernel path — keep the original kernel-less re-check
+            // (the executor defers to it when no kernel exists), so `reify check`
+            // and the default build path stay byte-unchanged.
+            let (recheck_results, recheck_diags) = if self.build_scheduler
+                == crate::engine_fixpoint::BuildScheduler::UnifiedDag
+                && let Some(kernel_name) = default_kernel_name.as_deref()
+            {
+                // Task 4358 ε step-12: the auto-constraint guard's decline set.
+                // Constraints whose transitive auto-read closure reaches an `auto`
+                // cell are SKIPPED by the executor (δ already emits their
+                // `E_EVAL_UNRESOLVED` via `unresolved_diagnostics`). Deriving the
+                // skip-set from the SAME `constraints_reaching_auto` predicate δ
+                // uses guarantees the decline and the diagnostic cannot diverge.
+                // Empty when no `eval_state` (then the executor has nothing to skip).
+                let declined = self
+                    .eval_state
+                    .as_ref()
+                    .map(|s| {
+                        crate::engine_fixpoint::constraints_reaching_auto(
+                            &s.snapshot.graph,
+                            &s.trace_map,
+                        )
+                    })
+                    .unwrap_or_default();
+                self.check_constraints_post_geometry(
+                    module,
+                    &values,
+                    &module_named_steps,
+                    kernel_name,
+                    determinacy,
+                    &declined,
+                )
+            } else {
+                self.check_constraints_against_templates(module, &values, determinacy)
+            };
             for entry in constraint_results.iter_mut() {
                 if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
                     continue;
@@ -6026,6 +6246,129 @@ impl Engine {
         }
     }
 
+    /// Task 4358 ε: hydrate a SINGLE value cell at its scheduled slot under
+    /// [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`], mirroring the
+    /// per-cell body of `post_process_geometry_queries` +
+    /// `post_process_topology_selectors` for one cell instead of looping the whole
+    /// template. Driven by the `HydrateCell` build step so a geometry-query cell
+    /// (`volume`/`area`/`centroid`/`bounding_box`) or a topology-selector cell
+    /// (`edges_at_height` / `closest_point` / a `ResolveSelector` coercion …)
+    /// resolves the moment its producing realization(s) complete — BEFORE a later
+    /// realization in the Kahn schedule consumes it (e.g. a curated
+    /// `fillet(solid, edges, radius)` reads the resolved edge `List` rather than
+    /// `Undef`).
+    ///
+    /// # Selector cells consumed by a realization resolve to a `List`, not a `Selector`
+    ///
+    /// A curated edge/face selector (`edges_at_height`, `faces_by_normal`, …) is a
+    /// `Value::Selector`-typed cell whose `try_eval_topology_selector` result is a
+    /// kernel-FREE `Value::Selector` DESCRIPTOR (task 4118 γ). A consuming curated
+    /// `fillet(solid, edges, radius)` realization, however, reads its `edges` arg
+    /// as a `Value::List<Geometry>` — the legacy `compile_geometry_op` Fillet arm
+    /// errors ("curated edge selection is not yet available …") on a bare
+    /// descriptor, the exact P2-before-P4 staging gap tasks 4360/4358 close. So
+    /// when this selector cell is read by ANY realization (`realization_read_cells`
+    /// = the union of every realization trace's `reads`), the descriptor is
+    /// resolved one step further to its concrete sub-handle `List` via
+    /// `resolve_selector_to_list` (the kernel-bearing query runs HERE, at the
+    /// scheduled slot where the parent solid is already realized). Selector cells
+    /// consumed ONLY by selector-composition value cells
+    /// (`union`/`intersect`/`difference`, whose `reconstruct_selector_value`
+    /// REQUIRES a `Value::Selector` child) are NOT in `realization_read_cells`, so
+    /// they keep their descriptor form and composition stays correct. The negative
+    /// side of this gate (composition-only child selectors keep their descriptors so
+    /// a curated fillet over `union(e1, e2)` still resolves non-empty edges in-loop)
+    /// is pinned by `tests/unified_dag_geometry_executors.rs::
+    /// unified_dag_curated_fillet_over_selector_composition_resolves_edges`.
+    ///
+    /// Resolution order otherwise matches `run_post_processes` (geometry query →
+    /// selector→list → topology selector → resolve-selector coercion); the first
+    /// helper that returns `Some` wins. A cell whose `default_expr` is not a
+    /// recognised query/selector is left untouched. Only the *timing* (before vs.
+    /// after the consuming realization) differs from the whole-template
+    /// post-process below, and only under UnifiedDag. Pinned by
+    /// `unified_dag_curated_fillet_resolves_edges_in_loop`.
+    ///
+    /// SYNC REQUIREMENT: this single-cell ladder and the whole-template pass order
+    /// in [`Engine::run_post_processes`] MUST change together — see the matching
+    /// "SYNC REQUIREMENT" note on that function. A divergence would change which
+    /// helper wins for a given cell only under UnifiedDag, only in-loop.
+    #[allow(clippy::too_many_arguments)]
+    fn hydrate_value_cell_in_loop(
+        template: &reify_compiler::TopologyTemplate,
+        cell_id: &reify_core::ValueCellId,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        functions: &[CompiledFunction],
+        meta_map: &HashMap<String, HashMap<String, String>>,
+        kernel: &mut dyn GeometryKernel,
+        realization_read_cells: &HashSet<reify_core::ValueCellId>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
+            return;
+        };
+        let Some(default_expr) = cell.default_expr.as_ref() else {
+            return;
+        };
+        // (a) whole-handle geometry query (volume/area/centroid/bounding_box,
+        //     incl. the nested operand-cell case). Read-only kernel access.
+        if let Some(value) = crate::geometry_ops::try_eval_geometry_query(
+            default_expr,
+            named_steps,
+            values,
+            functions,
+            meta_map,
+            &*kernel,
+            diagnostics,
+        ) {
+            values.insert(cell.id.clone(), value);
+            return;
+        }
+        // (b) selector cell consumed by a realization → resolve the descriptor to
+        //     its concrete `List<Geometry>` sub-handles so the consuming curated
+        //     fillet/chamfer/draft realization reads a List (see the doc comment).
+        //     Gated on `realization_read_cells` so composition-only selector cells
+        //     keep their `Value::Selector` descriptor. `resolve_selector_to_list`
+        //     returns `None` for a non-selector expr, so a non-selector
+        //     realization-read cell (e.g. a scalar param) falls through to (c)/(d).
+        if realization_read_cells.contains(&cell.id)
+            && let Some(value) = crate::geometry_ops::resolve_selector_to_list(
+                default_expr,
+                named_steps,
+                values,
+                kernel,
+                diagnostics,
+            )
+        {
+            values.insert(cell.id.clone(), value);
+            return;
+        }
+        // (c) topology selector descriptor / scalar / bool / point (closest_point /
+        //     is_on / angle_between_surfaces / edges_at_height / …).
+        if let Some(value) = crate::geometry_ops::try_eval_topology_selector(
+            default_expr,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+        ) {
+            values.insert(cell.id.clone(), value);
+            return;
+        }
+        // (d) ResolveSelector coercion → `List<Geometry>` (curated edge/face
+        //     selectors consumed by a 3-arg fillet/chamfer).
+        if let Some(value) = crate::geometry_ops::try_eval_resolve_selector(
+            default_expr,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+        ) {
+            values.insert(cell.id.clone(), value);
+        }
+    }
+
     /// Post-process value cells for a template after `execute_realization_ops`
     /// has populated `named_steps`, dispatching the whole-handle geometry
     /// queries `volume` / `area` / `centroid` / `bounding_box` on a
@@ -6102,6 +6445,20 @@ impl Engine {
     /// `functions` / `meta_map` build the `EvalContext` that
     /// `post_process_geometry_queries` uses to recompute nested geometry-query
     /// expressions (GHR-ζ step-10, e.g. `mass = volume(g) * material.density`).
+    ///
+    /// # SYNC REQUIREMENT with [`Engine::hydrate_value_cell_in_loop`] (task 4358 ε)
+    ///
+    /// The UnifiedDag schedule-driven build loop hydrates a SINGLE value cell at
+    /// its scheduled slot via [`Engine::hydrate_value_cell_in_loop`], which mirrors
+    /// the per-cell resolution ladder this whole-template pass applies (geometry
+    /// query → selector→list → topology selector → resolve-selector coercion). The
+    /// two sites MUST stay in sync: if the ORDER or the SET of helpers below
+    /// changes, the in-loop single-cell ladder in `hydrate_value_cell_in_loop` must
+    /// change identically, or a cell's resolution would diverge (which helper
+    /// "wins") only under UnifiedDag, only when that cell is hydrated in-loop ahead
+    /// of a consuming realization. See that function's doc comment for the matching
+    /// ladder and the rationale for the one deliberate divergence (a
+    /// realization-consumed selector is resolved one step further, to a `List`).
     //
     // `functions` + `meta_map` (added by GHR-ζ for the geometry-query EvalContext)
     // push this consolidator to 8 args; matches the sibling post-process helpers'

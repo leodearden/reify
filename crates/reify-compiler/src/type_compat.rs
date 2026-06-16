@@ -344,6 +344,11 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
     }
 }
@@ -407,6 +412,10 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
 
         // All remaining leaves carry no inner `Type`.
         Type::Bool
@@ -488,6 +497,10 @@ pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_dim_param),
 
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
+
         // All remaining leaves carry no `ScalarParam`.
         Type::Bool
         | Type::Int
@@ -546,6 +559,14 @@ pub(crate) struct TypeArgConflict {
 ///
 /// Pure and side-effect-free apart from mutating `subst`: it takes no
 /// diagnostics sink, leaving emission to the call site.
+///
+/// **β note — `Applied` vs `StructureRef` (task 4602):** `Applied{"C", [T]}`
+/// unified against a bare `StructureRef("C")` hits the
+/// `(Type::Applied { .. }, _) => Ok(())` fallthrough arm and binds **nothing**
+/// for `T`.  This is the deliberate β posture: resolving arg bindings across an
+/// Applied↔StructureRef pair requires the per-structure assoc-type table, which
+/// belongs to δ (`normalize_type`).  The δ implementer must NOT assume that this
+/// inference already happens here.
 pub(crate) fn unify(
     declared: &Type,
     arg: &Type,
@@ -653,6 +674,23 @@ pub(crate) fn unify(
             Ok(())
         }
 
+        // task 4602 β: Applied — same name + same arity → element-wise unify args.
+        (
+            Type::Applied { name: dn, args: da },
+            Type::Applied { name: an, args: aa },
+        ) if dn == an && da.len() == aa.len() => {
+            for (d, a) in da.iter().zip(aa.iter()) {
+                unify(d, a, subst)?;
+            }
+            Ok(())
+        }
+
+        // task 4602 β: Projection — same member → unify bases.
+        (
+            Type::Projection { base: db, member: dm },
+            Type::Projection { base: ab, member: am },
+        ) if dm == am => unify(db, ab, subst),
+
         // Conservative fallthrough — listed explicitly with NO `_` wildcard so
         // a future `Type` variant forces a compile-time decision here, in
         // lock-step with `type_carries_type_param` and the exhaustive
@@ -678,7 +716,10 @@ pub(crate) fn unify(
         | (Type::Vector { .. }, _)
         | (Type::Tensor { .. }, _)
         | (Type::Matrix { .. }, _)
-        | (Type::Union(_), _) => Ok(()),
+        | (Type::Union(_), _)
+        // task 4602 β: Applied/Projection structural mismatches → no binding.
+        | (Type::Applied { .. }, _)
+        | (Type::Projection { .. }, _) => Ok(()),
 
         // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
         // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing
@@ -960,6 +1001,72 @@ pub(crate) fn resolve_binop(op: &str) -> Option<BinOp> {
 /// The PRD-prose mnemonic is `E_MODULO_REQUIRES_INT` (severity `E_` → Error).
 pub(crate) fn modulo_operands_are_int(left: &Type, right: &Type) -> bool {
     matches!(left, Type::Int) && matches!(right, Type::Int)
+}
+
+/// Enforce PRD §7.1: ORDER ops (`<`, `<=`, `>`, `>=`) require both operands
+/// to be orderable scalar kinds: `Type::Int`, `Type::Scalar { .. }`, or
+/// `Type::ScalarParam(_)`.
+///
+/// `Type::ScalarParam(_)` is the dimension-parametric scalar `Scalar<Q>` produced
+/// inside dimension-kinded generic fn signatures (e.g. `std.fields::threshold`'s
+/// `sample(f, p) > value` over `Scalar<Q>`).  It is a genuine, well-formed scalar
+/// — comparing `Scalar<Q>` against `Scalar<Q>` is a valid order comparison — so it
+/// is accepted here rather than skipped in the caller's gradualism early-return:
+/// accepting in the predicate still lets a bad *sibling* operand (e.g.
+/// `Tensor > Scalar<Q>`) be flagged.
+///
+/// All other types — Bool, String, Enum, Vector, Point, Tensor, Matrix, List,
+/// and compound types — produce `Value::Undef` at runtime for order comparisons
+/// and are therefore rejected at compile time.
+///
+/// This is a pure predicate co-located with `modulo_operands_are_int` /
+/// `is_comparison_op`.  Diagnostic emission lives in
+/// `crates/reify-compiler/src/expr.rs` (`emit_comparison_operand_diagnostics`).
+///
+/// The PRD-prose mnemonic is `E_CmpOperandKind` (severity `E_` → Error).
+pub(crate) fn is_orderable_scalar(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
+}
+
+/// Enforce PRD §7.1: EQUALITY ops (`==`, `!=`) require both operands to be
+/// equatable kinds: `Type::Bool`, `Type::Int`, `Type::String`,
+/// `Type::Scalar { .. }`, or `Type::Enum(_)`.
+///
+/// Aggregate/structural kinds — Vector, Point, Tensor, Matrix, List, etc. —
+/// produce `Value::Undef` at runtime for equality comparisons and are rejected.
+///
+/// NOTE: Enum equality is intentionally PRESERVED here.  `Enum == Enum` is the
+/// guarded-declaration idiom `where shape == Shape.Round { ... }` used in
+/// committed examples (m5_guarded_enum.ri etc.) and `eval_eq` returns a defined
+/// `Bool` for Enum operands.  Rejecting it would break the build with no
+/// in-scope fix — §3.3's rationale is tensor-specific.
+///
+/// This is a pure predicate co-located with `modulo_operands_are_int` /
+/// `is_comparison_op`.  Diagnostic emission lives in
+/// `crates/reify-compiler/src/expr.rs` (`emit_comparison_operand_diagnostics`).
+///
+/// The PRD-prose mnemonic is `E_CmpOperandKind` (severity `E_` → Error).
+///
+/// NOTE: `Type::Frame(_)` is also accepted.  `Frame3 == Frame3` (and `!=`) is
+/// the structural port-selector identity idiom used in forall predicates, e.g.
+/// `p.p @ face("mount") != p.p @ face("side")`.  `Value::Frame` has a
+/// well-defined `PartialEq` impl (compares origin + basis), so this is a
+/// semantically valid equality comparison.  Rejecting it would break existing
+/// ad-hoc-selector patterns that compile and run correctly today.
+pub(crate) fn is_equatable_kind(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Bool
+            | Type::Int
+            | Type::String
+            | Type::Scalar { .. }
+            // Dimension-parametric scalar `Scalar<Q>` (see is_orderable_scalar): a
+            // well-formed scalar from dimension-kinded generic fns, equatable like
+            // any other scalar.
+            | Type::ScalarParam(_)
+            | Type::Enum(_)
+            | Type::Frame(_)
+    )
 }
 
 /// Returns `true` if `expr` is a syntactic literal zero as defined in §7.2:
@@ -2693,5 +2800,320 @@ mod tests {
             ),
             "concrete fn must NOT resolve for wrong dimension arg — exact match only"
         );
+    }
+
+    // ── task 4602 β: Applied / Projection coverage ──────────────────────────
+    // Tests for the new behavioral branches: unify (element-wise Applied,
+    // Projection base, and structural-mismatch fallthrough), substitute_type_params
+    // (Applied arg rebuild and Projection base rebuild), and type_carries_type_param
+    // / type_carries_dim_param recursion into Applied args and Projection base.
+
+    /// unify(Applied{C,[TypeParam(T)]}, Applied{C,[StructureRef(X)]}) must bind T=X.
+    #[test]
+    fn unify_applied_same_name_arity_binds_type_param() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::StructureRef("X".to_string())));
+        assert_eq!(subst.len(), 1);
+    }
+
+    /// unify(Applied{C,…}, Applied{D,…}) with differing name → Ok, no binding.
+    #[test]
+    fn unify_applied_differing_name_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied("D", vec![Type::StructureRef("X".to_string())]);
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing name: expected no binding");
+    }
+
+    /// unify(Applied{C,[T]}, Applied{C,[X,Y]}) with differing arity → Ok, no binding.
+    #[test]
+    fn unify_applied_differing_arity_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied(
+            "C",
+            vec![
+                Type::StructureRef("X".to_string()),
+                Type::StructureRef("Y".to_string()),
+            ],
+        );
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing arity: expected no binding");
+    }
+
+    /// unify(Projection{TypeParam(T),"M"}, Projection{StructureRef(X),"M"})
+    /// must unify the bases and bind T=X.
+    #[test]
+    fn unify_projection_same_member_unifies_base() {
+        let mut subst = HashMap::new();
+        let declared = Type::projection(tp("T"), "M");
+        let arg = Type::projection(Type::StructureRef("X".to_string()), "M");
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::StructureRef("X".to_string())));
+        assert_eq!(subst.len(), 1);
+    }
+
+    /// Projection with differing members → Ok, no binding (structural mismatch
+    /// via the Applied/Projection fallthrough).
+    #[test]
+    fn unify_projection_differing_member_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::projection(tp("T"), "M1");
+        let arg = Type::projection(Type::StructureRef("X".to_string()), "M2");
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing member: expected no binding");
+    }
+
+    /// Applied-vs-StructureRef hits the fallthrough and conservatively binds
+    /// nothing (β posture; δ/normalize_type is responsible for this pair).
+    #[test]
+    fn unify_applied_vs_structure_ref_conservative_beta_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::StructureRef("C".to_string());
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(
+            subst.is_empty(),
+            "Applied-vs-StructureRef must bind nothing in β (see unify doc β note)"
+        );
+    }
+
+    /// type_carries_type_param returns true for Applied whose args contain a TypeParam.
+    #[test]
+    fn type_carries_type_param_applied_with_type_param_arg() {
+        let t = Type::applied("C", vec![tp("T")]);
+        assert!(
+            type_carries_type_param(&t),
+            "Applied with TypeParam arg must carry a type param"
+        );
+        // Applied with no TypeParam in args → false.
+        let t2 = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
+        assert!(
+            !type_carries_type_param(&t2),
+            "Applied with only concrete args must not carry a type param"
+        );
+    }
+
+    /// type_carries_type_param returns true for Projection whose base is a TypeParam.
+    #[test]
+    fn type_carries_type_param_projection_with_type_param_base() {
+        let t = Type::projection(tp("T"), "M");
+        assert!(
+            type_carries_type_param(&t),
+            "Projection with TypeParam base must carry a type param"
+        );
+        let t2 = Type::projection(Type::StructureRef("X".to_string()), "M");
+        assert!(
+            !type_carries_type_param(&t2),
+            "Projection with concrete base must not carry a type param"
+        );
+    }
+
+    // ── task-4490: is_orderable_scalar / is_equatable_kind predicates ─────────
+    //
+    // These unit tests document and pin the allowlist contracts for the two
+    // comparison-operand predicates used in `emit_comparison_operand_diagnostics`.
+    //
+    // GRADUALISM NOTE: `Type::Error` and `Type::TypeParam(_)` both return `false`
+    // from these predicates — they are NOT in the allowlist.  The gradualism
+    // early-return in `emit_comparison_operand_diagnostics` short-circuits before
+    // reaching the predicate calls, so Error/TypeParam operands pass through
+    // silently.  The predicate returning `false` for them is intentional and
+    // correct; it is the early-return that grants the pass-through, not the
+    // predicate returning `true`.
+
+    /// `Type::Int` is orderable (integer comparison is defined at runtime).
+    #[test]
+    fn is_orderable_scalar_int_is_true() {
+        assert!(is_orderable_scalar(&Type::Int));
+    }
+
+    /// A dimensionless `Scalar` is orderable.
+    #[test]
+    fn is_orderable_scalar_dimensionless_scalar_is_true() {
+        assert!(is_orderable_scalar(&Type::dimensionless_scalar()));
+    }
+
+    /// A dimensioned `Scalar` (e.g. Length) is orderable.
+    #[test]
+    fn is_orderable_scalar_dimensioned_scalar_is_true() {
+        assert!(is_orderable_scalar(&Type::length()));
+    }
+
+    /// `Type::Bool` is NOT orderable — `eval_cmp` yields `Undef` for Bool operands.
+    #[test]
+    fn is_orderable_scalar_bool_is_false() {
+        assert!(!is_orderable_scalar(&Type::Bool));
+    }
+
+    /// `Type::String` is NOT orderable — `eval_cmp` yields `Undef` for String operands.
+    #[test]
+    fn is_orderable_scalar_string_is_false() {
+        assert!(!is_orderable_scalar(&Type::String));
+    }
+
+    /// `Type::Enum(_)` is NOT orderable — `eval_cmp` yields `Undef` for Enum operands.
+    /// (Enum EQUALITY is preserved via `is_equatable_kind`; only ORDER is rejected.)
+    #[test]
+    fn is_orderable_scalar_enum_is_false() {
+        assert!(!is_orderable_scalar(&Type::Enum("Direction".to_string())));
+    }
+
+    /// `Type::Tensor{..}` is NOT orderable — aggregate type, yields `Undef` for order ops.
+    #[test]
+    fn is_orderable_scalar_tensor_is_false() {
+        assert!(!is_orderable_scalar(&Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::Matrix{..}` is NOT orderable — aggregate type.
+    #[test]
+    fn is_orderable_scalar_matrix_is_false() {
+        assert!(!is_orderable_scalar(&Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::Vector{..}` is NOT orderable — aggregate type.
+    #[test]
+    fn is_orderable_scalar_vector_is_false() {
+        assert!(!is_orderable_scalar(&Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::TypeParam(_)` is NOT in the `is_orderable_scalar` allowlist.
+    ///
+    /// The gradualism early-return in `emit_comparison_operand_diagnostics` handles
+    /// TypeParam by short-circuiting before this predicate is reached, so no
+    /// spurious `CmpOperandKind` diagnostic is emitted for unresolved type params.
+    #[test]
+    fn is_orderable_scalar_type_param_is_false() {
+        assert!(!is_orderable_scalar(&Type::TypeParam("T".to_string())));
+    }
+
+    /// `Type::Error` (poison) is NOT in the `is_orderable_scalar` allowlist.
+    ///
+    /// The gradualism early-return handles Error before this predicate; it is
+    /// the early-return, not a predicate true-value, that prevents cascade noise.
+    #[test]
+    fn is_orderable_scalar_error_is_false() {
+        assert!(!is_orderable_scalar(&Type::Error));
+    }
+
+    // ── is_equatable_kind ─────────────────────────────────────────────────────
+
+    /// `Type::Bool` is equatable — `eval_eq` returns a defined Bool for Bool operands.
+    #[test]
+    fn is_equatable_kind_bool_is_true() {
+        assert!(is_equatable_kind(&Type::Bool));
+    }
+
+    /// `Type::Int` is equatable.
+    #[test]
+    fn is_equatable_kind_int_is_true() {
+        assert!(is_equatable_kind(&Type::Int));
+    }
+
+    /// `Type::String` is equatable — `eval_eq` returns a defined Bool for String operands.
+    #[test]
+    fn is_equatable_kind_string_is_true() {
+        assert!(is_equatable_kind(&Type::String));
+    }
+
+    /// A dimensionless `Scalar` is equatable.
+    #[test]
+    fn is_equatable_kind_dimensionless_scalar_is_true() {
+        assert!(is_equatable_kind(&Type::dimensionless_scalar()));
+    }
+
+    /// A dimensioned `Scalar` is equatable.
+    #[test]
+    fn is_equatable_kind_dimensioned_scalar_is_true() {
+        assert!(is_equatable_kind(&Type::length()));
+    }
+
+    /// `Type::Enum(_)` IS equatable — CRUX: `eval_eq` returns a defined Bool for Enum.
+    ///
+    /// The `where shape == Shape.Round { ... }` guarded-enum idiom routes through
+    /// the `Eq` arm and must compile cleanly.  This is a pinning test for the
+    /// task-4490 scoping decision (design_decision[0]).
+    #[test]
+    fn is_equatable_kind_enum_is_true() {
+        assert!(is_equatable_kind(&Type::Enum("Shape".to_string())));
+    }
+
+    /// `Type::Tensor{..}` is NOT equatable — aggregate type, `eval_eq` yields `Undef`.
+    #[test]
+    fn is_equatable_kind_tensor_is_false() {
+        assert!(!is_equatable_kind(&Type::Tensor {
+            rank: 2,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::Matrix{..}` is NOT equatable — aggregate type.
+    #[test]
+    fn is_equatable_kind_matrix_is_false() {
+        assert!(!is_equatable_kind(&Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::Vector{..}` is NOT equatable — aggregate type.
+    #[test]
+    fn is_equatable_kind_vector_is_false() {
+        assert!(!is_equatable_kind(&Type::Vector {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        }));
+    }
+
+    /// `Type::TypeParam(_)` is NOT in the `is_equatable_kind` allowlist.
+    ///
+    /// Gradualism in `emit_comparison_operand_diagnostics` short-circuits on
+    /// TypeParam before this predicate is reached.
+    #[test]
+    fn is_equatable_kind_type_param_is_false() {
+        assert!(!is_equatable_kind(&Type::TypeParam("T".to_string())));
+    }
+
+    /// `Type::Error` (poison) is NOT in the `is_equatable_kind` allowlist.
+    ///
+    /// Gradualism short-circuits on Error before this predicate is reached.
+    #[test]
+    fn is_equatable_kind_error_is_false() {
+        assert!(!is_equatable_kind(&Type::Error));
+    }
+
+    /// `Type::Frame(_)` IS equatable — port-selector identity comparison idiom.
+    ///
+    /// `@face("mount") != @face("side")` in forall predicates types both
+    /// operands as `Frame3`.  `Value::Frame` has a well-defined `PartialEq`
+    /// (compares origin + basis), so this is a semantically valid equality.
+    /// Rejecting Frame would break the ad-hoc selector pattern.
+    #[test]
+    fn is_equatable_kind_frame_is_true() {
+        assert!(is_equatable_kind(&Type::Frame(3)));
+        assert!(is_equatable_kind(&Type::Frame(2)));
+    }
+
+    /// `Type::Frame(_)` is NOT orderable — Frame3 has no natural ordering.
+    #[test]
+    fn is_orderable_scalar_frame_is_false() {
+        assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
 }

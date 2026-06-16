@@ -60,6 +60,19 @@ const SKIP_SET: &[(&str, &str)] = &[
          seed_candidate_value_map.",
     ),
     (
+        "auto/bearing_unsat.ri",
+        "ζ negative fixture: strict `auto: Seal` with TWO candidates that BOTH violate the \
+         member constraint `seal.thickness < bore_radius=3mm` (ThickSeal=5mm, HugeSeal=8mm). \
+         Under the real checker (SimpleConstraintChecker) Phase B finds zero feasible candidates \
+         → FeasibilityResult::Empty → E_AUTO_TYPE_PARAM_NO_CANDIDATE Error naming each \
+         candidate's violated constraint. Under the stub checker every constraint is \
+         Indeterminate → all candidates stub-feasible → ≥2 feasible → E_AUTO_TYPE_PARAM_AMBIGUOUS. \
+         Either way the fixture emits an Error under any checker and cannot pass the zero-Error \
+         gate. Exercised by task ζ's reify-eval auto_type_param_completion_e2e harness \
+         (bearing_unsat_emits_no_candidate_naming_constraint). \
+         Mirrored into auto_type_param_determinism_tests.rs::SKIP_SET (task 4437 ζ).",
+    ),
+    (
         "conditional_compilation/main.ri",
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \

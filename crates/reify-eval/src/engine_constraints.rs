@@ -11,8 +11,8 @@ use reify_core::{
 use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     CompiledExpr, CompiledFunction, ConstraintDiagnostics, ConstraintInput, ConstraintResult,
-    DeterminacyState, GeometryHandleId, OptimizedImplInput, PersistentMap, Satisfaction,
-    StructureInstanceData, StructureTypeId, Value, ValueMap,
+    DeterminacyState, GeometryHandleId, KernelHandle, OptimizedImplInput, PersistentMap,
+    Satisfaction, StructureInstanceData, StructureTypeId, Value, ValueMap,
 };
 
 use crate::{CheckResult, ConstraintCheckEntry, Engine, EngineError};
@@ -763,6 +763,222 @@ impl Engine {
                 debug_assert_eq!(
                     result.id, compiled.id,
                     "check_constraints_against_templates: result.id must match compiled.id \
+                     — dispatch_constraints reordered results or active_constraints changed",
+                );
+                Self::push_constraint_result(
+                    &mut diagnostics,
+                    &mut constraint_results,
+                    result,
+                    compiled.label.as_deref(),
+                );
+            }
+        }
+
+        (constraint_results, diagnostics)
+    }
+
+    /// Task 4358 ε (step-8): the post-geometry constraint re-check that supersedes
+    /// the kernel-less Task-4229 re-check on the `UnifiedDag` build path.
+    ///
+    /// Same per-template / [`collect_active_constraints`] /
+    /// [`dispatch_constraints`] / [`push_constraint_result`] shape as
+    /// [`check_constraints_against_templates`], with ONE addition: before the
+    /// kernel-less [`SimpleConstraintChecker`] runs, each active constraint's
+    /// inline geometry-query leaves (`bounding_box(part)` / `volume(part)` / …)
+    /// are folded to `Literal`s of their kernel-dispatched `Value` via
+    /// [`crate::geometry_ops::rewrite_geometry_queries`], using the live default
+    /// kernel + the realization-produced `module_named_steps`. This is the engine
+    /// side of PRD C6/D4: the constraint trait boundary stays kernel-less (no
+    /// trait break), but `build()` resolves the geometry BEFORE the boundary so an
+    /// INLINE geometry-query constraint reaches a DEFINITE verdict instead of the
+    /// frozen kernel-less `Indeterminate` (un-freezing "C7").
+    ///
+    /// ORDERING INVARIANT (esc-4358-124): `eval_expr` `unreachable!()`-PANICS on a
+    /// `CrossSubGeometryRef`, so the fold MUST reduce every geometry-query leaf
+    /// (incl. `bounding_box(proc.build_volume)`) to a `Literal` STRUCTURALLY here,
+    /// before `dispatch_constraints` runs the checker. `rewrite_geometry_queries`
+    /// → `dispatch_geometry_query_call` → `resolve_geometry_handle_arg` resolves
+    /// the handle WITHOUT ever calling `eval_expr` on the geometry arg, satisfying
+    /// the invariant.
+    ///
+    /// Returns the SAME `(Vec<ConstraintCheckEntry>, Vec<Diagnostic>)` shape as
+    /// [`check_constraints_against_templates`] so it is a drop-in re-check source
+    /// for the 4229 merge loop in `build()`. When no default kernel is present
+    /// (nothing to fold against) it defers verbatim to the kernel-less path.
+    ///
+    /// AUTO-CONSTRAINT GUARD (step-12): `declined` is the set of constraints whose
+    /// transitive auto-read closure reaches an `auto` cell, computed by δ's
+    /// [`crate::engine_fixpoint::constraints_reaching_auto`] — EXACTLY the
+    /// constraints for which δ emits `E_EVAL_UNRESOLVED`. Each such constraint is
+    /// SKIPPED here (dropped from `active_constraints` BEFORE the geometry fold and
+    /// the checker dispatch), so it is OMITTED from the returned results. The 4229
+    /// merge loop then finds no re-check entry for it and leaves its pre-geometry
+    /// `Indeterminate` untouched — δ's `E_EVAL_UNRESOLVED` stays the sole signal,
+    /// with no contradicting definite/Indeterminate-from-`Undef` verdict.
+    ///
+    /// Dropping the expr BEFORE the fold also satisfies the esc-4358-124 ordering
+    /// invariant: a declined constraint's expr may still carry an unfolded
+    /// `CrossSubGeometryRef` whose closure is auto-blocked, and `eval_expr`
+    /// `unreachable!()`-PANICS on that node — so it must never reach the checker.
+    pub(crate) fn check_constraints_post_geometry(
+        &self,
+        module: &CompiledModule,
+        values: &ValueMap,
+        module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
+        default_kernel_name: &str,
+        determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+        declined: &HashSet<ConstraintNodeId>,
+    ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
+        // No default kernel → no geometry to fold; the folding pass would be a
+        // no-op, so defer to the kernel-less re-check verbatim (keeps the
+        // no-kernel UnifiedDag path identical to legacy).
+        let Some(kernel) = self.geometry_kernels.get(default_kernel_name) else {
+            return self.check_constraints_against_templates(module, values, determinacy);
+        };
+        let kernel = kernel.as_ref();
+
+        let mut constraint_results = Vec::new();
+        let mut diagnostics = Vec::new();
+
+        for template in &module.templates {
+            let active_constraints = Self::collect_active_constraints(template, values);
+
+            // Task 4358 ε step-12: DECLINE constraints whose transitive auto-read
+            // closure reaches an `auto` cell. Filtering BEFORE the fold/dispatch
+            // (a) omits them from the returned results so the 4229 merge loop
+            // leaves their pre-geometry `Indeterminate` intact (δ's
+            // `E_EVAL_UNRESOLVED` is the sole signal — no bogus verdict), and
+            // (b) drops their expr before any `eval_expr`, honouring the
+            // esc-4358-124 ordering invariant (an unfolded `CrossSubGeometryRef`
+            // reaching the checker PANICS). `declined` is empty on every path that
+            // is not UnifiedDag-with-an-auto-reaching constraint, so this is a
+            // no-op elsewhere.
+            let active_constraints: Vec<&CompiledConstraint> = active_constraints
+                .into_iter()
+                .filter(|c| !declined.contains(&c.id))
+                .collect();
+
+            if active_constraints.is_empty() {
+                continue;
+            }
+
+            // This template's realization-produced handle map (keyed by member
+            // name, plus `<sub>.<member>` cross-sub keys seeded by
+            // `seed_cross_sub_named_steps`). Absent only if the template realized
+            // no geometry — then the fold finds no handles and leaves leaves as
+            // `Undef` (→ Indeterminate), matching the kernel-less path. Cloned
+            // (not borrowed) so the cross-`let` seeding below can extend it.
+            let mut named_steps = module_named_steps
+                .get(&template.name)
+                .cloned()
+                .unwrap_or_default();
+
+            // Task 4358 ε step-10: seed cross-`let` structure-instance handles so
+            // an inline `bounding_box(proc.build_volume)` leaf folds. A
+            // `let proc = FdmPrinter()` binding is a `StructureRef`-typed value
+            // cell (NOT a `sub`, so `seed_cross_sub_named_steps` does not cover
+            // it), and its child realizations were snapshotted under
+            // `module_named_steps[<def-name>]` when that template's realization
+            // loop ran. For each such cell, copy the child's `<member> → handle`
+            // entries under the composed `"<binding>.<member>"` key that
+            // `resolve_geometry_handle_arg` reconstructs from the `IndexAccess`
+            // member-access shape. `or_insert` lets a same-template realization
+            // handle win over a cross-`let` seed on key collision. This runs only
+            // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
+            // the realization geometry output stay byte-identical.
+            //
+            // SAFE-DEGRADATION — single-instance-per-def fold (task 4358 ε
+            // amendment, reviewer_comprehensive robustness): the child handle set
+            // is looked up by the structure DEF name (`module_named_steps[def_name]`,
+            // keyed by template name, NOT by `let`-binding instance). So TWO same-def
+            // bindings in one template carrying DIFFERENT params — e.g.
+            // `let a = FdmPrinter(build_volume = box(200mm,...))` and
+            // `let b = FdmPrinter(build_volume = box(300mm,...))` — would both seed
+            // their `<binding>.<member>` keys from that ONE shared (last-snapshotted)
+            // handle set, folding `bounding_box(a.build_volume)` and
+            // `bounding_box(b.build_volume)` against the SAME handle — a
+            // silently-incorrect DEFINITE verdict, not an `Undef`.
+            //
+            // To fail SAFE we DECLINE the cross-`let` fold for any def bound more than
+            // once in this template (see `structure_ref_def_counts` below): those
+            // `<binding>.<member>` keys are left unseeded, so the leaf folds to `Undef`
+            // → `Indeterminate` (degrades, never wrong). The 4275 form this closes
+            // (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()` (count == 1), so it
+            // still folds to a DEFINITE verdict. Per-instance handle disambiguation
+            // (per-binding, not per-def, realization snapshot keying) would let
+            // multi-instance folds resolve correctly — a larger change to the
+            // realization executor's `module_named_steps` population, deferred to #4628
+            // (PRD §9 geometry-in-the-loop stays excluded; multi-instance cross-`let`
+            // folding is the adjacent follow-up). Pinned by
+            // `unified_dag_multi_instance_cross_let_declines_fold`.
+            let mut structure_ref_def_counts: HashMap<&str, usize> = HashMap::new();
+            for cell in &template.value_cells {
+                if let reify_core::Type::StructureRef(def_name) = &cell.cell_type {
+                    *structure_ref_def_counts
+                        .entry(def_name.as_str())
+                        .or_insert(0) += 1;
+                }
+            }
+            for cell in &template.value_cells {
+                let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
+                    continue;
+                };
+                // Decline the fold for a def bound >1× in this template (safe
+                // degradation above): leave its `<binding>.<member>` keys unseeded so
+                // the leaf folds to `Undef` → `Indeterminate`, never a wrong handle.
+                if structure_ref_def_counts
+                    .get(def_name.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+                {
+                    continue;
+                }
+                let Some(child_steps) = module_named_steps.get(def_name) else {
+                    continue;
+                };
+                for (member, handle) in child_steps {
+                    named_steps
+                        .entry(format!("{}.{}", cell.id.member, member))
+                        .or_insert(*handle);
+                }
+            }
+
+            // Fold each active constraint's geometry-query leaves to Literals
+            // BEFORE the kernel-less checker runs (ordering invariant above). An
+            // unresolvable leaf folds to `Literal(Undef)`, propagating to an
+            // Indeterminate verdict — never a wrong value.
+            let folded_exprs: Vec<CompiledExpr> = active_constraints
+                .iter()
+                .map(|c| {
+                    crate::geometry_ops::rewrite_geometry_queries(
+                        &c.expr,
+                        &named_steps,
+                        kernel,
+                        &mut diagnostics,
+                    )
+                })
+                .collect();
+
+            let entries: Vec<_> = active_constraints
+                .iter()
+                .zip(folded_exprs.iter())
+                .map(|(c, folded)| (c.id.clone(), folded, c.optimized_target.as_deref()))
+                .collect();
+
+            let (results, dispatch_diags) =
+                self.dispatch_constraints(entries, values, &self.functions, determinacy);
+            diagnostics.extend(dispatch_diags);
+            debug_assert_eq!(
+                results.len(),
+                active_constraints.len(),
+                "check_constraints_post_geometry: results/active_constraints length mismatch",
+            );
+
+            for (result, compiled) in results.into_iter().zip(active_constraints.iter()) {
+                debug_assert_eq!(
+                    result.id, compiled.id,
+                    "check_constraints_post_geometry: result.id must match compiled.id \
                      — dispatch_constraints reordered results or active_constraints changed",
                 );
                 Self::push_constraint_result(

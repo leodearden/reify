@@ -341,11 +341,13 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     }
 }
 
-/// The quantity dimension of a `Vector` operand (its `quantity` Scalar's
-/// dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or a non-Vector).
+/// The quantity dimension of a `Vector` or `Point` operand (its `quantity`
+/// Scalar's dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or
+/// a non-Vector/non-Point type).
 fn vector_quantity_dimension(t: &Type) -> DimensionVector {
     match t {
         Type::Vector { quantity, .. } => arg_dimension(quantity),
+        Type::Point { quantity, .. } => arg_dimension(quantity),
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
@@ -1169,6 +1171,35 @@ mod tests {
         assert_eq!(
             math_fn_result_type("magnitude", &[v]),
             sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// magnitude of a Point3<Length> must return Scalar<Length>, not Real.
+    /// (vector_quantity_dimension must handle Type::Point in addition to Type::Vector.)
+    #[test]
+    fn magnitude_of_point3_is_quantity_scalar() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("magnitude", &[p]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// dot/cross/outer pass through vector_quantity_dimension (via arg_vector_quantity),
+    /// so Point operands now yield the correct quantity dimension rather than DIMENSIONLESS.
+    /// dot(Point3<L>, Point3<L>) → Scalar<L²> — documents the widened scope of the helper.
+    #[test]
+    fn dot_of_point3_uses_point_quantity_dimension() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("dot", &[p.clone(), p]),
+            sca(DimensionVector::LENGTH.mul(&DimensionVector::LENGTH))
         );
     }
 

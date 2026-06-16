@@ -1736,7 +1736,7 @@ Warn, not forbid. When a declaration in a child scope uses the same name as a de
 
 ### 8.6 `self`
 
-The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent.
+The `self` keyword refers to the enclosing entity definition or specialization. `self.param_name` is equivalent to `param_name` for locally declared names. Required when the entity itself (rather than one of its members) is the referent. This equivalence extends to all locally-scoped names: a bare reference to a single-instance sub (`bolt`) resolves identically to `self.bolt` — a `StructureRef` value — and a bare reference to a collection sub (`bolts`) resolves identically to `self.bolts` — a `List<T>` value.
 
 `self` never refers to the module. The module is not an entity.
 
@@ -1822,6 +1822,26 @@ Referencing a guarded entity from an unguarded context is a compile error. A ref
 ### 8.11 Imports and Scoping
 
 Imported names enter the module's top-level namespace. They do not participate in upward visibility -- imported names are not lexical parents. They are simply available as names in the module scope.
+
+### 8.12 Reserved Builtin Type Names
+
+The following names are reserved by the type resolver and take precedence over user declarations in type-annotation position:
+
+- **Datum types:** `Direction`, `Axis`, `Plane`, `Frame`
+- **Scalar primitives:** `Bool`, `Int`, `Real`, `String`, `Dimensionless`, `Scalar`
+- **Selector family:** `Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`
+- **Geometry / solid types:** `Geometry`, `Solid`, `DatumRef`
+- **Named physical dimensions:** `Length`, `Mass`, `Time`, `Force`, `Pressure`, `Energy`, `Power`, `Torque`, `Density`, `Area`, `Volume`, `Angle`, `Temperature`, `Velocity`, `Acceleration`, and all other named physical-quantity singletons in the standard dimension table.
+
+Declaring a user `enum`, `structure`, `occurrence`, or `trait` whose name matches one of these builtin names causes the user declaration to be silently shadowed in type-annotation position — the builtin type always wins when resolving a type annotation.
+
+**Diagnostic:** The compiler emits a `W_RESERVED_TYPE_NAME` Warning at the user declaration's span to alert the author. The program still compiles; the builtin still resolves. Rename the user declaration to avoid the ambiguity.
+
+```reify
+// WARNING: `enum Direction` shadows the builtin Direction datum type.
+// Rename to e.g. `enum Polarity` to eliminate the warning.
+enum Direction { In, Out }   // W_RESERVED_TYPE_NAME
+```
 
 ---
 

@@ -1369,6 +1369,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_CONFLICT`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnTypeArgConflict,
+    /// An Option-recovery or Map-recovery combinator call supplies a default
+    /// value whose type does not unify with the subject's element type.
+    /// The authoritative combinator set is `FALLBACK_COMBINATORS` in
+    /// `crates/reify-compiler/src/expr.rs` (currently: `unwrap_or`,
+    /// `or_default`, `fallback`, `get_or`).  Edit that constant to add or
+    /// remove members — the doc comments here do not need to be kept in sync.
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` generic type-arg-conflict arm),
+    /// emitted when `type_compat::unify` returns `Err(TypeArgConflict)` for a
+    /// call whose name is in the recovery-combinator set
+    /// (`is_fallback_combinator`).  The conflict is between the default-value
+    /// argument type and the element type bound by the subject argument.
+    ///
+    /// Canonical message form:
+    /// `"E_FALLBACK_TYPE: conflicting type arguments for type parameter '<P>' in call to '<name>': <existing> vs <incoming>"`
+    ///
+    /// The PRD-prose mnemonic is `E_FALLBACK_TYPE`; contract C-3 of
+    /// `docs/prds/v0_6/result-and-fallback.md`.
+    FallbackType,
     /// A generic function call's type argument(s) cannot be inferred from the
     /// supplied arguments, leaving the call's result type wholly undetermined.
     ///
@@ -2544,6 +2564,91 @@ pub enum DiagnosticCode {
     /// `E_TYPE_PARAM_MEMBER_NOT_IN_BOUND` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §4596).
     TypeParamMemberNotInBound,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    ///
+    /// Emitted as a `Warning` when a user-declared `enum`, `structure`, `occurrence`,
+    /// or `trait` declaration uses a name that is also resolvable by the builtin type
+    /// resolver (`resolve_type_name`). The builtin type still wins in type-annotation
+    /// position; this warning exists to alert the author that the user declaration is
+    /// silently shadowed.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' shadows a builtin type name; the builtin takes precedence in type position"`
+    ///
+    /// One label accompanies the warning at the user declaration's span:
+    /// `"shadows a builtin type name"`.
+    ///
+    /// Builtin names covered: the datum types (`Direction`, `Axis`, `Plane`, `Frame`),
+    /// scalar primitives (`Bool`, `Int`, `Real`, `String`), the selector family
+    /// (`Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`), geometry/solid types
+    /// (`Geometry`, `Solid`, `DatumRef`), `Dimensionless`, and every named physical
+    /// dimension (`Length`, `Mass`, `Force`, `Energy`, `Area`, `Volume`, `Angle`, …).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_RESERVED_TYPE_NAME`.
+    ReservedTypeName,
+
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Eq/Ne/Lt/Le/Gt/Ge compile site).
+    ///
+    /// Emitted as a `Severity::Error` when a relational operator (any of `==`, `!=`,
+    /// `<`, `<=`, `>`, `>=`) is applied to an operand whose type is not acceptable for
+    /// that operator family:
+    ///
+    /// - ORDER ops (`<`, `<=`, `>`, `>=`): operand must be `Type::Int` or
+    ///   `Type::Scalar { .. }` (`is_orderable_scalar`).
+    /// - EQUALITY ops (`==`, `!=`): operand must be `Type::Bool`, `Type::Int`,
+    ///   `Type::String`, `Type::Scalar { .. }`, or `Type::Enum(..)` (`is_equatable_kind`).
+    ///
+    /// Aggregate/structural kinds (`Tensor`, `Matrix`, `Vector`, `Point`, `List`, …)
+    /// are rejected for ALL six operators — they produce `Value::Undef` at runtime,
+    /// making any comparison silently indeterminate.
+    ///
+    /// When the offending operand is `Type::Tensor { .. }` or `Type::Matrix { .. }`,
+    /// the message includes a fixit suggestion ("reduce to a scalar first, e.g.
+    /// `eigenvalues(x)[0]` or `trace(x)`") and the candidates list is populated via
+    /// [`Diagnostic::with_candidates`] for machine-readable IDE quick-fix support.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code (anti-cascade).
+    ///
+    /// The result type is NOT poisoned — comparison ops return `Type::Bool` even on
+    /// operand-kind errors (mirrors the Implies guard; avoids cascade noise in
+    /// enclosing `constraint` expressions).
+    ///
+    /// Canonical message form (order op, left operand bad):
+    ///   `"comparison \`<\` left operand must be a scalar or Int, got \`Tensor<2,3,Length>\`"`
+    /// Canonical message form (equality op, left operand bad):
+    ///   `"comparison \`==\` left operand is not a comparable kind, got \`Tensor<2,3,Length>\`; reduce to a scalar first, e.g. \`eigenvalues(x)[0]\` or \`trace(x)\`"`
+    /// with a label `"not a comparable kind"` on the expression span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CmpOperandKind`
+    /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
+    CmpOperandKind,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::And/Or/Implies compile site).
+    ///
+    /// Emitted as a `Severity::Error` when a logical operator (`and`, `or`, `implies`)
+    /// is applied to an operand whose type is not `Type::Bool`.  All three logical
+    /// operators require `Bool` operands; non-Bool values produce `Value::Undef` at
+    /// runtime (Kleene three-valued logic: `Undef and false = false` / `Undef or true = true`,
+    /// but `5 and flag` is an authoring mistake that always Undefs when `5` stays non-Bool).
+    ///
+    /// Generalizes the previously-uncoded Implies Bool guard (task 3921) to `And` and
+    /// `Or` uniformly.  The Kleene RUNTIME eval (`eval_and`, `eval_or`, `eval_implies`
+    /// in `reify-expr`) is NOT changed — only the compile-time diagnostic is added.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code (anti-cascade).
+    ///
+    /// The result type is NOT poisoned — logical ops return `Type::Bool` even on
+    /// operand errors (mirrors the prior Implies behavior).
+    ///
+    /// Canonical message form (left operand bad):
+    ///   `"and left operand must be Bool, got \`Int\`"`
+    /// with a label `"expected Bool here"` on the offending operand span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_LogicalRequiresBool`
+    /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
+    LogicalOperandNotBool,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4125,6 +4230,28 @@ mod tests {
     fn diagnostic_code_op_contract_violation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
         assert_eq!(s, "\"OpContractViolation\"");
+    }
+
+    // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
+    // Pairs with the lint pass in
+    // `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip test is added here.
+
+    /// Task 4591 (step-1): `DiagnosticCode::ReservedTypeName` must exist, be
+    /// distinct from `DiagnosticCode::Shadowing`, and be attachable via
+    /// `Diagnostic::warning(..).with_code(..)` with the code reading back.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn reserved_type_name_code_exists_and_attaches() {
+        // Exist + distinct from a neighbouring Warning code.
+        assert_ne!(DiagnosticCode::ReservedTypeName, DiagnosticCode::Shadowing);
+
+        // Attachable via the builder; code reads back correctly.
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ReservedTypeName);
+        assert_eq!(d.code, Some(DiagnosticCode::ReservedTypeName));
     }
 }
 

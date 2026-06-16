@@ -392,7 +392,7 @@ enum Shape {
     Point,
     Circle
 }
-fn area(w : Length) -> Scalar { w }
+fn area(w : Length) -> Length { w }
 ";
 
         lsp.handle_request(
