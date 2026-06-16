@@ -112,6 +112,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         // sub lowers to a `SubComponentDecl` and is never held in a value cell;
         // no `Value::Keyed` exists. γ may revisit if it introduces a Value form.
         Type::Keyed(_) => false,
+        // Assoc-type projection (task 4602 β): compile-time only — non-concrete
+        // until base is resolved by normalize_type (leaf δ); no runtime form.
+        Type::Projection { .. } => false,
         // Representable: every other variant that has (or may have) a
         // corresponding `Value`. Listed explicitly so that adding a new
         // `Type` variant to `reify_types` requires a conscious decision here
@@ -150,6 +153,9 @@ pub fn is_representable_cell_type(ty: &reify_core::Type) -> bool {
         | Type::BoundingBox
         | Type::Matrix { .. }
         | Type::Geometry // task 3604 / GHR-β: Value::GeometryHandle now exists
+        // Generic-applied type (task 4602 β): phantom args — runtime cell holds
+        // a Value::StructureInstance identified by name (args erased at eval).
+        | Type::Applied { .. }
         | Type::Error => true,
     }
 }
@@ -5307,6 +5313,38 @@ mod invariant_tests {
             )))),
             "Type::Keyed must be non-representable as a value cell_type (β: no Value::Keyed; \
              keyed subs lower to SubComponentDecl)"
+        );
+    }
+
+    // ── Applied / Projection representability (step-1 RED / task 4602 β) ────
+    // RED until step-2 adds Type::Applied and Type::Projection variants.
+    // Compile failure IS the RED signal.
+
+    /// β: Type::Applied is representable — a phantom-args cell at runtime holds
+    /// a `Value::StructureInstance` identified by name, ignoring type args.
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_admits_applied() {
+        assert!(
+            super::is_representable_cell_type(&Type::Applied {
+                name: "Coupling".to_string(),
+                args: vec![Type::StructureRef("Prismatic".to_string())],
+            }),
+            "Type::Applied must be representable (phantom-args cell, β)"
+        );
+    }
+
+    /// β: Type::Projection is NOT representable — compile-time-only assoc-type
+    /// access; no runtime value form exists until the base is concrete (δ).
+    /// RED until step-2.
+    #[test]
+    fn is_representable_cell_type_rejects_projection() {
+        assert!(
+            !super::is_representable_cell_type(&Type::Projection {
+                base: Box::new(Type::StructureRef("Prismatic".to_string())),
+                member: "MotionValue".to_string(),
+            }),
+            "Type::Projection must be non-representable (compile-time only, β)"
         );
     }
 }

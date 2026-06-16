@@ -860,6 +860,9 @@ fn format_type_repr(t: &Type) -> String {
         Type::ScalarParam(_) => "ScalarParam",
         Type::Error => "Error",
         Type::Union(_) => "Union",
+        // task 4602 β: new variants; payload dropped per format_type_repr contract.
+        Type::Applied { .. } => "Applied",
+        Type::Projection { .. } => "Projection",
     }
     .to_string()
 }
@@ -1031,6 +1034,21 @@ mod tests {
                 quantity: Box::new(Type::dimensionless_scalar()),
             }),
             "Matrix"
+        );
+        // β (task 4602): Applied and Projection — new variants; RED until step-2.
+        assert_eq!(
+            format_type_repr(&Type::applied(
+                "Coupling",
+                vec![Type::StructureRef("Prismatic".into())]
+            )),
+            "Applied"
+        );
+        assert_eq!(
+            format_type_repr(&Type::projection(
+                Type::StructureRef("Prismatic".into()),
+                "MotionValue"
+            )),
+            "Projection"
         );
     }
 }

@@ -290,7 +290,13 @@ fn value_type_kind_matches(
         // check is the defence-in-depth arm). Any non-structure target type
         // (Int, Real, List, …) default-rejects via the inner `_` arm.
         Value::StructureInstance(data) => match ty {
+            // Concrete structure name — exact nominal match.
             Type::StructureRef(n) => n == &data.type_name,
+            // Generic-applied type (task 4602 β): phantom args, name-only match.
+            // A runtime Coupling<Prismatic> cell holds an ordinary
+            // StructureInstance with type_name "Coupling"; the type args are
+            // compile-time only and carry no runtime payload.
+            Type::Applied { name, .. } => name == &data.type_name,
             Type::TraitObject(bound) => registry
                 .and_then(|r| r.meta(data.type_id))
                 .map(|m| m.declared_trait_bounds.iter().any(|b| b == bound))
@@ -1813,6 +1819,41 @@ mod tests {
         assert!(
             !value_type_kind_matches(&v, &t, None),
             "Without a registry, trait-bound conformance is unprovable → false"
+        );
+    }
+
+    // ── value_type_kind_matches: Applied type (step-1 RED / task 4602 β) ────────
+    // RED until step-2 adds Type::Applied and updates the StructureInstance arm.
+    // Compile failure IS the RED signal.
+
+    /// β: Applied type with the SAME name as the StructureInstance → true
+    /// (phantom args are ignored; runtime match is name-only).
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_same_name_returns_true() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Coupling".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must match Applied with same name (phantom args ignored)"
+        );
+    }
+
+    /// β: Applied type with a DIFFERENT name → false.
+    #[test]
+    fn value_type_kind_matches_structure_instance_into_applied_different_name_returns_false() {
+        use reify_core::Type;
+        let (v, reg) = structure_instance_with_registry("Coupling", &[]);
+        let t = Type::Applied {
+            name: "Other".to_string(),
+            args: vec![Type::StructureRef("Prismatic".to_string())],
+        };
+        assert!(
+            !value_type_kind_matches(&v, &t, Some(&reg)),
+            "StructureInstance must NOT match Applied with different name"
         );
     }
 

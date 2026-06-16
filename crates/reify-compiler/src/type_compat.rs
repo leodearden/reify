@@ -344,6 +344,11 @@ pub(crate) fn type_carries_trait_object(t: &Type) -> bool {
         Type::List(inner) => type_carries_trait_object(inner),
         Type::Set(inner) => type_carries_trait_object(inner),
         Type::Map(key, val) => type_carries_trait_object(key) || type_carries_trait_object(val),
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        // Added explicitly (not compiler-forced) to stay verbatim-synced with
+        // the reify-expr copy (esc-4231-120/126) and for §5 substrate correctness.
+        Type::Applied { args, .. } => args.iter().any(type_carries_trait_object),
+        Type::Projection { base, .. } => type_carries_trait_object(base),
         _ => false,
     }
 }
@@ -407,6 +412,10 @@ pub(crate) fn type_carries_type_param(t: &Type) -> bool {
 
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_type_param),
+
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_type_param),
+        Type::Projection { base, .. } => type_carries_type_param(base),
 
         // All remaining leaves carry no inner `Type`.
         Type::Bool
@@ -488,6 +497,10 @@ pub(crate) fn type_carries_dim_param(t: &Type) -> bool {
         // Union: any arm.
         Type::Union(arms) => arms.iter().any(type_carries_dim_param),
 
+        // task 4602 β: Applied — recurse into type args; Projection — recurse into base.
+        Type::Applied { args, .. } => args.iter().any(type_carries_dim_param),
+        Type::Projection { base, .. } => type_carries_dim_param(base),
+
         // All remaining leaves carry no `ScalarParam`.
         Type::Bool
         | Type::Int
@@ -546,6 +559,14 @@ pub(crate) struct TypeArgConflict {
 ///
 /// Pure and side-effect-free apart from mutating `subst`: it takes no
 /// diagnostics sink, leaving emission to the call site.
+///
+/// **β note — `Applied` vs `StructureRef` (task 4602):** `Applied{"C", [T]}`
+/// unified against a bare `StructureRef("C")` hits the
+/// `(Type::Applied { .. }, _) => Ok(())` fallthrough arm and binds **nothing**
+/// for `T`.  This is the deliberate β posture: resolving arg bindings across an
+/// Applied↔StructureRef pair requires the per-structure assoc-type table, which
+/// belongs to δ (`normalize_type`).  The δ implementer must NOT assume that this
+/// inference already happens here.
 pub(crate) fn unify(
     declared: &Type,
     arg: &Type,
@@ -653,6 +674,23 @@ pub(crate) fn unify(
             Ok(())
         }
 
+        // task 4602 β: Applied — same name + same arity → element-wise unify args.
+        (
+            Type::Applied { name: dn, args: da },
+            Type::Applied { name: an, args: aa },
+        ) if dn == an && da.len() == aa.len() => {
+            for (d, a) in da.iter().zip(aa.iter()) {
+                unify(d, a, subst)?;
+            }
+            Ok(())
+        }
+
+        // task 4602 β: Projection — same member → unify bases.
+        (
+            Type::Projection { base: db, member: dm },
+            Type::Projection { base: ab, member: am },
+        ) if dm == am => unify(db, ab, subst),
+
         // Conservative fallthrough — listed explicitly with NO `_` wildcard so
         // a future `Type` variant forces a compile-time decision here, in
         // lock-step with `type_carries_type_param` and the exhaustive
@@ -678,7 +716,10 @@ pub(crate) fn unify(
         | (Type::Vector { .. }, _)
         | (Type::Tensor { .. }, _)
         | (Type::Matrix { .. }, _)
-        | (Type::Union(_), _) => Ok(()),
+        | (Type::Union(_), _)
+        // task 4602 β: Applied/Projection structural mismatches → no binding.
+        | (Type::Applied { .. }, _)
+        | (Type::Projection { .. }, _) => Ok(()),
 
         // Dimension-param scalar: bind when the arg is a concrete Scalar, mirror
         // of the TypeParam arm above (bind / idempotent re-bind = Ok / differing
@@ -2692,6 +2733,117 @@ mod tests {
                 OverloadResolution::NoMatch(_)
             ),
             "concrete fn must NOT resolve for wrong dimension arg — exact match only"
+        );
+    }
+
+    // ── task 4602 β: Applied / Projection coverage ──────────────────────────
+    // Tests for the new behavioral branches: unify (element-wise Applied,
+    // Projection base, and structural-mismatch fallthrough), substitute_type_params
+    // (Applied arg rebuild and Projection base rebuild), and type_carries_type_param
+    // / type_carries_dim_param recursion into Applied args and Projection base.
+
+    /// unify(Applied{C,[TypeParam(T)]}, Applied{C,[StructureRef(X)]}) must bind T=X.
+    #[test]
+    fn unify_applied_same_name_arity_binds_type_param() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::StructureRef("X".to_string())));
+        assert_eq!(subst.len(), 1);
+    }
+
+    /// unify(Applied{C,…}, Applied{D,…}) with differing name → Ok, no binding.
+    #[test]
+    fn unify_applied_differing_name_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied("D", vec![Type::StructureRef("X".to_string())]);
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing name: expected no binding");
+    }
+
+    /// unify(Applied{C,[T]}, Applied{C,[X,Y]}) with differing arity → Ok, no binding.
+    #[test]
+    fn unify_applied_differing_arity_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::applied(
+            "C",
+            vec![
+                Type::StructureRef("X".to_string()),
+                Type::StructureRef("Y".to_string()),
+            ],
+        );
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing arity: expected no binding");
+    }
+
+    /// unify(Projection{TypeParam(T),"M"}, Projection{StructureRef(X),"M"})
+    /// must unify the bases and bind T=X.
+    #[test]
+    fn unify_projection_same_member_unifies_base() {
+        let mut subst = HashMap::new();
+        let declared = Type::projection(tp("T"), "M");
+        let arg = Type::projection(Type::StructureRef("X".to_string()), "M");
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::StructureRef("X".to_string())));
+        assert_eq!(subst.len(), 1);
+    }
+
+    /// Projection with differing members → Ok, no binding (structural mismatch
+    /// via the Applied/Projection fallthrough).
+    #[test]
+    fn unify_projection_differing_member_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::projection(tp("T"), "M1");
+        let arg = Type::projection(Type::StructureRef("X".to_string()), "M2");
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(subst.is_empty(), "differing member: expected no binding");
+    }
+
+    /// Applied-vs-StructureRef hits the fallthrough and conservatively binds
+    /// nothing (β posture; δ/normalize_type is responsible for this pair).
+    #[test]
+    fn unify_applied_vs_structure_ref_conservative_beta_binds_nothing() {
+        let mut subst = HashMap::new();
+        let declared = Type::applied("C", vec![tp("T")]);
+        let arg = Type::StructureRef("C".to_string());
+        assert!(unify(&declared, &arg, &mut subst).is_ok());
+        assert!(
+            subst.is_empty(),
+            "Applied-vs-StructureRef must bind nothing in β (see unify doc β note)"
+        );
+    }
+
+    /// type_carries_type_param returns true for Applied whose args contain a TypeParam.
+    #[test]
+    fn type_carries_type_param_applied_with_type_param_arg() {
+        let t = Type::applied("C", vec![tp("T")]);
+        assert!(
+            type_carries_type_param(&t),
+            "Applied with TypeParam arg must carry a type param"
+        );
+        // Applied with no TypeParam in args → false.
+        let t2 = Type::applied("C", vec![Type::StructureRef("X".to_string())]);
+        assert!(
+            !type_carries_type_param(&t2),
+            "Applied with only concrete args must not carry a type param"
+        );
+    }
+
+    /// type_carries_type_param returns true for Projection whose base is a TypeParam.
+    #[test]
+    fn type_carries_type_param_projection_with_type_param_base() {
+        let t = Type::projection(tp("T"), "M");
+        assert!(
+            type_carries_type_param(&t),
+            "Projection with TypeParam base must carry a type param"
+        );
+        let t2 = Type::projection(Type::StructureRef("X".to_string()), "M");
+        assert!(
+            !type_carries_type_param(&t2),
+            "Projection with concrete base must not carry a type param"
         );
     }
 }
