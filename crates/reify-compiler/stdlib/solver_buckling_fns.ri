@@ -102,3 +102,36 @@ pub fn mode_shape(
 ) -> Field<Point3<Length>, Vector3<Length>> {
     result.modes[n].mode_shape
 }
+
+// ── solve_buckling_load_cases ─────────────────────────────────────────────────
+
+// `solve_buckling_load_cases` — multi-load-case buckling eigenvalue solve.
+//
+// @optimized("solver::buckling_multi_case") routes to the trampoline in
+// `crates/reify-eval/src/compute_targets/buckling_multi_case.rs`.
+//
+// Signature mirrors `solve_load_cases` (fea_multi_case.ri) but:
+//   - material : ElasticMaterial  (matches single-case `solve_buckling`)
+//   - options  : BucklingOptions  (shared across all cases; LoadCase.options
+//     carries ElasticOptions — wrong type for buckling, so it is ignored
+//     by the trampoline per design decision DD-4 in .task/plan.json)
+//   - returns  : MultiCaseBucklingResult
+//
+// The inline contract-body `MultiCaseBucklingResult(cases: map{})` is never
+// reached — the @optimized trampoline always intercepts.
+//
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
+@optimized("solver::buckling_multi_case")
+pub fn solve_buckling_load_cases(
+    material : ElasticMaterial,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    cases    : List<LoadCase>,
+    options  : BucklingOptions = BucklingOptions()
+) -> MultiCaseBucklingResult {
+    // Inline contract-body — never reached; @optimized intercepts at the
+    // call site and routes to the `solver::buckling_multi_case` trampoline
+    // (crates/reify-eval/src/compute_targets/buckling_multi_case.rs).
+    MultiCaseBucklingResult(cases: map{})
+}

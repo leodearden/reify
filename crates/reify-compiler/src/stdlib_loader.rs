@@ -102,17 +102,22 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.solver.buckling",
             include_str!("../stdlib/solver_buckling.ri").to_owned(),
         ),
-        // `std.solver.buckling.fns` MUST follow `std.solver.buckling` —
-        // function bodies access struct fields (`result.modes[0].eigenvalue`)
-        // that require `BucklingResult`/`Mode` to be in the prelude registry.
-        // Same split as `std.flexures.types` / `std.flexures`. esc-3851-32.
-        (
-            "std.solver.buckling.fns",
-            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
-        ),
         (
             "std.fea.multi_case",
             include_str!("../stdlib/fea_multi_case.ri").to_owned(),
+        ),
+        // `std.solver.buckling.fns` MUST follow BOTH `std.solver.buckling` AND
+        // `std.fea.multi_case`:
+        //   - `std.solver.buckling` provides `BucklingResult`/`Mode`/`BucklingOptions`/
+        //     `MultiCaseBucklingResult` (function bodies field-access these; requires
+        //     them in the prelude registry when `phase_functions` runs — esc-3851-32).
+        //   - `std.fea.multi_case` provides `LoadCase` (task η adds
+        //     `solve_buckling_load_cases(... cases: List<LoadCase> ...)`, which the
+        //     type-checker must resolve).
+        // Same split + rationale as `std.flexures.types` / `std.flexures`.
+        (
+            "std.solver.buckling.fns",
+            include_str!("../stdlib/solver_buckling_fns.ri").to_owned(),
         ),
         (
             "std.analysis",
