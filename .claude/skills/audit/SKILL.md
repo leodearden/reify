@@ -47,25 +47,25 @@ Three opt-in detectors backed by jcodemunch — invoked only when named explicit
 
 ## PTODO — TODO-tracking invariant
 
-PTODO detects violations of the project's TODO citation invariant (per `docs/prds/reify-audit-ptodo-detector.md` §8). It is deterministic (grep + read-only sqlite; **no LLM/jcodemunch/MCP**) and runs in the **no-`--pattern` default sweep** at **Medium** severity (as of task ε, #4557). It is distinct from the opt-in advisory P-* detectors above.
+PTODO detects violations of the project's TODO citation invariant (per `docs/prds/reify-audit-ptodo-detector.md` §8). It is deterministic (grep + read-only sqlite; **no LLM/jcodemunch/MCP**) and runs in the **no-`--pattern` default sweep**. It is distinct from the opt-in advisory P-* detectors above.
 
-**Violation taxonomy (§8.3):**
+**Violation taxonomy (§8.3) — severity as of task η, #4559:**
 
-| Kind | Meaning |
-|------|---------|
-| `untracked` | Marker present in a tracked source file but cites no task ID |
-| `malformed-cite` | Marker has a cite but not in canonical `#NNNN` form (Greek letter, PRD-relative, legacy) |
-| `phantom-tracking` | Source cite `#N` is in the tasks DB but the cited task does not list this file |
-| `bare-ignore` | `#[ignore]` reason string lacks a cite |
-| `unknown-id` | Cited `#NNNN` not found in the tasks DB |
-| `orphaned` | Cited task is terminal (done/cancelled) |
-| `task-cites-deleted-path` | A non-terminal task's `metadata.files` path has git history but is no longer tracked |
+| Kind | Severity | Meaning |
+|------|----------|---------|
+| `untracked` | **High** → hard gate (non-zero exit) | Marker present in a tracked source file but cites no task ID |
+| `bare-ignore` | **High** → hard gate (non-zero exit) | `#[ignore]` attribute with no reason string |
+| `orphaned` | **High** → hard gate (non-zero exit) | Cited task is terminal (done/cancelled). Liveness lane: High only where tasks.db exists |
+| `malformed-cite` | Medium | Marker has a cite but not in canonical `#NNNN` form (Greek letter, PRD-relative, legacy) |
+| `phantom-tracking` | Medium | Source cite `#N` is in the tasks DB but the cited task does not list this file |
+| `unknown-id` | Medium | Cited `#NNNN` not found in the tasks DB (a DB-sync race must not hard-fail verify) |
+| `task-cites-deleted-path` | Medium (advisory) | A non-terminal task's `metadata.files` path has git history but is no longer tracked |
 
-All PTODO violation kinds emit **Severity::Medium** today → file a deferred follow-up task per the severity ladder. (A future task may flip `untracked`/`orphaned`/`bare-ignore` to High.)
+**Hard-gate model (task η, #4559):** `untracked`/`orphaned`/`bare-ignore` emit `Severity::High` → `reify-audit` exits non-zero (exit code = High count) and hard-fails the `tests/infra` verify step. The Medium kinds and `task-cites-deleted-path` (advisory) remain exit-neutral.
 
-**Degradation:** when `tasks.db` is absent/unreadable, the liveness and inverse lanes are skipped (one stderr breadcrumb); the structural lane (`untracked`/`malformed-cite`) still runs. Exit class is unchanged.
+**Degradation:** when `tasks.db` is absent/unreadable, the liveness and inverse lanes are skipped (one stderr breadcrumb); the structural lane (`untracked`/`malformed-cite`/`bare-ignore`) still runs. The structural High kinds (untracked/bare-ignore) fire everywhere; the liveness High kind (orphaned) fires only where tasks.db exists.
 
-**Default-sweep membership:** PTODO is exit-neutral (exit code = High-severity count; PTODO emits Medium only), so it adds findings at Medium without affecting the exit code of a clean-tree run.
+**Default-sweep membership:** PTODO High kinds (`untracked`/`orphaned`/`bare-ignore`) drive a non-zero exit when violations are present. On a clean tree (no violations) PTODO adds zero High findings and the exit code is unchanged.
 
 ## Severity ladder
 
@@ -79,7 +79,7 @@ Route each finding by its `severity` field immediately after parsing the CLI's J
 
 The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage. See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
 
-**PTODO findings are always Medium** → file a deferred follow-up task (see `references/severity-routing.md` PTODO row for title template and taxonomy-specific routing notes).
+**PTODO severity routing (post-η):** `untracked`/`orphaned`/`bare-ignore` → High → escalate via `escalate_info`; `malformed-cite`/`phantom-tracking`/`unknown-id` → Medium → file deferred follow-up task; `task-cites-deleted-path` → Medium (advisory) → file deferred follow-up task. See `references/severity-routing.md` for the PTODO title template and per-kind routing notes.
 
 ## Outputs
 

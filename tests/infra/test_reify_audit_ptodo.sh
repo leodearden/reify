@@ -109,10 +109,14 @@ echo "--- (a) Ratchet: live fingerprints subset of committed baseline ---"
 LIVE_TMP=""
 FIX=""
 FIX_LIVE=""
+FIX2=""        # scenario (c) clean-fixture temp dir
+FIX2_RUNS=""   # scenario (c) empty runs-db file
 cleanup_all() {
-    [ -n "$LIVE_TMP" ] && rm -f "$LIVE_TMP"
-    [ -n "$FIX" ]      && rm -rf "$FIX"
-    [ -n "$FIX_LIVE" ] && rm -f "$FIX_LIVE"
+    [ -n "$LIVE_TMP"  ] && rm -f "$LIVE_TMP"
+    [ -n "$FIX"       ] && rm -rf "$FIX"
+    [ -n "$FIX_LIVE"  ] && rm -f "$FIX_LIVE"
+    [ -n "$FIX2"      ] && rm -rf "$FIX2"
+    [ -n "$FIX2_RUNS" ] && rm -f "$FIX2_RUNS"
 }
 trap cleanup_all EXIT
 LIVE_TMP="$(mktemp)"
@@ -166,6 +170,81 @@ assert "fixture live output contains an ':: untracked ::' line for src/fresh.rs"
 NEW_IN_FIXTURE="$(comm -23 <(sort -u "$FIX_LIVE") /dev/null)"
 assert "fixture live fingerprints are NOT in empty baseline (gate fires red)" \
     bash -c '[ -n "$1" ]' -- "$NEW_IN_FIXTURE"
+
+# -----------------------------------------------------------------------
+# (c) EXIT-CODE HARD GATE (task η, #4559): an untracked marker is now
+#     Severity::High → reify-audit exits NON-ZERO (exit code = High count).
+#
+#     Two hermetic cases using the SAME temp git repo from scenario (b)
+#     (FIX already has a tracked untracked marker in src/fresh.rs):
+#       (c-dirty)  fresh.rs carries marker → non-zero exit
+#       (c-clean)  replace fresh.rs with marker-free content → exit 0
+#
+#     VALIDATED DESIGN:
+#       - An empty 0-byte file is an acceptable --runs-db for --pattern PTODO
+#         (the CLI opens it but the PTODO lanes never read ctx.conn).
+#       - env -u REIFY_PTODO_TASKS_DB prevents a stale env var from routing
+#         liveness checks to an unexpected tasks DB.
+#       - We test via EXIT CODE, not stream parsing (JSON goes to stderr;
+#         the gate cares only about the process exit code = High-count).
+#       - Uses structural High kind (untracked) which works without a
+#         tasks.db; orphaned (liveness High) is not exercised here — the
+#         hermetic fixture has no DB, so the liveness lane degrades (§6.7).
+#
+#     SELF-MATCH SAFETY: marker token assembled from $M at runtime.
+# -----------------------------------------------------------------------
+echo ""
+echo "--- (c) Exit-code hard gate: untracked → High → non-zero exit ---"
+
+# Reuse $FIX from scenario (b) — src/fresh.rs already carries the marker,
+# already git-tracked.  Provide a separate empty runs-db (touch = 0-byte file).
+FIX2_RUNS="$(mktemp)"
+
+# Guard: assert the precondition inherited from (b).  $FIX must be set and
+# src/fresh.rs must be git-tracked.  A failed precondition means (b) was
+# skipped or reordered, not a product regression — fail early with a clear
+# message rather than exercising an absent/empty repo and getting a
+# misleading exit-code result.
+assert "(c-dirty) precondition: \$FIX set and src/fresh.rs git-tracked" \
+    bash -c 'git -C "$1" ls-files --error-unmatch src/fresh.rs >/dev/null 2>&1' -- "$FIX"
+
+# (c-dirty) marker present → exactly 1 High finding → exit 1 (exit code = High count).
+# Asserting the exact code (1) distinguishes "gate fired" from "binary errored"
+# (e.g. IO misconfig exits 125, Rust panic exits 101).
+set +e
+env -u REIFY_PTODO_TASKS_DB \
+    "$REIFY_AUDIT_BIN" \
+        --pattern PTODO \
+        --project-root "$FIX" \
+        --runs-db "$FIX2_RUNS" \
+        --no-jcodemunch \
+        >/dev/null 2>/dev/null
+_exit_dirty=$?
+set -e
+
+assert "(c-dirty) untracked marker → reify-audit exits 1 (exactly 1 High finding)" \
+    bash -c '[ "$1" -eq 1 ]' -- "$_exit_dirty"
+
+# (c-clean) replace fresh.rs with marker-free content → no High findings → exit 0.
+FIX2="$(mktemp -d)"
+git -C "$FIX2" init -q
+mkdir -p "$FIX2/src"
+printf '// no markers here — purely a comment\n' > "$FIX2/src/clean.rs"
+git -C "$FIX2" add -A
+
+set +e
+env -u REIFY_PTODO_TASKS_DB \
+    "$REIFY_AUDIT_BIN" \
+        --pattern PTODO \
+        --project-root "$FIX2" \
+        --runs-db "$FIX2_RUNS" \
+        --no-jcodemunch \
+        >/dev/null 2>/dev/null
+_exit_clean=$?
+set -e
+
+assert "(c-clean) no markers → reify-audit exits 0" \
+    bash -c '[ "$1" -eq 0 ]' -- "$_exit_clean"
 
 # -----------------------------------------------------------------------
 # Summary
