@@ -6684,6 +6684,7 @@ mod tests {
                 "Chamfer",
                 GeometryOp::Chamfer {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     distance: Value::Real(0.001),
                 },
             ),

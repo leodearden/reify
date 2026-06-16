@@ -862,6 +862,9 @@ pub(crate) fn compile_geometry_op(
                 }
                 reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
                     target: target_id,
+                    // step-6: mechanical field add (empty = all-edges back-compat).
+                    // The curated-edge resolution is wired in step-10.
+                    edges: vec![],
                     distance: eval_arg("distance")?,
                 }),
                 reify_compiler::ModifyKind::Shell => {

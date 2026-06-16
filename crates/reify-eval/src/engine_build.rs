@@ -11714,6 +11714,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: GeometryHandleId(82),
+                    edges: vec![],
                     distance: Value::Real(0.001),
                 },
                 expected: vec![GeometryHandleId(82)],
@@ -12119,6 +12120,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: h(1),
+                    edges: vec![],
                     distance: r(0.001),
                 },
                 expected: Operation::ModifyChamfer,
@@ -13990,6 +13992,7 @@ mod populate_local_feature_tests {
 
         let geom_op = GeometryOp::Chamfer {
             target,
+            edges: vec![],
             distance: Value::Real(0.001),
         };
 

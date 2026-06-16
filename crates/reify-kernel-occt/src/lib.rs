@@ -5186,6 +5186,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(0.0),
         });
         match result {
@@ -5207,6 +5208,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(-1.0),
         });
         match result {
@@ -5228,6 +5230,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(f64::NAN),
         });
         match result {
@@ -5249,6 +5252,7 @@ mod tests {
             .unwrap();
         let result = kernel.execute(&GeometryOp::Chamfer {
             target: box_h.id,
+            edges: vec![],
             distance: Value::Real(f64::INFINITY),
         });
         match result {

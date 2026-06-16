@@ -156,7 +156,9 @@ fn chamfer_through_full_eval_pipeline() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Chamfer { target, distance } => {
+        GeometryOp::Chamfer {
+            target, distance, ..
+        } => {
             assert_eq!(
                 *target, target_handle,
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
@@ -206,7 +208,9 @@ fn chamfer_modify_only_needs_distance_arg() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Chamfer { target, distance } => {
+        GeometryOp::Chamfer {
+            target, distance, ..
+        } => {
             assert_eq!(
                 *target, target_handle,
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
