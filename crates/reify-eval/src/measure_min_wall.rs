@@ -19,6 +19,46 @@
 // The realized-field happy-path honest-number e2e is deferred to η=4427
 // to avoid coupling δ's tests to α's OpenVDB voxelisation defaults.
 
+impl crate::Engine {
+    /// Measure the minimum wall thickness of an already-realized BRep solid.
+    ///
+    /// Calls `realize_solid_sdf(subject)` to obtain the CPU-resident SampledField
+    /// (None on every degradation path — no OpenVDB kernel, unresolvable subject,
+    /// chain failure), derives `h = min(field.spacing)` from the realized grid's
+    /// own spacing, and delegates to
+    /// `reify_shell_extract::min_wall_thickness(&sdf, h)`.
+    ///
+    /// # Returns
+    ///
+    /// - `Some(Measured(t))` — min-wall `t ≥ 2·h`; conservative lower bound.
+    /// - `Some(BelowResolution { raw, floor })` — `raw < 2·h`; self-describing.
+    /// - `Some(NoMeasurement)` — no medial voxels found.
+    /// - `None` — `realize_solid_sdf` returned `None` (D5: no fabricated number)
+    ///   OR `min_wall_thickness` returned `Err` (structurally invalid field).
+    ///
+    /// PRD §4 D5: never panics and never fabricates a number.
+    #[allow(dead_code)] // consumed by ζ=4426
+    pub(crate) fn measure_min_wall(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> Option<reify_shell_extract::MinWallThickness> {
+        // γ's BRep→Mesh→Voxel→SampledField recipe (None on degradation).
+        let sdf = self.realize_solid_sdf(subject)?;
+
+        // Derive h from the realized grid's own spacing — decouples δ's
+        // honest-floor from α's OpenVDB voxel_size default (PRD §4 D decision
+        // on explicit-h parameter; deferred e2e gate in η=4427).
+        let h = sdf
+            .spacing
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+
+        // Map Err (structurally invalid SDF) → None (D5).
+        reify_shell_extract::min_wall_thickness(&sdf, h).ok()
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
