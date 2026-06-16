@@ -503,10 +503,10 @@ fn innermost_list_element(t: &Type) -> Type {
 mod tests {
     use super::*;
 
-    /// The four construction-builtin names, frozen by the §3 contract. Local
-    /// fixture so a drift in `MATH_CONSTRUCTION_NAMES` is caught against an
-    /// independent list rather than against itself.
-    const EXPECTED_NAMES: [&str; 4] = ["vec", "matrix", "diag", "identity"];
+    /// The six construction-builtin names, frozen by the §3 contract (task 4622
+    /// adds vec3/vec2). Local fixture so a drift in `MATH_CONSTRUCTION_NAMES` is
+    /// caught against an independent list rather than against itself.
+    const EXPECTED_NAMES: [&str; 6] = ["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
     // ── Name-family contract (step-9 RED / step-10 GREEN) ────────────────────
 
@@ -562,13 +562,17 @@ mod tests {
         assert!(!is_math_typed_fn("Matrix"));
         assert!(!is_math_typed_fn("Diag"));
         assert!(!is_math_typed_fn("Identity"));
+        // task 4622 additions — PascalCase must not match.
+        assert!(!is_math_typed_fn("Vec3"));
+        assert!(!is_math_typed_fn("Vec2"));
     }
 
-    /// `MATH_CONSTRUCTION_NAMES` is exactly the four construction names —
-    /// membership both ways plus an exact count (so neither a missing nor an
-    /// extra name slips through).
+    /// `MATH_CONSTRUCTION_NAMES` is exactly the six construction names (vec,
+    /// matrix, diag, identity, vec3, vec2) — membership both ways plus an exact
+    /// count (so neither a missing nor an extra name slips through).
+    /// Task 4622 extends the original four-name set by adding vec3/vec2.
     #[test]
-    fn math_construction_names_are_exactly_the_four() {
+    fn math_construction_names_are_exactly_the_six() {
         assert_eq!(
             MATH_CONSTRUCTION_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -810,6 +814,45 @@ mod tests {
                 n: 2,
                 quantity: Box::new(len_ty)
             }
+        );
+    }
+
+    // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
+
+    /// (c-4622a) `vec3` over 3 dimensionless Real args →
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec3_result_type_dimensionless_is_vector_n3_real() {
+        let args = vec![real_elem(0.0), real_elem(0.0), real_elem(1.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(0,0,1) must type as Vector{{n:3, quantity:Real}}"
+        );
+    }
+
+    /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec2_result_type_length_is_vector_n2_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(1.0), length_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "vec2(1m, 2m) must type as Vector{{n:2, quantity:Scalar<Length>}}"
         );
     }
 
