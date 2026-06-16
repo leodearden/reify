@@ -561,7 +561,11 @@ pub(crate) fn compile_unit(
 /// `resolve_dimension_type` — because it is intentionally absent from `NAMED_DIMENSIONS`.
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
-        "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
+        // NOTE: bare "Scalar" (no type arg) is intentionally absent here.
+        // It previously resolved to Some(Type::length()) as an M1 default, but that default
+        // was removed in task 4375 γ (E_BARE_SCALAR).  Bare `Scalar` now triggers a hard error
+        // in resolve_type_expr_with_aliases_kinded and returns Some(Type::Error) (poison sentinel).
+        // Parameterised `Scalar<Q>` continues to resolve through resolve_parameterized_builtin_type.
         "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
         "Geometry" => Some(Type::Geometry), // Canonical surface spelling of the geometry-handle type (Solid is the legacy alias)
         "DatumRef" => Some(Type::Geometry), // datum-reference handle aliases the geometry-handle type (PRD §8 Q1 / task #3116)
@@ -1367,6 +1371,34 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(ty);
     }
 
+    // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
+    //
+    // Fires ONLY when name == "Scalar" AND type_args is empty — which means:
+    //   • The parameterised-builtin check above did NOT fire (type_args was empty).
+    //   • The simple-name block above did NOT resolve it (Scalar has no default in
+    //     resolve_type_name since task 4375 γ removed the `Type::length()` arm).
+    //   • No user-defined alias named "Scalar" is in scope (that would have matched).
+    //
+    // Guard placement rationale: fires after builtins/type-params/aliases/structures/traits
+    // have all failed, so a user alias named "Scalar" still wins.  The `type_args.is_empty()`
+    // condition keeps `Scalar<BadDim>` routing to the parameterised-builtin path where it
+    // surfaces the precise dimension error (task 4375 γ design decision D2).
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one BareScalarType diagnostic,
+    // suppressing the generic UnresolvedType cascade so the user sees exactly one clean
+    // E_BARE_SCALAR error (mirrors the DimParamKind anti-cascade pattern at line 1341).
+    if name == "Scalar" && type_args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "bare `Scalar` is not a valid type: write `Scalar<Q>` or a named dimension \
+                 like `Length`",
+            )
+            .with_code(DiagnosticCode::BareScalarType)
+            .with_label(DiagnosticLabel::new(type_expr.span, "bare `Scalar` type")),
+        );
+        return Some(Type::Error);
+    }
+
     // Check parameterized alias instantiation
     if let Some(alias_entry) = alias_registry.lookup(name)
         && !alias_entry.type_params.is_empty()
@@ -1985,17 +2017,15 @@ fn classify_dim_slot<'a>(
 ///   diagnostics and propagate `None` so the alias stays unresolved.  Falling
 ///   through to a subsequent `resolve_type_name` lookup would silently bind the
 ///   builtin's default type and produce a wrong-type cascade at use sites
-///   (see task #2841: `Scalar` default → `Type::length()`).
+///   (see task #2841; the `Scalar` default `Type::length()` was removed in
+///   task 4375 γ via E_BARE_SCALAR, handled upstream in
+///   `resolve_type_expr_with_aliases_kinded` before reaching this function).
 /// - **`tmp_diags` empty** → no named arm matched (the `_ => return None` arm
 ///   fired); falling through to the user-parametric alias check is safe because
-///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, and `Point3`
-///   have no `resolve_type_name` default.
-///
-/// `Scalar` is the one builtin parametric with a `resolve_type_name` default
-/// (`Type::length()`).  It satisfies the invariant because its failure path
-/// always routes through `resolve_type_alias_expr_to_dimension`, which pushes a
-/// diagnostic before returning `None` — keeping `tmp_diags` non-empty whenever
-/// the `Scalar` arm matched and failed (task #2843).
+///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, `Point3`,
+///   and `Scalar` have no `resolve_type_name` default (bare `Scalar` is handled
+///   upstream by the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`
+///   before this function is reached, so it never arrives here bare).
 ///
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
