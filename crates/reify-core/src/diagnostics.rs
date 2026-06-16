@@ -4126,6 +4126,28 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
         assert_eq!(s, "\"OpContractViolation\"");
     }
+
+    // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
+    // Pairs with the lint pass in
+    // `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip test is added here.
+
+    /// Task 4591 (step-1): `DiagnosticCode::ReservedTypeName` must exist, be
+    /// distinct from `DiagnosticCode::Shadowing`, and be attachable via
+    /// `Diagnostic::warning(..).with_code(..)` with the code reading back.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn reserved_type_name_code_exists_and_attaches() {
+        // Exist + distinct from a neighbouring Warning code.
+        assert_ne!(DiagnosticCode::ReservedTypeName, DiagnosticCode::Shadowing);
+
+        // Attachable via the builder; code reads back correctly.
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ReservedTypeName);
+        assert_eq!(d.code, Some(DiagnosticCode::ReservedTypeName));
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
