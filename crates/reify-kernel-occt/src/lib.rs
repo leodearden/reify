@@ -2573,6 +2573,36 @@ impl OcctKernel {
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::OffsetCurve {
+                target,
+                distance,
+                reference,
+                direction,
+            } => {
+                let dist = extract_f64(distance)?;
+                // Build the offset wire inside an inner scope so the immutable
+                // `get_shape` borrow(s) drop before `store_with_repr` takes
+                // `&mut self` (mirrors `extract_edges` / `execute_split`'s
+                // `materialized` scope). Dispatch the three overloads on
+                // (reference, direction): a reference surface (overload 2) wins
+                // over a direction (overload 3); neither → planar offset
+                // (overload 1).
+                let result = {
+                    let shape = self.get_shape(*target)?;
+                    match (reference, direction) {
+                        (Some(ref_id), _) => {
+                            let ref_shape = self.get_shape(*ref_id)?;
+                            ffi::ffi::make_offset_curve_on_surface(shape, dist, ref_shape)
+                        }
+                        (None, Some(dir)) => ffi::ffi::make_offset_curve_directional(
+                            shape, dist, dir[0], dir[1], dir[2],
+                        ),
+                        (None, None) => ffi::ffi::make_offset_curve(shape, dist),
+                    }
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                };
+                return Ok(self.store_with_repr(result, BRepKind::Wire));
+            }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
                 let w = extract_f64(width)?;
