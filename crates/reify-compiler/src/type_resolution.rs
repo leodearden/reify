@@ -3982,6 +3982,13 @@ mod tests {
             "resolve_type_alias_expr_to_dimension(\"Real\") should produce no diagnostics; got: {:?}",
             diags_real
         );
+        // Positive assertion: Real must actually resolve to DIMENSIONLESS, not just
+        // match Dimensionless vacuously (e.g. both returning None with no diagnostic).
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should return Some(DIMENSIONLESS)"
+        );
         assert_eq!(
             result_real, result_dim,
             "Real and Dimensionless must resolve to the same dimension"
