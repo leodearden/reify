@@ -127,14 +127,47 @@ pub enum Divergence {
     GeometryDiffers { reason: &'static str },
 }
 
+/// One projected value cell: the cell id (the matcher's key + sort key) plus a
+/// canonical, order-independent, type-discriminating equality fingerprint, and a
+/// readable `Display` render (the latter is deliberately NOT part of equality).
+#[derive(Debug, Clone)]
+pub struct ProjectedValue {
+    /// `ValueCellId` Display (`Entity.member`) — the matcher key and sort key.
+    pub cell: String,
+    /// `content_hash` hex — the canonical equality fingerprint. It SORTS
+    /// struct/map fields, DOMAIN-SEPARATES by type tag (so `Int(1)` ≠ `Real(1.0)`),
+    /// and EXCLUDES per-Engine ephemeral handles (`kernel_handle`) and the
+    /// `StructureInstance.type_id` — so two semantically identical values compare
+    /// equal regardless of `PersistentMap`/`HashMap` iteration order or which
+    /// scheduler produced them.
+    ///
+    /// A raw `{:?}` render (step-2's first cut) is NEITHER canonical —
+    /// `StructureInstanceData.fields` is a `PersistentMap` whose Debug iteration
+    /// order leaks — NOR handle-stable (`GeometryHandle` Debug bakes in the
+    /// ephemeral `kernel_handle`), so it cannot be the equality key for a safety
+    /// gate. `content_hash` is exactly the cross-Engine-stable identity Reify's
+    /// own incremental cache keys on, so it is the right canonical form here.
+    pub canonical: String,
+    /// Human-readable `Display` render — surfaced in diffs only, deliberately NOT
+    /// compared (Display is lossy: `Int(1)` and `Real(1.0)` both render "1").
+    pub display: String,
+}
+
+/// Equality is the canonical fingerprint at a given cell — the readable `display`
+/// render is excluded so a lossy/non-canonical render can never corrupt the gate.
+impl PartialEq for ProjectedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.cell == other.cell && self.canonical == other.canonical
+    }
+}
+
 /// Deterministic canonical projection of a [`BuildResult`] over the
 /// scheduler-overlap comparison surface. Structural equality of two projections
 /// IS the equivalence relation the gate asserts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedBuildResult {
-    /// `values` sorted by `ValueCellId`, each rendered to a stable
-    /// `(Entity.member, Debug(value))` pair.
-    pub values: Vec<(String, String)>,
+    /// `values` sorted by `ValueCellId`, each a canonical [`ProjectedValue`].
+    pub values: Vec<ProjectedValue>,
     /// `constraint_results` sorted by constraint id, as
     /// `(id, label, satisfaction)`.
     pub constraint_results: Vec<(String, Option<String>, Satisfaction)>,
@@ -142,8 +175,18 @@ pub struct ProjectedBuildResult {
     pub diagnostics: Vec<(Option<DiagnosticCode>, String, Severity)>,
     /// The raw exported geometry bytes.
     pub geometry_output: Option<Vec<u8>>,
-    /// `resolved_params` sorted by cell, as `(Entity.member, Debug(value))`.
-    pub resolved_params: Vec<(String, String)>,
+    /// `resolved_params` sorted by cell, each a canonical [`ProjectedValue`].
+    pub resolved_params: Vec<ProjectedValue>,
+}
+
+/// Project one `(id, value)` cell to its canonical [`ProjectedValue`].
+fn project_value(id: impl std::fmt::Display, v: &Value) -> ProjectedValue {
+    ProjectedValue {
+        cell: id.to_string(),
+        // `ContentHash(pub u128)` — 32 hex digits is the full fingerprint.
+        canonical: format!("{:032x}", v.content_hash().0),
+        display: format!("{v}"),
+    }
 }
 
 /// Project a [`BuildResult`] onto its deterministic canonical
@@ -164,13 +207,13 @@ pub struct ProjectedBuildResult {
 /// Structural equality of two projections IS the equivalence relation the ζ gate
 /// asserts.
 pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
-    // `values` — sorted by `ValueCellId`, each as `(Entity.member, Debug(value))`.
-    let mut values: Vec<(String, String)> = result
+    // `values` — sorted by `ValueCellId`, each a canonical [`ProjectedValue`].
+    let mut values: Vec<ProjectedValue> = result
         .values
         .iter()
-        .map(|(id, v)| (id.to_string(), format!("{v:?}")))
+        .map(|(id, v)| project_value(id, v))
         .collect();
-    values.sort();
+    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
 
     // `constraint_results` — sorted by constraint-id Display, then label, as
     // `(id, label, satisfaction)`. `sort_by` (not `sort`) so we need no `Ord` on
@@ -193,13 +236,13 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
 
     let geometry_output = result.geometry_output.clone();
 
-    // `resolved_params` — sorted by cell, as `(Entity.member, Debug(value))`.
-    let mut resolved_params: Vec<(String, String)> = result
+    // `resolved_params` — sorted by cell, each a canonical [`ProjectedValue`].
+    let mut resolved_params: Vec<ProjectedValue> = result
         .resolved_params
         .iter()
-        .map(|(id, v)| (id.to_string(), format!("{v:?}")))
+        .map(|(id, v)| project_value(id, v))
         .collect();
-    resolved_params.sort();
+    resolved_params.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
 
     ProjectedBuildResult {
         values,
@@ -213,22 +256,209 @@ pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
 /// Assert UnifiedDag is equivalent to LegacyMultiPass for `case`, admitting ONLY
 /// the per-case reasoned divergences in `case.allowed`.
 ///
-/// step-2 implements the EMPTY-allow-list path: plain projection equality with a
-/// rich panic diff. step-4 extends this with the structured per-[`Divergence`]
-/// matcher that admits a reasoned non-empty allow-list while rejecting unused
-/// allow entries and unreasoned diff items (a real ε defect → escalate
-/// `design_concern`, never blanket-allow).
+/// Computes the field-wise diff between the two canonical projections, then
+/// requires a TWO-WAY match against the reasoned allow-list:
+///   * every diff item MUST be matched by a SPECIFIC [`Divergence`] (constraint
+///     flips by id/label substring; one-sided diagnostics by exact code; value
+///     resolves by cell substring; geometry by a scoped flag). An UNMATCHED diff
+///     item is an unreasoned divergence — a real ε defect → the gate fails hard
+///     (escalate `design_concern`, NEVER blanket-allow);
+///   * every allow entry MUST match ≥1 diff item. An entry matching nothing is
+///     stale/dead cover → the gate fails hard (keeps the committed list honest as
+///     ε evolves).
+///
+/// With an EMPTY allow-list this reduces to "any divergence fails" — the
+/// plainly-equivalent path the SEED sweep relies on.
 pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, unified: &BuildResult) {
-    let projected_legacy = project_build_result(legacy);
-    let projected_unified = project_build_result(unified);
+    use std::collections::BTreeMap;
 
-    assert_eq!(
-        projected_unified, projected_legacy,
-        "case `{}`: UnifiedDag projection diverged from LegacyMultiPass with no \
-         reasoned allow-list to admit it.\n  legacy  = {projected_legacy:#?}\n  \
-         unified = {projected_unified:#?}",
+    let pl = project_build_result(legacy);
+    let pu = project_build_result(unified);
+    let allowed = case.allowed;
+    let mut used = vec![false; allowed.len()];
+    let mut unmatched: Vec<String> = Vec::new();
+
+    // (1) constraint-verdict diffs, keyed by (id, label) ← ConstraintFlips.
+    let by_constraint = |p: &ProjectedBuildResult| -> BTreeMap<(String, Option<String>), Satisfaction> {
+        p.constraint_results
+            .iter()
+            .cloned()
+            .map(|(id, label, sat)| ((id, label), sat))
+            .collect()
+    };
+    let cl = by_constraint(&pl);
+    let cu = by_constraint(&pu);
+    let mut ckeys: Vec<&(String, Option<String>)> = cl.keys().chain(cu.keys()).collect();
+    ckeys.sort();
+    ckeys.dedup();
+    for k in ckeys {
+        let (a, b) = (cl.get(k).copied(), cu.get(k).copied());
+        if a == b {
+            continue;
+        }
+        let (id, label) = k;
+        let mut matched = false;
+        for (i, d) in allowed.iter().enumerate() {
+            if let Divergence::ConstraintFlips { constraint, .. } = d {
+                if id.contains(constraint) || label.as_deref().is_some_and(|l| l.contains(constraint)) {
+                    used[i] = true;
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            unmatched.push(format!(
+                "constraint `{id}`{}: {a:?} (legacy) → {b:?} (unified)",
+                label.as_deref().map(|l| format!(" [{l}]")).unwrap_or_default(),
+            ));
+        }
+    }
+
+    // (2) diagnostics present on exactly one side (order-independent multiset
+    // diff) ← DiagnosticAdded, matched by exact code (either direction).
+    let one_sided = |a: &[(Option<DiagnosticCode>, String, Severity)],
+                     b: &[(Option<DiagnosticCode>, String, Severity)]|
+     -> Vec<(Option<DiagnosticCode>, String, Severity)> {
+        let mut remaining = b.to_vec();
+        let mut out = Vec::new();
+        for item in a {
+            if let Some(pos) = remaining.iter().position(|x| x == item) {
+                remaining.remove(pos);
+            } else {
+                out.push(item.clone());
+            }
+        }
+        out
+    };
+    let legacy_only = one_sided(&pl.diagnostics, &pu.diagnostics);
+    let unified_only = one_sided(&pu.diagnostics, &pl.diagnostics);
+    for (side, (code, msg, sev)) in legacy_only
+        .iter()
+        .map(|d| ("legacy-only", d))
+        .chain(unified_only.iter().map(|d| ("unified-only", d)))
+    {
+        let mut matched = false;
+        for (i, d) in allowed.iter().enumerate() {
+            if let Divergence::DiagnosticAdded { code: ac, .. } = d {
+                if Some(*ac) == *code {
+                    used[i] = true;
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            unmatched.push(format!("{side} diagnostic code={code:?} sev={sev:?}: {msg}"));
+        }
+    }
+
+    // (3) value-cell diffs (canonical differs, or present on one side) ←
+    // ValueResolves, matched by cell substring. `values` and `resolved_params`
+    // share the bucket (both keyed by cell id).
+    let by_cell = |vs: &[ProjectedValue]| -> BTreeMap<String, ProjectedValue> {
+        vs.iter().map(|p| (p.cell.clone(), p.clone())).collect()
+    };
+    for (tag, lvs, uvs) in [
+        ("", &pl.values, &pu.values),
+        ("(param) ", &pl.resolved_params, &pu.resolved_params),
+    ] {
+        let (vl, vu) = (by_cell(lvs), by_cell(uvs));
+        let mut cells: Vec<&String> = vl.keys().chain(vu.keys()).collect();
+        cells.sort();
+        cells.dedup();
+        for c in cells {
+            let (a, b) = (vl.get(c), vu.get(c));
+            let differ = match (a, b) {
+                (Some(x), Some(y)) => x.canonical != y.canonical,
+                _ => true,
+            };
+            if !differ {
+                continue;
+            }
+            let mut matched = false;
+            for (i, d) in allowed.iter().enumerate() {
+                if let Divergence::ValueResolves { cell_substr, .. } = d {
+                    if c.contains(cell_substr) {
+                        used[i] = true;
+                        matched = true;
+                    }
+                }
+            }
+            if !matched {
+                unmatched.push(format!(
+                    "value `{tag}{c}`: {:?} (legacy) → {:?} (unified)",
+                    a.map(|p| &p.display),
+                    b.map(|p| &p.display),
+                ));
+            }
+        }
+    }
+
+    // (4) exported geometry bytes differ ← GeometryDiffers.
+    if pl.geometry_output != pu.geometry_output {
+        let mut matched = false;
+        for (i, d) in allowed.iter().enumerate() {
+            if matches!(d, Divergence::GeometryDiffers { .. }) {
+                used[i] = true;
+                matched = true;
+            }
+        }
+        if !matched {
+            unmatched.push(format!(
+                "geometry_output bytes differ: legacy={:?} bytes, unified={:?} bytes",
+                pl.geometry_output.as_ref().map(|b| b.len()),
+                pu.geometry_output.as_ref().map(|b| b.len()),
+            ));
+        }
+    }
+
+    // Stale/unused allow entries: an entry that matched NO diff item.
+    let unused: Vec<String> = allowed
+        .iter()
+        .zip(used.iter())
+        .filter(|(_, u)| !**u)
+        .map(|(d, _)| describe_divergence(d))
+        .collect();
+
+    if unmatched.is_empty() && unused.is_empty() {
+        return;
+    }
+
+    let fmt_list = |items: &[String]| -> String {
+        if items.is_empty() {
+            "    (none)".to_string()
+        } else {
+            items.iter().map(|s| format!("    • {s}")).collect::<Vec<_>>().join("\n")
+        }
+    };
+    panic!(
+        "case `{}`: differential gate FAILED.\n\
+         {} UNREASONED divergence(s) — a real ε defect → escalate `design_concern`, \
+         NEVER blanket-allow:\n{}\n\
+         {} STALE/UNUSED allow entr(y/ies) — matched no diff item, remove or fix:\n{}",
         case.name,
+        unmatched.len(),
+        fmt_list(&unmatched),
+        unused.len(),
+        fmt_list(&unused),
     );
+}
+
+/// Render a [`Divergence`] for the stale-entry panic list.
+fn describe_divergence(d: &Divergence) -> String {
+    match d {
+        Divergence::ConstraintFlips { constraint, reason } => {
+            format!("ConstraintFlips {{ constraint: {constraint:?}, reason: {reason:?} }}")
+        }
+        Divergence::DiagnosticAdded { code, reason } => {
+            format!("DiagnosticAdded {{ code: {code:?}, reason: {reason:?} }}")
+        }
+        Divergence::ValueResolves { cell_substr, reason } => {
+            format!("ValueResolves {{ cell_substr: {cell_substr:?}, reason: {reason:?} }}")
+        }
+        Divergence::GeometryDiffers { reason } => {
+            format!("GeometryDiffers {{ reason: {reason:?} }}")
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
