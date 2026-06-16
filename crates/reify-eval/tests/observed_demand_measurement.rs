@@ -6,14 +6,20 @@
 //! (b) the zero-behavior-change contract — registering observed demand must not
 //! change the production eval-set produced by `edit_param`.
 
-use reify_core::{RealizationNodeId, ValueCellId};
+use reify_compiler::CompiledModule;
+use reify_core::{ModulePath, RealizationNodeId, Type, ValueCellId};
 use reify_eval::cache::NodeId;
-use reify_eval::WouldPruneByKind;
-use reify_ir::Value;
+use reify_eval::{Engine, WouldPruneByKind};
+use reify_ir::{CompiledExpr, Value};
 // `sorted_values` / `bracket_engine` are shared from reify-test-support (a
 // single definition shared with `selective_demand_measurement.rs`) so the
-// byte-identity comparison logic cannot drift between the two test files.
-use reify_test_support::{bracket_engine, cnid, sorted_values, vcid};
+// byte-identity comparison logic cannot drift between the two test files. The
+// builder/mocks symbols (re-exported at the crate root) drive the collection
+// fixture used by the structural-mutation coverage tests below.
+use reify_test_support::{
+    CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder, bracket_engine, cnid,
+    sorted_values, value_ref_typed, vcid,
+};
 
 #[test]
 fn observed_demand_cone_tracks_registered_roots_only() {
@@ -245,5 +251,223 @@ fn observed_registration_is_zero_behavior_change_leaf_lock() {
     assert!(
         saw_real_pruning,
         "the scripted session must include the thickness edit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Structural-mutation coverage (collection grow / shrink).
+//
+// `edit_param` rebuilds the OBSERVED cone against the post-mutation graph when a
+// collection grows or shrinks (`structural_mutation && observed cone non-empty`,
+// engine_edit.rs). The bracket / two-body fixtures only ever do plain `param`
+// edits, so that branch is otherwise never exercised. These two tests drive a
+// `Bolt`/`Parent` collection fixture through count-changing edits to pin the
+// measurement across a structural mutation.
+// ---------------------------------------------------------------------------
+
+/// Build a `Bolt`/`Parent` collection fixture where `Bolt.diameter` defaults to
+/// `Parent.bolt_d`, so a later `edit_param(bolt_d, …)` dirties EVERY bolt
+/// instance (the task-4530 reverse_index rebuild makes grown instances track
+/// upstream param edits). `n_default` seeds the initial instance count. The
+/// returned engine is NOT yet eval'd — the caller calls `eval` so the count
+/// cell and instances exist before registering observed demand.
+fn bolt_parent_collection_engine(n_default: i64) -> (CompiledModule, Engine) {
+    let bolt = TopologyTemplateBuilder::new("Bolt")
+        .param(
+            "Bolt",
+            "diameter",
+            Type::length(),
+            Some(value_ref_typed("Parent", "bolt_d", Type::length())),
+        )
+        .build();
+
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .param(
+            "Parent",
+            "bolt_d",
+            Type::length(),
+            Some(CompiledExpr::literal(Value::length(0.01), Type::length())),
+        )
+        .param(
+            "Parent",
+            "n",
+            Type::Int,
+            Some(CompiledExpr::literal(Value::Int(n_default), Type::Int)),
+        )
+        .let_binding(
+            "Parent",
+            "__count_bolts",
+            Type::Int,
+            value_ref_typed("Parent", "n", Type::Int),
+        )
+        .structure_controlling_cell(ValueCellId::new("Parent", "__count_bolts"))
+        .collection_sub_component("bolts", "Bolt", ValueCellId::new("Parent", "__count_bolts"))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bolt)
+        .build();
+    let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    (module, engine)
+}
+
+#[test]
+fn structural_grow_with_observed_root_measures_grown_instances() {
+    // Coverage for the rebuild-on-structural-mutation branch on a GROW, with the
+    // reviewer's three assertions: newly-grown UNregistered instances appear in
+    // would_prune, the registered instance is retained, and conservation holds.
+    let (module, mut engine) = bolt_parent_collection_engine(2);
+    engine.eval(&module);
+
+    // Observe one EXISTING instance (mimics the GUI marking body[0] visible).
+    // Backward closure of bolts[0].diameter is {bolts[0].diameter, bolt_d}.
+    let bolt0_d = NodeId::Value(vcid("Parent.bolts[0]", "diameter"));
+    engine.add_observed_demand(bolt0_d.clone());
+    engine.rebuild_observed_cone();
+    assert!(
+        engine.observed_demand_is_demanded(&bolt0_d),
+        "registered instance is in the observed cone before the grow"
+    );
+
+    // GROW 2 -> 4. structural_mutation == true AND the observed cone is
+    // non-empty, so the branch refreshes the observed cone against the grown
+    // graph before recording the measurement.
+    engine
+        .edit_param(vcid("Parent", "n"), Value::Int(4))
+        .expect("grow n 2->4");
+    let m_grow = engine
+        .last_demand_prune_measurement()
+        .expect("measurement recorded on the structural grow edit")
+        .clone();
+    assert_eq!(
+        m_grow.observed_retained + m_grow.would_prune.total(),
+        m_grow.eval_set_size,
+        "conservation holds across the structural grow edit"
+    );
+    assert_eq!(
+        m_grow.eval_set_size,
+        engine.last_eval_set().len(),
+        "grow measurement counts the FINAL production eval-set"
+    );
+
+    // The registered instance survives the grow and stays in the cone.
+    assert!(
+        engine.observed_demand_is_demanded(&bolt0_d),
+        "registered instance remains demanded after the rebuild against the grown graph"
+    );
+
+    // Edit the shared upstream param. The task-4530 reverse_index rebuild makes
+    // ALL four instances (incl. the newly-grown bolts[2], bolts[3]) dirty, so
+    // last_eval_set carries bolts[0..3].diameter.
+    engine
+        .edit_param(vcid("Parent", "bolt_d"), Value::length(0.02))
+        .expect("edit bolt_d after grow");
+    let m = engine
+        .last_demand_prune_measurement()
+        .expect("measurement recorded on the bolt_d edit")
+        .clone();
+
+    // (a) The registered instance bolts[0].diameter is RETAINED.
+    assert!(
+        m.observed_retained >= 1,
+        "registered bolts[0].diameter must be retained (observed_retained >= 1), got {}",
+        m.observed_retained
+    );
+
+    // (b) The newly-grown, UNregistered instances are NOT in the observed cone,
+    //     so they are reported as would_prune. bolts[1], bolts[2], bolts[3] are
+    //     all unregistered Value nodes in the eval-set => would_prune.value >= 3.
+    let bolt2_d = NodeId::Value(vcid("Parent.bolts[2]", "diameter"));
+    let bolt3_d = NodeId::Value(vcid("Parent.bolts[3]", "diameter"));
+    assert!(
+        !engine.observed_demand_is_demanded(&bolt2_d),
+        "grown bolts[2].diameter is not a registered root => not observed-demanded"
+    );
+    assert!(
+        !engine.observed_demand_is_demanded(&bolt3_d),
+        "grown bolts[3].diameter is not a registered root => not observed-demanded"
+    );
+    assert!(
+        m.would_prune.value >= 3,
+        "the unregistered (incl. newly-grown) instances must appear in would_prune.value, got {}",
+        m.would_prune.value
+    );
+
+    // (c) Conservation still holds against the post-grow eval-set.
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "conservation holds on the post-grow upstream edit"
+    );
+    assert_eq!(
+        m.eval_set_size,
+        engine.last_eval_set().len(),
+        "measurement counts the FINAL production eval-set"
+    );
+}
+
+#[test]
+fn structural_shrink_rebuilds_observed_cone_against_shrunk_graph() {
+    // Tight regression guard: the rebuild-on-structural-mutation branch must run
+    // against the MUTATED graph, not a stale pre-mutation one. Register an
+    // instance that a later shrink REMOVES; after the shrink that root is
+    // dangling (absent from the graph) and so transitively demands nothing — in
+    // particular `bolt_d` drops out of the observed cone. Without the rebuild the
+    // cone stays stale and keeps claiming bolt_d is observed-demanded, so this
+    // test fails if the branch is removed.
+    let (module, mut engine) = bolt_parent_collection_engine(4);
+    engine.eval(&module);
+
+    let bolt3_d = NodeId::Value(vcid("Parent.bolts[3]", "diameter"));
+    let bolt_d = NodeId::Value(vcid("Parent", "bolt_d"));
+    engine.add_observed_demand(bolt3_d.clone());
+    engine.rebuild_observed_cone();
+    // Backward closure: bolts[3].diameter reads bolt_d => cone == {both}.
+    assert_eq!(
+        engine.observed_demand_cone_size(),
+        2,
+        "pre-shrink observed cone is {{bolts[3].diameter, bolt_d}}"
+    );
+    assert!(
+        engine.observed_demand_is_demanded(&bolt_d),
+        "bolt_d is reachable from bolts[3].diameter before the shrink"
+    );
+
+    // SHRINK 4 -> 2: bolts[2], bolts[3] are removed from the graph. The branch
+    // rebuilds the observed cone against the SHRUNK graph; bolts[3].diameter is
+    // now a dangling registered root with an empty dependency set.
+    engine
+        .edit_param(vcid("Parent", "n"), Value::Int(2))
+        .expect("shrink n 4->2");
+
+    assert!(
+        engine.observed_demand_is_demanded(&bolt3_d),
+        "the dangling registered root is still itself in the cone"
+    );
+    assert!(
+        !engine.observed_demand_is_demanded(&bolt_d),
+        "bolt_d must drop out: the rebuild ran against the SHRUNK graph \
+         (without the structural-mutation rebuild this would stay stale-true)"
+    );
+    assert_eq!(
+        engine.observed_demand_cone_size(),
+        1,
+        "post-shrink observed cone holds only the dangling root"
+    );
+
+    // The measurement is still recorded and conserved on the structural edit.
+    let m = engine
+        .last_demand_prune_measurement()
+        .expect("measurement recorded on the structural shrink edit");
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "conservation holds across the structural shrink edit"
+    );
+    assert_eq!(
+        m.eval_set_size,
+        engine.last_eval_set().len(),
+        "shrink measurement counts the FINAL production eval-set"
     );
 }
