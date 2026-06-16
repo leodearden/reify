@@ -684,12 +684,13 @@ impl SelectorValue {
                     ContentHash::of(&buf)
                 }
                 // Task 4536: fresh tag byte 7 (0–6 already taken by the leaves
-                // above). The role is encoded via its stable derived `Debug`
-                // string — distinguishing every `Role` value (including
-                // data-carrying variants) without enumerating them here, the
-                // same string-hashing discipline `Named` uses.
+                // above). The role is encoded via `Role::content_hash_bytes()`
+                // — an explicit, frozen per-variant byte discriminant (NOT the
+                // derived `Debug` string), so renaming a `Role` variant cannot
+                // silently change a cached selector's content hash. See the
+                // INVARIANT on `Role::content_hash_bytes` (reviewer suggestion 4).
                 LeafQuery::ByRole(role) => {
-                    ContentHash::of(&[7u8]).combine(ContentHash::of_str(&format!("{role:?}")))
+                    ContentHash::of(&[7u8]).combine(ContentHash::of(&role.content_hash_bytes()))
                 }
             }
         }

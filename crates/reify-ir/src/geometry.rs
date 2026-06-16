@@ -3245,6 +3245,54 @@ pub enum Role {
     CapCornerVertex { face: CapKind },
 }
 
+impl Role {
+    /// Stable byte encoding of this role for content-hashing (task 4536
+    /// amendment, reviewer suggestion 4).
+    ///
+    /// Byte 0 is an explicit per-variant discriminant; bytes 1..4 encode the
+    /// payload (`CapKind`/`AxisSign`), 0-padded for unit variants. This is a
+    /// deliberate replacement for a `format!("{self:?}")`-derived hash input:
+    /// the derived `Debug` string is NOT a serialization contract, so a future
+    /// rename of a `Role` variant (or one of its `CapKind`/`AxisSign` payload
+    /// variants) would silently change the hash and invalidate every cached
+    /// selector resolution. The `match` is intentionally wildcard-free, so
+    /// adding a `Role` variant is a compile error here until a fresh
+    /// discriminant is assigned.
+    ///
+    /// INVARIANT: never renumber an existing discriminant — only append new
+    /// ones. The numbers below are a frozen serialization contract, not an
+    /// enum-layout detail.
+    pub(crate) fn content_hash_bytes(&self) -> [u8; 4] {
+        fn cap(k: CapKind) -> u8 {
+            match k {
+                CapKind::Top => 1,
+                CapKind::Bottom => 2,
+                CapKind::Start => 3,
+                CapKind::End => 4,
+            }
+        }
+        fn sign(s: AxisSign) -> u8 {
+            match s {
+                AxisSign::Pos => 1,
+                AxisSign::Neg => 2,
+            }
+        }
+        match self {
+            Role::Cap(k) => [0, cap(*k), 0, 0],
+            Role::Side => [1, 0, 0, 0],
+            Role::NewEdge => [2, 0, 0, 0],
+            Role::RevolvedFace => [3, 0, 0, 0],
+            Role::AxisFace => [4, 0, 0, 0],
+            Role::SweptFace => [5, 0, 0, 0],
+            Role::LoftedFace => [6, 0, 0, 0],
+            Role::MidSurfaceFace => [7, 0, 0, 0],
+            Role::MidSurfaceEdge => [8, 0, 0, 0],
+            Role::CornerVertex { x, y, z } => [9, sign(*x), sign(*y), sign(*z)],
+            Role::CapCornerVertex { face } => [10, cap(*face), 0, 0],
+        }
+    }
+}
+
 /// Per-topology-entity attribute record for v0.2 persistent naming.
 ///
 /// One of these is associated with each face/edge produced by a feature,
@@ -5303,6 +5351,65 @@ mod tests {
             assert_ne!(Role::MidSurfaceFace, existing);
             assert_ne!(Role::MidSurfaceEdge, existing);
         }
+    }
+
+    // --- task 4536 amendment: Role::content_hash_bytes stable encoding ---
+
+    #[test]
+    fn role_content_hash_bytes_are_distinct_deterministic_and_frozen() {
+        use std::collections::HashSet;
+
+        // One representative of every variant (every payload value enumerated),
+        // mirroring the distinctness discipline above. This list is the proof
+        // that `content_hash_bytes` is injective across the whole `Role` space —
+        // the property the selector content hash relies on.
+        let all = [
+            Role::Cap(CapKind::Top),
+            Role::Cap(CapKind::Bottom),
+            Role::Cap(CapKind::Start),
+            Role::Cap(CapKind::End),
+            Role::Side,
+            Role::NewEdge,
+            Role::RevolvedFace,
+            Role::AxisFace,
+            Role::SweptFace,
+            Role::LoftedFace,
+            Role::MidSurfaceFace,
+            Role::MidSurfaceEdge,
+            Role::CornerVertex {
+                x: AxisSign::Pos,
+                y: AxisSign::Neg,
+                z: AxisSign::Pos,
+            },
+            Role::CornerVertex {
+                x: AxisSign::Neg,
+                y: AxisSign::Pos,
+                z: AxisSign::Neg,
+            },
+            Role::CapCornerVertex { face: CapKind::Top },
+            Role::CapCornerVertex { face: CapKind::End },
+        ];
+
+        // (1) Deterministic: the encoding does not depend on call-site state.
+        for r in &all {
+            assert_eq!(r.content_hash_bytes(), r.content_hash_bytes());
+        }
+
+        // (2) Injective: no two distinct Role values collide on their bytes.
+        let mut seen: HashSet<[u8; 4]> = HashSet::new();
+        for r in &all {
+            assert!(
+                seen.insert(r.content_hash_bytes()),
+                "content_hash_bytes collision for {r:?}: {:?}",
+                r.content_hash_bytes()
+            );
+        }
+
+        // (3) Frozen contract for the roles this task's selectors address. These
+        // exact bytes are a serialization contract — a deliberate edit, never an
+        // incidental rename, may change them (see the INVARIANT doc).
+        assert_eq!(Role::MidSurfaceFace.content_hash_bytes(), [7, 0, 0, 0]);
+        assert_eq!(Role::MidSurfaceEdge.content_hash_bytes(), [8, 0, 0, 0]);
     }
 
     // --- task 5b (#2619): LoftOpHistoryRecords (multi-parent loft op) ---
