@@ -2458,6 +2458,38 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_FEA_THIN_BODY`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FeaThinBody,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs`
+    /// (ambient-default collection pre-pass — ambient-default-material task B).
+    ///
+    /// Emitted as a `Severity::Error` when two `default <TypeName> = <expr>`
+    /// declarations name the same type within the same scope (file top-level,
+    /// or a single `purpose` body). Two declarations for one type in one scope
+    /// is an ambiguity; the first declaration is retained as the table entry.
+    ///
+    /// Two labels accompany the error, mirroring [`DuplicateMemberKey`]: the
+    /// duplicate occurrence (`"duplicate default declared here"`) and the first
+    /// occurrence (`"first defined here"`).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_DUP_AMBIENT_DEFAULT`
+    /// (see `docs/prds/ambient-default-material.md` §7 invariant (ii)).
+    DuplicateAmbientDefault,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs`
+    /// (ambient-default collection pre-pass — ambient-default-material task B).
+    ///
+    /// Emitted as a `Severity::Error` when the value expression of a
+    /// `default <TypeName> = <expr>` declaration does not
+    /// `implicitly_converts_to` the named type. Attributed ONCE at the
+    /// declaration span (DD4), not at the use sites the default would have
+    /// filled, so the designer sees one clear error at the source of the
+    /// mistake (e.g. `default Material = 5mm`).
+    ///
+    /// A single label accompanies the error at the declaration span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_AMBIENT_DEFAULT_TYPE_MISMATCH`
+    /// (see `docs/prds/ambient-default-material.md` §7).
+    AmbientDefaultTypeMismatch,
 }
 
 /// A diagnostic message with location and optional labels.

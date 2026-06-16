@@ -4,6 +4,7 @@
 // `mutable_key_type` on every `BTreeMap<Value, _>` site.
 #![allow(clippy::mutable_key_type)]
 
+mod ambient_defaults;
 mod analysis_signatures;
 mod annotations;
 mod arg_check;

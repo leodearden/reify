@@ -1,5 +1,7 @@
 use crate::*;
 
+use crate::ambient_defaults::AmbientDefaults;
+
 /// Tag used when cross-checking requirements against available defaults.
 /// A `param` requirement can only be satisfied by a `param` default, and a `let`
 /// requirement only by a `let` default. A kind mismatch is treated the same as "no
@@ -1979,5 +1981,324 @@ pub(super) fn check_phase_inject_defaults(
             // assoc-type phase (step-10).
             DefaultKind::AssocType(_) => {}
         }
+    }
+}
+
+/// Ambient-default injection phase (task 4497, ambient-default-material B).
+///
+/// Runs immediately AFTER [`check_phase_collect_trait_bounds`] and BEFORE the
+/// pre-register / available-defaults / inject phases consume `ctx.defaults`.
+/// For every unfilled `Param` requirement whose type is a `StructureRef(T)`,
+/// it resolves the ambient default for `T` (at the given scope) and — on a hit
+/// — synthesizes a `TraitDefault { kind: DefaultKind::Param { .. } }` carrying
+/// the ambient value expr into `ctx.defaults`. The existing
+/// [`check_phase_inject_defaults`] then performs the real `ValueCellDecl`
+/// injection, so an ambient default rides the verified trait-default rails
+/// exactly like a trait-declared param default (DD2) — no new injection code.
+///
+/// ## Resolution ladder (DD3): explicit member > trait-declared default > ambient
+///
+/// A requirement is synthesized ONLY when it is neither an explicit structure
+/// member (`structure_members.contains_key`) nor already covered by an entry in
+/// `ctx.defaults` (a trait-declared default). Skipping both cases before
+/// synthesis enforces the ladder at the cheapest point — the ambient entry is
+/// simply never created when a higher-priority source exists.
+///
+/// ## Type-keying (DD1)
+///
+/// The ambient table is keyed by the referenced structure's type *name*, so any
+/// `Param(StructureRef(name))` requirement is a candidate; there is no trait- or
+/// member-path coupling. The v1 grammar only exercises `Material`, but the
+/// machinery is type-generic.
+///
+/// ## Scope (DD6)
+///
+/// `purpose` selects the innermost scope for resolution. Top-level structures
+/// (the only structures that exist) resolve at file scope (`purpose = None`);
+/// purpose-scoped defaults are never injected into a structure.
+pub(super) fn check_phase_inject_ambient_defaults(
+    ctx: &mut MergeContext,
+    ambient: &AmbientDefaults,
+    structure_members: &HashMap<String, Type>,
+    purpose: Option<&str>,
+) {
+    // Names already covered by a trait-declared default — these win over an
+    // ambient default (DD3). Collected as owned Strings so this set does not
+    // borrow `ctx.defaults` while we extend it below.
+    let existing_default_names: HashSet<String> =
+        ctx.defaults.iter().filter_map(|d| d.name.clone()).collect();
+
+    // Synthesize into a local buffer first (the loop reads `ctx.requirements`;
+    // the extend mutates `ctx.defaults`).
+    let mut synthesized: Vec<TraitDefault> = Vec::new();
+    for req in &ctx.requirements {
+        // Only `Param` requirements referencing a structure type can be filled
+        // by an ambient default (DD1: keyed by the referenced type name).
+        let RequirementKind::Param(Type::StructureRef(type_name)) = &req.kind else {
+            continue;
+        };
+        // DD3 ladder: explicit member wins, then trait-declared default wins.
+        if structure_members.contains_key(&req.name) {
+            continue;
+        }
+        if existing_default_names.contains(&req.name) {
+            continue;
+        }
+        // Resolve the ambient default for the referenced type at this scope.
+        let Some(entry) = ambient.resolve(type_name, purpose) else {
+            continue;
+        };
+        // Synthesize a Param default carrying the ambient value expr as its
+        // `default`, so `check_phase_inject_defaults` compiles + injects it via
+        // `compile_expr` exactly like a real trait param default. Mirrors the
+        // synthetic-ParamDecl construction at conformance/mod.rs:2131.
+        synthesized.push(TraitDefault {
+            name: Some(req.name.clone()),
+            kind: DefaultKind::Param {
+                cell_type: entry.declared_type.clone(),
+                default_decl: reify_ast::ParamDecl {
+                    name: req.name.clone(),
+                    doc: None,
+                    is_priv: false,
+                    type_expr: None,
+                    default: Some(entry.value.clone()),
+                    where_clause: None,
+                    annotations: vec![],
+                    span: entry.span,
+                    content_hash: ContentHash(0),
+                },
+            },
+            span: entry.span,
+        });
+    }
+    ctx.defaults.extend(synthesized);
+}
+
+#[cfg(test)]
+mod ambient_inject_tests {
+    use super::*;
+    use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+
+    /// File-level ambient table with a single `Material` entry whose value expr
+    /// is a recognizable `Ident(marker)`, so a synthesized default's carried
+    /// value can be checked by identity (see [`synth_marker`]).
+    fn material_ambient_table(marker: &str) -> AmbientDefaults {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level(
+            "Material".to_string(),
+            ResolvedAmbientDefault {
+                value: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Ident(marker.to_string()),
+                    span: SourceSpan::empty(0),
+                },
+                declared_type: Type::StructureRef("Material".to_string()),
+                span: SourceSpan::empty(0),
+            },
+        );
+        table
+    }
+
+    /// A `param <name> : Material` requirement, i.e.
+    /// `RequirementKind::Param(StructureRef("Material"))`.
+    fn material_param_req(name: &str) -> TraitRequirement {
+        TraitRequirement {
+            name: name.to_string(),
+            kind: RequirementKind::Param(Type::StructureRef("Material".to_string())),
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A synthetic trait-declared `Param` default named `name`, carrying an
+    /// `Ident(marker)` value so it can be distinguished from an ambient synth.
+    fn trait_param_default(name: &str, marker: &str) -> TraitDefault {
+        TraitDefault {
+            name: Some(name.to_string()),
+            kind: DefaultKind::Param {
+                cell_type: Type::StructureRef("Material".to_string()),
+                default_decl: reify_ast::ParamDecl {
+                    name: name.to_string(),
+                    doc: None,
+                    is_priv: false,
+                    type_expr: None,
+                    default: Some(reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident(marker.to_string()),
+                        span: SourceSpan::empty(0),
+                    }),
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                },
+            },
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Pull the `Ident` marker carried by the synthesized `Param` default named
+    /// `name` (its `default_decl.default` expr). `None` if no such default
+    /// exists or it carries no `Ident` value.
+    fn synth_marker<'a>(ctx: &'a MergeContext, name: &str) -> Option<&'a str> {
+        ctx.defaults.iter().find_map(|d| {
+            if d.name.as_deref() != Some(name) {
+                return None;
+            }
+            if let DefaultKind::Param { default_decl, .. } = &d.kind
+                && let Some(expr) = &default_decl.default
+                && let reify_ast::ExprKind::Ident(marker) = &expr.kind
+            {
+                Some(marker.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// (a) An unfilled `Material`-typed Param requirement with a file-level
+    /// ambient entry in scope synthesizes a `TraitDefault { name: Some(..),
+    /// kind: DefaultKind::Param { .. } }` whose `default_decl` carries the
+    /// ambient value expr, and whose `cell_type` is the resolved Material type.
+    ///
+    /// RED (step-7): fails — `check_phase_inject_ambient_defaults` does not exist.
+    #[test]
+    fn injects_ambient_default_for_unfilled_material_param() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("ambient_steel"),
+            "expected a synthesized Param default for 'material' carrying the ambient \
+             value expr; got {:?}",
+            ctx.defaults
+        );
+        let cell_type_ok = ctx.defaults.iter().any(|d| {
+            d.name.as_deref() == Some("material")
+                && matches!(
+                    &d.kind,
+                    DefaultKind::Param { cell_type, .. }
+                        if cell_type == &Type::StructureRef("Material".to_string())
+                )
+        });
+        assert!(
+            cell_type_ok,
+            "synthesized Param cell_type should be StructureRef(\"Material\"); got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (b) DD3: an explicit structure member suppresses ambient synthesis — the
+    /// structure provides `material` itself, so no ambient default is created.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn skips_synth_when_param_is_explicit_structure_member() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let table = material_ambient_table("ambient_steel");
+        let mut structure_members: HashMap<String, Type> = HashMap::new();
+        structure_members.insert(
+            "material".to_string(),
+            Type::StructureRef("Material".to_string()),
+        );
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert!(
+            ctx.defaults.is_empty(),
+            "an explicit structure member must suppress ambient synth (DD3); got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (c) DD3: a trait-declared default already present in `ctx.defaults`
+    /// suppresses ambient synthesis — the ladder is explicit > trait-default >
+    /// ambient, so the pre-existing trait default survives unchanged and no
+    /// duplicate ambient entry is added.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn skips_synth_when_trait_default_already_present() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        ctx.defaults
+            .push(trait_param_default("material", "trait_default"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        let material_defaults = ctx
+            .defaults
+            .iter()
+            .filter(|d| d.name.as_deref() == Some("material"))
+            .count();
+        assert_eq!(
+            material_defaults, 1,
+            "a trait-declared default must suppress ambient synth (DD3); got {:?}",
+            ctx.defaults
+        );
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("trait_default"),
+            "the surviving 'material' default must be the pre-existing trait one"
+        );
+    }
+
+    /// (d) Two distinct `Material`-typed Param requirements, both unfilled, are
+    /// BOTH synthesized from the single file-level Material ambient entry.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn injects_for_every_unfilled_material_param() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        ctx.requirements
+            .push(material_param_req("secondary_material"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("ambient_steel"),
+            "first Material param should be synthesized; got {:?}",
+            ctx.defaults
+        );
+        assert_eq!(
+            synth_marker(&ctx, "secondary_material"),
+            Some("ambient_steel"),
+            "second Material param should be synthesized; got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (e) A Param requirement whose type has no ambient entry (here
+    /// `StructureRef("Widget")` while only `Material` is in the table) is left
+    /// untouched — no default is synthesized.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn leaves_param_with_no_ambient_entry_untouched() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(TraitRequirement {
+            name: "widget".to_string(),
+            kind: RequirementKind::Param(Type::StructureRef("Widget".to_string())),
+            span: SourceSpan::empty(0),
+        });
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert!(
+            ctx.defaults.is_empty(),
+            "a Param requirement with no ambient entry must not be synthesized; got {:?}",
+            ctx.defaults
+        );
     }
 }
