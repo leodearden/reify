@@ -38,10 +38,22 @@ mod common;
 ///
 /// Returns `None` if the cell is absent from stdout, evaluates to `undef`, or
 /// its first whitespace token is not a valid `f64`.
-#[allow(dead_code)]
+///
+/// Panics if more than one line matches the pattern (ambiguous output) so that
+/// a format change or a name collision fails loudly rather than silently
+/// reading the wrong value.
 fn parse_scalar_cell(stdout: &str, name: &str) -> Option<f64> {
     let pattern = format!(".{name} = ");
-    let line = stdout.lines().find(|l| l.contains(&pattern))?;
+    let matches: Vec<&str> = stdout.lines().filter(|l| l.contains(&pattern)).collect();
+    let line = match matches.len() {
+        0 => return None,
+        1 => matches[0],
+        n => panic!(
+            "parse_scalar_cell: {n} lines match '{pattern}'; expected exactly one. \
+             Use a fully-qualified cell name to disambiguate.\n\
+             Matches: {matches:?}"
+        ),
+    };
     let rhs = line.split_once('=')?.1.trim();
     if rhs.starts_with("undef") {
         return None;
@@ -56,42 +68,17 @@ fn parse_scalar_cell(stdout: &str, name: &str) -> Option<f64> {
 // `std_tolerancing_surface.ri` is the reference file: it has a
 // `constraint Conforms(tolerance: self.pos_mmc, measured_deviation: 0.15mm,
 // feature_departure: 0.1mm)` with NO explicit `actual` — the canonical scalar
-// path.  Both the eval flip and the check-green expectations are already
-// locked by `cli_tolerancing_eval.rs` (Test A / Test B); the NEW assertion
-// here is the absence of any η diagnostic ("measured deviation" absent),
-// which is the key regression signal if η over-intercepts.
+// path.
+//
+// The eval-flip (conforms_mmc=true / conforms_rfs=false) is already covered
+// by `cli_tolerancing_eval.rs::eval_std_tolerancing_surface_example_succeeds`
+// (Test A); duplicating it here would add CI cost without novel signal.
+// The NEW assertion this gate uniquely owns is the KEY B4 GUARD below:
+// the *absence* of any η diagnostic ("measured deviation" absent from all
+// output streams), proving C3 non-interception.
 //
 // Kernel-independent (std_tolerancing_surface.ri is a purely scalar file).
 // Green-on-arrival — the behavior ships via the done deps + C3 keying.
-
-/// B4 (signal, eval): `reify eval examples/tolerancing/std_tolerancing_surface.ri`
-/// exits 0 and stdout carries the MMC-vs-RFS conformance FLIP
-/// (`conforms_mmc = true`, `conforms_rfs = false`).
-///
-/// Supplements `cli_tolerancing_eval.rs::eval_std_tolerancing_surface_example_succeeds`
-/// (Test A) as a B4 regression anchor in this gate suite. Only pins the
-/// headline flip — not the full float cell assertions already covered by Test A.
-#[test]
-fn b4_scalar_eval_mmc_rfs_flip() {
-    let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
-    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
-
-    assert!(
-        status.success(),
-        "B4 eval: reify eval std_tolerancing_surface.ri should exit 0 \
-         (kernel-independent scalar file).\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("conforms_mmc = true"),
-        "B4 eval: stdout must contain 'conforms_mmc = true' \
-         (MMC zone 0.2mm ≥ 0.15mm → Satisfied).\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("conforms_rfs = false"),
-        "B4 eval: stdout must contain 'conforms_rfs = false' \
-         (RFS zone 0.1mm < 0.15mm → not satisfied).\nstdout: {stdout}\nstderr: {stderr}"
-    );
-}
 
 /// B4 (guard, check): `reify check examples/tolerancing/std_tolerancing_surface.ri`
 /// exits 0, reports "All constraints satisfied.", and produces NO η
@@ -163,7 +150,7 @@ fn b4_scalar_check_green_no_eta_intercept() {
 //
 // Stub mode (no OCCT): geometry cells are Undef → skip oracle assertions.
 // The file-integrity assert (exit 0, no "Error:") is unconditional.
-// RED until step-3 creates the fixture files.
+// Fixtures are committed in this PR; both tests are GREEN on arrival.
 
 /// B5 (inside): `reify eval examples/tolerancing/gdt_oracle_inside.ri` —
 /// actual shifted 0.05 mm (d < t = 0.1mm) — both oracles say INSIDE.
@@ -171,18 +158,16 @@ fn b4_scalar_check_green_no_eta_intercept() {
 /// Query oracle: `dev = max_deviation(actual, nominal)` < 1e-4 m (= 0.1mm).
 /// Boolean oracle: `pokeout = volume(difference(actual, zone))` < 1e-9 m³.
 ///
-/// RED until step-3 creates `examples/tolerancing/gdt_oracle_inside.ri`.
+/// Fixture `examples/tolerancing/gdt_oracle_inside.ri` is committed in this PR.
 #[test]
 fn b5_oracle_inside_oracles_agree() {
     let path = common::example_path("tolerancing/gdt_oracle_inside.ri");
     let (status, stdout, stderr) = common::run_subcommand("eval", &path);
 
     // Unconditional: fixture must be parseable (exit 0, no Error diagnostics).
-    // RED phase: file missing → eval exits non-zero → this assertion fails.
     assert!(
         status.success(),
-        "B5 inside: reify eval gdt_oracle_inside.ri must exit 0 \
-         (fixture missing → RED until step-3 creates it).\n\
+        "B5 inside: reify eval gdt_oracle_inside.ri must exit 0.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -237,7 +222,7 @@ fn b5_oracle_inside_oracles_agree() {
 /// Expected outside poke-out: (d − t) · face_area = 0.4mm · (10mm)² ≈ 4e-8 m³
 /// (~40× FLOOR margin — analytic, G6 floor-bounded inequality, not tuned).
 ///
-/// RED until step-3 creates `examples/tolerancing/gdt_oracle_outside.ri`.
+/// Fixture `examples/tolerancing/gdt_oracle_outside.ri` is committed in this PR.
 #[test]
 fn b5_oracle_outside_oracles_agree() {
     let path = common::example_path("tolerancing/gdt_oracle_outside.ri");
@@ -245,8 +230,7 @@ fn b5_oracle_outside_oracles_agree() {
 
     assert!(
         status.success(),
-        "B5 outside: reify eval gdt_oracle_outside.ri must exit 0 \
-         (fixture missing → RED until step-3 creates it).\n\
+        "B5 outside: reify eval gdt_oracle_outside.ri must exit 0.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
@@ -322,55 +306,50 @@ fn b5_oracle_outside_oracles_agree() {
 // Stub mode: scalar=OK, geometric=INDETERMINATE, RW=INDETERMINATE; exit 0;
 //   no "VIOLATED"; order still preserved.
 //
-// RED until step-5 creates `examples/tolerancing/gdt_pass_weave.ri`.
+// Fixture committed in this PR; test is GREEN on arrival.
 
 /// B9: `reify check examples/tolerancing/gdt_pass_weave.ri` produces three
 /// constraint result lines in declaration order with correct verdicts (under
 /// OCCT and in stub mode), proving C5 caller-order weave + cross-pass
 /// non-perturbation.
 ///
-/// RED until step-5 creates the fixture.
+/// Fixture `examples/tolerancing/gdt_pass_weave.ri` is committed in this PR.
 #[test]
 fn b9_pass_ordering_and_weave() {
     let path = common::example_path("tolerancing/gdt_pass_weave.ri");
     let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
     // Constraint labels for `constraint Conforms(...)` instantiations follow
-    // the ConstraintInstDecl format "{name}#{instance_idx}[{predicate_idx}]"
-    // (entity.rs expand_constraint_inst, line ~4175).
-    // Two separate `constraint Conforms(...)` calls → Conforms#0[0] and
-    // Conforms#1[0] (instance_idx increments per Conforms instantiation).
-    // `constraint RepresentationWithin(...)` uses the ConstraintNodeId Display
-    // form ("Entity#constraint[N]") because it is intercepted engine-side by
-    // dispatch_constraints / eval_representation_within with a fresh entry
-    // whose label comes from the compiled constraint's label.as_deref() — and
-    // as a ConstraintInstDecl it would produce "RepresentationWithin#0[0]",
-    // but the WeaveSphereCheck structure has one RepresentationWithin in its
-    // template so the ConstraintNodeId Display is "WeaveSphereCheck#constraint[0]".
+    // the ConstraintInstDecl format "{name}#{instance_idx}[{predicate_idx}]".
+    // SINGLE SOURCE OF TRUTH: entity.rs `expand_constraint_inst` (the
+    // ConstraintInstDecl compiler that allocates instance_idx and formats the
+    // label string).  If that function is relabeled, update these strings here
+    // too.  Two separate `constraint Conforms(...)` calls produce Conforms#0[0]
+    // and Conforms#1[0] (instance_idx increments per Conforms instantiation).
+    // `constraint RepresentationWithin(...)` is intercepted engine-side by
+    // dispatch_constraints / eval_representation_within; its ConstraintNodeId
+    // Display is "WeaveSphereCheck#constraint[0]" (one RepresentationWithin in
+    // the WeaveSphereCheck template).
     let scalar_label = "Conforms#0[0]";
     let geo_label    = "Conforms#1[0]";
     let rw_label     = "WeaveSphereCheck#constraint[0]";
 
-    // The three labels must appear in stdout.
-    // RED: fixture missing → check exits non-zero / labels absent → panic!.
+    // The three labels must appear in stdout in declaration order.
     let scalar_pos = stdout.find(scalar_label).unwrap_or_else(|| {
         panic!(
-            "B9: '{scalar_label}' not found in stdout \
-             (fixture missing → RED until step-5).\n\
+            "B9: '{scalar_label}' not found in stdout.\n\
              stdout: {stdout}\nstderr: {stderr}"
         )
     });
     let geo_pos = stdout.find(geo_label).unwrap_or_else(|| {
         panic!(
-            "B9: '{geo_label}' not found in stdout \
-             (fixture missing → RED until step-5).\n\
+            "B9: '{geo_label}' not found in stdout.\n\
              stdout: {stdout}\nstderr: {stderr}"
         )
     });
     let rw_pos = stdout.find(rw_label).unwrap_or_else(|| {
         panic!(
-            "B9: '{rw_label}' not found in stdout \
-             (fixture missing → RED until step-5).\n\
+            "B9: '{rw_label}' not found in stdout.\n\
              stdout: {stdout}\nstderr: {stderr}"
         )
     });
