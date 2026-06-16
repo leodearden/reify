@@ -879,6 +879,35 @@ structure AutoWidget {
 }
 "#;
 
+/// The lexicographic-parent multi-body assembly idiom (§6, step-14): a parent
+/// `structure Assembly` whose name sorts BEFORE its child `sub` names (`m`, `z`)
+/// and before the child structure defs (`Mbody`, `Zbody`), composing two distinct
+/// child bodies via `union` at the parent.
+///
+/// The point is to stress the unified Kahn worklist's `DebugOrd` pop order: by raw
+/// name sort the parent's union realization `Assembly.result` sorts FIRST (`'A'` <
+/// `'M'` < `'Z'`), yet it depends on the later-sorting child body realizations
+/// `Mbody.body` / `Zbody.body`, so it MUST pop LAST. The §3.1
+/// realization→realization edges enforce that topological order over the raw sort
+/// — the inverse of the SEED `two_sub_assembly` (parent `C` sorts AFTER children
+/// `A`/`B`, so naive sort order is already correct there). Both schedulers must
+/// produce byte-identical multi-body export + equivalent values/constraints, with
+/// residue==∅.
+///
+/// `Mbody` / `Zbody` are declared before `Assembly` (forward-ref limitation: a
+/// `sub` references a structure declared earlier).
+pub const LEX_PARENT_MULTIBODY_SRC: &str = r#"pub structure Mbody {
+    let body = box(10mm, 10mm, 10mm)
+}
+pub structure Zbody {
+    let body = box(20mm, 20mm, 20mm)
+}
+pub structure Assembly {
+    sub m = Mbody()
+    sub z = Zbody()
+    let result = union(self.m.body, self.z.body)
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
