@@ -4064,4 +4064,123 @@ mod tests {
              (type-position contract, task 4375 γ)"
         );
     }
+
+    // ── bare-Scalar rejection (task 4375 γ step-5) ───────────────────────────
+    // These three tests pin the E_BARE_SCALAR contract:
+    // (a) `resolve_type_name("Scalar")` returns `None` (no default arm).
+    // (b) Bare `Scalar` through `resolve_type_expr_with_aliases` returns
+    //     `Some(Type::Error)` + exactly one `BareScalarType` diagnostic.
+    // (c) `Scalar<NotADimension>` emits at least one diagnostic but NONE
+    //     with `BareScalarType` (the `type_args.is_empty()` guard lets the
+    //     precise dimension error through).
+    // All three are RED until step-6 removes the `"Scalar" => Some(Type::length())`
+    // arm and adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+
+    /// (a) `resolve_type_name("Scalar")` must return `None` once the default
+    /// `Type::length()` arm is removed.
+    ///
+    /// RED until step-6 deletes the `"Scalar" => Some(Type::length())` arm.
+    #[test]
+    fn resolve_type_name_scalar_returns_none_without_default_arm() {
+        assert_eq!(
+            resolve_type_name("Scalar"),
+            None,
+            "resolve_type_name(\"Scalar\") should return None \
+             after the bare-Scalar default arm is removed (E_BARE_SCALAR, task 4375 γ)"
+        );
+    }
+
+    /// (b) Bare `Scalar` (no type args) through `resolve_type_expr_with_aliases`
+    /// must return `Some(Type::Error)` and push exactly one `BareScalarType`
+    /// diagnostic with `Severity::Error`.
+    ///
+    /// RED until step-6 adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+    #[test]
+    fn resolve_type_expr_with_aliases_bare_scalar_emits_bare_scalar_type() {
+        let te = named_type_expr("Scalar"); // empty type_args
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Error),
+            "bare `Scalar` must resolve to Some(Type::Error) (poison sentinel, E_BARE_SCALAR)"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "bare `Scalar` must emit exactly one diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::BareScalarType),
+            "the diagnostic code must be BareScalarType; got: {:?}",
+            diagnostics[0].code
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "the diagnostic severity must be Error; got: {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// (c) `Scalar<NotADimension>` must NOT emit a `BareScalarType` diagnostic —
+    /// only a bare unparameterised `Scalar` triggers E_BARE_SCALAR.
+    ///
+    /// The `type_args.is_empty()` guard in step-6 lets the precise "unknown
+    /// dimension" error surface instead.
+    ///
+    /// RED until step-6 adds the guard (currently `Scalar<Q>` hits the Scalar
+    /// default arm and the bad dimension arg may or may not error).
+    #[test]
+    fn resolve_type_expr_with_aliases_scalar_bad_dim_no_bare_scalar_type() {
+        // Construct TypeExpr for `Scalar<NotADimension>` (one bad type arg).
+        let te = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Scalar".to_string(),
+                type_args: vec![named_type_expr("NotADimension")],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let _result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        // Must emit at least one diagnostic (unknown dimension "NotADimension"),
+        // but NONE of them may have code BareScalarType.
+        assert!(
+            !diagnostics.is_empty(),
+            "Scalar<NotADimension> should produce at least one diagnostic (unknown dimension)"
+        );
+        let bare_scalar_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::BareScalarType))
+            .collect();
+        assert!(
+            bare_scalar_diags.is_empty(),
+            "Scalar<NotADimension> must NOT emit BareScalarType — \
+             the type_args.is_empty() guard must let the dimension error through; \
+             got BareScalarType diagnostics: {:?}",
+            bare_scalar_diags
+        );
+    }
 }
