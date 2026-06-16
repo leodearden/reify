@@ -443,6 +443,38 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
     );
 }
 
+/// Assert `UnifiedDag` is DETERMINISTIC for `case`: two independent builds (fresh
+/// engines) produce byte-for-byte identical exported geometry AND an identical
+/// canonical projection.
+///
+/// The raw `geometry_output` byte check is the strong δ guarantee (realization
+/// order, hence exported bytes, never drifts run-to-run). The projection check
+/// additionally pins diagnostic EMISSION order and constraint-result order (both
+/// compared as ordered `Vec`s), so a worklist-order regression that reordered
+/// diagnostics — but happened to leave geometry bytes unchanged — would still be
+/// caught.
+pub fn assert_unified_byte_identical(case: &CorpusCase) {
+    let first = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+    let second = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+
+    assert_eq!(
+        first.geometry_output, second.geometry_output,
+        "case `{}`: UnifiedDag exported geometry is NOT byte-identical across two \
+         independent builds — a determinism regression (the worklist pop order must \
+         be total + stable). legacy_len={:?} second_len={:?}",
+        case.name,
+        first.geometry_output.as_ref().map(|b| b.len()),
+        second.geometry_output.as_ref().map(|b| b.len()),
+    );
+    assert_eq!(
+        project_build_result(&first),
+        project_build_result(&second),
+        "case `{}`: UnifiedDag canonical projection is NOT identical across two \
+         independent builds — a determinism regression in values/constraints/diagnostics",
+        case.name,
+    );
+}
+
 /// Render a [`Divergence`] for the stale-entry panic list.
 fn describe_divergence(d: &Divergence) -> String {
     match d {
