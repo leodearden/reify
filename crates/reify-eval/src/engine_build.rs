@@ -152,6 +152,24 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// One ordered action in a template's per-build schedule walk (task 4358 ε).
+///
+/// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
+/// realization loop is driven by `run_unified_pass`'s Kahn order rather than
+/// declaration order, so a curated selector value-cell (e.g. `edges_at_height`)
+/// is hydrated at its scheduled slot BEFORE the realization that consumes it
+/// (the curated `fillet(solid, edges, radius)`). Under `LegacyMultiPass` the
+/// walk is simply `[Realize(0), Realize(1), …]` in declaration order with no
+/// interleaved `HydrateCell` steps (selectors resolve in the post-process block,
+/// exactly as before) — so the legacy path stays byte-identical.
+enum BuildStep {
+    /// Run `execute_realization_ops` for `template.realizations[usize]`.
+    Realize(usize),
+    /// Hydrate the named value cell at its scheduled slot (selector / geometry
+    /// query) so a later realization in the schedule sees its resolved value.
+    HydrateCell(reify_core::ValueCellId),
+}
+
 /// Task 3441 / 3814: seed compound-key entries `<sub>.<member> → handle` from
 /// each non-collection sub's completed snapshot in `module_named_steps`.
 ///
@@ -202,24 +220,6 @@ impl<'a> RealizationOutputs<'a> {
 /// rather than accidentally resolving against the parent's scope.  Pinned by
 /// `cross_sub_nested_sub_in_override_path_produces_compile_error`.
 ///
-/// One ordered action in a template's per-build schedule walk (task 4358 ε).
-///
-/// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
-/// realization loop is driven by `run_unified_pass`'s Kahn order rather than
-/// declaration order, so a curated selector value-cell (e.g. `edges_at_height`)
-/// is hydrated at its scheduled slot BEFORE the realization that consumes it
-/// (the curated `fillet(solid, edges, radius)`). Under `LegacyMultiPass` the
-/// walk is simply `[Realize(0), Realize(1), …]` in declaration order with no
-/// interleaved `HydrateCell` steps (selectors resolve in the post-process block,
-/// exactly as before) — so the legacy path stays byte-identical.
-enum BuildStep {
-    /// Run `execute_realization_ops` for `template.realizations[usize]`.
-    Realize(usize),
-    /// Hydrate the named value cell at its scheduled slot (selector / geometry
-    /// query) so a later realization in the schedule sees its resolved value.
-    HydrateCell(reify_core::ValueCellId),
-}
-
 /// **Performance note:** the override path runs `kernel.execute_with_history`
 /// for every op of every named realization of every overridden sub on EACH
 /// invocation of this helper — including the invocation from
