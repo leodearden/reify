@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use reify_ast::QuantifierKind;
-use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, Value, ValueMap, quaternion_is_finite};
+use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFIX, SourceSpan, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -49,6 +49,22 @@ pub struct EvalContext<'a> {
     /// silently dropped — preserving the legacy `EvalContext::simple`
     /// semantics used by ad-hoc unit tests.
     pub diagnostics: Option<&'a RefCell<Vec<Diagnostic>>>,
+    /// Optional sink for op/builtin contract-failure `UndefCause` entries
+    /// (task 4323 γ, PRD undef-self-describing §4.3).
+    ///
+    /// When `Some`, `push_op_contract_failure` pushes an
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, span: empty }`
+    /// into the sink at each op/builtin push site that returns `Value::Undef`
+    /// with ALL inputs determined (genuine contract failure, not propagated undef).
+    ///
+    /// When `None`, all pushes are no-ops — preserving the legacy semantics
+    /// for every call site that does not attach the sink (A1/G3 transparency:
+    /// main-eval values are byte-identical with and without a sink attached).
+    ///
+    /// The engine's `record_op_contract_failures` helper attaches this sink during
+    /// the post-eval re-evaluation pass; callers that want to test the sink
+    /// directly can use `with_undef_cause_sink`.
+    pub undef_causes: Option<&'a RefCell<Vec<UndefCause>>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -61,6 +77,7 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
         }
     }
 
@@ -73,6 +90,7 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
         }
     }
 
@@ -86,6 +104,7 @@ impl<'a> EvalContext<'a> {
             meta: None,
             determinacy: None,
             diagnostics: None,
+            undef_causes: None,
         }
     }
 
@@ -112,6 +131,22 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach an op/builtin contract-failure undef-cause sink (task 4323 γ).
+    ///
+    /// When attached, `push_op_contract_failure` pushes an
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, span: empty }`
+    /// into the sink at each op/builtin site that returns `Value::Undef` with
+    /// ALL inputs determined (genuine domain/contract failure, not propagated undef).
+    ///
+    /// The cell-level drain boundary in `record_op_contract_failures` (reify-eval)
+    /// re-stamps the span with the owning cell's `decl.span`; the push site itself
+    /// uses an empty placeholder span because `CompiledExpr` carries no span
+    /// (spans are lost at compile).
+    pub fn with_undef_cause_sink(mut self, sink: &'a RefCell<Vec<UndefCause>>) -> Self {
+        self.undef_causes = Some(sink);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -124,6 +159,7 @@ impl<'a> EvalContext<'a> {
             meta: self.meta,
             determinacy: self.determinacy,
             diagnostics: self.diagnostics,
+            undef_causes: self.undef_causes,
         }
     }
 }
@@ -502,6 +538,14 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     // path), so the Undef-only `emit_undef_builtin_diagnostics` gate
                     // cannot surface it. A no-op for every non-snapshot name.
                     emit_snapshot_diagnostics(&function.name, &evaluated_args, &result, ctx);
+                    // γ (task 4323): genuine op/builtin contract failure — all args are
+                    // determined (strict undef-arg short-circuit above), so an Undef
+                    // result here is a real domain/contract violation, NOT propagated
+                    // undef. Push into the undef-cause sink if one is attached. When
+                    // no sink is attached this is a no-op (A1/G3 transparency).
+                    if result.is_undef() {
+                        push_op_contract_failure(ctx, DiagnosticCode::OpContractViolation);
+                    }
                     result
                 }
             }
@@ -2361,6 +2405,38 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
     }
 }
 
+/// Push an `UndefCause::OpContractFailed` into the undef-cause sink (task 4323 γ).
+///
+/// Called at the two op/builtin push sites that return `Value::Undef` with ALL
+/// inputs determined (genuine contract failure, not propagated undef):
+///
+/// 1. The `FunctionCall` arm in `eval_expr`, after `reify_stdlib::eval_builtin`
+///    returns `Value::Undef` (reachable only because the strict undef-arg
+///    short-circuit at lib.rs:206 already filtered out Undef args).
+/// 2. `eval_binop`, after the strict undef-propagation check (both operands
+///    are determined at that point; an Undef result is a genuine contract failure).
+///
+/// Uses an **empty placeholder span** (`SourceSpan::default()`) because
+/// `CompiledExpr` carries no span (spans are lost at compile). The engine's
+/// drain boundary (`record_op_contract_failures`) re-stamps the span with the
+/// owning cell's `decl.span` before writing to the side-map.
+///
+/// When `ctx.undef_causes` is `None`, this function is a complete no-op —
+/// preserving main-eval byte-identity (A1/G3 transparency).
+#[inline]
+fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
+    if let Some(sink) = ctx.undef_causes {
+        sink.borrow_mut().push(UndefCause::OpContractFailed {
+            code,
+            // Placeholder span: CompiledExpr carries no span (spans are lost at
+            // compile).  The engine's drain boundary (record_op_contract_failures)
+            // re-stamps this with the owning cell's decl.span before writing to
+            // the side-map.
+            span: SourceSpan::empty(0),
+        });
+    }
+}
+
 /// Apply a lambda closure to a list of argument values.
 ///
 /// Returns Undef if:
@@ -3117,15 +3193,20 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         return Value::Undef;
     }
 
-    match op {
+    // γ (task 4323): bind the result so we can inspect it for OpContractFailed
+    // before returning. Both operands are determined at this point (the strict
+    // undef-propagation check above already returned early for Undef operands),
+    // so any Undef result here is a genuine contract failure, NOT propagated undef.
+    let result = match op {
         BinOp::Add => {
             // Point + Point is undefined: spec 3.3.1 prohibits adding two points
             if matches!(&left.result_type, Type::Point { .. })
                 && matches!(&right.result_type, Type::Point { .. })
             {
-                return Value::Undef;
+                Value::Undef
+            } else {
+                eval_add(&lv, &rv)
             }
-            eval_add(&lv, &rv)
         }
         BinOp::Sub => eval_sub(&lv, &rv),
         BinOp::Mul => eval_mul(&lv, &rv),
@@ -3139,7 +3220,13 @@ fn eval_binop(op: BinOp, left: &CompiledExpr, right: &CompiledExpr, ctx: &EvalCo
         BinOp::Gt => eval_cmp(&lv, &rv, |a, b| a > b),
         BinOp::Ge => eval_cmp(&lv, &rv, |a, b| a >= b),
         BinOp::And | BinOp::Or | BinOp::Implies => unreachable!(),
+    };
+    // Push OpContractFailed when the result is Undef AND a sink is attached.
+    // When no sink is attached this is a no-op (A1/G3 transparency).
+    if result.is_undef() {
+        push_op_contract_failure(ctx, DiagnosticCode::OpContractViolation);
     }
+    result
 }
 
 /// Kleene AND: false ∧ Undef = false
@@ -8382,5 +8469,140 @@ mod tests {
             "pure-legacy snapshot must NOT emit SnapshotCenterOfMassDensityFallback, \
              got {diags:?}"
         );
+    }
+
+    // --- task 4323 γ: undef-cause sink tests ---
+    //
+    // Drives the `with_undef_cause_sink` builder, `push_op_contract_failure` helper,
+    // and the two push sites (FunctionCall arm, eval_binop).
+    //
+    // RED: `with_undef_cause_sink` does not exist → compile fail.
+    // GREEN after step-4 adds it to EvalContext.
+
+    /// BinOp::Div with a zero Int divisor produces Undef AND, when a sink is
+    /// attached via `with_undef_cause_sink`, records exactly one
+    /// `UndefCause::OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Mirrors the `div_by_zero_is_undef` test above but adds the sink assertion.
+    /// Drives the eval_binop push site (after the strict undef-propagation check).
+    #[test]
+    fn div_by_zero_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let left = lit(Value::Int(42), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "div-by-zero must produce Undef");
+        let causes = sink.borrow();
+        assert_eq!(causes.len(), 1, "sink must contain exactly one cause, got {causes:?}");
+        assert!(
+            matches!(
+                &causes[0],
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            ),
+            "cause must be OpContractFailed {{ OpContractViolation }}, got {:?}",
+            causes[0]
+        );
+    }
+
+    /// sqrt of a determined negative Real produces Undef AND the sink receives
+    /// an `OpContractFailed { code: OpContractViolation, .. }`.
+    ///
+    /// Drives the FunctionCall arm push site (after `eval_builtin` returns Undef
+    /// with a fully-determined arg list — the arg list has no Undef entries,
+    /// so the strict undef-arg short-circuit did NOT fire).
+    #[test]
+    fn sqrt_negative_with_sink_records_op_contract_failed() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Real(-1.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x21]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(-1.0) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            !causes.is_empty(),
+            "sink must contain at least one OpContractFailed cause, got {causes:?}"
+        );
+        assert!(
+            causes.iter().any(|c| matches!(
+                c,
+                UndefCause::OpContractFailed {
+                    code: DiagnosticCode::OpContractViolation,
+                    ..
+                }
+            )),
+            "causes must include OpContractFailed {{ OpContractViolation }}, got {causes:?}"
+        );
+    }
+
+    /// sqrt(Undef) with a sink leaves the sink EMPTY (expr-layer BT6).
+    ///
+    /// The strict undef-arg short-circuit at lib.rs:206 fires BEFORE the builtin
+    /// is ever called, so `reify_stdlib::eval_builtin` is never reached and
+    /// no OpContractFailed can be pushed — the no-false-attribution guarantee
+    /// falls out of the existing short-circuit structure.
+    #[test]
+    fn sqrt_undef_arg_with_sink_leaves_sink_empty() {
+        use reify_ir::UndefCause;
+
+        let arg = lit(Value::Undef, Type::dimensionless_scalar());
+        let expr = CompiledExpr {
+            content_hash: reify_core::ContentHash::of(&[0x4c, 0x22]),
+            result_type: Type::dimensionless_scalar(),
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: "sqrt".to_string(),
+                    qualified_name: "std::sqrt".to_string(),
+                },
+                args: vec![arg],
+            },
+        };
+        let values = ValueMap::new();
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = EvalContext::simple(&values).with_undef_cause_sink(&sink);
+        let result = eval_expr(&expr, &ctx);
+        assert!(result.is_undef(), "sqrt(Undef) must produce Undef");
+        let causes = sink.borrow();
+        assert!(
+            causes.is_empty(),
+            "sink must be EMPTY for Undef arg (BT6 — undef-arg short-circuit fires first), \
+             got {causes:?}"
+        );
+    }
+
+    /// div-by-zero with NO sink attached does not panic; result is still Undef.
+    ///
+    /// Pins the transparency invariant G3: absence of a sink changes nothing in
+    /// the eval result — all pushes are no-ops when `undef_causes` is None.
+    #[test]
+    fn div_by_zero_without_sink_is_transparent() {
+        let left = lit(Value::Int(10), Type::Int);
+        let right = lit(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::binop(BinOp::Div, left, right, Type::Int);
+        let values = ValueMap::new();
+        // Plain EvalContext::simple — no sink.
+        let result = eval_expr(&expr, &EvalContext::simple(&values));
+        assert!(result.is_undef(), "div-by-zero without sink must still produce Undef");
     }
 }

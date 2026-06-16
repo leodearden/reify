@@ -2490,6 +2490,23 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AMBIENT_DEFAULT_TYPE_MISMATCH`
     /// (see `docs/prds/ambient-default-material.md` §7).
     AmbientDefaultTypeMismatch,
+
+    /// Origin: `crates/reify-expr/src/lib.rs` op/builtin contract-failure reason
+    /// sink — γ (task 4323, PRD `docs/prds/v0_6/undef-self-describing.md` §4.3/§8.2).
+    ///
+    /// Emitted when an op or builtin returns `Value::Undef` with **all inputs
+    /// determined** (i.e. this is a genuine domain/contract failure, not a
+    /// propagated undef). Arithmetic and math-builtin domain failures
+    /// (sqrt domain, div/mod-by-zero, pow non-finite, dimension mismatch, Point+Point)
+    /// emit no pre-existing `DiagnosticCode`, so a new generic code is minted.
+    ///
+    /// PRD-prose mnemonic: `E_OP_CONTRACT`.
+    /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]` with no exhaustive
+    /// match-on-self; a single generic code is honest for v1 — finer per-op codes are
+    /// a follow-up. Follows the `SelectorKindMismatch`/`ArgTypeMismatch` minting
+    /// precedent; `DiagnosticCode` is `#[non_exhaustive]` so adding one variant is
+    /// non-breaking for downstream consumers.
+    OpContractViolation,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4037,6 +4054,40 @@ mod tests {
             deserialized.has_location,
             "missing `has_location` in JSON must deserialize as true (backward-compat default)"
         );
+    }
+
+    // --- OpContractViolation tests (task 4323 — E_OP_CONTRACT) ---
+    // Pairs with the undef-cause sink in `crates/reify-expr/src/lib.rs` (γ push
+    // sites: FunctionCall arm after `eval_builtin`, `eval_binop` after the strict
+    // undef-propagation check) and the `record_op_contract_failures` post-eval
+    // helper in `crates/reify-eval/src/engine_eval.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::OpContractViolation` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_unresolved_name_with_code_round_trips`
+    /// (which targets a different variant); a future enum reorganisation that
+    /// drops `OpContractViolation` is caught here.
+    ///
+    /// RED: the variant does not exist → compile fail.
+    /// GREEN after step-2 adds it to `DiagnosticCode`.
+    #[test]
+    fn diagnostic_code_op_contract_violation_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::OpContractViolation);
+        assert_eq!(d.code, Some(DiagnosticCode::OpContractViolation));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::OpContractViolation` serializes
+    /// as `"OpContractViolation"` (PascalCase, from `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_op_contract_violation_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
+        assert_eq!(s, "\"OpContractViolation\"");
     }
 }
 
