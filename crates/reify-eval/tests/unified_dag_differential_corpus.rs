@@ -18,7 +18,8 @@ mod differential;
 
 use differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, SEED_CORPUS, assert_equivalent_or_allowed,
-    build_under, build_with_kernel_stdlib, project_build_result, seeded_build_volume_kernel,
+    assert_unified_byte_identical, build_under, build_with_kernel_stdlib, project_build_result,
+    seeded_build_volume_kernel,
 };
 use reify_core::DiagnosticCode;
 use reify_eval::BuildScheduler;
@@ -149,4 +150,24 @@ fn allow_list_admits_only_reasoned_divergence() {
         "an allow entry that matches no diff item (the stale `GeometryDiffers`) MUST be rejected \
          — the committed allow-list stays honest as ε evolves",
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-5 (RED): UnifiedDag is DETERMINISTIC — two independent builds of the same
+// source produce byte-identical geometry and an identical canonical projection.
+// This pins the δ determinism guarantee (the unified worklist's BTreeSet<DebugOrd>
+// pop order is total + stable, so realization order — hence exported bytes and
+// diagnostic emission order — never drifts run-to-run).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// For every SEED corpus entry, build under `UnifiedDag` TWICE on fresh engines
+/// and assert byte-for-byte determinism (raw `geometry_output` bytes) plus an
+/// identical canonical projection.
+///
+/// RED until step-6: `assert_unified_byte_identical` does not exist yet.
+#[test]
+fn unified_runs_are_byte_identical() {
+    for case in SEED_CORPUS {
+        assert_unified_byte_identical(case);
+    }
 }
