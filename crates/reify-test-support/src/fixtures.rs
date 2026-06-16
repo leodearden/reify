@@ -1189,6 +1189,51 @@ pub fn wave2_flip_fixture() -> Wave2FlipFixture {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Engine builders + value-comparison helper for the selective-demand
+// measurement tests (task 4532). Hoisted here so the byte-identity comparison
+// logic has a SINGLE definition shared by `observed_demand_measurement.rs` and
+// `selective_demand_measurement.rs` — they previously carried verbatim copies,
+// and drift in one copy (e.g. the sort key) would silently diverge the
+// byte-identity comparisons. Co-located with the `bracket_compiled_module` /
+// `two_body_module` fixtures these engines wrap. Gated on `eval-helpers`
+// because `Engine` / `EvalResult` live in `reify-eval`, an optional dependency.
+// ---------------------------------------------------------------------------
+
+/// Collect an `EvalResult`'s values into a deterministically-ordered
+/// `Vec<(cell-id-string, Value)>` for byte-identity comparison (`ValueMap` has
+/// no `PartialEq`).
+#[cfg(feature = "eval-helpers")]
+pub fn sorted_values(r: &reify_eval::EvalResult) -> Vec<(String, Value)> {
+    let mut v: Vec<(String, Value)> = r
+        .values
+        .iter()
+        .map(|(id, val)| (id.to_string(), val.clone()))
+        .collect();
+    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v
+}
+
+/// Build a freshly-eval'd bracket engine (single-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn bracket_engine() -> reify_eval::Engine {
+    let module = bracket_compiled_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
+/// Build a freshly-eval'd two-body engine (multi-body fixture).
+#[cfg(feature = "eval-helpers")]
+pub fn two_body_engine() -> reify_eval::Engine {
+    let module = two_body_module();
+    let checker = crate::mocks::MockConstraintChecker::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    engine.eval(&module);
+    engine
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

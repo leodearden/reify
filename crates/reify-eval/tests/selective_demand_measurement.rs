@@ -25,44 +25,13 @@
 
 use reify_core::RealizationNodeId;
 use reify_eval::cache::NodeId;
-use reify_eval::{DemandPruneMeasurement, Engine, EvalResult};
+use reify_eval::DemandPruneMeasurement;
 use reify_ir::Value;
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{bracket_compiled_module, two_body_module, vcid};
-
-// ---------------------------------------------------------------------------
-// Helpers shared across tests
-// ---------------------------------------------------------------------------
-
-/// Collect an `EvalResult`'s values into a deterministically-ordered
-/// `Vec<(cell-id-string, Value)>` for byte-identity comparison.
-fn sorted_values(r: &EvalResult) -> Vec<(String, Value)> {
-    let mut v: Vec<(String, Value)> = r
-        .values
-        .iter()
-        .map(|(id, val)| (id.to_string(), val.clone()))
-        .collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
-}
-
-/// Build a freshly-eval'd bracket engine.
-fn bracket_engine() -> Engine {
-    let module = bracket_compiled_module();
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
-    engine.eval(&module);
-    engine
-}
-
-/// Build a freshly-eval'd two-body engine.
-fn two_body_engine() -> Engine {
-    let module = two_body_module();
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
-    engine.eval(&module);
-    engine
-}
+// `sorted_values` / `bracket_engine` / `two_body_engine` are shared from
+// reify-test-support (a single definition shared with
+// `observed_demand_measurement.rs`) so the byte-identity comparison logic
+// cannot drift between the two test files.
+use reify_test_support::{bracket_engine, sorted_values, two_body_engine, vcid};
 
 // ---------------------------------------------------------------------------
 // Step-13 GREEN: scenario helpers + summarizer.
@@ -166,7 +135,10 @@ impl Distribution {
         vals.sort_unstable();
         let min = vals.first().copied().unwrap_or(0);
         let max = vals.last().copied().unwrap_or(0);
-        let median = vals[vals.len() / 2];
+        // Total over empty input, matching the `.first()`/`.last()` siblings:
+        // `vals[vals.len()/2]` would panic on an empty slice. Currently
+        // unreachable (callers pass non-empty edit lists) but a latent trap.
+        let median = vals.get(vals.len() / 2).copied().unwrap_or(0);
         Distribution { min, median, max }
     }
 
@@ -397,5 +369,23 @@ fn emit_distribution_table() {
     println!(
         "  value nodes pruned:       {}  (fine grain — one per property cell)",
         b_val_prune
+    );
+
+    // Lock the "win is real" premise this table documents — without these the
+    // test only prints and can never fail (no regression protection).
+    assert!(
+        a_prune_total > 0,
+        "Scenario A: the observed cone must prune at least one node across the \
+         session (G6 'win is real')"
+    );
+    assert!(
+        b_prune_total > 0,
+        "Scenario B: the observed cone must prune at least one node across the \
+         session (G6 'win is real')"
+    );
+    assert!(
+        b_real_prune > 0,
+        "Scenario B: body_b's realization must appear in would_prune \
+         (coarse per-realization grain)"
     );
 }

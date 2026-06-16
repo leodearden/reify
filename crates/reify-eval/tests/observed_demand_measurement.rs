@@ -8,32 +8,12 @@
 
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
-use reify_eval::{Engine, EvalResult, WouldPruneByKind};
+use reify_eval::WouldPruneByKind;
 use reify_ir::Value;
-use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{bracket_compiled_module, cnid, vcid};
-
-/// Collect an `EvalResult`'s values into a deterministically-ordered
-/// `Vec<(cell-id-string, Value)>` for equality comparison (`ValueMap` has no
-/// `PartialEq`).
-fn sorted_values(r: &EvalResult) -> Vec<(String, Value)> {
-    let mut v: Vec<(String, Value)> = r
-        .values
-        .iter()
-        .map(|(id, val)| (id.to_string(), val.clone()))
-        .collect();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
-    v
-}
-
-/// Build a freshly-eval'd bracket engine.
-fn bracket_engine() -> Engine {
-    let module = bracket_compiled_module();
-    let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
-    engine.eval(&module);
-    engine
-}
+// `sorted_values` / `bracket_engine` are shared from reify-test-support (a
+// single definition shared with `selective_demand_measurement.rs`) so the
+// byte-identity comparison logic cannot drift between the two test files.
+use reify_test_support::{bracket_engine, cnid, sorted_values, vcid};
 
 #[test]
 fn observed_demand_cone_tracks_registered_roots_only() {
