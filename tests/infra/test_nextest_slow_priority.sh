@@ -165,6 +165,50 @@ assert "crates/reify-solver-elastic/tests/determinism.rs exists on disk (filter 
     test -f "$REPO_ROOT/crates/reify-solver-elastic/tests/determinism.rs"
 
 # ---------------------------------------------------------------------------
+# Assertion D2: drift-guard extension (step-3) — all priority values are
+# numeric integers in nextest's documented signed-8-bit range (-100..100).
+# nextest 0.9.136 hard-rejects out-of-range values at parse time (e.g. 9999
+# fails); the assertion ensures a future edit doesn't accidentally write a
+# value that nextest silently truncates or rejects at runtime.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion D2: priority values are integers in nextest's -100..100 range ---"
+
+_check_priority_range() {
+    local name="$1" val="$2"
+    # Must be non-empty, an integer (optionally negative), and in [-100, 100].
+    if [ -z "$val" ]; then return 1; fi
+    case "$val" in
+        ''|*[!0-9-]*) return 1 ;;
+        -*)
+            # negative
+            abs="${val#-}"
+            case "$abs" in (*[!0-9]*) return 1 ;; esac
+            [ "$abs" -le 100 ] || return 1
+            ;;
+        *)
+            [ "$val" -le 100 ] || return 1
+            ;;
+    esac
+    return 0
+}
+
+assert "tensegrity_t0a priority (${P_T0A:-unset}) is in nextest range -100..100" \
+    _check_priority_range tensegrity_t0a "${P_T0A:-}"
+
+assert "fea_diagnostics_e2e priority (${P_FEA:-unset}) is in nextest range -100..100" \
+    _check_priority_range fea_diagnostics_e2e "${P_FEA:-}"
+
+assert "representation_within_assertion priority (${P_REPR:-unset}) is in nextest range -100..100" \
+    _check_priority_range representation_within_assertion "${P_REPR:-}"
+
+assert "analytical_validation priority (${P_ANAL:-unset}) is in nextest range -100..100" \
+    _check_priority_range analytical_validation "${P_ANAL:-}"
+
+assert "determinism priority (${P_DET:-unset}) is in nextest range -100..100" \
+    _check_priority_range determinism "${P_DET:-}"
+
+# ---------------------------------------------------------------------------
 # Assertion E: LPT ordering — tensegrity_t0a priority strictly greater than others
 # (enforces longest-first scheduling; straggler must start at t=0)
 # ---------------------------------------------------------------------------
