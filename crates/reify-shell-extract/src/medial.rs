@@ -2260,4 +2260,151 @@ mod tests {
             "AxisExtentsOverflow Display must include nz=5000000: {msg}"
         );
     }
+
+    // ── δ=4424 step-1: min_wall_thickness RED tests ──────────────────────────
+    //
+    // Both tests below reference `min_wall_thickness` and `MinWallThickness`
+    // which do NOT yet exist in medial.rs — they compile-fail (RED) until
+    // step-2 adds the implementation.
+
+    /// Build an analytic slab Regular3D `SampledField` representing
+    /// `φ(x, y, z) = |z| − thickness_mm/2` over an `n³` grid centered on
+    /// the origin with physical spacing `h` (mm). Thin in z, spanning x/y —
+    /// the "2mm box" analytic fixture for δ (task 4424) min-wall tests.
+    /// Mirrors the structure of `slab_sdf_3d` but parameterised in physical
+    /// units (mm) rather than unit-spacing voxels.
+    fn analytic_slab_box(thickness_mm: f64, h: f64, n: usize) -> SampledField {
+        assert!(n >= 2, "slab grid needs ≥ 2 voxels per axis");
+        let half_thickness = thickness_mm / 2.0;
+        let half_extent = (n as f64 - 1.0) / 2.0 * h;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> =
+            (0..n).map(|i| bounds_min + (i as f64) * h).collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &_x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(z.abs() - half_thickness);
+                }
+            }
+        }
+        SampledField {
+            name: format!("slab-box-{thickness_mm}mm-h{h}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![h, h, h],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build an L-bracket Regular3D `SampledField` as the union (minimum) of
+    /// two perpendicular analytic slabs:
+    ///   `φ(x, y, z) = min(|z| − web_mm/2, |x| − web_mm/2)`
+    /// over an `n³` grid centered on the origin with physical spacing `h` (mm).
+    /// D4 fixture for the min_wall_thickness conservative-bound gate (§9 Q4).
+    fn analytic_l_bracket(web_mm: f64, h: f64, n: usize) -> SampledField {
+        assert!(n >= 2, "L-bracket grid needs ≥ 2 voxels per axis");
+        let half_web = web_mm / 2.0;
+        let half_extent = (n as f64 - 1.0) / 2.0 * h;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> =
+            (0..n).map(|i| bounds_min + (i as f64) * h).collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    let phi_z = z.abs() - half_web; // horizontal slab
+                    let phi_x = x.abs() - half_web; // vertical slab
+                    data.push(phi_z.min(phi_x)); // union = minimum SDF
+                }
+            }
+        }
+        SampledField {
+            name: format!("l-bracket-{web_mm}mm-h{h}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![h, h, h],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// PRD §3b / δ=4424 step-1a:
+    /// `min_wall_thickness` for a 2.0mm analytic slab SDF at spacing h=0.5mm
+    /// must:
+    ///   (a) return `Ok(Measured(t))` — slab is above the 2h floor.
+    ///   (b) `|t − 2.0| ≤ h` — within one voxel of the analytic thickness.
+    ///   (c) `t ≤ 2.0 + h` — conservative-lower-bound: min-reduction cannot
+    ///       OVERestimate.
+    ///
+    /// G6 honest-floor: inequalities only, NO exact float, NO machine-epsilon.
+    /// φ = |z|−1.0 is piecewise-linear ⇒ walk_to_zero exact ⇒ d⁺=d⁻=1.0 ⇒
+    /// d⁺+d⁻=2.0mm at every medial voxel ⇒ both bounds hold by construction.
+    #[test]
+    fn min_wall_thickness_box_2mm_is_conservative_lower_bound() {
+        let h = 0.5_f64;
+        let sdf = analytic_slab_box(2.0, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid analytic slab must not error");
+        match result {
+            MinWallThickness::Measured(t) => {
+                assert!(
+                    (t - 2.0).abs() <= h,
+                    "2mm slab: |t−2.0|={} must be ≤ h={}; got t={t}",
+                    (t - 2.0).abs(),
+                    h
+                );
+                assert!(
+                    t <= 2.0 + h,
+                    "2mm slab: t={t} must be ≤ 2.0+h={} (conservative lower bound)",
+                    2.0 + h
+                );
+            }
+            other => panic!(
+                "expected MinWallThickness::Measured(_) for 2mm slab at h={h}, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// PRD §3b D4 gate / δ=4424 step-1b — §9 Q4:
+    /// For an L-bracket SDF (union/min of two perpendicular slabs, web thickness
+    /// w=2.0mm), if `min_wall_thickness` returns `Measured(t)`, then `t ≤ w+h`.
+    ///
+    /// walk_to_zero returns the FIRST zero-crossing (nearest surface) so a
+    /// per-voxel d⁺+d⁻ cannot OVERestimate; the min-reduction can only
+    /// UNDERestimate.  The clean leg centres are locally slabs that register
+    /// medial voxels (proven by the slab test above).
+    ///
+    /// `NoMeasurement` is accepted as a valid fall-through if the union mask
+    /// does not register (D4 §9-Q4 scope decision: restrict to convex-ish in
+    /// that case and file non-convex correctness as a follow-up).
+    #[test]
+    fn min_wall_thickness_l_bracket_conservative_bound_holds() {
+        let w = 2.0_f64;
+        let h = 0.5_f64;
+        let sdf = analytic_l_bracket(w, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid L-bracket field must not error");
+        if let MinWallThickness::Measured(t) = result {
+            assert!(
+                t <= w + h,
+                "L-bracket Measured({t}) must be ≤ w+h={} \
+                 (conservative lower bound on re-entrant geometry)",
+                w + h
+            );
+        }
+        // NoMeasurement is also accepted (D4 §9-Q4 fall-through).
+    }
 }
