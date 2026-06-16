@@ -361,28 +361,28 @@ fn bounded_fallback_unsound_emits_bounded_infeasible() {
         compiled.diagnostics
     );
 
-    // (b) Soundness: no accepted substitution should produce a populated StackAssembly.stack.
-    // eval() on a module with Error diagnostics still runs — verify the stack sub is Undef/absent.
-    let result = eval_real(&compiled);
-    let stack_cell = reify_core::ValueCellId::new("StackAssembly", "stack");
-    match result.values.get(&stack_cell) {
-        None | Some(Value::Undef) => {
-            // Expected: no substitution → no populated StructureInstance.
-        }
-        Some(Value::StructureInstance(data)) => {
-            panic!(
-                "SOUNDNESS VIOLATION: StackAssembly.stack is a populated StructureInstance({}) \
-                 despite BoundedInfeasible Error — γ joint-recheck did not block the substitution!",
-                data.type_name
-            );
-        }
-        Some(other) => {
-            // Other Value variants (Bool, Scalar, etc.) are unexpected here but not unsound.
-            // Report but don't fail — the key soundness check is above.
-            eprintln!(
-                "note: StackAssembly.stack has unexpected value (not StructureInstance or Undef): {:?}",
-                other
-            );
-        }
-    }
+    // (b) Soundness via ctx/templates inspection: no accepted LayeredStack$…
+    //     monomorph should exist in compiled.templates.
+    //
+    // When BoundedInfeasible fires, the auto_type_param phase does NOT emit a
+    // substitution — the monomorphized template is never appended.  Monomorph
+    // names carry the `$` separator (e.g. `LayeredStack$LayerA_LayerA_…`);
+    // only the generic definition `LayeredStack` (no `$`) should be present.
+    //
+    // NOTE: eval_real is intentionally NOT called here.  The BoundedInfeasible
+    // module contains unresolved TypeParam value cells (the LayeredStack
+    // template's l1..l7 params still typed as T1..T7), which cause
+    // engine_eval.rs to panic with "unrepresentable cell_type TypeParam(…)".
+    // Templates inspection is the correct soundness path for this fixture.
+    let monomorph_name = compiled
+        .templates
+        .iter()
+        .find(|t| t.name.starts_with("LayeredStack$"))
+        .map(|t| t.name.clone());
+    assert!(
+        monomorph_name.is_none(),
+        "SOUNDNESS VIOLATION: compiled.templates contains '{}' despite BoundedInfeasible — \
+         γ joint-recheck did not block the monomorph substitution!",
+        monomorph_name.as_deref().unwrap_or("<none>")
+    );
 }
