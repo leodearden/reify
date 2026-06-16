@@ -23,6 +23,7 @@ pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
 pub(crate) mod realization_content;
+pub(crate) mod realize_solid_sdf;
 pub use engine_compute::{
     ComputeDispatchRegistry, ComputeFn, ComputeOutcome, DispatchError, RealizedContent,
     RealizationReadHandle,
