@@ -2860,13 +2860,13 @@ pub(crate) fn walk_type_for_applied<'a>(
     }
 }
 
-/// Check arity (and, in step-8, bounds) for a `Type::Applied { name, args }` node
-/// found in a structure value-cell type annotation.
+/// Check arity and bounds for a `Type::Applied { name, args }` node found in a
+/// structure value-cell type annotation.
 ///
 /// Called from `phase_pending_bound_checks` (entities_phase.rs) after all structures
 /// are compiled and the combined `template_registry` + `trait_registry` are available.
 ///
-/// ## Arity (this step — step-6 of task 4603 γ)
+/// ## Arity
 ///
 /// Looks up `name` in `template_registry`.  If absent (external / unknown structure)
 /// returns silently — the use will have produced a diagnostic elsewhere.  If present,
@@ -2878,16 +2878,26 @@ pub(crate) fn walk_type_for_applied<'a>(
 /// args is an arity error (0 vs N), unlike the shared `check_type_param_bounds`
 /// which early-continues on empty type_params.
 ///
-/// ## Bound check (step-8 — not yet implemented)
+/// ## Bound check
 ///
-/// Per-arg bound checking will be appended after the arity guard in the next step.
+/// After the arity check, iterates over `min(args.len(), type_params.len())` pairs
+/// so that bound checking proceeds even when arity is wrong (reporting both kinds of
+/// error independently).  For each (arg, type_param) pair:
 ///
-/// PRD mnemonic: E_TYPE_ARG_ARITY (step-6) / E_TYPE_ARG_BOUND (step-8).
+/// - Skips `Type::TypeParam(_)` args — bounds are enforced at the concrete
+///   instantiation site (mirrors `check_type_param_bounds`, entity.rs:3897).
+/// - Skips non-named/builtin args where `as_name()` returns `None` — they cannot
+///   violate a structure-trait bound.
+/// - For each bound declared on the type parameter, calls `satisfies_trait_bound`
+///   (entity.rs:3937) with the arg structure's `trait_bounds`; a false result
+///   pushes `DiagnosticCode::TypeArgBound`.
+///
+/// PRD mnemonic: E_TYPE_ARG_ARITY / E_TYPE_ARG_BOUND.
 pub(crate) fn check_applied_type_arg_bounds(
     name: &str,
     args: &[Type],
     template_registry: &HashMap<String, &TopologyTemplate>,
-    _trait_registry: &HashMap<String, &CompiledTrait>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
 ) {
@@ -2923,7 +2933,47 @@ pub(crate) fn check_applied_type_arg_bounds(
         );
     }
 
-    // Bound check will be appended here in step-8.
+    // Per-arg bound check — runs over the overlapping prefix even when arity
+    // is wrong, so both TypeArgArity and TypeArgBound can be reported.
+    let check_len = args.len().min(target.type_params.len());
+    for i in 0..check_len {
+        let arg = &args[i];
+        let tp = &target.type_params[i];
+
+        // Skip forwarded type-param args — their bounds are enforced at the
+        // concrete instantiation site (mirrors entity.rs:3897).
+        if matches!(arg, Type::TypeParam(_)) {
+            continue;
+        }
+
+        // Skip builtin/non-named args — they cannot violate a structure bound.
+        let arg_name = match arg.as_name() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let arg_template = template_registry.get(arg_name);
+
+        for bound in &tp.bounds {
+            let bound_name = &bound.trait_ref.name;
+            let satisfied = arg_template
+                .is_some_and(|t| satisfies_trait_bound(&t.trait_bounds, bound_name, trait_registry));
+
+            if !satisfied {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type argument '{}' does not satisfy bound '{}' on type parameter '{}' of '{}'",
+                        arg_name, bound_name, tp.name, name,
+                    ))
+                    .with_code(DiagnosticCode::TypeArgBound)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("'{}' does not implement '{}'", arg_name, bound_name),
+                    )),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

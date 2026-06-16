@@ -290,7 +290,7 @@ fn point3_two_type_args_in_default_stdlib_produces_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Arity-mismatch — silent fallthrough when same-named structure declared
+// Arity-mismatch — Applied resolution + TypeArgArity when same-named structure declared
 // ---------------------------------------------------------------------------
 
 /// Fixture: user-declared Vector3 and Point3 structures plus a use-site structure
@@ -310,50 +310,94 @@ structure def UseArity {
 /// `type_args.len() == 1` guard, but is then caught by the task-4603-γ
 /// structure-with-args arm (since `Vector3 ∈ structure_names && type_args non-empty`)
 /// and resolved to `Type::Applied { name: "Vector3", args: [Scalar<Force>, Scalar<Length>] }`.
-/// Prior to γ, the type args were silently dropped and `Type::StructureRef("Vector3")`
-/// was returned — this test was flipped from StructureRef to Applied as part of γ.
+///
+/// The arity check (added in step-6 of task-4603-γ via `phase_pending_bound_checks`)
+/// also fires a `TypeArgArity` diagnostic because `structure def Vector3 {}` is
+/// non-generic (0 type_params) but received 2 args.  The resolution itself is still
+/// correct (`Applied` rather than the pre-γ `StructureRef`).
 #[test]
 fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
-    assert_param_type(
-        ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
-        "UseArity",
-        "v",
-        &Type::Applied {
-            name: "Vector3".into(),
-            args: vec![
-                Type::Scalar {
-                    dimension: DimensionVector::FORCE,
-                },
-                Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                },
-            ],
-        },
+    use reify_core::diagnostics::DiagnosticCode;
+    let module = compile_with_stdlib_helper(ARITY_MISMATCH_USER_STRUCTURE_SOURCE);
+
+    // Cell type: args are NOT silently dropped — Applied (not StructureRef).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseArity")
+        .expect("UseArity must exist");
+    let cell_type = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "v")
+        .expect("v must exist")
+        .cell_type
+        .clone();
+    let expected = Type::Applied {
+        name: "Vector3".into(),
+        args: vec![
+            Type::Scalar { dimension: DimensionVector::FORCE },
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        ],
+    };
+    assert_eq!(cell_type, expected, "UseArity::v — expected {:?}", expected);
+
+    // Arity diagnostic: 2 args given to non-generic structure (0 params).
+    let arity_errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+    assert!(
+        !arity_errs.is_empty(),
+        "Vector3<Force, Length> (2 args vs 0 params on user structure) must emit TypeArgArity; \
+         diagnostics: {:?}",
+        module.diagnostics
     );
 }
 
 /// Parallel to `vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists`
 /// for `Point3`: with `structure def Point3 {}` in scope, `Point3<Force, Length>` is
 /// caught by the γ structure-with-args arm and resolves to
-/// `Type::Applied { name: "Point3", args: [Scalar<Force>, Scalar<Length>] }`.
-/// Flipped from StructureRef to Applied as part of task-4603-γ (same reasoning as
-/// the Vector3 variant above).
+/// `Type::Applied { name: "Point3", args: [Scalar<Force>, Scalar<Length>] }`, and
+/// the arity check fires `TypeArgArity` (2 args vs 0 params).
 #[test]
 fn point3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
-    assert_param_type(
-        ARITY_MISMATCH_USER_STRUCTURE_SOURCE,
-        "UseArity",
-        "p",
-        &Type::Applied {
-            name: "Point3".into(),
-            args: vec![
-                Type::Scalar {
-                    dimension: DimensionVector::FORCE,
-                },
-                Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                },
-            ],
-        },
+    use reify_core::diagnostics::DiagnosticCode;
+    let module = compile_with_stdlib_helper(ARITY_MISMATCH_USER_STRUCTURE_SOURCE);
+
+    // Cell type: args are NOT silently dropped — Applied (not StructureRef).
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseArity")
+        .expect("UseArity must exist");
+    let cell_type = template
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "p")
+        .expect("p must exist")
+        .cell_type
+        .clone();
+    let expected = Type::Applied {
+        name: "Point3".into(),
+        args: vec![
+            Type::Scalar { dimension: DimensionVector::FORCE },
+            Type::Scalar { dimension: DimensionVector::LENGTH },
+        ],
+    };
+    assert_eq!(cell_type, expected, "UseArity::p — expected {:?}", expected);
+
+    // Arity diagnostic: 2 args given to non-generic structure (0 params).
+    let arity_errs: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+    assert!(
+        !arity_errs.is_empty(),
+        "Point3<Force, Length> (2 args vs 0 params on user structure) must emit TypeArgArity; \
+         diagnostics: {:?}",
+        module.diagnostics
     );
 }
