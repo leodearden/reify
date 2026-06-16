@@ -6689,6 +6689,15 @@ mod tests {
                 },
             ),
             (
+                "ChamferAsymmetric",
+                GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(1),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
+                },
+            ),
+            (
                 "Translate",
                 GeometryOp::Translate {
                     target: GeometryHandleId(1),
@@ -6961,7 +6970,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 47;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -7935,6 +7944,40 @@ mod tests {
                 );
             }
             _ => panic!("expected GeometryOp::Chamfer"),
+        }
+    }
+
+    /// `GeometryOp::ChamferAsymmetric` records all four fields: `target`, a
+    /// curated `edges` selection, and the two distinct setbacks `d1`/`d2`. The
+    /// asymmetric op always carries an explicit edge selection at the .ri
+    /// surface; an empty list is the all-edges back-compat path (direct-IR
+    /// only). β (task 4185).
+    #[test]
+    fn chamfer_asymmetric_records_fields() {
+        let op = GeometryOp::ChamferAsymmetric {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            d1: Value::Real(0.001),
+            d2: Value::Real(0.002),
+        };
+        match op {
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                assert_eq!(target, GeometryHandleId(1), "target must round-trip");
+                assert_eq!(edges.len(), 4, "asymmetric chamfer must record all 4 edges");
+                assert_eq!(d1, Value::Real(0.001), "d1 setback must round-trip");
+                assert_eq!(d2, Value::Real(0.002), "d2 setback must round-trip");
+            }
+            _ => panic!("expected GeometryOp::ChamferAsymmetric"),
         }
     }
 
