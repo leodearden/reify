@@ -191,8 +191,9 @@ fn coerce_zero_operand(
         }
     }
 
-    // Left operand is a syntactic zero, right is Scalar<D non-dimensionless>.
-    if type_compat::is_syntactic_zero_literal(left_ast)
+    // Left operand is zero (syntactic OR a dimensionless constant expression that
+    // folds to exactly 0, e.g. `1 - 1`), right is Scalar<D non-dimensionless>.
+    if (type_compat::is_syntactic_zero_literal(left_ast) || const_folds_to_zero(&left))
         && is_dimensionless(&left.result_type)
         && let Type::Scalar { dimension } = right.result_type
         && !dimension.is_dimensionless()
@@ -206,8 +207,9 @@ fn coerce_zero_operand(
         );
     }
 
-    // Right operand is a syntactic zero, left is Scalar<D non-dimensionless>.
-    if type_compat::is_syntactic_zero_literal(right_ast)
+    // Right operand is zero (syntactic OR a dimensionless constant expression that
+    // folds to exactly 0, e.g. `1 - 1`), left is Scalar<D non-dimensionless>.
+    if (type_compat::is_syntactic_zero_literal(right_ast) || const_folds_to_zero(&right))
         && is_dimensionless(&right.result_type)
         && let Type::Scalar { dimension } = left.result_type
         && !dimension.is_dimensionless()
@@ -222,6 +224,255 @@ fn coerce_zero_operand(
     }
 
     (left, right)
+}
+
+/// Best-effort compile-time fold of a numeric operand to its SI magnitude.
+///
+/// Returns the folded value when `expr` is a constant arithmetic expression over
+/// numeric literals (`Int` / `Real` / dimensioned `Scalar`), `None` otherwise.
+/// Used by [`coerce_zero_operand`] to recognize operands that EVALUATE to exactly
+/// zero even when not written as a syntactic `0` (e.g. `1 - 1`, or
+/// `2m^2 * (5m - 5m) / 0.5m^3`).
+///
+/// Only the numeric MAGNITUDE is folded here; the operand's dimension is read
+/// separately from its `result_type`.  This is what makes the dimensioned vs
+/// dimensionless distinction work: `1m - 1m` folds to `0` but its `result_type`
+/// is `Scalar[m]` (non-dimensionless), so [`coerce_zero_operand`]'s
+/// `is_dimensionless` guard leaves it alone and a genuine dimension mismatch
+/// (e.g. `mass > 1m - 1m`) still errors — whereas `1 - 1` (dimensionless `0`)
+/// is coerced and `mass > 1 - 1` compiles clean.
+///
+/// Deliberately conservative: only numeric `Literal`s and `Add`/`Sub`/`Mul`/`Div`
+/// / unary `Neg` over them fold.  Any value-cell reference, function call, or
+/// other node yields `None` (not a compile-time constant).
+fn const_numeric_value(expr: &CompiledExpr) -> Option<f64> {
+    use reify_ir::{BinOp, CompiledExprKind, UnOp};
+    match &expr.kind {
+        CompiledExprKind::Literal(value) => match value {
+            Value::Int(i) => Some(*i as f64),
+            Value::Real(r) => Some(*r),
+            Value::Scalar { si_value, .. } => Some(*si_value),
+            _ => None,
+        },
+        CompiledExprKind::BinOp { op, left, right } => {
+            let l = const_numeric_value(left)?;
+            let r = const_numeric_value(right)?;
+            match op {
+                BinOp::Add => Some(l + r),
+                BinOp::Sub => Some(l - r),
+                BinOp::Mul => Some(l * r),
+                // Guard against div-by-zero producing inf/NaN; a non-constant or
+                // degenerate denominator simply makes this "not a constant zero".
+                BinOp::Div if r != 0.0 => Some(l / r),
+                _ => None,
+            }
+        }
+        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
+            const_numeric_value(operand).map(|v| -v)
+        }
+        _ => None,
+    }
+}
+
+/// Returns `true` when `expr` is a compile-time constant that folds to numeric
+/// zero (see [`const_numeric_value`]).  Subsumes a bare syntactic `0`.
+fn const_folds_to_zero(expr: &CompiledExpr) -> bool {
+    const_numeric_value(expr) == Some(0.0)
+}
+
+/// Emit compile-time operand-kind diagnostics for comparison operators
+/// (task-4490 / PRD §7.1 / `E_CmpOperandKind` / `E_CmpDimensionMismatch`).
+///
+/// # When to call
+///
+/// Call from the `compile_binop` site AFTER `infer_binop_type`, guarded by
+/// `matches!(bin_op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)`.
+/// Also called per-pair in the chained-comparison path (step-8).
+///
+/// # What it checks
+///
+/// 1. **Gradualism**: if either operand is `Type::Error` (poison) or
+///    `Type::TypeParam(_)` (unresolved auto/generic), return immediately.
+///    Emitting a secondary diagnostic on a poisoned or not-yet-resolved operand
+///    would produce cascade noise — the underlying error is the root cause.
+///
+/// 2. **Per-operand kind check**: for each operand that is not already the
+///    correct kind for this operator family, push a `DiagnosticCode::CmpOperandKind`
+///    error:
+///    - ORDER ops (`<`, `<=`, `>`, `>=`): acceptable = `is_orderable_scalar`
+///      (Int | Scalar).
+///    - EQUALITY ops (`==`, `!=`): acceptable = `is_equatable_kind`
+///      (Bool | Int | String | Scalar | Enum).
+///      For Tensor/Matrix operands, append a fixit ("reduce to a scalar first, e.g.
+///      `eigenvalues(x)[0]` or `trace(x)`") to the message AND populate
+///      `with_candidates(["eigenvalues(x)[0]", "trace(x)"])` for machine-readable
+///      IDE quick-fix support.
+///
+/// 3. **Dimension check** (step-6): added in a follow-up; not yet implemented here.
+///
+/// # Result type
+///
+/// Result type is NOT poisoned — comparison ops return `Type::Bool` even when
+/// operands are wrong.  Mirrors the And/Or/Implies guard (`LogicalOperandNotBool`).
+fn emit_comparison_operand_diagnostics(
+    bin_op: reify_ir::BinOp,
+    op_str: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use reify_ir::BinOp;
+    use type_compat::{format_dimension_mismatch_diagnostic, is_equatable_kind, is_orderable_scalar};
+
+    // Gradualism: Error (poison) or TypeParam (unresolved) → no secondary diagnostic.
+    // Emitting a secondary kind error on a poisoned or not-yet-resolved operand would
+    // produce cascade noise — the underlying error is the root cause.
+    //
+    // NOTE: the dimension-parametric scalar `Scalar<Q>` (Type::ScalarParam, from
+    // dimension-kinded generic fns like std.fields::threshold) is deliberately NOT
+    // skipped here — it is a genuine, well-formed comparable scalar, so
+    // is_orderable_scalar/is_equatable_kind accept it directly. Accepting in the
+    // predicate (rather than early-returning) still lets a bad *sibling* operand —
+    // e.g. `Tensor > Scalar<Q>` — be flagged.
+    if matches!(left_ty, Type::Error | Type::TypeParam(_))
+        || matches!(right_ty, Type::Error | Type::TypeParam(_))
+    {
+        return;
+    }
+
+    // Deferral (NOT poison): `Field<D,C>` and `StructureRef` operands pass through
+    // without adjudication. This task's contract targets aggregate-NUMERIC operands
+    // (Tensor/Matrix/Vector/Point/List) and scalars; comparisons whose operand is a
+    // whole field or a structure/solver-result are a separate hygiene concern that
+    // depends on reduction typing landing first. Two real stdlib examples rely on
+    // this today: `differential_field_ops.ri` does `max(field) < 1.0` and
+    // `multi_load_bracket.ri` does `max(envelope_von_mises(results)) < yield` — in
+    // both, the author expects `max(field) -> Scalar`, but `max` is kind-preserving
+    // at compile time (it reduces only at EVAL via field_reductions), so the operand
+    // stays a `Field`/`MultiCaseResult`. Until that compile-time reduction-typing gap
+    // is fixed (and `envelope_von_mises` gains a return-type signature), flagging
+    // these would be a false positive. See the field-reduction-typing follow-up task.
+    if matches!(left_ty, Type::Field { .. } | Type::StructureRef(_))
+        || matches!(right_ty, Type::Field { .. } | Type::StructureRef(_))
+    {
+        return;
+    }
+
+    let is_order_op = matches!(bin_op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
+
+    // Check left operand kind.
+    let left_acceptable = if is_order_op {
+        is_orderable_scalar(left_ty)
+    } else {
+        is_equatable_kind(left_ty)
+    };
+    if !left_acceptable {
+        diagnostics.push(make_cmp_kind_diagnostic(op_str, "left", left_ty, span));
+    }
+
+    // Check right operand kind.
+    let right_acceptable = if is_order_op {
+        is_orderable_scalar(right_ty)
+    } else {
+        is_equatable_kind(right_ty)
+    };
+    if !right_acceptable {
+        diagnostics.push(make_cmp_kind_diagnostic(op_str, "right", right_ty, span));
+    }
+
+    // Dimension-mismatch arm — only runs when NEITHER operand produced a kind error.
+    // Mirrors the Add/Sub guard at expr.rs ~1324-1364 (PRD §11 Q1: reuse DimensionMismatch).
+    if left_acceptable && right_acceptable {
+        match (left_ty, right_ty) {
+            // Both scalar-kind, both dimensioned, but with different dimensions
+            // (e.g. `Length < Mass`).
+            //
+            // The `!ld.is_dimensionless() && !rd.is_dimensionless()` guard is
+            // intentional: purpose bodies compiled with a generic `Structure`
+            // parameter return `Real` (dimensionless) for field accesses because
+            // the concrete field type is unknown at generic-compilation time (the
+            // `StructureRef` fallback in `resolve_type_expr_with_aliases` yields
+            // `Type::dimensionless_scalar()`).  Without the dimensionless-skip,
+            // `constraint subject.width > 0mm` would produce a spurious
+            // "Real vs Scalar[m]" dimension mismatch in the generic body even
+            // though the comparison is valid for every concrete `Structure` binding.
+            //
+            // Suppressing `Real vs Scalar[D]` misses the narrow case where a user
+            // genuinely compares a dimensionless ratio against a dimensioned
+            // threshold (e.g. `efficiency > 5mm`); that class of bug is deferred
+            // to a future non-generic-aware pass.
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
+                if ld != rd && !ld.is_dimensionless() && !rd.is_dimensionless() =>
+            {
+                diagnostics.push(format_dimension_mismatch_diagnostic(
+                    "comparison",
+                    left_ty,
+                    right_ty,
+                    span,
+                ));
+            }
+            // Dimensioned Scalar vs non-dimensionless Int (e.g. mass > 5).
+            // The β zero-coercion (coerce_zero_operand) already rewrites literal `0` to
+            // match the sibling's dimension, so `mass > 0` never reaches this arm.
+            (Type::Scalar { dimension }, Type::Int)
+            | (Type::Int, Type::Scalar { dimension })
+                if !dimension.is_dimensionless() =>
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "incompatible types in comparison: {} vs {}",
+                        left_ty, right_ty,
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "dimensioned vs dimensionless")),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build a `DiagnosticCode::CmpOperandKind` diagnostic for one offending operand.
+///
+/// For Tensor/Matrix operands the message includes the eigenvalues/trace fixit
+/// and the candidates list is populated for machine-readable IDE quick-fix support.
+fn make_cmp_kind_diagnostic(
+    op_str: &str,
+    side: &str,
+    ty: &Type,
+    span: reify_core::SourceSpan,
+) -> Diagnostic {
+    let is_reducible = matches!(ty, Type::Tensor { .. } | Type::Matrix { .. });
+    let (msg, candidates): (String, Vec<&str>) = if is_reducible {
+        (
+            format!(
+                "comparison `{op_str}` {side} operand is not a comparable kind, got `{ty}`; \
+                 reduce to a scalar first, e.g. `eigenvalues(x)[0]` or `trace(x)`"
+            ),
+            vec!["eigenvalues(x)[0]", "trace(x)"],
+        )
+    } else {
+        let hint = if matches!(ty, Type::Int | Type::Scalar { .. }) {
+            // orderable-scalar is not the issue — should not reach here
+            String::new()
+        } else {
+            String::new()
+        };
+        (
+            format!(
+                "comparison `{op_str}` {side} operand must be a comparable kind, got `{ty}`{hint}"
+            ),
+            vec![],
+        )
+    };
+
+    let mut d = Diagnostic::error(msg)
+        .with_code(DiagnosticCode::CmpOperandKind)
+        .with_label(DiagnosticLabel::new(span, "not a comparable kind"));
+    if !candidates.is_empty() {
+        d = d.with_candidates(candidates.iter().map(|s| s.to_string()));
+    }
+    d
 }
 
 /// Scan raw AST `args` for the first `ExprKind::Auto` and emit an
@@ -445,19 +696,25 @@ fn try_resolve_cross_sub_geometry_value_ref(
     } else {
         // Forward-declared child (is_forward_declared, !has_realization):
         // emit ValueCellRef so constraint expressions can be evaluated by the
-        // solver without panicking.  Type::Geometry is a placeholder — the
-        // compiler does not cascade-error on this type in comparison contexts,
-        // and eval looks up values from the snapshot by ID, not by type.
+        // solver without panicking.  The static type is `Type::Error` — the child
+        // is not yet compiled, so the member's true type is genuinely unknown here.
         //
-        // The placeholder type is provably harmless: the DimensionalSolver
-        // evaluates constraint operands numerically via
-        // `reify_expr::eval_expr(...).as_f64()` and never inspects an
-        // operand's static `Type`, so it produces identical residuals
-        // regardless of declaration order.  Regression guard:
+        // `Type::Error` (rather than the former `Type::Geometry` placeholder) is
+        // load-bearing for the type-hygiene comparison guard (task 4490): it
+        // propagates through arithmetic via `infer_binop_type`'s anti-cascade
+        // (`2 * Error → Error`) and is skipped by the guard's gradualism.  The old
+        // `Type::Geometry` placeholder instead yielded `Int` under `*`, so a
+        // forward-declared dimensional constraint like `2 * self.b.bore == 20mm`
+        // typed as `Int == Scalar[m]` and the guard false-positived.
+        //
+        // Eval is unaffected: the DimensionalSolver evaluates constraint operands
+        // numerically via `reify_expr::eval_expr(...).as_f64()` and never inspects
+        // an operand's static `Type`, so it produces identical residuals regardless
+        // of declaration order.  Regression guard:
         // `reify_eval/tests/auto_sub_override_resolution.rs`
         //   `sub_override_auto_forward_declared_dimensional_constraint_type_agnostic`
-        // (task 4123, step-1).
-        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
+        // (task 4123 step-1; placeholder type changed Geometry→Error for task 4490).
+        Some(CompiledExpr::value_ref(scoped_id, Type::Error))
     }
 }
 
@@ -1067,6 +1324,18 @@ pub(crate) fn compile_expr_guarded(
                         Some(bin_op) => {
                             let lhs = compiled_operands[i].clone();
                             let rhs = compiled_operands[i + 1].clone();
+                            // Operand-kind + dimension guard for each chained pair
+                            // (task-4490/step-8 — same helper as the single-comparison path).
+                            // The synthetic BinOp::And fold nodes built below bypass the
+                            // logical guard, so no false LogicalOperandNotBool fires.
+                            emit_comparison_operand_diagnostics(
+                                bin_op,
+                                op_str,
+                                &lhs.result_type,
+                                &rhs.result_type,
+                                expr.span,
+                                diagnostics,
+                            );
                             let result_type =
                                 infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
                             pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
@@ -1313,28 +1582,57 @@ pub(crate) fn compile_expr_guarded(
                         }
                     }
 
-                    // Bool-operand guard for `implies` (task-3921 / PRD §3.4).
+                    // Operand-kind (and later dimension) guard for comparison ops
+                    // (task-4490 / PRD §7.1 / `E_CmpOperandKind`).
                     //
-                    // `infer_binop_type` returns `Type::Bool` unconditionally for Implies, so
-                    // without this guard `5 implies 3` would silently type-check.  We reject
-                    // non-Bool, non-Error operands here (Type::Error is the poison sentinel;
-                    // suppressing the secondary diagnostic prevents cascade noise).
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for all six
+                    // comparison ops, so `tensor > 0` would silently type-check without
+                    // this guard.  `emit_comparison_operand_diagnostics` handles:
+                    //   - gradualism early-return on Error/TypeParam operands
+                    //   - per-operand kind check (order vs equality acceptance sets)
+                    //   - Tensor/Matrix fixit + candidates
+                    // Result type stays Bool (no poison — mirrors Implies/And/Or guards).
+                    if matches!(
+                        bin_op,
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                    ) {
+                        emit_comparison_operand_diagnostics(
+                            bin_op,
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+
+                    // Bool-operand guard for `and`, `or`, and `implies` (task-4490 / PRD §3.4).
                     //
-                    // And/Or are intentionally left unchanged (they evaluate non-Bool operands
-                    // to Undef at runtime; see design_decisions in plan.json).
-                    if matches!(bin_op, BinOp::Implies) {
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for all three ops,
+                    // so without this guard `5 and flag` would silently type-check.  We reject
+                    // non-Bool operands for And/Or/Implies and emit `LogicalOperandNotBool`.
+                    //
+                    // Gradualism: `Type::Error` (poison sentinel) and `Type::TypeParam(_)`
+                    // (unresolved auto/generic) pass through silently — emitting a secondary
+                    // diagnostic on a poisoned or not-yet-resolved operand would be cascade noise.
+                    //
+                    // Kleene three-valued RUNTIME eval (`eval_and`, `eval_or`, `eval_implies` in
+                    // reify-expr) is NOT changed — only the compile-time guard is added here.
+                    // (Prior to task-4490 the Implies guard was uncoded; And/Or had no guard.)
+                    if matches!(bin_op, BinOp::And | BinOp::Or | BinOp::Implies) {
                         let lty = &compiled_left.result_type;
                         let rty = &compiled_right.result_type;
                         let left_bad =
-                            !matches!(lty, Type::Bool | Type::Error);
+                            !matches!(lty, Type::Bool | Type::Error | Type::TypeParam(_));
                         let right_bad =
-                            !matches!(rty, Type::Bool | Type::Error);
+                            !matches!(rty, Type::Bool | Type::Error | Type::TypeParam(_));
                         if left_bad {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "implies left operand must be Bool, got `{}`",
+                                    "{op} left operand must be Bool, got `{}`",
                                     lty,
                                 ))
+                                .with_code(DiagnosticCode::LogicalOperandNotBool)
                                 .with_label(DiagnosticLabel::new(
                                     left.span,
                                     "expected Bool here",
@@ -1344,9 +1642,10 @@ pub(crate) fn compile_expr_guarded(
                         if right_bad {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "implies right operand must be Bool, got `{}`",
+                                    "{op} right operand must be Bool, got `{}`",
                                     rty,
                                 ))
+                                .with_code(DiagnosticCode::LogicalOperandNotBool)
                                 .with_label(DiagnosticLabel::new(
                                     right.span,
                                     "expected Bool here",

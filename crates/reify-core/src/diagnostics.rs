@@ -2587,6 +2587,68 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_RESERVED_TYPE_NAME`.
     ReservedTypeName,
+
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Eq/Ne/Lt/Le/Gt/Ge compile site).
+    ///
+    /// Emitted as a `Severity::Error` when a relational operator (any of `==`, `!=`,
+    /// `<`, `<=`, `>`, `>=`) is applied to an operand whose type is not acceptable for
+    /// that operator family:
+    ///
+    /// - ORDER ops (`<`, `<=`, `>`, `>=`): operand must be `Type::Int` or
+    ///   `Type::Scalar { .. }` (`is_orderable_scalar`).
+    /// - EQUALITY ops (`==`, `!=`): operand must be `Type::Bool`, `Type::Int`,
+    ///   `Type::String`, `Type::Scalar { .. }`, or `Type::Enum(..)` (`is_equatable_kind`).
+    ///
+    /// Aggregate/structural kinds (`Tensor`, `Matrix`, `Vector`, `Point`, `List`, …)
+    /// are rejected for ALL six operators — they produce `Value::Undef` at runtime,
+    /// making any comparison silently indeterminate.
+    ///
+    /// When the offending operand is `Type::Tensor { .. }` or `Type::Matrix { .. }`,
+    /// the message includes a fixit suggestion ("reduce to a scalar first, e.g.
+    /// `eigenvalues(x)[0]` or `trace(x)`") and the candidates list is populated via
+    /// [`Diagnostic::with_candidates`] for machine-readable IDE quick-fix support.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code (anti-cascade).
+    ///
+    /// The result type is NOT poisoned — comparison ops return `Type::Bool` even on
+    /// operand-kind errors (mirrors the Implies guard; avoids cascade noise in
+    /// enclosing `constraint` expressions).
+    ///
+    /// Canonical message form (order op, left operand bad):
+    ///   `"comparison \`<\` left operand must be a scalar or Int, got \`Tensor<2,3,Length>\`"`
+    /// Canonical message form (equality op, left operand bad):
+    ///   `"comparison \`==\` left operand is not a comparable kind, got \`Tensor<2,3,Length>\`; reduce to a scalar first, e.g. \`eigenvalues(x)[0]\` or \`trace(x)\`"`
+    /// with a label `"not a comparable kind"` on the expression span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CmpOperandKind`
+    /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
+    CmpOperandKind,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::And/Or/Implies compile site).
+    ///
+    /// Emitted as a `Severity::Error` when a logical operator (`and`, `or`, `implies`)
+    /// is applied to an operand whose type is not `Type::Bool`.  All three logical
+    /// operators require `Bool` operands; non-Bool values produce `Value::Undef` at
+    /// runtime (Kleene three-valued logic: `Undef and false = false` / `Undef or true = true`,
+    /// but `5 and flag` is an authoring mistake that always Undefs when `5` stays non-Bool).
+    ///
+    /// Generalizes the previously-uncoded Implies Bool guard (task 3921) to `And` and
+    /// `Or` uniformly.  The Kleene RUNTIME eval (`eval_and`, `eval_or`, `eval_implies`
+    /// in `reify-expr`) is NOT changed — only the compile-time diagnostic is added.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code (anti-cascade).
+    ///
+    /// The result type is NOT poisoned — logical ops return `Type::Bool` even on
+    /// operand errors (mirrors the prior Implies behavior).
+    ///
+    /// Canonical message form (left operand bad):
+    ///   `"and left operand must be Bool, got \`Int\`"`
+    /// with a label `"expected Bool here"` on the offending operand span.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_LogicalRequiresBool`
+    /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
+    LogicalOperandNotBool,
 }
 
 /// A diagnostic message with location and optional labels.
