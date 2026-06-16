@@ -8,8 +8,13 @@
 // substitute_type_params), independent of the body.
 //
 // Real tag-driven recovery eval is task β (intercept in reify-expr per §11
-// Q1).  The bodies are intentionally trivial so they produce no observable
-// eval side-effects while the stdlib module still loads clean.
+// Q1).  WARNING: the placeholder bodies return INCORRECT runtime values —
+// unwrap_or/or_default/fallback/get_or always return the supplied default
+// (ignoring a present value), is_some always returns true, is_none always
+// returns false.  Until task β lands, evaluating these functions yields
+// wrong results.  The bodies are placeholders only to let the module parse
+// and load clean; result_type is derived from call-site signature
+// substitution, independent of the body.
 //
 // map_or<T,U> is intentionally OMITTED — it requires an arrow-type grammar
 // production (type_expr → f:(T)->U) that does not exist.  It is owned by
