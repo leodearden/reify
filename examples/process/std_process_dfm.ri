@@ -45,11 +45,12 @@ structure def MilledAluminium : Subtracting {
 
 // Additive: FDM nylon printer with 220×220×250 mm build envelope.
 structure def FDMNylonPart : Adding {
-    param duration         : Time   = 4h
-    param cost             : Money  = 25USD
-    param layer_thickness  : Length = 0.2mm
-    param min_feature_size : Length = 0.4mm
-    param build_volume     : Solid  = box(220mm, 220mm, 250mm)
+    param duration           : Time   = 4h
+    param cost               : Money  = 25USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(220mm, 220mm, 250mm)
+    param max_overhang_angle : Angle  = 45deg
 }
 
 // Forming: sheet-metal stamping process.
@@ -94,12 +95,19 @@ structure def AnnealingProcess : HeatTreating {
 }
 
 // ── 2. DFMRule conformers — one each at Info / Warning / Error ────────────────
+//
+// DFMRule requires `subject : Solid` — the geometry handle the auto-measurement
+// pass realizes and measures against the bound process capability (the metrology
+// engine shipped by the process-dfm-geometry-metrology PRD). Here it is a simple
+// placeholder solid; this declarative example asserts the scalar + build-volume
+// DFM surface, not the auto-measurement diagnostics (see §8 of the stdlib ref).
 
 // Informational: minimum feature size advisory.
 structure def FeatureSizeInfoRule : DFMRule {
     param rule_name  : String      = "min_feature_size_advisory"
     param severity   : DFMSeverity = DFMSeverity.Info
     param applies_to : Process     = MilledAluminium()
+    param subject    : Solid       = box(50mm, 50mm, 20mm)
 }
 
 // Warning: minimum wall thickness.
@@ -107,6 +115,7 @@ structure def WallThicknessWarningRule : DFMRule {
     param rule_name  : String      = "min_wall_thickness"
     param severity   : DFMSeverity = DFMSeverity.Warning
     param applies_to : Process     = StampedSheetMetal()
+    param subject    : Solid       = box(80mm, 80mm, 2mm)
 }
 
 // Error: draft angle required for die release.
@@ -114,6 +123,7 @@ structure def DraftAngleErrorRule : DFMRule {
     param rule_name  : String      = "draft_angle_required"
     param severity   : DFMSeverity = DFMSeverity.Error
     param applies_to : Process     = StampedSheetMetal()
+    param subject    : Solid       = box(40mm, 40mm, 30mm)
 }
 
 // ── 3. Scalar DFM constraints (pure-scalar — no geometry kernel required) ─────
