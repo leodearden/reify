@@ -3955,6 +3955,22 @@ pub(crate) fn resolve_selector_to_list(
     // while every other leaf/composite behaves exactly as `resolve`.
     match crate::topology_selectors::resolve_with_attributes(&sv, kernel, table, diagnostics) {
         Ok(ids) => {
+            // task 4536: an attribute-role leaf (e.g. `mid_surface(body)`) that
+            // matched NO entities means the realized body carries no such derived
+            // attribute — a non-shell body has no mid-surface. The mid_surface
+            // contract is `Value::Undef` + a diagnostic in that case, NOT a silent
+            // empty list. Generic empty selections (a `faces_by_area` window with
+            // no match, a ByRole leaf nested in a 4119 composite, …) keep
+            // returning an empty `Value::List`.
+            if ids.is_empty()
+                && let Some(role) = selector_is_attribute_role_leaf(&sv)
+            {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "topology-attribute selector matched no entities with role {role:?}; \
+                     body has no such derived mid-surface attribute; result undefined"
+                )));
+                return Some(reify_ir::Value::Undef);
+            }
             let elements = ids
                 .into_iter()
                 .enumerate()
@@ -3996,6 +4012,29 @@ fn first_leaf_target(
         }
     }
     walk(&sv.node)
+}
+
+/// Returns `Some(role)` iff `sv` is a single `ByRole(role)` leaf — i.e. a
+/// `mid_surface(body)`-style attribute-role selector (task 4536).
+///
+/// Used by [`resolve_selector_to_list`] to distinguish a genuinely-empty role
+/// match (a non-shell body carries no `MidSurfaceFace` attribute → the
+/// `mid_surface` contract is `Value::Undef` + a diagnostic) from a generic
+/// empty selection (e.g. a `faces_by_area` window matching nothing → an empty
+/// `Value::List`). Composite selectors (`Union`/`Intersect`/`Difference`) and
+/// every other leaf query return `None`, so a ByRole leaf nested inside a 4119
+/// composition still follows the generic empty-list path rather than collapsing
+/// the whole composition to `Undef`.
+fn selector_is_attribute_role_leaf(
+    sv: &reify_ir::value::SelectorValue,
+) -> Option<reify_ir::Role> {
+    match &sv.node {
+        reify_ir::value::SelectorNode::Leaf {
+            query: reify_ir::value::LeafQuery::ByRole(role),
+            ..
+        } => Some(*role),
+        _ => None,
+    }
 }
 
 /// Resolve an `IndexAccess` index expr to a `usize`. Accepts an `Int` literal or
