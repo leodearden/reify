@@ -20,7 +20,11 @@
 #[path = "common/differential.rs"]
 mod differential;
 
-use differential::{AUTO_GEOMETRY_CONSTRAINT_SRC, build_with_kernel_stdlib, seeded_build_volume_kernel};
+use differential::{
+    AUTO_GEOMETRY_CONSTRAINT_SRC, CorpusCase, LEX_PARENT_MULTIBODY_SRC,
+    assert_equivalent_or_allowed, build_case, build_case_keep_engine, build_with_kernel_stdlib,
+    residue_for, seeded_build_volume_kernel,
+};
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::BuildScheduler;
 
@@ -109,5 +113,58 @@ fn auto_plus_geometry_constraint_emits_eval_unresolved() {
             .any(|d| d.code == Some(DiagnosticCode::EvalUnresolved)),
         "LegacyMultiPass must NOT carry EvalUnresolved (it degrades to Indeterminate); got {:?}",
         codes(&legacy),
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-13 (RED): cross-sub multi-body assembly with a LEXICOGRAPHICALLY-EARLY
+// parent. The parent structure's name sorts BEFORE its child `sub` names, so the
+// unified Kahn worklist's DebugOrd pop order is stressed: the parent's union
+// realization must still pop AFTER its children's body realizations. The §3.1
+// realization→realization edges enforce the topological order over the raw name
+// sort, so both schedulers MUST produce byte-identical multi-body export +
+// equivalent values/constraints, with residue==∅. A divergence here is a real
+// worklist-ordering bug → escalate `design_concern`, never blanket-allow.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// RED until step-14: `LEX_PARENT_MULTIBODY_SRC` (the lexicographic-parent
+/// assembly source) is not authored yet, so this fails to compile.
+#[test]
+fn cross_sub_multi_body_assembly_exports_equivalently() {
+    let case = CorpusCase {
+        name: "lex_parent_multibody",
+        source: LEX_PARENT_MULTIBODY_SRC,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    };
+
+    let legacy = build_case(&case, BuildScheduler::LegacyMultiPass);
+    let unified = build_case(&case, BuildScheduler::UnifiedDag);
+
+    // (1) full projection equivalence (values + constraints + diagnostics +
+    // geometry) admitting ZERO divergence (empty allow-list).
+    assert_equivalent_or_allowed(&case, &legacy, &unified);
+
+    // (2) explicit byte-equivalence of the exported multi-body geometry — the §3.1
+    // edges keep the unified pop order correct despite the lexicographically-early
+    // parent.
+    assert_eq!(
+        legacy.geometry_output, unified.geometry_output,
+        "lexicographic-parent multi-body assembly: exported geometry MUST be byte-identical \
+         across schedulers (legacy_len={:?}, unified_len={:?})",
+        legacy.geometry_output.as_ref().map(|b| b.len()),
+        unified.geometry_output.as_ref().map(|b| b.len()),
+    );
+
+    // (3) Stage-1 residue==∅ (the assembly is acyclic).
+    let (engine, _) = build_case_keep_engine(&case, BuildScheduler::UnifiedDag);
+    let residue = residue_for(&engine);
+    assert!(
+        residue.is_empty(),
+        "lexicographic-parent assembly: Stage-1 residue MUST be ∅ under UnifiedDag; \
+         got {} unpopped node(s): {residue:?}",
+        residue.len(),
     );
 }
