@@ -2514,4 +2514,59 @@ mod tests {
         }
         // NoMeasurement is also accepted (D4 §9-Q4 fall-through).
     }
+
+    // ── δ=4424 step-3: BelowResolution RED test ──────────────────────────────
+    //
+    // Under step-2's impl, min_wall_thickness always returns Measured(_) for
+    // any finite min-sum. Step-3 adds a test that requires BelowResolution
+    // for a sub-2h slab (0.8mm at h=0.5 → 2h=1.0mm). The test is RED until
+    // step-4 adds the honest-floor branch.
+
+    /// PRD §3b G6 honest-floor / δ=4424 step-3:
+    /// `min_wall_thickness` for a 0.8mm analytic slab at h=0.5mm (2h=1.0mm)
+    /// must return `Ok(BelowResolution { raw, floor })` with `floor == 2·h`
+    /// and `raw < floor`.
+    ///
+    /// The feature must be REPORTED self-describingly — NEVER silently returned
+    /// as `Measured` (which would imply the measurement is reliable at this
+    /// resolution). This structurally avoids the esc-3453 (guessed %) and
+    /// esc-3770 (impossible 1e-12) failure modes.
+    ///
+    /// Voxel-budget proof: with h=0.5 the grid voxels near the slab centre are
+    /// at z=±0.25 (inside the 0.8mm slab, half_thickness=0.4mm). For each such
+    /// voxel d⁺+d⁻ = 0.80mm (piecewise-linear SDF ⇒ exact), which is < 2h=1.0.
+    /// Under step-2 the function returns Measured(0.80) instead → RED.
+    #[test]
+    fn min_wall_thickness_below_resolution_feature_is_reported_not_rounded() {
+        let h = 0.5_f64;
+        // 0.8mm slab: 2h = 1.0mm, true wall 0.8mm < 2h → below resolution.
+        let sdf = analytic_slab_box(0.8, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid sub-2h slab must not error");
+        // Must NOT be Measured — below-resolution features must not be silently
+        // promoted to a seemingly-reliable thickness value.
+        assert!(
+            !matches!(result, MinWallThickness::Measured(_)),
+            "0.8mm slab at h=0.5 must NOT be Measured (raw is below 2h=1.0mm); \
+             got {result:?}"
+        );
+        // Must be BelowResolution with floor == 2·h and raw < floor.
+        match result {
+            MinWallThickness::BelowResolution { raw, floor } => {
+                assert_eq!(
+                    floor,
+                    2.0 * h,
+                    "BelowResolution floor must be exactly 2·h={}, got {floor}",
+                    2.0 * h
+                );
+                assert!(
+                    raw < floor,
+                    "BelowResolution raw={raw} must be < floor={floor}"
+                );
+            }
+            other => panic!(
+                "expected BelowResolution for 0.8mm slab at h=0.5, got {other:?}"
+            ),
+        }
+    }
 }
