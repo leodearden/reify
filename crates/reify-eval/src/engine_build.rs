@@ -724,11 +724,13 @@ fn populate_attribute_history(
         AttributeHistory::LocalFeature(history) => {
             // Local-feature ops (fillet / chamfer): one target shape.
             let target_handle = match geom_op {
-                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                GeometryOp::Fillet { target, .. }
+                | GeometryOp::Chamfer { target, .. }
+                | GeometryOp::ChamferAsymmetric { target, .. } => *target,
                 _ => {
                     return Err(reify_ir::QueryError::QueryFailed(format!(
-                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
-                         GeometryOp: {:?}",
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer/\
+                         ChamferAsymmetric GeometryOp: {:?}",
                         geom_op
                     )));
                 }
