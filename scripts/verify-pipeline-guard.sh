@@ -5,6 +5,11 @@
 # Subcommands:
 #   requires-full-gate [file...]  — read repo-relative changed-file paths from
 #                                   "$@" (if any) or newline-separated stdin.
+#                                   Caller path-form contract: pass clean
+#                                   repo-relative paths (as emitted by 'git
+#                                   diff --name-only').  Leading './' is
+#                                   stripped defensively; absolute paths and
+#                                   '../' forms will NOT match.
 #                                   Exit 0 if ANY path is load-bearing (full gate
 #                                   REQUIRED — do NOT fast-path the diff).
 #                                   Exit 1 if none are load-bearing (fast-path safe).
@@ -95,24 +100,29 @@ case "$_subcmd" in
         ;;
     requires-full-gate)
         shift
+        # Collect all candidates from args or stdin, then do ONE grep pass —
+        # O(N+M) instead of O(N*M) per-candidate subshell pipelines.
         if [ "$#" -gt 0 ]; then
-            # Args mode: candidates from positional arguments.
-            for _candidate in "$@"; do
-                if printf '%s\n' "$_SORTED_SET" | grep -qxF "$_candidate"; then
-                    echo "$_candidate"
-                    exit 0
-                fi
-            done
+            _raw=$(printf '%s\n' "$@")
         else
             # Stdin mode: newline-separated paths — supports large diffs that
             # would exceed ARG_MAX if passed as positional arguments.
-            while IFS= read -r _candidate; do
-                [ -z "$_candidate" ] && continue
-                if printf '%s\n' "$_SORTED_SET" | grep -qxF "$_candidate"; then
-                    echo "$_candidate"
-                    exit 0
-                fi
-            done
+            _raw=$(cat)
+        fi
+        # Normalize: strip a leading './' so callers that pass './foo/bar'
+        # match the clean repo-relative form in _SORTED_SET.  'git diff
+        # --name-only' emits clean paths; this is defensive hardening.
+        # Absolute paths and '../'-prefixed forms will NOT match.
+        _normalized=$(printf '%s\n' "$_raw" | sed 's|^\./||')
+        # Single-pass match: -f reads _SORTED_SET as fixed-string patterns,
+        # -x anchors to the full line, -m1 short-circuits after the first hit.
+        # '|| true' prevents set -e from aborting on no-match (grep exit 1).
+        _match=$(printf '%s\n' "$_normalized" \
+                 | grep -xF -m1 -f <(printf '%s\n' "$_SORTED_SET") 2>/dev/null \
+                 || true)
+        if [ -n "$_match" ]; then
+            echo "$_match"
+            exit 0
         fi
         exit 1
         ;;

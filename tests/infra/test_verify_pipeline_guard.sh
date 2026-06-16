@@ -91,6 +91,12 @@ assert_exit "STDIN: load-bearing file piped in -> full gate required (exit 0)" 0
     bash -c 'printf "docs/x.md\nscripts/verify.sh\n" | bash "$1" requires-full-gate' \
     _ "$GUARD_SH"
 
+# NORMALIZATION: a leading './' is stripped defensively — a caller that passes
+# './scripts/verify.sh' instead of the canonical 'scripts/verify.sh' should
+# still trigger the full gate (guards against a cross-repo caller prefixing './').
+assert_exit "NORMALIZE: ./scripts/verify.sh stripped to scripts/verify.sh (exit 0)" 0 \
+    run_guard requires-full-gate ./scripts/verify.sh
+
 # --list contract: output must include scripts/verify.sh (one path per line).
 assert "--list output includes scripts/verify.sh" \
     bash -c 'bash "$1" --list | grep -qxF "scripts/verify.sh"' \
@@ -128,6 +134,25 @@ done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$REPO_ROOT/scripts/verify
 # test_verify_throughput.sh (root-caused in esc-4288-206).
 assert_exit "INCIDENT-SIM: scripts/occt-scope-lib.sh (lib diff) -> full gate required (exit 0)" 0 \
     run_guard requires-full-gate scripts/occt-scope-lib.sh
+
+# GROUND-TRUTH: hard-coded assertions for the four libs KNOWN to be sourced by
+# verify.sh today.  These are independent of the grep|sed derivation loop
+# above — if the production extraction regex had a bug (e.g., mishandled an
+# indented or multi-word source line), both the loop and the loop's expectation
+# would compute the same wrong result, masking the regression.  This
+# independent check catches that divergence.
+assert "--list includes scripts/occt-scope-lib.sh (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/occt-scope-lib.sh"' \
+    _ "$GUARD_SH"
+assert "--list includes scripts/release-scope-lib.sh (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/release-scope-lib.sh"' \
+    _ "$GUARD_SH"
+assert "--list includes scripts/affected-crates-lib.sh (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/affected-crates-lib.sh"' \
+    _ "$GUARD_SH"
+assert "--list includes scripts/lib_test_semaphore.sh (hard-coded ground truth)" \
+    bash -c 'bash "$1" --list | grep -qxF "scripts/lib_test_semaphore.sh"' \
+    _ "$GUARD_SH"
 
 # SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source
 # line appended, prove the classifier auto-covers the new lib via
