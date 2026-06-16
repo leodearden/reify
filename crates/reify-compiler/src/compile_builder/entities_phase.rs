@@ -450,8 +450,26 @@ fn resolve_ambient_default(
     //     declaration-site type check (DD4). A poisoned value (`Type::Error`)
     //     already drew its own diagnostic — skip the conversion check
     //     (anti-cascade) and drop the entry.
+    //
+    //     This compile is TYPE-CHECK-ONLY: the resulting `CompiledExpr` is
+    //     discarded (only `decl.value`'s AST is stored), and every real
+    //     injection site recompiles the value via `check_phase_inject_defaults`
+    //     (checker.rs). A default consumed by N structures therefore compiles
+    //     its value N+1 times. To keep a NON-error diagnostic of the value
+    //     (e.g. a lossy/precision warning) from being double-reported — once
+    //     here and once per consuming structure — scope this throwaway compile's
+    //     diagnostics into a temp buffer and forward only genuine
+    //     `Severity::Error`s. Those errors drop the entry (it is never injected),
+    //     so the pre-pass is their sole report site; non-error diagnostics
+    //     re-surface at the injection site where the value is actually used.
+    let mut value_diagnostics = Vec::new();
     let value_type =
-        compile_expr(&decl.value, scope, enum_defs, functions, diagnostics).result_type;
+        compile_expr(&decl.value, scope, enum_defs, functions, &mut value_diagnostics).result_type;
+    diagnostics.extend(
+        value_diagnostics
+            .into_iter()
+            .filter(|d| d.severity == reify_core::Severity::Error),
+    );
     if value_type == Type::Error {
         return None;
     }
