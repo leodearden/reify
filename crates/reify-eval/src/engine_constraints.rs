@@ -886,6 +886,26 @@ impl Engine {
             // handle win over a cross-`let` seed on key collision. This runs only
             // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
             // the realization geometry output stay byte-identical.
+            //
+            // LIMITATION — single-instance-per-def assumption (task 4358 ε
+            // amendment, reviewer_comprehensive robustness): the child handle set
+            // is looked up by the structure DEF name (`module_named_steps[def_name]`,
+            // keyed by template name, NOT by `let`-binding instance). So TWO same-def
+            // bindings in one template carrying DIFFERENT params — e.g.
+            // `let a = FdmPrinter(build_volume = box(200mm,...))` and
+            // `let b = FdmPrinter(build_volume = box(300mm,...))` — both seed their
+            // `<binding>.<member>` keys from that ONE shared handle set, so
+            // `bounding_box(a.build_volume)` and `bounding_box(b.build_volume)` would
+            // fold against the SAME (last-snapshotted) handle. For divergent instances
+            // this is a silently-incorrect fold, not an `Undef`. The 4275 form this
+            // closes (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()`, so the
+            // assumption holds for every shape ε targets. Per-instance handle
+            // disambiguation requires per-binding (not per-def) realization snapshot
+            // keying — a larger change to the realization executor's `module_named_steps`
+            // population, deferred out of ε's scope (PRD §9 geometry-in-the-loop is
+            // already excluded; multi-instance cross-`let` folding is the adjacent
+            // follow-up). Until then, treat a same-def multi-instance constraint fold
+            // as unsupported rather than relied upon.
             for cell in &template.value_cells {
                 let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
                     continue;

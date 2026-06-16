@@ -311,6 +311,89 @@ fn fits_envelope_satisfaction(result: &BuildResult) -> Satisfaction {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Amendment (reviewer_comprehensive, architecture_coherence): the non-query
+// `FunctionCall`-args recursion arm ε added to `geometry_ops::rewrite_geometry_
+// queries` is SHARED geometry-fold code, reached on BOTH scheduler paths — NOT a
+// UnifiedDag-only addition. On `LegacyMultiPass` it runs inside
+// `post_process_geometry_queries` → `try_eval_geometry_query` case (b) for any
+// VALUE CELL whose `default_expr` is a non-query `FunctionCall` wrapping a
+// geometry-query leaf. This is the one documented exception to ε's
+// "LegacyMultiPass stays byte-identical" claim (a shared correctness fix:
+// Undef → real value). This test pins that shared fix on the LEGACY path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `LegacyMultiPass`, a VALUE CELL `let fits = fits_build_volume(
+/// bounding_box(part), bounding_box(envelope))` — a non-query `FunctionCall`
+/// (`fits_build_volume`, a builtin → a genuine `FunctionCall` IR node, not an
+/// inlined `BinOp`) wrapping two `bounding_box(..)` geometry-query leaves — must
+/// fold to a concrete `Value::Bool`, NOT the pre-fix `Value::Undef`.
+///
+/// Path: `post_process_geometry_queries` iterates `template.value_cells` and calls
+/// `try_eval_geometry_query` on `fits`'s `default_expr`. `is_geometry_query_call`
+/// is false (outer call is `fits_build_volume`, not in the recognised leaf set) but
+/// `expr_contains_geometry_query` is true (the inner `bounding_box` leaves), so
+/// case (b) NESTED runs: `rewrite_geometry_queries` folds the leaves, then the
+/// kernel-less `eval_expr` evaluates `fits_build_volume(Literal(bbox),
+/// Literal(bbox))` → `Bool`.
+///
+/// Before ε's FunctionCall-args arm the outer `fits_build_volume(..)` call hit the
+/// `_ => expr.clone()` fallthrough, so its inner `bounding_box(..)` leaves stayed
+/// un-folded and the kernel-less `eval_expr` could not resolve them → `Undef`. So
+/// this asserts the SHARED correctness fix on the LegacyMultiPass scheduler — it is
+/// GREEN now and would RED if the recursion arm were reverted (the cell would drop
+/// back to `Undef`). It exercises the value-cell geometry fold
+/// (`post_process_geometry_queries`), distinct from the constraint 4229 re-check
+/// the other ε constraint tests cover.
+#[test]
+fn legacy_multipass_folds_nonquery_functioncall_value_cell() {
+    let source = r#"
+structure Widget {
+    let part     = box(10mm, 10mm, 10mm)
+    let envelope = box(100mm, 100mm, 100mm)
+    let fits     = fits_build_volume(bounding_box(part), bounding_box(envelope))
+}
+"#;
+
+    // Declaration-order realization: `part` → handle 1, `envelope` → handle 2
+    // (same "first box → handle 1" convention as the step-7 test). Both bboxes
+    // valid ⇒ `fits_build_volume` is decidable ⇒ a concrete `Bool` either way; the
+    // test asserts FOLDED (Bool, not Undef), not a specific polarity.
+    let part = GeometryHandleId(1);
+    let envelope = GeometryHandleId(2);
+    let bbox = |hi: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
+              \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
+        ))
+    };
+    let kernel = MockGeometryKernel::new()
+        .with_bbox_result(part, bbox(0.01))
+        .with_bbox_result(envelope, bbox(0.10));
+
+    // LegacyMultiPass (the production default) — the path the byte-identical claim
+    // covers, and the one this shared fix also affects for this cell shape.
+    let legacy =
+        build_with_kernel_stdlib(source, BuildScheduler::LegacyMultiPass, Box::new(kernel));
+
+    let fits_id = reify_core::ValueCellId::new("Widget", "fits");
+    let fits = legacy.values.get(&fits_id).unwrap_or_else(|| {
+        panic!(
+            "expected Widget.fits in values; cells={:?}, diagnostics={:?}",
+            legacy.values.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            legacy.diagnostics,
+        )
+    });
+    assert!(
+        matches!(fits, Value::Bool(_)),
+        "LegacyMultiPass must fold the inner bounding_box(..) leaves of the non-query \
+         fits_build_volume(..) VALUE cell (shared geometry_ops FunctionCall-args recursion \
+         arm), yielding a concrete Bool — not the pre-fix Undef; got {fits:?}, \
+         diagnostics={:?}",
+        legacy.diagnostics,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-9 (RED): cross-sub capstone — the 4275 `let proc = FdmPrinter()` form.
 // bounding_box(proc.build_volume) must fold to a DEFINITE verdict under UnifiedDag.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -668,4 +751,114 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
          the `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
          not dropped (zero) and not double-appended (two); recorded ops={recorded:?}",
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Amendment (reviewer_comprehensive, test_coverage): the NEGATIVE side of the
+// `hydrate_value_cell_in_loop` branch-(b) gate
+// (`realization_read_cells.contains(&cell.id)`). The POSITIVE side — a
+// realization-consumed selector resolving to a `List` — is pinned by
+// `unified_dag_curated_fillet_resolves_edges_in_loop`. The NEGATIVE side: a
+// COMPOSITION-ONLY selector cell (read by a `union`/`intersect`/`difference` value
+// cell, NOT by any realization) must NOT be in `realization_read_cells`, so branch
+// (b) is SKIPPED and it keeps its `Value::Selector` descriptor — which
+// `reconstruct_selector_value` REQUIRES of a composition child.
+//
+// Observability: asserting on the COMPOSED cell's final value cannot distinguish a
+// broken gate, because the whole-template `run_post_processes` re-runs AFTER the
+// schedule loop (engine_build.rs) and would re-resolve the composition to a
+// descriptor regardless. The gate is only observable through a realization
+// dispatched IN-LOOP: a curated fillet consuming the composition. If the gate were
+// dropped, the composition's child selectors would resolve to `List`s in-loop,
+// `reconstruct_selector_value` would reject them (→ `None`), the composition would
+// fail to resolve to a `List` before the fillet's scheduled slot, and the fillet
+// would dispatch with EMPTY edges (the all-edges fallback) — an already-recorded op
+// `run_post_processes` cannot un-record. So the fillet's non-empty edge list is the
+// reliable pin for the negative gate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under `UnifiedDag`, a curated `fillet(b, combined, r)` whose edge arg is a
+/// selector COMPOSITION `combined = union(e1, e2)` over two composition-only edge
+/// selectors must dispatch with a resolved, non-empty `edges` list.
+///
+/// Gate wiring: the fillet realization's dependency trace reads `combined` (+ `b`),
+/// NOT `e1`/`e2` directly — so `realization_read_cells = {combined, b}` and
+/// `e1`/`e2` are absent. `hydrate_value_cell_in_loop` therefore SKIPS branch (b)
+/// for `e1`/`e2` (keeping them `Value::Selector` descriptors) and TAKES branch (b)
+/// for `combined` (realization-read) → `resolve_selector_to_list(union(e1, e2))`,
+/// which `reconstruct_selector_value`-wraps the two surviving descriptors and
+/// resolves the union to a concrete `List<Geometry>` before the fillet's slot.
+///
+/// This pins BOTH sides of the gate at once: the negative side (`e1`/`e2`
+/// descriptors preserved — branch (b) skipped) is the precondition for the positive
+/// side (`combined` resolves to a `List` — branch (b) taken) to succeed. A dropped
+/// gate would resolve `e1`/`e2` to `List`s in-loop, break the union reconstruction,
+/// and leave the fillet with empty (all-edges) `edges`.
+///
+/// Structural assertion only (`edges` non-empty), mirroring
+/// `unified_dag_curated_fillet_resolves_edges_in_loop` — the OCCT volume-≠-all-fillet
+/// e2e is η's, per PRD §8.
+#[test]
+fn unified_dag_curated_fillet_over_selector_composition_resolves_edges() {
+    // `e1`/`e2` feed the `union` COMPOSITION, never a realization; the fillet reads
+    // only `combined`. Both selectors use the same height window so the union is
+    // non-empty (and dedups to the same edge set — the test asserts non-empty, not a
+    // specific count).
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let e1 = edges_at_height(b, 5mm, 1mm)
+    let e2 = edges_at_height(b, 5mm, 1mm)
+    let combined = union(e1, e2)
+    let f = fillet(b, combined, 2mm)
+}"#;
+
+    // Same kernel convention as `unified_dag_curated_fillet_resolves_edges_in_loop`:
+    // the box is the first (and only) `execute()` → parent handle 1; edge sub-handle
+    // ids are high (50/51/52) to avoid colliding with realization result handles; a
+    // flat bbox on z=5mm passes the `edges_at_height(b, 5mm, 1mm)` window for each.
+    let parent = GeometryHandleId(1);
+    let edge_ids = [GeometryHandleId(50), GeometryHandleId(51), GeometryHandleId(52)];
+    let bbox_at = |z: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":{z},\
+              \"xmax\":0.01,\"ymax\":0.01,\"zmax\":{z}}}"
+        ))
+    };
+    let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, edge_ids.to_vec());
+    for id in edge_ids {
+        kernel = kernel.with_bbox_result(id, bbox_at(0.005));
+    }
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    let ops = ops_ref.lock().unwrap().clone();
+    let fillets: Vec<&GeometryOp> = ops
+        .iter()
+        .map(|rec| &rec.op)
+        .filter(|op| matches!(op, GeometryOp::Fillet { .. }))
+        .collect();
+
+    assert_eq!(
+        fillets.len(),
+        1,
+        "UnifiedDag must dispatch exactly one curated Fillet op over the selector \
+         composition (the composition-only child selectors must keep their descriptors \
+         so the union resolves to a List before the fillet slot); recorded ops={:?}, \
+         diagnostics={:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>(),
+        result.diagnostics,
+    );
+
+    match fillets[0] {
+        GeometryOp::Fillet { edges, .. } => assert!(
+            !edges.is_empty(),
+            "the curated fillet over `union(e1, e2)` must dispatch with a resolved, \
+             non-empty edge list — proving branch (b) was SKIPPED for the composition-only \
+             `e1`/`e2` (descriptors preserved) so `reconstruct_selector_value` could wrap \
+             them. An empty list means a child selector was wrongly resolved to a List \
+             in-loop and the union reconstruction failed (all-edges fallback)."
+        ),
+        _ => unreachable!("filtered to Fillet above"),
+    }
 }

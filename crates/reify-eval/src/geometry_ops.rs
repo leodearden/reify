@@ -2383,6 +2383,22 @@ fn dispatch_geometry_query_call(
 /// default (a conservative downgrade, never a wrong value). Extend this match
 /// if a future trait nests a geometry query inside a richer wrapper.
 ///
+/// CROSS-SCHEDULER REACH (task 4358 ε amendment): the non-query `FunctionCall`-
+/// args recursion arm below is NOT UnifiedDag-only — this function is shared
+/// geometry-fold code reached on BOTH scheduler paths. On `LegacyMultiPass` it
+/// runs inside `post_process_geometry_queries` → `try_eval_geometry_query`
+/// case (b) for every VALUE CELL whose `default_expr` is a non-query
+/// `FunctionCall` wrapping a geometry-query leaf (e.g.
+/// `let fits = fits_build_volume(bounding_box(part), bounding_box(envelope))`).
+/// Before ε added this arm the outer call fell through the `_` arm un-folded, so
+/// its inner leaves never folded and `eval_expr` (kernel-less) yielded `Undef`;
+/// with the arm the leaves fold first and `eval_expr` computes a concrete value.
+/// This is therefore a shared CORRECTNESS fix (Undef/error → real value), and the
+/// one documented exception to ε's "LegacyMultiPass stays byte-identical" claim —
+/// limited to that specific non-query-wrapper cell shape. Pinned on the legacy
+/// path by `tests/unified_dag_geometry_executors.rs::
+/// legacy_multipass_folds_nonquery_functioncall_value_cell`.
+///
 /// PERFORMANCE: every geometry-query leaf is dispatched independently, so an
 /// expression repeating an identical call (e.g. `volume(g) + volume(g)`) issues
 /// one kernel round-trip per occurrence, and the enclosing
@@ -2421,7 +2437,9 @@ pub(crate) fn rewrite_geometry_queries(
         // this arm handles every OTHER FunctionCall — e.g. the constraint shape
         // `fits_build_volume(bounding_box(..), bounding_box(..))` — so its inner
         // query leaves resolve instead of being left un-folded (→ Undef) by the
-        // `_` fallthrough.
+        // `_` fallthrough. Reached on BOTH scheduler paths (it also folds legacy
+        // non-query-wrapper VALUE cells via `post_process_geometry_queries`) — see
+        // the CROSS-SCHEDULER REACH note in this function's doc comment.
         reify_ir::CompiledExprKind::FunctionCall { function, args } => {
             let rewritten_args: Vec<reify_ir::CompiledExpr> = args
                 .iter()

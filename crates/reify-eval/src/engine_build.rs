@@ -6275,7 +6275,11 @@ impl Engine {
     /// consumed ONLY by selector-composition value cells
     /// (`union`/`intersect`/`difference`, whose `reconstruct_selector_value`
     /// REQUIRES a `Value::Selector` child) are NOT in `realization_read_cells`, so
-    /// they keep their descriptor form and composition stays correct.
+    /// they keep their descriptor form and composition stays correct. The negative
+    /// side of this gate (composition-only child selectors keep their descriptors so
+    /// a curated fillet over `union(e1, e2)` still resolves non-empty edges in-loop)
+    /// is pinned by `tests/unified_dag_geometry_executors.rs::
+    /// unified_dag_curated_fillet_over_selector_composition_resolves_edges`.
     ///
     /// Resolution order otherwise matches `run_post_processes` (geometry query →
     /// selector→list → topology selector → resolve-selector coercion); the first
