@@ -6047,4 +6047,89 @@ mod tests {
             diagnostics,
         );
     }
+
+    // ── task-4622: walk_param_against_arg_type Vector leaf arm ───────────────
+
+    /// (a) Bare scalar arg against `Vector3<Length>` param →
+    /// exactly one `TypeNotConformingToVector` Error.
+    ///
+    /// RED until S4 adds the `Type::Vector` arm to `walk_param_against_arg_type`.
+    #[test]
+    fn vector_param_rejects_scalar_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        // Bare Real scalar: `1.0`
+        let compiled_arg = CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            Type::dimensionless_scalar(),
+        );
+        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToVector diagnostic for scalar arg \
+             against Vector3<Length> param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToVector),
+            "expected TypeNotConformingToVector, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (b) A dimensionless `Vector{n:3}` arg against `Vector3<Length>` param →
+    /// ZERO diagnostics (locks the loose-quantity positive leg: a dimensionless
+    /// vec3 is accepted for a Length-quantity param).
+    ///
+    /// RED until S4 adds the arm (before S4 the `_` arm silently produces 0;
+    /// after S4 the arm explicitly accepts vector-shaped args → still 0, but now
+    /// for the right structural reason). The positive-leg stays green before AND
+    /// after S4; what changes is the REJECTION leg in test (a).
+    #[test]
+    fn vector_param_accepts_dimensionless_vector_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "v"),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "dimensionless Vector3 arg must be accepted for Vector3<Length> param \
+             (loose-quantity convention), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
 }
