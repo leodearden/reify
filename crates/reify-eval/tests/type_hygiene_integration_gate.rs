@@ -40,8 +40,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{
-    MockGeometryKernel, check_source_with_stdlib, errors_only, eval_source,
-    parse_and_compile_with_stdlib,
+    MockGeometryKernel, check_source, check_source_with_stdlib, compile_source_with_stdlib,
+    errors_only, eval_source, parse_and_compile_with_stdlib,
 };
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -317,9 +317,10 @@ structure def MoiRejection {
     let i = moment_of_inertia(b, 7850.0)
 }
 "#;
-    // parse_and_compile_with_stdlib: ζ emits ArgTypeMismatch at compile time.
-    // We do NOT assert zero errors — we're testing the runtime Warning path.
-    let compiled = parse_and_compile_with_stdlib(SRC);
+    // compile_source_with_stdlib: ζ emits ArgTypeMismatch at compile time.
+    // We tolerate that compile-time error (both layers report it) and proceed
+    // to eval to verify the runtime Warning path (ε never-silent).
+    let compiled = compile_source_with_stdlib(SRC);
 
     // Build with MockGeometryKernel so density-arg resolution runs (OCCT-independent).
     let checker = SimpleConstraintChecker;
@@ -519,24 +520,27 @@ structure def UndefinedInput {
         );
     }
 
-    // ── Branch 2: operator undefined (dimension mismatch at runtime) ───────────
-    // `param a : Scalar<Length> = 1m` and `param b : Scalar<Mass> = 1kg` are DEFINED.
-    // `a > b` — Length vs Mass — eval_cmp returns None (dimension mismatch) so
+    // ── Branch 2: operator undefined (division by zero at runtime) ───────────
+    // `param x : Scalar<Length> = 1m` and `param k : Int = 0` are DEFINED.
+    // `x / k` → Undef at runtime (division by zero); `x > Undef` → Undef so
     // the constraint is Undef but with DEFINED leaves.
     // classify_undef sees defined leaves → "operator undefined for these operand kinds".
     //
-    // NOTE: compiled WITHOUT stdlib so the DimensionMismatch compile-time check
-    // (which requires the stdlib type registry) does not fire; the check_source
-    // helper uses parse_and_compile (no stdlib).  The constraint still evaluates at
-    // runtime and hits the dimension-mismatch arm of eval_cmp → Undef → Indeterminate.
+    // NOTE: We use division-by-zero rather than a cross-dimension comparison
+    // because α (task 4490) now fires DimensionMismatch at compile time even
+    // without stdlib, which would prevent reaching the runtime classify_undef
+    // branch via `check_source`.  Division by zero is a purely runtime failure
+    // (the compiler cannot statically detect that `k`'s default is 0), so the
+    // constraint reaches the evaluator with defined leaves and returns Undef.
+    // See `reify_constraints::tests::division_by_zero_no_panic` for the
+    // equivalent lower-level characterisation.
     {
-        use reify_test_support::check_source;
         let result = check_source(
             r#"
 structure def OperatorUndef {
-    param a : Scalar<Length> = 1m
-    param b : Scalar<Mass> = 1kg
-    constraint a > b
+    param x : Scalar<Length> = 1m
+    param k : Int = 0
+    constraint x > x / k
 }
 "#,
         );
@@ -574,7 +578,7 @@ structure def OperatorUndef {
         assert!(
             !msg.contains("undefined inputs"),
             "§10 row 13 (branch 2): message must NOT say 'undefined inputs' (both leaves are \
-             DEFINED — it's a dim-mismatch, not a missing-value); got: {msg}"
+             DEFINED — it's a division-by-zero, not a missing-value); got: {msg}"
         );
     }
 }
