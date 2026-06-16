@@ -1959,7 +1959,17 @@ impl Engine {
         // never feeds `compute_eval_set`. Newly-grown instances the GUI has not
         // yet re-registered as observed roots stay outside the cone (correctly
         // reported as would-prune); plain param edits skip this entirely.
-        if structural_mutation {
+        //
+        // Performance guard (Sugg 4): skip the rebuild entirely when the
+        // observed registry has no roots — i.e. the common production case
+        // where the GUI never called `sync_observed_demand`. `cone_size() > 0`
+        // iff at least one observed root was registered AND a cone built
+        // (`sync_observed_demand` always rebuilds after adding, so any root ⇒
+        // cone_size ≥ 1; with no roots the cone is empty and a rebuild on empty
+        // roots is a pure no-op). This makes the zero-observed-demand hot path a
+        // guaranteed no-op rather than wasted O(0) work just before the
+        // task-4530 production-demand rebuild below.
+        if structural_mutation && self.observed_demand.cone_size() > 0 {
             self.observed_demand.rebuild_cone(&new_snapshot.graph);
         }
         let measurement = crate::observed_demand::measure_would_prune(
