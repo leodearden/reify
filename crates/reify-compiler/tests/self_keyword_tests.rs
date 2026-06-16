@@ -1358,3 +1358,212 @@ structure S {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ─── task-4615: bare non-collection sub resolves to StructureRef (self.X ≡ X) ───
+
+#[test]
+fn bare_non_collection_sub_equivalence_with_self() {
+    // Criterion 2: `bare bolt` and `self.bolt` must resolve to the same StructureRef
+    // value cell — ValueCellId("S.bolt", "__self") with type StructureRef("Bolt").
+    //
+    // RED until the bare-ident None-branch fallback is added in expr.rs (task-4615 step-2).
+    // Mirrors self_param_equivalence_with_bare_param (step-11) and
+    // collection_sub_fallback_equivalence_self_and_bare (task-1770 step-4).
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let via_self = self.bolt
+    let via_bare = bolt
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+
+    let via_self_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_self")
+        .expect("via_self value cell");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // Both should reference ValueCellId("S.bolt", "__self") by construction.
+    let expected_id = ValueCellId::new("S.bolt", "__self");
+
+    let self_refs = via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .collect_value_refs();
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        self_refs.contains(&expected_id),
+        "via_self should reference ValueCellId(\"S.bolt\",\"__self\"), got: {:?}",
+        self_refs
+    );
+    assert!(
+        bare_refs.contains(&expected_id),
+        "via_bare should reference ValueCellId(\"S.bolt\",\"__self\"), got: {:?}",
+        bare_refs
+    );
+
+    // Structural equivalence: the two refs must be identical sets.
+    assert_eq!(
+        self_refs, bare_refs,
+        "self_refs and bare_refs must be identical (self.bolt ≡ bolt)"
+    );
+
+    // Both result types must be StructureRef("Bolt").
+    let self_ty = &via_self_cell
+        .default_expr
+        .as_ref()
+        .expect("via_self default_expr")
+        .result_type;
+    let bare_ty = &via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .result_type;
+
+    assert_eq!(
+        self_ty,
+        &reify_core::Type::StructureRef("Bolt".to_string()),
+        "via_self result_type should be StructureRef(\"Bolt\"), got: {:?}",
+        self_ty
+    );
+    assert_eq!(
+        bare_ty,
+        &reify_core::Type::StructureRef("Bolt".to_string()),
+        "via_bare result_type should be StructureRef(\"Bolt\"), got: {:?}",
+        bare_ty
+    );
+    assert_eq!(
+        self_ty, bare_ty,
+        "self_ty and bare_ty must be identical (self.bolt ≡ bolt)"
+    );
+}
+
+#[test]
+fn bare_non_collection_sub_member_access_resolves() {
+    // Criterion 1: bare `bolt.diameter` must compile without "unresolved name" for `bolt`.
+    // Once the bare-ident fallback resolves `bolt` to StructureRef("Bolt"), the generic
+    // StructureRef field-projection path (expr.rs:~3049) handles `.diameter` cleanly.
+    //
+    // RED until the bare-ident None-branch fallback is added in expr.rs (task-4615 step-2).
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    let d = bolt.diameter
+}"#;
+    let compiled = compile_source(source);
+    let unresolved_name_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unresolved name"))
+        .collect();
+    assert!(
+        unresolved_name_errors.is_empty(),
+        "bare `bolt.diameter` should not emit 'unresolved name', got: {:?}",
+        unresolved_name_errors
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn bare_undeclared_name_still_unresolved() {
+    // Criterion 3 (regression guard): a genuinely unknown bare identifier must still
+    // produce an "unresolved name" error — the new sub fallback must not swallow it.
+    //
+    // GREEN today and must stay GREEN after task-4615 step-2.
+    let source = r#"structure S {
+    let x = nonexistent_thing
+}"#;
+    let compiled = compile_source(source);
+    let unresolved_name_errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error && d.message.contains("unresolved name"))
+        .collect();
+    assert!(
+        !unresolved_name_errors.is_empty(),
+        "expected at least one 'unresolved name' error for `nonexistent_thing`, got diagnostics: {:?}",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn local_param_shadows_same_named_sub() {
+    // When a param has the same name as a single-instance sub, bare name
+    // resolution must prefer the param (via scope.resolve, which checks
+    // scope.names) over the new sub fallback in the None branch.
+    //
+    // Pins the scope.resolve-before-fallback precedence order introduced by
+    // task-4615 step-2: the new fallback lives in the `None` branch, so it is
+    // only reachable when scope.resolve returns None (i.e. no param/let with
+    // that name exists).  This test ensures that ordering cannot silently
+    // regress — if the fallback were incorrectly moved above scope.resolve,
+    // `via_bare` would reference the sub's StructureRef cell instead of the
+    // param's Length cell.
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    param bolt : Length = 99mm
+    let via_bare = bolt
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // scope.resolve wins: bare `bolt` must reference the PARAM's cell.
+    let param_id = ValueCellId::new("S", "bolt");
+    // The sub fallback would produce this id — must NOT appear.
+    let sub_id = ValueCellId::new("S.bolt", "__self");
+
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        bare_refs.contains(&param_id),
+        "bare `bolt` should resolve to param ValueCellId(\"S\",\"bolt\") via scope.resolve, got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&sub_id),
+        "bare `bolt` must NOT resolve to sub ValueCellId(\"S.bolt\",\"__self\") — param shadows sub, got: {:?}",
+        bare_refs
+    );
+}
