@@ -10,6 +10,7 @@ mod complex;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
@@ -621,6 +622,27 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     return Value::Undef;
                 }
                 return eval_solve_load_cases(&evaluated_args, ctx);
+            }
+            // Intercept Option/Map recovery combinators (task β, PRD §11 Q1).
+            //
+            // Combinators are declared as `pub fn` in stdlib/option_recovery.ri
+            // and compile to UserFunctionCall (confirmed by
+            // option_recovery_resolution_tests.rs test b).  The pure .ri body
+            // route is blocked because it requires the some(v)/none match form
+            // (grammar gap, PRD §4.4 raf-12, DCE F4), so the reify-expr
+            // intrinsic route is the sanctioned default (§11 Q1).
+            //
+            // Gate: cheap name+arity check on *compiled* args — no evaluation.
+            // Wrong-arity / non-combinator calls fall through to
+            // eval_user_function_call unchanged (no double-eval on decline path).
+            //
+            // Recovery is SUBJECT-tag-driven (not strict all-args undef):
+            // unwrap_or(some(5mm), undef) must return 5mm, not Undef.  See the
+            // critical pitfall note in option_recovery.rs and plan §DESIGN.
+            if option_recovery::is_combinator(function_name, args.len()) {
+                let evaluated_args: Vec<Value> =
+                    args.iter().map(|a| eval_expr(a, ctx)).collect();
+                return option_recovery::eval_combinator(function_name, &evaluated_args);
             }
             eval_user_function_call(function_name, args, ctx)
         }
