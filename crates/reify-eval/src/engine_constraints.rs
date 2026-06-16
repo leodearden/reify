@@ -887,29 +887,53 @@ impl Engine {
             // on the UnifiedDag Constraint-executor path, so LegacyMultiPass and
             // the realization geometry output stay byte-identical.
             //
-            // LIMITATION — single-instance-per-def assumption (task 4358 ε
+            // SAFE-DEGRADATION — single-instance-per-def fold (task 4358 ε
             // amendment, reviewer_comprehensive robustness): the child handle set
             // is looked up by the structure DEF name (`module_named_steps[def_name]`,
             // keyed by template name, NOT by `let`-binding instance). So TWO same-def
             // bindings in one template carrying DIFFERENT params — e.g.
             // `let a = FdmPrinter(build_volume = box(200mm,...))` and
-            // `let b = FdmPrinter(build_volume = box(300mm,...))` — both seed their
-            // `<binding>.<member>` keys from that ONE shared handle set, so
-            // `bounding_box(a.build_volume)` and `bounding_box(b.build_volume)` would
-            // fold against the SAME (last-snapshotted) handle. For divergent instances
-            // this is a silently-incorrect fold, not an `Undef`. The 4275 form this
-            // closes (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()`, so the
-            // assumption holds for every shape ε targets. Per-instance handle
-            // disambiguation requires per-binding (not per-def) realization snapshot
-            // keying — a larger change to the realization executor's `module_named_steps`
-            // population, deferred out of ε's scope (PRD §9 geometry-in-the-loop is
-            // already excluded; multi-instance cross-`let` folding is the adjacent
-            // follow-up). Until then, treat a same-def multi-instance constraint fold
-            // as unsupported rather than relied upon.
+            // `let b = FdmPrinter(build_volume = box(300mm,...))` — would both seed
+            // their `<binding>.<member>` keys from that ONE shared (last-snapshotted)
+            // handle set, folding `bounding_box(a.build_volume)` and
+            // `bounding_box(b.build_volume)` against the SAME handle — a
+            // silently-incorrect DEFINITE verdict, not an `Undef`.
+            //
+            // To fail SAFE we DECLINE the cross-`let` fold for any def bound more than
+            // once in this template (see `structure_ref_def_counts` below): those
+            // `<binding>.<member>` keys are left unseeded, so the leaf folds to `Undef`
+            // → `Indeterminate` (degrades, never wrong). The 4275 form this closes
+            // (`SmallPart`) binds a SINGLE `let proc = FdmPrinter()` (count == 1), so it
+            // still folds to a DEFINITE verdict. Per-instance handle disambiguation
+            // (per-binding, not per-def, realization snapshot keying) would let
+            // multi-instance folds resolve correctly — a larger change to the
+            // realization executor's `module_named_steps` population, deferred to #4628
+            // (PRD §9 geometry-in-the-loop stays excluded; multi-instance cross-`let`
+            // folding is the adjacent follow-up). Pinned by
+            // `unified_dag_multi_instance_cross_let_declines_fold`.
+            let mut structure_ref_def_counts: HashMap<&str, usize> = HashMap::new();
+            for cell in &template.value_cells {
+                if let reify_core::Type::StructureRef(def_name) = &cell.cell_type {
+                    *structure_ref_def_counts
+                        .entry(def_name.as_str())
+                        .or_insert(0) += 1;
+                }
+            }
             for cell in &template.value_cells {
                 let reify_core::Type::StructureRef(def_name) = &cell.cell_type else {
                     continue;
                 };
+                // Decline the fold for a def bound >1× in this template (safe
+                // degradation above): leave its `<binding>.<member>` keys unseeded so
+                // the leaf folds to `Undef` → `Indeterminate`, never a wrong handle.
+                if structure_ref_def_counts
+                    .get(def_name.as_str())
+                    .copied()
+                    .unwrap_or(0)
+                    > 1
+                {
+                    continue;
+                }
                 let Some(child_steps) = module_named_steps.get(def_name) else {
                     continue;
                 };

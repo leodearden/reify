@@ -514,6 +514,107 @@ structure SmallPart {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Amendment (reviewer_comprehensive, robustness_silent_incorrectness): the
+// cross-`let` structure-instance handle seeding in `check_constraints_post_geometry`
+// keys child handles by structure DEF name, NOT by `let`-binding instance, so it
+// cannot disambiguate two same-def instances. ε's SAFE-DEGRADATION amendment
+// DECLINES the cross-`let` fold for any def bound >1× in a template (leaving the
+// leaf Undef → Indeterminate) rather than folding against the wrong (shared,
+// last-snapshotted) handle — a silently-incorrect DEFINITE verdict. #4628 tracks
+// per-binding snapshot keying that would let multi-instance folds resolve to a
+// definite per-instance verdict.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Two same-def `FdmPrinter` instances (`a`, `b`) in one structure, each feeding a
+/// geometry-backed `FitsBuildVolume` constraint over its own `build_volume`. The
+/// def-name-keyed cross-`let` snapshot cannot tell `a.build_volume` from
+/// `b.build_volume`, so ε DECLINES the fold for the (count == 2) `FdmPrinter` def:
+/// both `bounding_box(<inst>.build_volume)` leaves stay `Undef` → both constraints
+/// degrade to `Indeterminate`, NEVER a silently-wrong DEFINITE verdict folded
+/// against the shared (last-snapshotted) handle. The same-scope `bounding_box(part)`
+/// leaf still folds, so the only `Undef` is the undisambiguable cross-`let` leaf.
+///
+/// Contrast `unified_dag_cross_sub_build_volume_constraint_is_definite`: the
+/// SINGLE-instance `let proc = FdmPrinter()` form (count == 1) still folds to a
+/// DEFINITE verdict. #4628 tracks the per-binding snapshot keying that would let
+/// this multi-instance form fold to a definite per-instance verdict instead — at
+/// which point this test flips from asserting Indeterminate to a definite verdict.
+#[test]
+fn unified_dag_multi_instance_cross_let_declines_fold() {
+    // `FdmPrinter` MUST be declared before `MultiPrinter` (declaration order is
+    // topological for the cross-`let` snapshot seeding — same forward-ref
+    // limitation as the step-9 capstone).
+    let source = r#"
+import std.process
+
+structure def FdmPrinter : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 10USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 45deg
+}
+
+structure MultiPrinter {
+    let a = FdmPrinter()
+    let b = FdmPrinter()
+    let part = box(50mm, 50mm, 50mm)
+    constraint FitsBuildVolume(proc: a, part: part)
+    constraint FitsBuildVolume(proc: b, part: part)
+}
+"#;
+
+    // Valid bbox replies for every realized handle (the part body + both printers'
+    // build_volume bodies, plus a prelude margin). The cross-`let` leaves are
+    // DECLINED before dispatch, so these replies only ever resolve the same-scope
+    // `bounding_box(part)`; each `bounding_box(<inst>.build_volume)` stays `Undef`.
+    let bbox = |hi: f64| {
+        Value::String(format!(
+            "{{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\
+              \"xmax\":{hi},\"ymax\":{hi},\"zmax\":{hi}}}"
+        ))
+    };
+    let make_kernel = || {
+        let mut k = MockGeometryKernel::new();
+        for i in 1..=6u64 {
+            k = k.with_bbox_result(GeometryHandleId(i), bbox(0.05));
+        }
+        k
+    };
+
+    let unified =
+        build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(make_kernel()));
+
+    // The declined cross-`let` fold leaves the constraints in `constraint_results`
+    // (a declined FOLD ≠ a dropped constraint — that is step-12's auto-guard), just
+    // with an unresolvable leaf → Indeterminate.
+    let fits: Vec<_> = unified
+        .constraint_results
+        .iter()
+        .filter(|e| e.label.as_deref().is_some_and(|l| l.contains("FitsBuildVolume")))
+        .collect();
+    assert!(
+        !fits.is_empty(),
+        "expected FitsBuildVolume constraint entries under UnifiedDag (declined fold \
+         must not drop the constraint); constraint_results={:?}, diagnostics={:?}",
+        unified.constraint_results,
+        unified.diagnostics,
+    );
+    assert!(
+        fits.iter().all(|e| e.satisfaction == Satisfaction::Indeterminate),
+        "a multi-instance same-def cross-`let` fold must DEGRADE SAFELY to \
+         Indeterminate (the fold is DECLINED — the def-name-keyed snapshot cannot \
+         disambiguate `a.build_volume` from `b.build_volume`), never a silently-wrong \
+         DEFINITE verdict folded against the shared handle; got {:?}, diagnostics={:?}",
+        fits.iter()
+            .map(|e| (e.label.clone(), e.satisfaction))
+            .collect::<Vec<_>>(),
+        unified.diagnostics,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-11 (RED): auto-constraint guard decline. A geometry-backed constraint
 // whose transitive auto-read closure reaches an `auto` parameter must be DECLINED
 // (not given a bogus definite verdict) — leaving δ's E_EVAL_UNRESOLVED as the
