@@ -158,6 +158,31 @@ pub fn residue_for(engine: &Engine) -> std::collections::HashSet<reify_eval::cac
     reify_eval::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map).residue
 }
 
+/// Locate the single `FitsBuildVolume` constraint entry's [`Satisfaction`] in a
+/// [`BuildResult`] (the stdlib def's instantiation is labelled
+/// `"FitsBuildVolume#0[0]"`). The 4275 boundary differential (step-15/16) reads
+/// this DIRECTLY to assert UnifiedDag is DEFINITE while legacy is Indeterminate —
+/// a clarity companion to the `assert_equivalent_or_allowed` reasoned check.
+/// Lifted from `tests/unified_dag_geometry_executors.rs:728`. Panics with the full
+/// constraint list if no such entry is present.
+pub fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
+    result
+        .constraint_results
+        .iter()
+        .find(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsBuildVolume"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a FitsBuildVolume constraint result, got: {:?}",
+                result.constraint_results
+            )
+        })
+        .satisfaction
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Corpus data types + the reasoned, PER-CASE allow-list (no blanket patterns).
 // ─────────────────────────────────────────────────────────────────────────────

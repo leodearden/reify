@@ -29,6 +29,29 @@ use reify_core::{DiagnosticCode, Severity};
 use reify_eval::BuildScheduler;
 use reify_ir::Satisfaction;
 
+/// The TWO reasoned divergences the 4275 single-instance cross-`let` case
+/// legitimately exhibits under the seeded kernel (step-16). Mirrors the corpus
+/// binary's `REASONED_4275` (the same divergence proven by
+/// `allow_list_admits_only_reasoned_divergence`): (1) the `FitsBuildVolume`
+/// constraint flips Indeterminate (legacy) → DEFINITE (unified); (2) the
+/// legacy-only `ConstraintIndeterminate` warning vanishes once unified resolves
+/// the verdict (a CONSEQUENCE of the flip, not an independent divergence). Every
+/// other field is byte-equal, so the gate admits exactly these and nothing else.
+const REASONED_4275_BOUNDARY: &[Divergence] = &[
+    Divergence::ConstraintFlips {
+        constraint: "FitsBuildVolume",
+        reason: "4275 single-instance `let proc = FdmPrinter()`: UnifiedDag folds the cross-`let` \
+                 bounding_box(proc.build_volume) leaf post-geometry (PRD §3.3) → a DEFINITE \
+                 verdict; LegacyMultiPass freezes the pre-geometry Indeterminate",
+    },
+    Divergence::DiagnosticAdded {
+        code: DiagnosticCode::ConstraintIndeterminate,
+        reason: "the legacy-only `constraint … indeterminate` warning vanishes once UnifiedDag \
+                 resolves the constraint to a definite verdict (a consequence of the flip, not an \
+                 independent divergence)",
+    },
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
 // step-11 (RED): auto + geometry-backed constraint → `EvalUnresolved`.
 //
