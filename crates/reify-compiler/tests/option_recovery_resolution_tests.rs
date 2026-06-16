@@ -12,7 +12,7 @@
 //! `compile_source` — because the combinators live in a stdlib module and are
 //! only prelude-callable via `compile_with_stdlib`.
 
-use reify_core::{Severity, Type};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::compile_source_with_stdlib;
 
 // ── helper ───────────────────────────────────────────────────────────────────
@@ -211,6 +211,63 @@ structure S {
         v_expr.result_type,
         Type::length(),
         "get_or(m, \"key\", 0mm) result_type should be Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}
+
+// ── (f) E_FALLBACK_TYPE on default/element type mismatch ─────────────────────
+
+/// `unwrap_or(o, "x")` where `o : Option<Length>` binds T=Length via the
+/// first arg, then the second arg "x" (String) conflicts: the call yields
+/// exactly one Error diagnostic with code == DiagnosticCode::FallbackType
+/// AND the message contains the mnemonic "E_FALLBACK_TYPE", and the
+/// result cell is poisoned (default_expr.result_type == Type::Error).
+///
+/// RED (after step-2): the conflict arm already fires
+/// (type_compat::unify returns Err(TypeArgConflict), T=Length vs T=String)
+/// but emits DiagnosticCode::FnTypeArgConflict — NOT FallbackType, which
+/// does not yet exist → this test fails to compile / the code assertion
+/// fails.
+#[test]
+fn unwrap_or_default_element_type_mismatch_emits_e_fallback_type() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = unwrap_or(o, "x")
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for unwrap_or(o, \"x\"), got: {:?}",
+        errors
+    );
+
+    let diag = &errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::FallbackType),
+        "expected DiagnosticCode::FallbackType, got: {:?}",
+        diag.code
+    );
+    assert!(
+        diag.message.contains("E_FALLBACK_TYPE"),
+        "expected diagnostic message to contain \"E_FALLBACK_TYPE\", got: {:?}",
+        diag.message
+    );
+
+    let v_expr = cell_expr_stdlib(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::Error,
+        "poisoned cell result_type should be Type::Error, got {:?}",
         v_expr.result_type
     );
 }
