@@ -33,6 +33,28 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 // tests/unified_dag_cycle_contract.rs:35-48).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Construct a FRESH [`Engine`] wired the δ/ε way — a [`SimpleConstraintChecker`]
+/// plus the supplied geometry `kernel` — with its [`BuildScheduler`] pinned through
+/// the `set_build_scheduler` test seam. The SINGLE engine-construction site every
+/// build helper routes through, so a future change to the standard engine wiring is
+/// made in ONE place rather than five.
+fn fresh_engine(scheduler: BuildScheduler, kernel: Box<dyn GeometryKernel>) -> Engine {
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(scheduler);
+    engine
+}
+
+/// Compile `source`, routing through the stdlib prelude iff `needs_stdlib` (so
+/// prelude names — `fits_build_volume`, `Solid`, … — resolve). The single
+/// compile-branch site the keep-engine / warm helpers share.
+fn compile_maybe_stdlib(source: &str, needs_stdlib: bool) -> reify_compiler::CompiledModule {
+    if needs_stdlib {
+        compile_source_with_stdlib(source)
+    } else {
+        compile_source(source)
+    }
+}
+
 /// Compile `source` (through the stdlib prelude iff `needs_stdlib`), build it on
 /// a FRESH engine under `scheduler` with a default (unseeded)
 /// [`MockGeometryKernel`], and return the full [`BuildResult`]. The corpus-sweep
@@ -56,9 +78,7 @@ pub fn build_with_kernel(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
-    engine.set_build_scheduler(scheduler);
-    engine.build(&compiled, ExportFormat::Step)
+    fresh_engine(scheduler, kernel).build(&compiled, ExportFormat::Step)
 }
 
 /// Like [`build_with_kernel`] but compiles `source` through the stdlib prelude
@@ -72,9 +92,7 @@ pub fn build_with_kernel_stdlib(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source_with_stdlib(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
-    engine.set_build_scheduler(scheduler);
-    engine.build(&compiled, ExportFormat::Step)
+    fresh_engine(scheduler, kernel).build(&compiled, ExportFormat::Step)
 }
 
 /// Like [`build_under`] but RETAINS the engine so its post-build
@@ -88,14 +106,8 @@ pub fn build_under_keep_engine(
     scheduler: BuildScheduler,
     needs_stdlib: bool,
 ) -> (Engine, BuildResult) {
-    let compiled = if needs_stdlib {
-        compile_source_with_stdlib(source)
-    } else {
-        compile_source(source)
-    };
-    let kernel: Box<dyn GeometryKernel> = Box::new(MockGeometryKernel::new());
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
-    engine.set_build_scheduler(scheduler);
+    let compiled = compile_maybe_stdlib(source, needs_stdlib);
+    let mut engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
     let result = engine.build(&compiled, ExportFormat::Step);
     (engine, result)
 }
@@ -121,17 +133,12 @@ pub fn build_case(case: &CorpusCase, scheduler: BuildScheduler) -> BuildResult {
 /// Like [`build_case`] but RETAINS the engine for the residue gate (mirrors
 /// [`build_under_keep_engine`], honoring the case's optional seeded `kernel`).
 pub fn build_case_keep_engine(case: &CorpusCase, scheduler: BuildScheduler) -> (Engine, BuildResult) {
-    let compiled = if case.needs_stdlib {
-        compile_source_with_stdlib(case.source)
-    } else {
-        compile_source(case.source)
-    };
+    let compiled = compile_maybe_stdlib(case.source, case.needs_stdlib);
     let kernel: Box<dyn GeometryKernel> = match case.kernel {
         Some(make) => make(),
         None => Box::new(MockGeometryKernel::new()),
     };
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
-    engine.set_build_scheduler(scheduler);
+    let mut engine = fresh_engine(scheduler, kernel);
     let result = engine.build(&compiled, ExportFormat::Step);
     (engine, result)
 }
@@ -1019,16 +1026,8 @@ pub fn warm_eval_after_edit(
     cell: ValueCellId,
     new_value: Value,
 ) -> EvalResult {
-    let compiled = if needs_stdlib {
-        compile_source_with_stdlib(source)
-    } else {
-        compile_source(source)
-    };
-    let mut engine = Engine::new(
-        Box::new(SimpleConstraintChecker),
-        Some(Box::new(MockGeometryKernel::new())),
-    );
-    engine.set_build_scheduler(scheduler);
+    let compiled = compile_maybe_stdlib(source, needs_stdlib);
+    let mut engine = fresh_engine(scheduler, Box::new(MockGeometryKernel::new()));
     // Cold build — populates eval_state and is the sole build_scheduler reader.
     engine.build(&compiled, ExportFormat::Step);
     // WARM path — edit_param re-evaluates WITHOUT consulting build_scheduler.
