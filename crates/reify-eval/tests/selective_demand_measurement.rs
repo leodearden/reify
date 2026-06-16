@@ -125,7 +125,11 @@ fn run_scenario_b() -> (Vec<DemandPruneMeasurement>, Vec<DemandPruneMeasurement>
 /// Aggregated distribution statistics for a set of measurements.
 struct Distribution {
     min: usize,
-    median: usize,
+    /// True median: the middle value for an odd-length run, the **mean of the
+    /// two central values** for an even-length run. Held as `f64` so an
+    /// even-length split (e.g. 4 edits) is not silently biased toward the
+    /// upper-of-two-middle element, which the old `vals[len/2]` form returned.
+    median: f64,
     max: usize,
 }
 
@@ -133,17 +137,33 @@ impl Distribution {
     fn of<F: Fn(&DemandPruneMeasurement) -> usize>(ms: &[DemandPruneMeasurement], f: F) -> Self {
         let mut vals: Vec<usize> = ms.iter().map(&f).collect();
         vals.sort_unstable();
+        let n = vals.len();
         let min = vals.first().copied().unwrap_or(0);
         let max = vals.last().copied().unwrap_or(0);
-        // Total over empty input, matching the `.first()`/`.last()` siblings:
-        // `vals[vals.len()/2]` would panic on an empty slice. Currently
-        // unreachable (callers pass non-empty edit lists) but a latent trap.
-        let median = vals.get(vals.len() / 2).copied().unwrap_or(0);
+        // True median. Empty input -> 0.0, matching the `.first()`/`.last()`
+        // siblings (a bare `vals[n/2]` would panic on an empty slice).
+        // Currently every caller passes a non-empty edit list, but the guard
+        // keeps the summarizer total.
+        let median = if n == 0 {
+            0.0
+        } else if n % 2 == 1 {
+            vals[n / 2] as f64
+        } else {
+            (vals[n / 2 - 1] + vals[n / 2]) as f64 / 2.0
+        };
         Distribution { min, median, max }
     }
 
     fn fmt(&self) -> String {
-        format!("{}/{}/{}", self.min, self.median, self.max)
+        // Render an integral median without a trailing ".0" so a constant
+        // distribution stays integer-clean in the documented table, while a
+        // genuine even-length split still shows its ".5".
+        let med = if self.median.fract() == 0.0 {
+            format!("{}", self.median as i64)
+        } else {
+            format!("{}", self.median)
+        };
+        format!("{}/{}/{}", self.min, med, self.max)
     }
 }
 
