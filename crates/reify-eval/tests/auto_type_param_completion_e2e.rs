@@ -386,3 +386,60 @@ fn bounded_fallback_unsound_emits_bounded_infeasible() {
         monomorph_name.as_deref().unwrap_or("<none>")
     );
 }
+
+// ── Step-6 ─────────────────────────────────────────────────────────────────────
+
+/// ζ new "NoCandidate negative" — all candidates rejected by constraint.
+///
+/// Reads examples/auto/bearing_unsat.ri (two Seal candidates: ThickSeal=5mm,
+/// HugeSeal=8mm; constraint `seal.thickness < bore_radius=3mm`; both violate),
+/// compiles under the REAL SimpleConstraintChecker, and asserts:
+///   (a) AutoTypeParamNoCandidate Error is present
+///   (b) the error message names the violated constraint
+///       (contains "rejected by constraint")
+///   (c) no Bearing$* monomorph template — clean diagnostic, no silent Undef
+///
+/// RED: examples/auto/bearing_unsat.ri does not exist yet → read_fixture's
+/// .expect panics at runtime.  GREEN after step-7 authors the fixture.
+#[test]
+fn bearing_unsat_emits_no_candidate_naming_constraint() {
+    let src = read_fixture(BEARING_UNSAT_PATH);
+    let compiled = compile_real(&src, "bearing_unsat");
+
+    // (a) NoCandidate Error must be present.
+    assert!(
+        has_error_code(&compiled.diagnostics, DiagnosticCode::AutoTypeParamNoCandidate),
+        "bearing_unsat.ri must emit AutoTypeParamNoCandidate under real checker \
+         (ThickSeal=5mm and HugeSeal=8mm both violate seal.thickness < bore_radius=3mm); \
+         diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    // (b) Error message names the violated constraint.
+    let no_candidate_msg = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamNoCandidate))
+        .map(|d| d.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    assert!(
+        no_candidate_msg.contains("rejected by constraint"),
+        "NoCandidate message must name the violated constraint via \
+         \"rejected by constraint\"; got: {:?}",
+        no_candidate_msg
+    );
+
+    // (c) No Bearing$* monomorph: clean diagnostic, no silent substitution.
+    let monomorph_name = compiled
+        .templates
+        .iter()
+        .find(|t| t.name.starts_with("Bearing$"))
+        .map(|t| t.name.clone());
+    assert!(
+        monomorph_name.is_none(),
+        "SOUNDNESS VIOLATION: compiled.templates contains '{}' despite NoCandidate Error — \
+         a Bearing substitution was accepted when all candidates were violated!",
+        monomorph_name.as_deref().unwrap_or("<none>")
+    );
+}
