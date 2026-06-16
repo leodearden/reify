@@ -2361,16 +2361,33 @@ impl OcctKernel {
                     return Ok(handle);
                 }
             }
-            GeometryOp::Chamfer { target, distance } => {
-                let shape = self.get_shape(*target)?;
+            GeometryOp::Chamfer {
+                target,
+                edges,
+                distance,
+            } => {
                 let d = extract_f64(distance)?;
                 if !(d.is_finite() && d > 0.0) {
                     return Err(GeometryError::OperationFailed(
                         "chamfer distance must be a finite positive value".into(),
                     ));
                 }
-                ffi::ffi::chamfer_all_edges(shape, d)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                if edges.is_empty() {
+                    // 2-arg / empty-selection back-compat: chamfer ALL edges
+                    // (unchanged path). Yields a shape stored after the match.
+                    let shape = self.get_shape(*target)?;
+                    ffi::ffi::chamfer_all_edges(shape, d)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                } else {
+                    // Curated per-edge selection: chamfer only the chosen edges.
+                    // `chamfer_edges_with_history` stores the Solid result and
+                    // returns its handle (mirroring the Fillet arm); the history
+                    // is captured for the persistent-naming seam but not surfaced
+                    // through execute().
+                    let (handle, _history) =
+                        self.chamfer_edges_with_history(*target, d, edges)?;
+                    return Ok(handle);
+                }
             }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;

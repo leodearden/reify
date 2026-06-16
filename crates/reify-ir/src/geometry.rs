@@ -612,8 +612,14 @@ pub enum GeometryOp {
         radius: Value,
     },
     /// Chamfer edges by distance.
+    ///
+    /// `edges` is the curated selection of edges to chamfer. An **empty** list
+    /// is the all-edges back-compat path (legacy 2-arg `chamfer(solid, distance)`);
+    /// a non-empty list names the specific edges to chamfer (3-arg
+    /// `chamfer(solid, edges, distance)`). Mirrors `Fillet`.
     Chamfer {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         distance: Value,
     },
     /// Translate by vector (dx, dy, dz in meters).
