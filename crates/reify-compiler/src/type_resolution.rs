@@ -257,7 +257,9 @@ pub(crate) fn resolve_dimension_type(
     }
     // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
     // None for it), but resolve_dimension_type must still accept it.
-    if name == "Dimensionless" {
+    // "Real" is the unified dimension-position synonym for "Dimensionless" (PRD Open Q2):
+    // Vector3<Real>, Scalar<Real>, Point3<Real> resolve identically to their <Dimensionless> form.
+    if name == "Dimensionless" || name == "Real" {
         return Some(DimensionVector::DIMENSIONLESS);
     }
     // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
