@@ -1068,7 +1068,7 @@ trait Process {
 
 ```
 trait Subtracting : Process {
-    param tool_access : Geometry
+    param tool_access : Solid
     param min_feature_size : Length
     param achievable_finish : Length
 }
@@ -1132,6 +1132,63 @@ never a false violation.
 See `examples/process/std_process_dfm_metrology.ri` for a complete worked
 example covering overhang, draft, undercut, and a conforming rule that emits
 nothing.
+
+**DFM constraint defs:**
+
+Alongside the auto-measurement pass above, `std.process` ships a **declarative
+DFM engine**: `pub constraint def`s over declared process-capability params and
+cheaply-measured design values, backed by the `fits_build_volume` bbox
+comparator (§3.10).
+
+```
+// Universal scalar manufacturability check: measured >= capability.
+pub constraint def Manufacturable {
+    param measured   : Length
+    param capability : Length
+    measured >= capability
+}
+
+// Subtracting — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FeatureManufacturable {
+    param proc    : Subtracting
+    param feature : Length
+    feature >= proc.min_feature_size
+}
+
+// Forming — pure-scalar; evaluates to Satisfied/Violated without a kernel.
+pub constraint def BendManufacturable {
+    param proc        : Forming
+    param bend_radius : Length
+    bend_radius >= proc.min_bend_radius
+}
+pub constraint def DrawManufacturable {
+    param proc       : Forming
+    param draw_depth : Length
+    draw_depth <= proc.max_draw_depth
+}
+pub constraint def DraftManufacturable {
+    param proc  : Forming
+    param draft : Angle
+    draft >= proc.draft_angle
+}
+
+// Adding — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FitsBuildVolume {
+    param proc : Adding
+    param part : Solid
+    fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))
+}
+```
+
+The scalar defs (`Manufacturable`, `BendManufacturable`, `DrawManufacturable`,
+`DraftManufacturable`) evaluate to definite Satisfied/Violated under plain
+`reify check` (no geometry kernel required). The geometry-backed defs
+(`FeatureManufacturable`, `FitsBuildVolume`) require the OCCT kernel to resolve
+`bounding_box(solid)`; without one they are Indeterminate. `fits_build_volume`
+emits a build-volume DFM diagnostic (`{I,W,E}_DFM_BUILD_VOLUME`) at the severity
+named by its optional third `DFMSeverity` argument (default `Warning`).
+See `examples/process/std_process_dfm.ri` for a worked example of the
+declarative scalar + build-volume surface.
 
 ---
 
