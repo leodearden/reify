@@ -1947,6 +1947,21 @@ impl Engine {
         // `observed_retained + Σwould_prune == eval_set_size` hold by
         // construction. The two field borrows (`&self.last_eval_set`,
         // `&self.observed_demand`) are disjoint, so this is NLL-OK.
+        //
+        // Robustness amendment (task 4532): when this edit grew or shrank a
+        // collection (`structural_mutation`), the graph gained/removed nodes and
+        // the task-4530 block below rebuilds the production `demand` cone against
+        // `new_snapshot.graph`. Refresh the OBSERVED cone against that SAME grown
+        // graph FIRST, so the measurement compares the post-grow `last_eval_set`
+        // against a cone built from the same graph (a faithful counterfactual)
+        // rather than a cone left over from the pre-grow graph at the last
+        // `sync_observed_demand`. Still a pure side-channel: the observed cone
+        // never feeds `compute_eval_set`. Newly-grown instances the GUI has not
+        // yet re-registered as observed roots stay outside the cone (correctly
+        // reported as would-prune); plain param edits skip this entirely.
+        if structural_mutation {
+            self.observed_demand.rebuild_cone(&new_snapshot.graph);
+        }
         let measurement = crate::observed_demand::measure_would_prune(
             &self.last_eval_set,
             &self.observed_demand,

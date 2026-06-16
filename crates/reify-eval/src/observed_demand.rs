@@ -79,8 +79,20 @@ pub(crate) fn measure_would_prune(
 ) -> DemandPruneMeasurement {
     let mut retained = 0usize;
     let mut wp = WouldPruneByKind::default();
+    // Fast path (perf amendment, task 4532): in the default production state the
+    // GUI has not called `sync_observed_demand`, so the observed cone is empty
+    // and `is_demanded` is false for every node — the per-node hash lookup is
+    // wasted work on the hot interactive edit path. Hoist the emptiness check so
+    // those lookups are skipped. This is OUTPUT-EQUIVALENT to the full loop (an
+    // empty cone retains nothing), which DELIBERATELY preserves the "empty
+    // observed cone ⇒ would-prune everything" semantics that the Scenario-B
+    // control distribution in docs/design/selective-demand-measurement.md
+    // documents and asserts. We intentionally do NOT emit a `None` /
+    // all-retained sentinel here: that would misreport an empty cone as
+    // retaining the whole eval-set and contradict that artifact.
+    let cone_empty = observed.cone_size() == 0;
     for node in eval_set {
-        if observed.is_demanded(node) {
+        if !cone_empty && observed.is_demanded(node) {
             retained += 1;
         } else {
             match node {
