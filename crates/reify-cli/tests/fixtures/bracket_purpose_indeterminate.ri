@@ -3,5 +3,5 @@ structure Bracket {
 }
 
 purpose mfg_ready(subject : Structure) {
-    constraint subject.tolerance > 0.1mm
+    constraint subject.tolerance > 0
 }

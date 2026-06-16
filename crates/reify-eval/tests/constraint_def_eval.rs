@@ -16,10 +16,10 @@ use reify_test_support::{check_source, error_diags, parse_and_compile};
 const MIN_WALL_SOURCE: &str = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 1
+    param thickness: Length = 1mm
     constraint MinWall(wall: thickness)
 }
 "#;
@@ -88,8 +88,8 @@ constraint def Bounded {
     x <= hi
 }
 structure S {
-    param w: Length = 15
-    constraint Bounded(x: w, lo: 1, hi: 10)
+    param w: Length = 15mm
+    constraint Bounded(x: w, lo: 1mm, hi: 10mm)
 }
 "#;
     let result = check_source(source);
@@ -160,10 +160,10 @@ fn satisfied_constraint_def_has_label_no_error() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 5
+    param thickness: Length = 5mm
     constraint MinWall(wall: thickness)
 }
 "#;
@@ -208,11 +208,11 @@ fn guarded_constraint_def_inactive_when_guard_false() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param active: Bool = false
-    param t: Length = 1
+    param t: Length = 1mm
     constraint MinWall(wall: t) where active
 }
 "#;
@@ -248,11 +248,11 @@ fn guarded_constraint_def_violated_when_guard_true() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param active: Bool = true
-    param t: Length = 1
+    param t: Length = 1mm
     constraint MinWall(wall: t) where active
 }
 "#;
@@ -374,8 +374,8 @@ structure S {
 fn inline_constraint_diagnostics_unchanged() {
     let source = r#"
 structure S {
-    param thickness: Length = 1
-    constraint thickness > 2
+    param thickness: Length = 1mm
+    constraint thickness > 2mm
 }
 "#;
     let result = check_source(source);
@@ -464,10 +464,10 @@ fn labeled_diagnostics_replaces_id_in_labels_messages() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
-    param thickness: Length = 1
+    param thickness: Length = 1mm
     constraint MinWall(wall: thickness)
 }
 "#;
