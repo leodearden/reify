@@ -22,12 +22,14 @@ mod differential;
 
 use differential::{
     AUTO_GEOMETRY_CONSTRAINT_SRC, CROSS_LET_4275_SRC, CorpusCase, Divergence,
-    LEX_PARENT_MULTIBODY_SRC, assert_equivalent_or_allowed, build_case, build_case_keep_engine,
-    build_with_kernel_stdlib, fits_build_volume_satisfaction, residue_for, seeded_build_volume_kernel,
+    LEX_PARENT_MULTIBODY_SRC, MULTI_REALIZATION_SRC, WARM_PREDICATE_SRC,
+    assert_equivalent_or_allowed, build_case, build_case_keep_engine, build_with_kernel_stdlib,
+    fits_build_volume_satisfaction, project_eval_values, residue_for, seeded_build_volume_kernel,
+    warm_eval_after_edit,
 };
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_eval::BuildScheduler;
-use reify_ir::Satisfaction;
+use reify_ir::{Satisfaction, Value};
 
 /// The TWO reasoned divergences the 4275 single-instance cross-`let` case
 /// legitimately exhibits under the seeded kernel (step-16). Mirrors the corpus
@@ -252,4 +254,107 @@ fn cross_sub_4275_let_bound_form_is_definite_differential() {
         kernel: Some(seeded_build_volume_kernel),
     };
     assert_equivalent_or_allowed(&case, &legacy, &unified);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-17 (RED): the remaining §6 rows.
+//   (a) `multi_realization_export_equivalent` — a cold build of a ≥2-realization
+//       module exports byte-equivalent geometry under both schedulers (+ value /
+//       constraint equivalence + residue==∅);
+//   (b) `warm_determinacy_predicate_let_is_scheduler_agnostic` — build, then drive
+//       a WARM path (`edit_param`) over a determinacy-predicate `let`, and assert
+//       the warm result is identical whether the engine was set to Legacy or
+//       Unified. `build_scheduler` is read ONLY in cold `build()`
+//       (engine_build.rs:2420/3008); `eval_cached` / `edit_param` / `edit_source`
+//       / `build_snapshot` do NOT consult it, so warm is scheduler-agnostic.
+//   (c) `reserved_warm_auto_plus_const_let_theta` — an `#[ignore]`d θ-reserved row.
+//
+// θ RE-HOME NOTE: when θ (#4361) routes warm Resolution back-prop
+// (`let y = auto_x + N`) through the unified driver, it MUST re-home rows (b)/(c)
+// from "scheduler-agnostic regression guard" to "warm == cold" assertions — at
+// which point (b) stops being a pure agnosticism guard and (c) becomes a real warm
+// back-prop differential.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// (a) RED until step-18: `MULTI_REALIZATION_SRC` is not authored yet, so this
+/// fails to compile.
+#[test]
+fn multi_realization_export_equivalent() {
+    let case = CorpusCase {
+        name: "multi_realization_export",
+        source: MULTI_REALIZATION_SRC,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    };
+    let legacy = build_case(&case, BuildScheduler::LegacyMultiPass);
+    let unified = build_case(&case, BuildScheduler::UnifiedDag);
+
+    // value / constraint / diagnostic / geometry equivalence (empty allow-list).
+    assert_equivalent_or_allowed(&case, &legacy, &unified);
+    // explicit byte-equivalence of the exported bodies.
+    assert_eq!(
+        legacy.geometry_output, unified.geometry_output,
+        "multi-realization module: exported bodies MUST be byte-identical across schedulers \
+         (legacy_len={:?}, unified_len={:?})",
+        legacy.geometry_output.as_ref().map(|b| b.len()),
+        unified.geometry_output.as_ref().map(|b| b.len()),
+    );
+    // Stage-1 residue==∅ (acyclic).
+    let (engine, _) = build_case_keep_engine(&case, BuildScheduler::UnifiedDag);
+    let residue = residue_for(&engine);
+    assert!(
+        residue.is_empty(),
+        "multi-realization module: Stage-1 residue MUST be ∅ under UnifiedDag; got {} node(s): {residue:?}",
+        residue.len(),
+    );
+}
+
+/// (b) RED until step-18: `WARM_PREDICATE_SRC` + the `warm_eval_after_edit` /
+/// `project_eval_values` helpers are not authored yet, so this fails to compile.
+///
+/// A REGRESSION GUARD, not an equivalence claim about the scheduler: it pins that
+/// the WARM `edit_param` re-evaluation of a determinacy-predicate `let` is
+/// byte-identical regardless of which `BuildScheduler` the engine carries — exactly
+/// because warm paths never read `build_scheduler`. θ (#4361) must preserve this
+/// (or re-home it to a "warm == cold" assertion) when it routes warm back-prop
+/// through the driver.
+#[test]
+fn warm_determinacy_predicate_let_is_scheduler_agnostic() {
+    // Construct the cell id twice (ValueCellId need not be Clone for this test).
+    let warm_legacy = warm_eval_after_edit(
+        WARM_PREDICATE_SRC,
+        BuildScheduler::LegacyMultiPass,
+        false,
+        ValueCellId::new("WarmPredicate", "k"),
+        Value::Real(5.0),
+    );
+    let warm_unified = warm_eval_after_edit(
+        WARM_PREDICATE_SRC,
+        BuildScheduler::UnifiedDag,
+        false,
+        ValueCellId::new("WarmPredicate", "k"),
+        Value::Real(5.0),
+    );
+
+    assert_eq!(
+        project_eval_values(&warm_legacy),
+        project_eval_values(&warm_unified),
+        "the WARM edit_param re-eval of a determinacy-predicate `let` MUST be scheduler-agnostic \
+         (build_scheduler is read only in cold build(); warm paths do not consult it) until θ \
+         #4361 routes warm Resolution back-prop through the driver",
+    );
+}
+
+/// (c) θ-reserved row: warm Resolution back-prop (`let y = auto_x + N`) is not yet
+/// routed through the unified driver, so there is no warm machinery to assert
+/// against. Intentional `#[ignore]`d placeholder — when θ (#4361) lands it re-homes
+/// the warm rows above from "scheduler-agnostic regression guard" to "warm == cold"
+/// assertions, and this row becomes a real warm-back-prop differential.
+#[test]
+#[ignore = "θ #4361 — warm Resolution back-prop (let y = auto_x + N) not yet routed through the driver; corpus row reserved"]
+fn reserved_warm_auto_plus_const_let_theta() {
+    // Intentionally empty: no θ-dependent machinery exists to assert against yet
+    // (see the #[ignore] reason). Reserved per PRD D7 + decomposition §8-ζ.
 }
