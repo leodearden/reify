@@ -271,3 +271,72 @@ fn correct_arity_emits_no_type_arg_arity() {
         arity_errors
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 7 — RED: bound diagnostics (step-8 makes these GREEN)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Bound-violation: `Coupling<NotMotion>` passes arity (1 arg, 1 param) but
+/// violates the `P: HasMotion` bound — must emit exactly one `TypeArgBound`
+/// diagnostic and NO `TypeArgArity`.
+///
+/// RED until step-8: no bound check on the member-annotation path.
+#[test]
+fn bound_violation_emits_type_arg_bound() {
+    let source = format!(
+        "{}\nstructure def Bad {{ param c : Coupling<NotMotion> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    // Must have NO arity error — arity is correct (1 arg, 1 param).
+    let arity_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+    assert!(
+        arity_errors.is_empty(),
+        "Coupling<NotMotion> (correct arity) must emit NO TypeArgArity; got: {:?}",
+        arity_errors
+    );
+
+    // Must have exactly one bound-violation diagnostic.
+    let bound_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgBound))
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "Coupling<NotMotion> (NotMotion does not satisfy HasMotion) must emit exactly one \
+         TypeArgBound diagnostic; got: {:?}",
+        bound_errors
+    );
+}
+
+/// Bound-satisfied: `Coupling<Prismatic>` conforms to `P: HasMotion` — must
+/// emit NO `TypeArgBound` diagnostic.
+///
+/// Must stay GREEN through step-8.
+#[test]
+fn bound_satisfied_emits_no_type_arg_bound() {
+    let source = format!(
+        "{}\nstructure def Ok2 {{ param c : Coupling<Prismatic> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    let bound_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgBound))
+        .collect();
+    assert!(
+        bound_errors.is_empty(),
+        "Coupling<Prismatic> (Prismatic satisfies HasMotion) must emit NO TypeArgBound; \
+         got: {:?}",
+        bound_errors
+    );
+}
