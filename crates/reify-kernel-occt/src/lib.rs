@@ -2389,6 +2389,28 @@ impl OcctKernel {
                     return Ok(handle);
                 }
             }
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                let d1 = extract_f64(d1)?;
+                let d2 = extract_f64(d2)?;
+                if !(d1.is_finite() && d1 > 0.0 && d2.is_finite() && d2 > 0.0) {
+                    return Err(GeometryError::OperationFailed(
+                        "asymmetric chamfer distances must be finite positive values".into(),
+                    ));
+                }
+                // Asymmetric chamfer always routes to the per-edge primitive
+                // (empty `edges` = all-edges, enumerated inside the kernel
+                // wrapper). `chamfer_asymmetric_edges_with_history` stores the
+                // Solid result and returns its handle; the history is captured
+                // for the persistent-naming seam but not surfaced through execute().
+                let (handle, _history) =
+                    self.chamfer_asymmetric_edges_with_history(*target, d1, d2, edges)?;
+                return Ok(handle);
+            }
             GeometryOp::Translate { target, dx, dy, dz } => {
                 let shape = self.get_shape(*target)?;
                 if !dx.is_finite() || !dy.is_finite() || !dz.is_finite() {

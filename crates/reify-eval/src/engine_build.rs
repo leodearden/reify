@@ -1189,6 +1189,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1263,6 +1264,7 @@ fn substitute_op_parents(
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1420,6 +1422,10 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Modify
         GeometryOp::Fillet { .. } => Operation::ModifyFillet,
         GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
+        // Asymmetric chamfer reuses the ModifyChamfer capability — both execute
+        // via BRepFilletAPI_MakeChamfer on BRep (same kernel op + repr). See
+        // task β (#4185) design decision.
+        GeometryOp::ChamferAsymmetric { .. } => Operation::ModifyChamfer,
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,

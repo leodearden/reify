@@ -622,6 +622,21 @@ pub enum GeometryOp {
         edges: Vec<GeometryHandleId>,
         distance: Value,
     },
+    /// Chamfer edges with two distinct setbacks (asymmetric chamfer).
+    ///
+    /// `d1` is applied to the reference face of each selected edge and `d2` to
+    /// the other adjacent face (`BRepFilletAPI_MakeChamfer::Add(d1, d2, E, F)`).
+    /// `edges` is the curated selection (4-arg `chamfer_asymmetric(solid, edges,
+    /// d1, d2)`); an **empty** list is the all-edges back-compat path
+    /// (reachable only via direct IR — the .ri surface always carries an
+    /// explicit edge selection). Mirrors `Chamfer`'s edge contract but carries
+    /// distinct d1/d2 and a per-edge reference face at the kernel.
+    ChamferAsymmetric {
+        target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
+        d1: Value,
+        d2: Value,
+    },
     /// Translate by vector (dx, dy, dz in meters).
     Translate {
         target: GeometryHandleId,
@@ -924,6 +939,7 @@ impl GeometryOp {
             GeometryOp::Intersection { .. } => "Intersection",
             GeometryOp::Fillet { .. } => "Fillet",
             GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
             GeometryOp::Translate { .. } => "Translate",
             GeometryOp::Rotate { .. } => "Rotate",
             GeometryOp::Scale { .. } => "Scale",
