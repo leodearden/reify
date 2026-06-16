@@ -413,11 +413,12 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         let (id, label) = k;
         let mut matched = false;
         for (i, d) in allowed.iter().enumerate() {
-            if let Divergence::ConstraintFlips { constraint, .. } = d {
-                if id.contains(constraint) || label.as_deref().is_some_and(|l| l.contains(constraint)) {
-                    used[i] = true;
-                    matched = true;
-                }
+            if let Divergence::ConstraintFlips { constraint, .. } = d
+                && (id.contains(constraint)
+                    || label.as_deref().is_some_and(|l| l.contains(constraint)))
+            {
+                used[i] = true;
+                matched = true;
             }
         }
         if !matched {
@@ -453,11 +454,11 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
     {
         let mut matched = false;
         for (i, d) in allowed.iter().enumerate() {
-            if let Divergence::DiagnosticAdded { code: ac, .. } = d {
-                if Some(*ac) == *code {
-                    used[i] = true;
-                    matched = true;
-                }
+            if let Divergence::DiagnosticAdded { code: ac, .. } = d
+                && Some(*ac) == *code
+            {
+                used[i] = true;
+                matched = true;
             }
         }
         if !matched {
@@ -490,11 +491,11 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
             }
             let mut matched = false;
             for (i, d) in allowed.iter().enumerate() {
-                if let Divergence::ValueResolves { cell_substr, .. } = d {
-                    if c.contains(cell_substr) {
-                        used[i] = true;
-                        matched = true;
-                    }
+                if let Divergence::ValueResolves { cell_substr, .. } = d
+                    && c.contains(cell_substr)
+                {
+                    used[i] = true;
+                    matched = true;
                 }
             }
             if !matched {
