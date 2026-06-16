@@ -33,6 +33,7 @@ impl crate::Engine {
     ///     the `inventory::submit!` (register.rs:157).  This is the D5 mechanism.
     ///  4. `tessellate`, `ingest_mesh`, or `densify_grid_to_sampled` returns
     ///     `Err` (chain failure).
+    #[allow(dead_code)] // consumed by δ=4424, ε=4425, ζ=4426 (future tasks)
     pub(crate) fn realize_solid_sdf(
         &mut self,
         subject: reify_ir::value::GeometryHandleRef,
@@ -64,12 +65,45 @@ impl crate::Engine {
         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
         self.geometry_kernels.get(openvdb_name)?;
 
-        // ── step-4: tessellate → ingest → densify ─────────────────────────
-        // Guards above (resolution, source, openvdb) cover the step-1
-        // degradation contract. Step-4 replaces this placeholder with the
-        // real tessellate→ingest→densify recipe.
-        let _ = brep_id;
-        None
+        // ── 4. BRep→Mesh→Voxel→SampledField recipe (PRD §7.1 γ, §4 D1) ─────
+        // γ is the first production caller to reference ReprKind::Voxel as a
+        // *demanded* repr — anti-orphan production signal for the Voxel variant.
+        tracing::debug!(
+            target: "reify_eval::realize_solid_sdf",
+            demanded = ?reify_ir::ReprKind::Voxel,
+            ?brep_id,
+            "realize_solid_sdf: demanding Voxel realization of subject solid"
+        );
+
+        // Tessellate BRep→Mesh (immutable borrow of geometry_kernels → owned Mesh).
+        // The borrow on self.geometry_kernels is released once `mesh` is in hand.
+        let mesh = self
+            .geometry_kernels
+            .get(&source)?
+            // DEFAULT_TESSELLATION_TOLERANCE = 0.0001 (mirrors engine_build.rs:3773)
+            .tessellate(brep_id, 0.0001)
+            .ok()?;
+
+        // Ingest Mesh→Voxel: first production Voxel demand in reify-eval.
+        // Uses the live openvdb instance from geometry_kernels (NOT ad-hoc
+        // OpenVdbKernel::new() — that would recreate the C-17 orphan; mirrors
+        // realization_content.rs δ-arm:187-188).
+        let voxel = self
+            .geometry_kernels
+            .get_mut(openvdb_name)?
+            .ingest_mesh(&mesh)
+            .ok()?;
+
+        // Densify Voxel→SampledField (CPU-resident; medial.rs:602).
+        // The same openvdb instance holds the grid across ingest→densify
+        // (stateful kernel keyed by handle id, per realization_content.rs δ tests).
+        let field = self
+            .geometry_kernels
+            .get_mut(openvdb_name)?
+            .densify_grid_to_sampled(voxel.id)
+            .ok()?;
+
+        Some(field)
     }
 }
 
@@ -258,7 +292,7 @@ mod tests {
     #[cfg(has_openvdb)]
     #[test]
     fn realize_solid_sdf_realized_box_returns_sampleable_field() {
-        use reify_ir::{GeometryKernel, SampledGridKind};
+        use reify_ir::SampledGridKind;
         use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
 
         let mut engine = make_engine();
