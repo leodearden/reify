@@ -19517,6 +19517,84 @@ mod tests {
         );
     }
 
+    /// `mid_surface(body)` (task 4536) evaluates to `Value::Selector(Face)` with
+    /// a `SelectorNode::Leaf { query: LeafQuery::ByRole(Role::MidSurfaceFace) }`.
+    /// Mirrors the `faces(b)` All-leaf ctor, differing only in the leaf query —
+    /// the role-addressed `ByRole` leaf composes with 4119's union/intersect as a
+    /// first-class kind-typed leaf. Zero kernel queries at construction time
+    /// (K2/BT7): the `TopologyAttributeTable` filter is deferred to the
+    /// `ResolveSelector` coercion path. RED until step-10 adds the `MidSurface`
+    /// helper variant + build arm.
+    #[test]
+    fn mid_surface_ctor_yields_byrole_leaf_selector_of_face_kind() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let handle_b = GeometryHandleId(1);
+        let rr = RealizationNodeId::new("MidSurfaceCtorTest", 0);
+        let hash_b: [u8; 32] = [0xCD; 32];
+
+        let named_steps = HashMap::new(); // no kernel queries at construction
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new("MidSurfaceCtorTest", "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: hash_b,
+                kernel_handle: handle_b,
+            },
+        );
+
+        let expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            "MidSurfaceCtorTest",
+            "body",
+            Type::Geometry,
+            Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let mut kernel = MockGeometryKernel::new();
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_topology_selector(
+            &expr,
+            &named_steps,
+            &values,
+            &mut kernel,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "mid_surface(body): expected Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "mid_surface() → Face kind"
+        );
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf {
+                query: reify_ir::value::LeafQuery::ByRole(role),
+                ..
+            } => {
+                assert_eq!(
+                    *role,
+                    reify_ir::Role::MidSurfaceFace,
+                    "mid_surface(body) → ByRole(MidSurfaceFace) leaf"
+                );
+            }
+            other => panic!("expected Leaf{{ ByRole(MidSurfaceFace) }}, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     /// `edge(b, "rim")` evaluates to `Value::Selector(Edge)` with
     /// `LeafQuery::Named("rim")`. RED until step-10.
     #[test]
