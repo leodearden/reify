@@ -1165,7 +1165,7 @@ fn envelope_critical_load(args: &[Value]) -> Value {
 
     let mut min_lambda: Option<f64> = None;
 
-    for (_, case_val) in cases {
+    for case_val in cases.values() {
         let lambda = match extract_first_mode_eigenvalue(case_val) {
             Some(v) if v.is_finite() => v,
             _ => continue,
