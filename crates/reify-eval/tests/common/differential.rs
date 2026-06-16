@@ -146,6 +146,91 @@ pub struct ProjectedBuildResult {
     pub resolved_params: Vec<(String, String)>,
 }
 
+/// Project a [`BuildResult`] onto its deterministic canonical
+/// [`ProjectedBuildResult`] over the scheduler-overlap comparison surface.
+///
+/// Determinism is the whole point — every field that rides a `HashMap`/persistent
+/// map is rendered to a sorted `Vec` so iteration order can never leak into the
+/// comparison:
+/// - `values` / `resolved_params`: sorted by `ValueCellId` (Display `Entity.member`),
+///   each value rendered with a stable `{:?}`;
+/// - `constraint_results`: sorted by constraint-id Display then label, as
+///   `(id, label, satisfaction)`;
+/// - `diagnostics`: kept in EMISSION order (the δ driver pins one total order for
+///   its diagnostic vector — see `engine_fixpoint::run_unified_pass` docs — so the
+///   order itself is part of the contract and must NOT be re-sorted);
+/// - `geometry_output`: the raw bytes verbatim.
+///
+/// Structural equality of two projections IS the equivalence relation the ζ gate
+/// asserts.
+pub fn project_build_result(result: &BuildResult) -> ProjectedBuildResult {
+    // `values` — sorted by `ValueCellId`, each as `(Entity.member, Debug(value))`.
+    let mut values: Vec<(String, String)> = result
+        .values
+        .iter()
+        .map(|(id, v)| (id.to_string(), format!("{v:?}")))
+        .collect();
+    values.sort();
+
+    // `constraint_results` — sorted by constraint-id Display, then label, as
+    // `(id, label, satisfaction)`. `sort_by` (not `sort`) so we need no `Ord` on
+    // `Satisfaction`; the (id, label) key is the deterministic discriminator.
+    let mut constraint_results: Vec<(String, Option<String>, Satisfaction)> = result
+        .constraint_results
+        .iter()
+        .map(|e| (e.id.to_string(), e.label.clone(), e.satisfaction))
+        .collect();
+    constraint_results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    // `diagnostics` — EMISSION order (NOT sorted): the unified driver guarantees a
+    // single total order for its diagnostic vector, and the δ cycle-contract test
+    // already asserts that order is byte-preserving vs legacy on acyclic modules.
+    let diagnostics: Vec<(Option<DiagnosticCode>, String, Severity)> = result
+        .diagnostics
+        .iter()
+        .map(|d| (d.code, d.message.clone(), d.severity))
+        .collect();
+
+    let geometry_output = result.geometry_output.clone();
+
+    // `resolved_params` — sorted by cell, as `(Entity.member, Debug(value))`.
+    let mut resolved_params: Vec<(String, String)> = result
+        .resolved_params
+        .iter()
+        .map(|(id, v)| (id.to_string(), format!("{v:?}")))
+        .collect();
+    resolved_params.sort();
+
+    ProjectedBuildResult {
+        values,
+        constraint_results,
+        diagnostics,
+        geometry_output,
+        resolved_params,
+    }
+}
+
+/// Assert UnifiedDag is equivalent to LegacyMultiPass for `case`, admitting ONLY
+/// the per-case reasoned divergences in `case.allowed`.
+///
+/// step-2 implements the EMPTY-allow-list path: plain projection equality with a
+/// rich panic diff. step-4 extends this with the structured per-[`Divergence`]
+/// matcher that admits a reasoned non-empty allow-list while rejecting unused
+/// allow entries and unreasoned diff items (a real ε defect → escalate
+/// `design_concern`, never blanket-allow).
+pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, unified: &BuildResult) {
+    let projected_legacy = project_build_result(legacy);
+    let projected_unified = project_build_result(unified);
+
+    assert_eq!(
+        projected_unified, projected_legacy,
+        "case `{}`: UnifiedDag projection diverged from LegacyMultiPass with no \
+         reasoned allow-list to admit it.\n  legacy  = {projected_legacy:#?}\n  \
+         unified = {projected_unified:#?}",
+        case.name,
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEED corpus — plainly-equivalent programs (empty allow-lists). Expanded with
 // the `tests/golden` idioms + language-breadth entries at step-10.
