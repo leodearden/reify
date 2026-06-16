@@ -33,3 +33,54 @@ occt = { max-threads = 24 }
 [[profile.default.overrides]]
 filter = 'package(reify-kernel-occt) | package(reify-eval) | package(reify-cli) | package(reify-config)'
 test-group = 'occt'
+
+# LPT (Longest-Processing-Time-first) scheduling for the 5 heaviest test binaries.
+# These dominate the branch-scope --include-infra makespan: a >180s straggler in
+# tensegrity_t0a plus four other heavy-compute binaries collectively push the
+# tail past the 1800s orchestrator wall (esc-4536-63, task #4627).
+#
+# nextest schedules higher-priority tests first (signed-8-bit range -100..100,
+# default 0).  Starting the heaviest binary at t=0 lets it overlap the rest of
+# the suite rather than dangling off the tail.
+#
+# tensegrity_t0a: top tier (priority = 100) — the >180s straggler that defines
+#   the critical path; must start FIRST, before everything else.
+# fea_diagnostics_e2e, representation_within_assertion (reify-eval),
+# analytical_validation, determinism (reify-solver-elastic): secondary tier
+#   (priority = 50) — still schedule early but yield the first slot to the
+#   straggler.
+#
+# Drift guard: tests/infra/test_nextest_slow_priority.sh asserts that each
+# filter resolves to a real crates/<pkg>/tests/<bin>.rs on disk so a typo or
+# file rename becomes a CI failure rather than a silent no-op.
+#
+# Coexistence: these priority overrides compose with the occt test-group cap
+# above — reify-eval binaries are in both; priority controls ORDER (straggler
+# grabs an occt slot first), the group cap controls CONCURRENCY.
+# reify-solver-elastic is NOT in the occt group; its overrides are a pure win.
+#
+# gen-nextest-config.sh full-copy + anchored-sed preserves these blocks verbatim
+# (the sed only rewrites the occt max-threads literal line).
+
+# Initial uniform tier — all 5 heavy binaries schedule early (before default=0).
+# tensegrity_t0a will be raised to priority = 100 (top tier) in a follow-up to
+# enforce strict LPT ordering (longest job first); uniform = 50 here is step-2.
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(tensegrity_t0a)'
+priority = 50
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(fea_diagnostics_e2e)'
+priority = 50
+
+[[profile.default.overrides]]
+filter = 'package(reify-eval) & binary(representation_within_assertion)'
+priority = 50
+
+[[profile.default.overrides]]
+filter = 'package(reify-solver-elastic) & binary(analytical_validation)'
+priority = 50
+
+[[profile.default.overrides]]
+filter = 'package(reify-solver-elastic) & binary(determinism)'
+priority = 50

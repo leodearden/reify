@@ -39,34 +39,14 @@ GEN_CFG="$REPO_ROOT/scripts/gen-nextest-config.sh"
 echo "=== Nextest slow-priority LPT ordering tests (task 4627) ==="
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helper: extract `priority = N` integer from a [[profile.default.overrides]]
+# block whose filter contains both package(<pkg>) and binary(<bin>).
+# Reads from FILE argument; prints the integer or empty string.
+# Usage: _priority_for_file <file> <pkg> <binary>
 # ---------------------------------------------------------------------------
-
-# Extract the `priority = N` value from a [[profile.default.overrides]] block
-# whose filter contains the given package+binary pattern.
-# Prints the integer value, or empty string if not found.
-# Usage: _priority_for <pkg> <binary>
-_priority_for() {
-    local pkg="$1" bin="$2"
-    # We search for a block whose filter line contains both package(pkg) and
-    # binary(bin).  TOML blocks are separated by blank lines or new [[...]]
-    # headers.  We use awk to find a matching filter, then look forward for
-    # `priority = N` in the same block (before the next [[...]] or EOF).
-    awk -v pkg="package(${pkg})" -v bin="binary(${bin})" '
-        /^\[\[/ { in_block = 0 }
-        /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
-        in_block && /^priority[[:space:]]*=/ {
-            match($0, /[0-9]+/)
-            print substr($0, RSTART, RLENGTH)
-            in_block = 0
-        }
-    ' "$NEXTEST_TOML"
-}
-
-# Same as above but on an arbitrary file path (used for gen-config preservation).
 _priority_for_file() {
-    local file="$1" pkg="$2" bin="$3"
-    awk -v pkg="package(${pkg})" -v bin="binary(${bin})" '
+    local file="$1" pkg="package(${2})" bin="binary(${3})"
+    awk -v pkg="$pkg" -v bin="$bin" '
         /^\[\[/ { in_block = 0 }
         /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
         in_block && /^priority[[:space:]]*=/ {
@@ -77,31 +57,41 @@ _priority_for_file() {
     ' "$file"
 }
 
+# Convenience wrapper for the canonical nextest.toml.
+_priority_for() {
+    _priority_for_file "$NEXTEST_TOML" "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# Precompute priority values from nextest.toml (in current shell, not subshell).
+# This makes assertions simple test -n / test -gt checks on already-resolved values.
+# ---------------------------------------------------------------------------
+P_T0A="$(_priority_for reify-eval tensegrity_t0a)"
+P_FEA="$(_priority_for reify-eval fea_diagnostics_e2e)"
+P_REPR="$(_priority_for reify-eval representation_within_assertion)"
+P_ANAL="$(_priority_for reify-solver-elastic analytical_validation)"
+P_DET="$(_priority_for reify-solver-elastic determinism)"
+
 # ---------------------------------------------------------------------------
 # Assertion A: priority override present for each of the 5 slow binaries
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion A: priority override present for each slow binary ---"
 
-# reify-eval :: tensegrity_t0a
 assert "nextest.toml: priority override exists for package(reify-eval) & binary(tensegrity_t0a)" \
-    bash -c "[ -n \"\$(_priority_for reify-eval tensegrity_t0a)\" ]"
+    test -n "$P_T0A"
 
-# reify-eval :: fea_diagnostics_e2e
 assert "nextest.toml: priority override exists for package(reify-eval) & binary(fea_diagnostics_e2e)" \
-    bash -c "[ -n \"\$(_priority_for reify-eval fea_diagnostics_e2e)\" ]"
+    test -n "$P_FEA"
 
-# reify-eval :: representation_within_assertion
 assert "nextest.toml: priority override exists for package(reify-eval) & binary(representation_within_assertion)" \
-    bash -c "[ -n \"\$(_priority_for reify-eval representation_within_assertion)\" ]"
+    test -n "$P_REPR"
 
-# reify-solver-elastic :: analytical_validation
 assert "nextest.toml: priority override exists for package(reify-solver-elastic) & binary(analytical_validation)" \
-    bash -c "[ -n \"\$(_priority_for reify-solver-elastic analytical_validation)\" ]"
+    test -n "$P_ANAL"
 
-# reify-solver-elastic :: determinism
 assert "nextest.toml: priority override exists for package(reify-solver-elastic) & binary(determinism)" \
-    bash -c "[ -n \"\$(_priority_for reify-solver-elastic determinism)\" ]"
+    test -n "$P_DET"
 
 # ---------------------------------------------------------------------------
 # Assertion B: occt test-group block still present (coexistence)
@@ -117,36 +107,44 @@ assert "nextest.toml: [[profile.default.overrides]] occt test-group filter still
 
 # ---------------------------------------------------------------------------
 # Assertion C: gen-nextest-config.sh preserves all priority overrides and occt group
+# (compile-free — gen-nextest-config.sh only runs sed, never cargo)
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion C: gen-nextest-config.sh preserves priority overrides and occt group ---"
 
-# Generate the temp config (compile-free — gen-nextest-config.sh only does sed).
+# Generate the temp config (compile-free).
 _TMP_CFG="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
 
+# Precompute values from the generated config in the current shell.
+_C_T0A="$(_priority_for_file "$_TMP_CFG" reify-eval tensegrity_t0a)"
+_C_FEA="$(_priority_for_file "$_TMP_CFG" reify-eval fea_diagnostics_e2e)"
+_C_REPR="$(_priority_for_file "$_TMP_CFG" reify-eval representation_within_assertion)"
+_C_ANAL="$(_priority_for_file "$_TMP_CFG" reify-solver-elastic analytical_validation)"
+_C_DET="$(_priority_for_file "$_TMP_CFG" reify-solver-elastic determinism)"
+
 assert "gen-nextest-config.sh: occt test-group still present in generated config" \
-    bash -c "grep -qF 'occt = { max-threads = ' '$_TMP_CFG'"
+    grep -qF 'occt = { max-threads = ' "$_TMP_CFG"
 
 assert "gen-nextest-config.sh: tensegrity_t0a priority override preserved in generated config" \
-    bash -c "[ -n \"\$(_priority_for_file '$_TMP_CFG' reify-eval tensegrity_t0a)\" ]"
+    test -n "$_C_T0A"
 
 assert "gen-nextest-config.sh: fea_diagnostics_e2e priority override preserved in generated config" \
-    bash -c "[ -n \"\$(_priority_for_file '$_TMP_CFG' reify-eval fea_diagnostics_e2e)\" ]"
+    test -n "$_C_FEA"
 
 assert "gen-nextest-config.sh: representation_within_assertion priority override preserved in generated config" \
-    bash -c "[ -n \"\$(_priority_for_file '$_TMP_CFG' reify-eval representation_within_assertion)\" ]"
+    test -n "$_C_REPR"
 
 assert "gen-nextest-config.sh: analytical_validation priority override preserved in generated config" \
-    bash -c "[ -n \"\$(_priority_for_file '$_TMP_CFG' reify-solver-elastic analytical_validation)\" ]"
+    test -n "$_C_ANAL"
 
 assert "gen-nextest-config.sh: determinism priority override preserved in generated config" \
-    bash -c "[ -n \"\$(_priority_for_file '$_TMP_CFG' reify-solver-elastic determinism)\" ]"
+    test -n "$_C_DET"
 
 rm -f "$_TMP_CFG"
 
 # ---------------------------------------------------------------------------
-# Assertion D: drift-guard — each filter maps to a real test file on disk
-# (step-3 adds this; stub out here as a forward-declared section)
+# Assertion D: drift-guard — each filter package+binary maps to a real test file
+# (typo'd/renamed filters would be silent no-ops in nextest; fail here instead)
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion D: drift-guard — filter package+binary names map to real test files ---"
@@ -168,27 +166,21 @@ assert "crates/reify-solver-elastic/tests/determinism.rs exists on disk (filter 
 
 # ---------------------------------------------------------------------------
 # Assertion E: LPT ordering — tensegrity_t0a priority strictly greater than others
-# (step-3 adds this; RED until step-4 differentiates priorities)
+# (enforces longest-first scheduling; straggler must start at t=0)
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Assertion E: LPT ordering — tensegrity_t0a priority > other four binaries ---"
 
-_P_STRAGGLER="$(_priority_for reify-eval tensegrity_t0a)"
-_P_FEA="$(_priority_for reify-eval fea_diagnostics_e2e)"
-_P_REPR="$(_priority_for reify-eval representation_within_assertion)"
-_P_ANALYTICAL="$(_priority_for reify-solver-elastic analytical_validation)"
-_P_DETERMINISM="$(_priority_for reify-solver-elastic determinism)"
+assert "tensegrity_t0a priority (${P_T0A:-unset}) > fea_diagnostics_e2e priority (${P_FEA:-unset})" \
+    bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_FEA:-}' ] && [ '${P_T0A:-0}' -gt '${P_FEA:-0}' ]"
 
-assert "tensegrity_t0a priority (${_P_STRAGGLER:-unset}) > fea_diagnostics_e2e priority (${_P_FEA:-unset})" \
-    bash -c "[ -n '${_P_STRAGGLER}' ] && [ -n '${_P_FEA}' ] && [ '${_P_STRAGGLER}' -gt '${_P_FEA}' ]"
+assert "tensegrity_t0a priority (${P_T0A:-unset}) > representation_within_assertion priority (${P_REPR:-unset})" \
+    bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_REPR:-}' ] && [ '${P_T0A:-0}' -gt '${P_REPR:-0}' ]"
 
-assert "tensegrity_t0a priority (${_P_STRAGGLER:-unset}) > representation_within_assertion priority (${_P_REPR:-unset})" \
-    bash -c "[ -n '${_P_STRAGGLER}' ] && [ -n '${_P_REPR}' ] && [ '${_P_STRAGGLER}' -gt '${_P_REPR}' ]"
+assert "tensegrity_t0a priority (${P_T0A:-unset}) > analytical_validation priority (${P_ANAL:-unset})" \
+    bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_ANAL:-}' ] && [ '${P_T0A:-0}' -gt '${P_ANAL:-0}' ]"
 
-assert "tensegrity_t0a priority (${_P_STRAGGLER:-unset}) > analytical_validation priority (${_P_ANALYTICAL:-unset})" \
-    bash -c "[ -n '${_P_STRAGGLER}' ] && [ -n '${_P_ANALYTICAL}' ] && [ '${_P_STRAGGLER}' -gt '${_P_ANALYTICAL}' ]"
-
-assert "tensegrity_t0a priority (${_P_STRAGGLER:-unset}) > determinism priority (${_P_DETERMINISM:-unset})" \
-    bash -c "[ -n '${_P_STRAGGLER}' ] && [ -n '${_P_DETERMINISM}' ] && [ '${_P_STRAGGLER}' -gt '${_P_DETERMINISM}' ]"
+assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DET:-unset})" \
+    bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_DET:-}' ] && [ '${P_T0A:-0}' -gt '${P_DET:-0}' ]"
 
 test_summary
