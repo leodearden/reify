@@ -148,7 +148,11 @@ fn corpus_has_zero_bare_scalar() {
     collect_files(&root.join("crates"), "ri", &mut files);
     collect_files(&root.join("crates"), "rs", &mut files);
 
-    // E. gui/src-tauri/**/*.rs — GUI inline DSL test sources (δ-completion)
+    // E. gui/src-tauri/**/*.rs — all GUI src-tauri Rust sources (production + inline-DSL
+    //    tests). The recursive walk intentionally covers production files (engine.rs,
+    //    types.rs, …) as well as the inline-DSL test fixtures; the wider coverage is
+    //    beneficial — any bare `Scalar` reaching type resolution from GUI code is caught
+    //    here too. (δ-completion: δ's guard never scanned this tree.)
     collect_files(&root.join("gui").join("src-tauri"), "rs", &mut files);
 
     // F. GUI fixture .ri files
