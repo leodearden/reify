@@ -3064,6 +3064,94 @@ pub(crate) fn compile_expr_guarded(
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
             }
 
+            // ── Type::TypeParam member access (task 4596) ───────────────────────
+            //
+            // `<param>.<member>` where the receiver is a still-unresolved
+            // `Type::TypeParam(param_name)` (the un-monomorphized L2 path).
+            //
+            // α's monomorphization rewrite handles the post-resolve StructureRef
+            // path via the branch above; this branch handles the pre-resolve path
+            // inside the auto-type-param search loop.
+            //
+            // NODE SHAPE (critical — deviates from a naïve index_access):
+            // `eval_index_access` (reify-expr/src/lib.rs) only projects a field
+            // when the object evaluates to `Value::StructureInstance`.  Inside the
+            // search loop the `seal` cell has no StructureInstance (still TypeParam)
+            // and β seeds the FLAT key `ValueCellId::new(param_member, field)` —
+            // NOT a StructureInstance at `ValueCellId(entity, param)`.
+            // So `index_access(value_ref(seal), "thickness")` would evaluate to
+            // `Undef` and the constraint would stay `Indeterminate`, failing to
+            // unblock ζ.  The correct node is a FLAT
+            // `value_ref(ValueCellId::new(receiver_member, member), trait_member_type)`
+            // which `eval_expr ValueRef` resolves via direct `get_or_undef`, matching
+            // β's per-candidate seed key exactly
+            // (param_member == receiver's ValueCellId.member, per `param_type_member`
+            // in auto_type_param.rs).
+            //
+            // SOUNDNESS CONTRACT: this branch NEVER returns a node whose
+            // `result_type` is `Type::TypeParam(_)` and NEVER synthesizes a
+            // permissive placeholder type.  When no bound trait declares `member`,
+            // the impl-step-4 negative path below emits `TypeParamMemberNotInBound`
+            // and returns a poison literal.
+            if !compiled_obj.result_type.is_error()
+                && let Type::TypeParam(param_name) = &compiled_obj.result_type
+            {
+                // Resolve the receiver's param-member name from the compiled_obj.
+                // The receiver must be a ValueRef (e.g. `ValueCellId(entity,"seal")`);
+                // its `.member` is the flat-key entity component β seeds under.
+                if let CompiledExprKind::ValueRef(ref receiver_id) = compiled_obj.kind {
+                    let receiver_member = receiver_id.member.clone();
+                    let bound_traits = scope
+                        .type_param_bounds
+                        .get(param_name.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // Walk bound traits to find the first one declaring `member`.
+                    let found_type: Option<Type> = bound_traits.iter().find_map(|trait_name| {
+                        scope
+                            .trait_member_types
+                            .get(trait_name.as_str())
+                            .and_then(|members| members.get(member.as_str()))
+                            .cloned()
+                    });
+
+                    if let Some(member_type) = found_type {
+                        // Positive path: emit the flat ValueRef that β's per-candidate
+                        // ValueMap can resolve.
+                        return CompiledExpr::value_ref(
+                            ValueCellId::new(receiver_member, member.clone()),
+                            member_type,
+                        );
+                    } else {
+                        // Negative path (step-4): no bound trait declares `member`.
+                        // Emit a targeted diagnostic and return a poison literal.
+                        // Anti-cascade: one Error + one poison (never a TypeParam
+                        // result_type, never a permissive placeholder).
+                        let bound_names = if bound_traits.is_empty() {
+                            format!("(no bounds on type parameter '{param_name}')")
+                        } else {
+                            bound_traits.join(", ")
+                        };
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "type parameter '{param_name}' (bound: {bound_names}) \
+                                 has no member '{member}': the bound trait does not declare '{member}'"
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                format!("'{member}' not declared by bound trait"),
+                            ))
+                            .with_code(DiagnosticCode::TypeParamMemberNotInBound),
+                        );
+                    }
+                }
+                // If the receiver is not a ValueRef (e.g. a nested expr), fall
+                // through to the generic poison below — we cannot construct the
+                // flat key without the receiver's member name.
+            }
+
             // ── Datum-projection member access (geometric-relations β) ─────────
             //
             // `<datum>.<member>` where the receiver is a datum type

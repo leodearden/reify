@@ -2459,6 +2459,7 @@ pub enum DiagnosticCode {
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FeaThinBody,
 
+
     /// Origin: `crates/reify-compiler/src/compile_builder/entities_phase.rs`
     /// (ambient-default collection pre-pass — ambient-default-material task B).
     ///
@@ -2507,6 +2508,42 @@ pub enum DiagnosticCode {
     /// precedent; `DiagnosticCode` is `#[non_exhaustive]` so adding one variant is
     /// non-breaking for downstream consumers.
     OpContractViolation,
+
+    /// Origin: `crates/reify-compiler/src/expr.rs` — `MemberAccess` handler,
+    /// `Type::TypeParam` branch (task 4596).
+    ///
+    /// Canonical message forms (see `expr.rs`, `MemberAccess` handler):
+    ///
+    /// - When the type parameter has bound trait(s):
+    ///   `"type parameter '<param>' (bound: <trait1>, <trait2>) has no member \
+    ///    '<member>': the bound trait does not declare '<member>'"`
+    /// - When the type parameter has NO bounds:
+    ///   `"type parameter '<param>' (bound: (no bounds on type parameter \
+    ///    '<param>')) has no member '<member>': the bound trait does not \
+    ///    declare '<member>'"`
+    ///
+    /// Emitted as `Severity::Error` (anti-cascade: one diagnostic + poison
+    /// literal via `make_poison_literal`) when a member-access expression
+    /// `<param>.<member>` is compiled against an unresolved `Type::TypeParam`
+    /// receiver and no bound trait on that type parameter declares `<member>`
+    /// as a `RequirementKind::Param` or `RequirementKind::Let` member.
+    ///
+    /// Sub-cases that all produce this code:
+    ///   1. The type parameter has NO bounds (`T` with no `: Trait`).
+    ///   2. A bound trait name is absent from the scope's `trait_member_types`
+    ///      (should not happen in a well-formed compilation unit, but handled
+    ///      defensively).
+    ///   3. The bound trait(s) exist but none declares `<member>`.
+    ///
+    /// Soundness contract: the branch NEVER returns a node whose `result_type`
+    /// is `Type::TypeParam` and NEVER synthesizes a permissive placeholder type
+    /// (e.g. `Type::dimensionless_scalar()`), so no unsound substitution can
+    /// propagate through a trait-contract violation.
+    ///
+    /// The PRD-prose mnemonic for this code is
+    /// `E_TYPE_PARAM_MEMBER_NOT_IN_BOUND` (see
+    /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §4596).
+    TypeParamMemberNotInBound,
 }
 
 /// A diagnostic message with location and optional labels.

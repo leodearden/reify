@@ -32,17 +32,6 @@
             }
         },
         {
-            "capability": "4437 typeparam member access not yet supported",
-            "probe_kind": "check",
-            "fixture": "tests/prd-gate/fixtures/typeparam_member_access.ri",
-            "expected": {
-                "observation": "absent",
-                "match": {
-                    "stderr_contains": "member access not yet supported"
-                }
-            }
-        },
-        {
             "capability": "4497 purpose nested-structure grammar production",
             "probe_kind": "grammar",
             "fixture": "tests/prd-gate/fixtures/purpose_nested_structure.ri",

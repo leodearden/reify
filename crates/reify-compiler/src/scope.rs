@@ -28,6 +28,31 @@ pub(crate) struct CompilationScope<'u> {
     /// Trait member index for qualified access validation: trait_name → set of member names.
     /// Populated from trait_registry in compile_entity.
     pub(crate) trait_members: HashMap<String, HashSet<String>>,
+    /// Type-param → bound trait names for the entity being compiled.
+    ///
+    /// Populated in `compile_entity` from `structure.type_params`
+    /// (`TypeParamDecl { name, bounds }`). Empty for entities that declare
+    /// no type parameters.
+    ///
+    /// Used by the `Type::TypeParam` member-access branch in `expr.rs`
+    /// (task 4596) to look up the bound trait(s) for a type-param receiver
+    /// so the accessed member's static type can be resolved from the trait
+    /// contract (not the candidate — the candidate is unknown at L2).
+    pub(crate) type_param_bounds: HashMap<String, Vec<String>>,
+    /// Trait → member name → declared type, for all traits in scope.
+    ///
+    /// Populated in `compile_entity` from the `trait_registry`, alongside the
+    /// existing `trait_members` name-set. Carries only `RequirementKind::Param`
+    /// and `RequirementKind::Let` entries (the value-bearing requirements);
+    /// `Sub`, `Fn`, and `AssocType` requirements are excluded because they do
+    /// not produce a scalar/dimensional value that constraint expressions can
+    /// reference.
+    ///
+    /// Used by the `Type::TypeParam` member-access branch in `expr.rs`
+    /// (task 4596) to resolve the member type from the bound trait's contract
+    /// (the only statically-available type source when the receiver is still
+    /// an un-resolved TypeParam).
+    pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
     /// Sub-component type map: sub_name → structure_name.
     /// Used to resolve instance qualified access (sub.(Trait::member)).
     pub(crate) sub_component_types: HashMap<String, String>,
@@ -141,6 +166,8 @@ impl<'u> CompilationScope<'u> {
             port_names: HashSet::new(),
             collection_sub_names: HashSet::new(),
             trait_members: HashMap::new(),
+            type_param_bounds: HashMap::new(),
+            trait_member_types: HashMap::new(),
             sub_component_types: HashMap::new(),
             sub_structure_traits: HashMap::new(),
             meta_entries: HashMap::new(),
