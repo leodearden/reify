@@ -1003,6 +1003,14 @@ pub(crate) fn compile_expr_guarded(
                     // Placed AFTER the collection-sub check (collection subs already
                     // early-returned above) and BEFORE builtins (subs shadow builtins, consistent
                     // with the collection-sub precedence established above).
+                    // The `&& !scope.collection_sub_names.contains(...)` conjunct here is
+                    // redundant-by-construction: collection subs already early-returned at
+                    // the `if scope.collection_sub_names.contains(...)` check above, so
+                    // `name` can never be a collection sub at this point.  Contrast with
+                    // the identical conjunction in the MemberAccess arm (~L2417), where it
+                    // IS load-bearing because there is no preceding early-return for
+                    // collection subs in that arm.  Kept here to mirror the MemberAccess
+                    // guard and document the helper's precondition at every call site.
                     if scope.sub_component_types.contains_key(name.as_str())
                         && !scope.collection_sub_names.contains(name.as_str())
                     {

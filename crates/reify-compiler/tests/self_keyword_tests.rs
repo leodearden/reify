@@ -1511,3 +1511,59 @@ fn bare_undeclared_name_still_unresolved() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn local_param_shadows_same_named_sub() {
+    // When a param has the same name as a single-instance sub, bare name
+    // resolution must prefer the param (via scope.resolve, which checks
+    // scope.names) over the new sub fallback in the None branch.
+    //
+    // Pins the scope.resolve-before-fallback precedence order introduced by
+    // task-4615 step-2: the new fallback lives in the `None` branch, so it is
+    // only reachable when scope.resolve returns None (i.e. no param/let with
+    // that name exists).  This test ensures that ordering cannot silently
+    // regress — if the fallback were incorrectly moved above scope.resolve,
+    // `via_bare` would reference the sub's StructureRef cell instead of the
+    // param's Length cell.
+    let source = r#"structure Bolt {
+    param diameter : Length = 10mm
+}
+structure S {
+    sub bolt = Bolt()
+    param bolt : Length = 99mm
+    let via_bare = bolt
+}"#;
+    let compiled = parse_and_compile(source);
+    let s_template = compiled
+        .templates
+        .iter()
+        .find(|t| t.name == "S")
+        .expect("S template");
+    let via_bare_cell = s_template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "via_bare")
+        .expect("via_bare value cell");
+
+    // scope.resolve wins: bare `bolt` must reference the PARAM's cell.
+    let param_id = ValueCellId::new("S", "bolt");
+    // The sub fallback would produce this id — must NOT appear.
+    let sub_id = ValueCellId::new("S.bolt", "__self");
+
+    let bare_refs = via_bare_cell
+        .default_expr
+        .as_ref()
+        .expect("via_bare default_expr")
+        .collect_value_refs();
+
+    assert!(
+        bare_refs.contains(&param_id),
+        "bare `bolt` should resolve to param ValueCellId(\"S\",\"bolt\") via scope.resolve, got: {:?}",
+        bare_refs
+    );
+    assert!(
+        !bare_refs.contains(&sub_id),
+        "bare `bolt` must NOT resolve to sub ValueCellId(\"S.bolt\",\"__self\") — param shadows sub, got: {:?}",
+        bare_refs
+    );
+}
