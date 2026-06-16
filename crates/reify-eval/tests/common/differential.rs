@@ -843,6 +843,42 @@ structure SmallPart {
 }
 "#;
 
+/// The auto + geometry-backed-constraint boundary idiom (§6, step-12): an `auto`
+/// param drives a box dimension realized into geometry, and an inline
+/// `fits_build_volume(bounding_box(part), bounding_box(envelope))` constraint
+/// transitively reads that auto realization.
+///
+/// `param part : Solid = box(w, …)` reads the `auto` cell `AutoWidget.w`, and the
+/// constraint reads `part` through `bounding_box(part)`. So the constraint's
+/// transitive geometry-backed read closure
+/// (`Constraint.realization_reads ∋ AutoWidget#part-realization`, and that
+/// realization reads the auto cell `w`) reaches an auto value cell → under
+/// `UnifiedDag` the transitive-auto-read guard
+/// (`engine_fixpoint::unresolved_diagnostics`) DECLINES the constraint and emits
+/// one `E_EVAL_UNRESOLVED` naming it; `LegacyMultiPass` degrades to Indeterminate
+/// without that diagnostic.
+///
+/// SHAPE NOTE — `param part : Solid` (NOT `let part = box(…)`): the
+/// constraint→realization edge δ's guard walks is `geometry_cell`, populated by
+/// `EvaluationGraph::from_templates` ONLY for a value cell whose `cell_type ==
+/// Type::Geometry` (a `Solid` cell IS `Type::Geometry`) whose member name matches
+/// the realization's name. A `let part = box(…)` inferred-type binding leaves
+/// `geometry_cell == None`, so `collect_constraint_realization_reads` finds no
+/// backing realization and the guard would NOT fire. Same constraint as
+/// `unified_dag_auto_reaching_constraint_is_declined`
+/// (`tests/unified_dag_geometry_executors.rs`), but in the
+/// `fits_build_volume(bounding_box(part), bounding_box(envelope))` form §6 names.
+pub const AUTO_GEOMETRY_CONSTRAINT_SRC: &str = r#"
+import std.process
+
+structure AutoWidget {
+    param w        : Length = auto
+    param part     : Solid  = box(w, 50mm, 50mm)
+    param envelope : Solid  = box(200mm, 200mm, 200mm)
+    constraint fits_build_volume(bounding_box(part), bounding_box(envelope))
+}
+"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
