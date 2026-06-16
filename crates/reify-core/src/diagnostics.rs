@@ -4306,6 +4306,60 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::BareScalarType).unwrap();
         assert_eq!(s, "\"BareScalarType\"");
     }
+
+    // --- TypeArgArity / TypeArgBound tests (task 4603 γ — E_TYPE_ARG_ARITY / E_TYPE_ARG_BOUND) ---
+    // Pairs with `check_applied_type_arg_bounds` in
+    // `crates/reify-compiler/src/type_resolution.rs` (called from
+    // `phase_pending_bound_checks` in entities_phase.rs).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TypeArgArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-4 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("wrong number of type arguments").with_code(DiagnosticCode::TypeArgArity);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgArity));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// `DiagnosticCode::TypeArgBound` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-4 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_bound_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("type argument does not satisfy bound").with_code(DiagnosticCode::TypeArgBound);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgBound));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgArity` serializes as
+    /// `"TypeArgArity"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-4 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgArity).unwrap();
+        assert_eq!(s, "\"TypeArgArity\"");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgBound` serializes as
+    /// `"TypeArgBound"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-4 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_bound_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgBound).unwrap();
+        assert_eq!(s, "\"TypeArgBound\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
