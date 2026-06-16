@@ -1359,6 +1359,44 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
+    // Structure-with-args arm (task 4603 γ — un-drop fix).
+    //
+    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
+    // writing something like `Coupling<Prismatic>`. The simple-name fallthrough
+    // below (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
+    // and **silently drop** the type args — making `Coupling<Prismatic>` and
+    // `Coupling<Revolute>` identical. This arm intercepts that case first.
+    //
+    // Each arg is resolved recursively via `resolve_type_expr_with_aliases_kinded`
+    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use in
+    // `resolve_parameterized_builtin_type`). An arg that resolves to `None` becomes
+    // `Type::Error` (anti-cascade sentinel — the diagnostic was already pushed).
+    //
+    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
+    //            empty `type_args` falls through to `resolve_type_with_aliases`
+    //            and becomes `Type::StructureRef` (unchanged).
+    if structure_names.contains(name) && !type_args.is_empty() {
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_expr_with_aliases_kinded(
+                    arg_expr,
+                    type_param_names,
+                    dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error)
+            })
+            .collect();
+        return Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        });
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases,
     // structure names, trait names).
     if let Some(ty) = resolve_type_with_aliases(
