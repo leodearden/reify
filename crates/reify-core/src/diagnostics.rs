@@ -2544,6 +2544,29 @@ pub enum DiagnosticCode {
     /// `E_TYPE_PARAM_MEMBER_NOT_IN_BOUND` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §4596).
     TypeParamMemberNotInBound,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    ///
+    /// Emitted as a `Warning` when a user-declared `enum`, `structure`, `occurrence`,
+    /// or `trait` declaration uses a name that is also resolvable by the builtin type
+    /// resolver (`resolve_type_name`). The builtin type still wins in type-annotation
+    /// position; this warning exists to alert the author that the user declaration is
+    /// silently shadowed.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' shadows a builtin type name; the builtin takes precedence in type position"`
+    ///
+    /// One label accompanies the warning at the user declaration's span:
+    /// `"shadows a builtin type name"`.
+    ///
+    /// Builtin names covered: the datum types (`Direction`, `Axis`, `Plane`, `Frame`),
+    /// scalar primitives (`Bool`, `Int`, `Real`, `String`), the selector family
+    /// (`Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`), geometry/solid types
+    /// (`Geometry`, `Solid`, `DatumRef`), `Dimensionless`, and every named physical
+    /// dimension (`Length`, `Mass`, `Force`, `Energy`, `Area`, `Volume`, `Angle`, …).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_RESERVED_TYPE_NAME`.
+    ReservedTypeName,
 }
 
 /// A diagnostic message with location and optional labels.
@@ -4125,6 +4148,28 @@ mod tests {
     fn diagnostic_code_op_contract_violation_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::OpContractViolation).unwrap();
         assert_eq!(s, "\"OpContractViolation\"");
+    }
+
+    // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
+    // Pairs with the lint pass in
+    // `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip test is added here.
+
+    /// Task 4591 (step-1): `DiagnosticCode::ReservedTypeName` must exist, be
+    /// distinct from `DiagnosticCode::Shadowing`, and be attachable via
+    /// `Diagnostic::warning(..).with_code(..)` with the code reading back.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn reserved_type_name_code_exists_and_attaches() {
+        // Exist + distinct from a neighbouring Warning code.
+        assert_ne!(DiagnosticCode::ReservedTypeName, DiagnosticCode::Shadowing);
+
+        // Attachable via the builder; code reads back correctly.
+        let d = Diagnostic::warning("x").with_code(DiagnosticCode::ReservedTypeName);
+        assert_eq!(d.code, Some(DiagnosticCode::ReservedTypeName));
     }
 }
 
