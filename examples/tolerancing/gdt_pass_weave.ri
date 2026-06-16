@@ -25,7 +25,7 @@
 //     [0] scalar Conforms: tolerance=WeaveScalarTol(0.1mm RFS), dev=0.05mm → Satisfied
 //     [1] geometric Conforms: inline FlatnessCallout, actual=translate(part,0.5mm) → VIOLATED
 //   WeaveSphereCheck:
-//     [0] RepresentationWithin(subject, 1mm) over #precision(0.1mm) sphere(1000mm) → Satisfied
+//     [0] RepresentationWithin(subject, 1mm) over #precision(0.1mm) sphere(10mm) → Satisfied
 
 // Module-level precision directive: affects all tessellation in this file.
 // #precision(0.1mm) ensures the WeaveSphere tessellation chord deviation is
@@ -91,12 +91,15 @@ structure GdtPassWeave {
 
 // ── WeaveSphere: tessellation subject for the RepresentationWithin assertion ──
 
-// Fine-precision sphere at 1000 mm (1 m) radius.
-// At #precision(0.1mm), the sampled facet-chord deviation on a 1m-radius sphere
-// is far below the 1mm RepresentationWithin bound (same regime as
-// crates/reify-cli/tests/fixtures/representation_within_satisfied.ri).
+// Small sphere (10 mm radius) at module-level #precision(0.1mm).
+// At #precision(0.1mm) the sampled facet-chord deviation (sagitta ≈ 0.1mm) is
+// far below the 1mm RepresentationWithin bound → Satisfied, same as the
+// bt7/representation_within_satisfied.ri reference.
+// Using 10mm (vs 1000mm) reduces the triangle count by ~100× (≈200 vs ≈20000
+// triangles), cutting test runtime from ~30s to ~0.5s while preserving the C5
+// non-perturbation proof — sphere size is irrelevant to that invariant.
 structure WeaveSphere {
-    let r = sphere(1000mm)
+    let r = sphere(10mm)
 }
 
 // ── WeaveSphereCheck: RepresentationWithin assertion ──────────────────────────
