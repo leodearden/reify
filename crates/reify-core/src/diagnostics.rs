@@ -427,6 +427,24 @@ pub enum DiagnosticCode {
     /// secondary label naming the canonical dimensions when both are known
     /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
     DimensionMismatch,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    ///          (`resolve_type_expr_with_aliases_kinded`, bare-Scalar guard, task 4375 γ).
+    /// Canonical message form:
+    /// `"bare \`Scalar\` is not a valid type: write \`Scalar<Q>\` or a named dimension like \`Length\`"`.
+    ///
+    /// Emitted as `Severity::Error` when the resolver encounters the unparameterized
+    /// identifier `Scalar` (i.e. `type_args.is_empty()`) at a type-expression position.
+    /// The guard returns `Some(Type::Error)` (poison sentinel) so callers suppress their
+    /// generic `UnresolvedType` cascade — the user sees exactly one clean E_BARE_SCALAR
+    /// diagnostic rather than two cascaded errors.
+    ///
+    /// Note: `Scalar<Q>` with valid or invalid type args is **not** covered by this code —
+    /// `Scalar<Length>` is fine; `Scalar<NotADimension>` surfaces a precise dimension error
+    /// emitted by the parameterized-builtin path. The `type_args.is_empty()` guard enforces
+    /// the distinction.
+    ///
+    /// PRD mnemonic: `E_BARE_SCALAR`. See `docs/prds/v0_6/real-dimensionless-unification.md`.
+    BareScalarType,
     /// Origin: `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
     /// Emitted as a Warning when a child-scope binder (e.g. lambda parameter,
     /// quantifier-bound variable) uses the same name as a name visible from an
