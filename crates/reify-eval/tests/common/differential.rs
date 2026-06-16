@@ -20,8 +20,8 @@
 #![allow(dead_code)]
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, Severity};
-use reify_eval::{BuildResult, BuildScheduler, Engine};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
+use reify_eval::{BuildResult, BuildScheduler, Engine, EvalResult};
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, Satisfaction, Value};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib};
 
@@ -933,6 +933,32 @@ pub structure Assembly {
     let result = union(self.m.body, self.z.body)
 }"#;
 
+/// The multi-realization export idiom (§6, step-18): a single structure with ≥2
+/// box realizations folded through two `union` realizations to a terminal body.
+/// Five realizations (`a`, `b`, `c`, `ab`, `result`) exercise the unified schedule
+/// over a non-trivial realization DAG; both schedulers MUST export byte-identical
+/// geometry + equivalent values/constraints, with residue==∅.
+pub const MULTI_REALIZATION_SRC: &str = r#"pub structure MultiBody {
+    let a = box(10mm, 10mm, 10mm)
+    let b = box(20mm, 20mm, 20mm)
+    let c = box(30mm, 30mm, 30mm)
+    let ab = union(a, b)
+    let result = union(ab, c)
+}"#;
+
+/// The warm determinacy-predicate idiom (§6, step-18): a `Real` param `k` driving
+/// a numeric `let scaled` and a boolean determinacy-predicate `let within = k <=
+/// 3.0`. The warm-path test builds this then `edit_param`s `k` and asserts the
+/// re-evaluated values are identical regardless of the engine's `BuildScheduler`
+/// — `build_scheduler` is read ONLY in cold `build()`; `edit_param` never consults
+/// it. Mirrors the proven `Real`-param + `Value::Real` warm-edit shape from
+/// `tests/field_eval_tests.rs`.
+pub const WARM_PREDICATE_SRC: &str = r#"structure WarmPredicate {
+    param k    : Real = 2.0
+    let scaled = k * 10.0
+    let within = k <= 3.0
+}"#;
+
 /// A FRESH [`MockGeometryKernel`] seeded with valid bbox replies for the first
 /// four realized handles, so `fits_build_volume` is decidable EITHER way (⇒ a
 /// DEFINITE verdict, never undecidable — proving the unified fold, not mere
@@ -951,4 +977,54 @@ pub fn seeded_build_volume_kernel() -> Box<dyn GeometryKernel> {
         k = k.with_bbox_result(GeometryHandleId(i), bbox(if i == 1 { 0.20 } else { 0.05 }));
     }
     Box::new(k)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Warm-path helpers (§6, step-18). `build_scheduler` is consulted ONLY in cold
+// `build()` (engine_build.rs:2420/3008); `eval_cached` / `edit_param` /
+// `edit_source` / `build_snapshot` do NOT read it, so a warm re-evaluation is
+// scheduler-agnostic until θ (#4361) routes warm Resolution back-prop through the
+// driver. θ must re-home the warm corpus rows from "scheduler-agnostic regression
+// guard" to "warm == cold" assertions when it lands.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Cold-build `source` on a FRESH engine under `scheduler`, then drive the WARM
+/// `edit_param(cell, new_value)` path and return its [`EvalResult`]. The cold
+/// `build()` is the ONLY path that reads `build_scheduler`; the subsequent
+/// `edit_param` does not — so the returned warm result is expected to be identical
+/// across schedulers (the regression the warm corpus row guards).
+pub fn warm_eval_after_edit(
+    source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+    cell: ValueCellId,
+    new_value: Value,
+) -> EvalResult {
+    let compiled = if needs_stdlib {
+        compile_source_with_stdlib(source)
+    } else {
+        compile_source(source)
+    };
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    engine.set_build_scheduler(scheduler);
+    // Cold build — populates eval_state and is the sole build_scheduler reader.
+    engine.build(&compiled, ExportFormat::Step);
+    // WARM path — edit_param re-evaluates WITHOUT consulting build_scheduler.
+    engine
+        .edit_param(cell, new_value)
+        .expect("edit_param must succeed on the warm path")
+}
+
+/// Project an [`EvalResult`]'s `values` to the same deterministic, canonical,
+/// order-independent [`ProjectedValue`] vec `project_build_result` uses (sorted by
+/// cell id then content-hash). The warm corpus row compares two of these across
+/// schedulers; structural equality IS the scheduler-agnostic warm guarantee.
+pub fn project_eval_values(r: &EvalResult) -> Vec<ProjectedValue> {
+    let mut values: Vec<ProjectedValue> =
+        r.values.iter().map(|(id, v)| project_value(id, v)).collect();
+    values.sort_by(|a, b| a.cell.cmp(&b.cell).then_with(|| a.canonical.cmp(&b.canonical)));
+    values
 }
