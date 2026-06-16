@@ -274,6 +274,113 @@ impl std::fmt::Display for MedialError {
 
 impl std::error::Error for MedialError {}
 
+/// Measured minimum wall thickness with honest-floor semantics.
+///
+/// PRD §3b / task δ (4424). The min-wall measurement is the MIN of d⁺+d⁻ over
+/// all medial voxels — a conservative-lower-bound bias. `BelowResolution`
+/// self-describes when the raw min-wall is below the `2·h` floor (G6
+/// honest-floor: never silently promoted to `Measured`). The consumer ζ=4426
+/// maps `BelowResolution` and `NoMeasurement` to `Indeterminate` rather than
+/// using a sub-resolution number.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MinWallThickness {
+    /// Measured minimum wall thickness (same units as the SDF grid spacing).
+    /// Guaranteed ≥ `2·h` (the resolution floor); conservative-lower-bound
+    /// via the min-reduction over all medial voxels.
+    Measured(f64),
+    /// The raw measured min-wall (`raw`) is below the `2·h` resolution floor
+    /// (`floor = 2·h`).  The raw value is still carried so the caller can
+    /// decide how to report it; it must NOT be silently treated as a reliable
+    /// physical thickness.
+    BelowResolution {
+        /// Raw min-wall sum d⁺+d⁻ from the walk, < `floor`.
+        raw: f64,
+        /// Resolution floor = 2 × voxel spacing `h`.
+        floor: f64,
+    },
+    /// No medial voxels were found (empty mask) — the input SDF does not
+    /// represent detectable thin-solid geometry at the given resolution.
+    NoMeasurement,
+}
+
+/// Compute the minimum wall thickness of a thin solid from its narrow-band SDF.
+///
+/// Runs `compute_medial_mask(sdf, &MedialOptions::default())` to identify
+/// medial voxels, re-walks each via `bidirectional_distances`, and returns the
+/// MIN of `d⁺+d⁻` — the conservative-lower-bound min-wall scalar (bias-low:
+/// the min-reduction can only underestimate, never overestimate).
+///
+/// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
+/// the resolution floor used for the `BelowResolution` branch.  The eval
+/// binding (`Engine::measure_min_wall`, task δ) derives `h` from the realized
+/// grid's own spacing, decoupling this function from any external voxelisation
+/// default.
+///
+/// # Returns
+///
+/// - `Ok(Measured(t))` — `t ≥ 2·h`; conservative lower bound.
+/// - `Ok(BelowResolution { raw, floor })` — `raw < 2·h = floor`.
+/// - `Ok(NoMeasurement)` — no medial voxels found (empty mask).
+/// - `Err(MedialError)` — structurally invalid SDF (same conditions as
+///   `compute_medial_mask`).
+pub fn min_wall_thickness(
+    sdf: &SampledField,
+    h: f64,
+) -> Result<MinWallThickness, MedialError> {
+    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
+    if mask.voxels.is_empty() {
+        return Ok(MinWallThickness::NoMeasurement);
+    }
+
+    // Re-derive walk parameters exactly as compute_medial_mask does.
+    let options = MedialOptions::default();
+    let min_spacing = sdf.spacing[0].min(sdf.spacing[1]).min(sdf.spacing[2]);
+    let max_walk_dist = options.max_thickness_voxels * min_spacing;
+    let walk_step = 0.25 * min_spacing;
+    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    let mut min_sum = f64::INFINITY;
+
+    for &[vi, vj, vk] in &mask.voxels {
+        // Bounds-guard: medial mask indices must be within the grid.
+        let idx = [vi as usize, vj as usize, vk as usize];
+        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
+            continue;
+        }
+
+        // World coordinate and normalised gradient for this medial voxel.
+        let world = world_at_index(sdf, idx);
+        let grad_raw = gradient_at_index(sdf, idx);
+        let Some(g) = normalize3(grad_raw) else {
+            continue; // degenerate gradient — skip
+        };
+
+        // Bidirectional walk: d⁺ + d⁻ for this voxel.
+        let Some((d_plus, d_minus, _, _)) =
+            bidirectional_distances(sdf, world, g, max_steps, walk_step)
+        else {
+            continue; // walk failed (off-grid) — skip
+        };
+
+        let sum = d_plus + d_minus;
+        if sum.is_finite() {
+            min_sum = min_sum.min(sum);
+        }
+    }
+
+    if !min_sum.is_finite() {
+        return Ok(MinWallThickness::NoMeasurement);
+    }
+
+    // Honest-floor: BelowResolution branch added in step-4 (task δ).
+    // For now (step-2), all finite measurements are returned as Measured.
+    Ok(MinWallThickness::Measured(min_sum))
+}
+
 /// Compute the per-voxel medial mask for a Regular3D narrow-band SDF.
 ///
 /// # Algorithm overview
