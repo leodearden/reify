@@ -126,16 +126,36 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// The Option/Map recovery combinators whose `dflt` argument type must unify
+/// with the subject's element type (contract C-3,
+/// PRD docs/prds/v0_6/result-and-fallback.md).
+///
+/// `is_fallback_combinator` uses this slice as its single source of truth;
+/// the `DiagnosticCode::FallbackType` doc comment in `reify-core/src/diagnostics.rs`
+/// references this list rather than re-enumerating members, so adding or
+/// removing a combinator name requires only editing this constant.
+///
+/// `or_else`, `is_some`, and `is_none` are **not** in this set — they carry
+/// no default-vs-element contract.
+const FALLBACK_COMBINATORS: &[&str] = &["unwrap_or", "or_default", "fallback", "get_or"];
+
 /// Returns `true` for the Option/Map recovery combinators whose default
 /// argument type must unify with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
 ///
 /// These names emit `DiagnosticCode::FallbackType` (E_FALLBACK_TYPE) instead
 /// of `FnTypeArgConflict` when a type-arg conflict is detected in the generic
-/// call resolver.  or_else / is_some / is_none are excluded: they have no
-/// default-vs-element contract.
+/// call resolver.  `or_else` / `is_some` / `is_none` are excluded: they have
+/// no default-vs-element contract.
+///
+/// **Name-shadowing note:** the dispatch is on the raw call-site name string.
+/// A user-defined generic function that happens to share one of these names
+/// (e.g. `pub fn unwrap_or<T>(…)`) would also receive `E_FALLBACK_TYPE` on a
+/// type-arg conflict, even though it has no stdlib default-vs-element contract.
+/// This is accepted: these are stdlib-reserved prelude names (see language
+/// spec §8.12 reserved builtins), so shadowing is unlikely in practice.
 fn is_fallback_combinator(name: &str) -> bool {
-    matches!(name, "unwrap_or" | "or_default" | "fallback" | "get_or")
+    FALLBACK_COMBINATORS.contains(&name)
 }
 
 /// §7.2 syntactic-zero coercion for binary operator operands (task-4485/β).
@@ -1727,31 +1747,20 @@ pub(crate) fn compile_expr_guarded(
                             // inference sentinel, not a payload).
                             if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
                             {
-                                let (code, message) = if is_fallback_combinator(name) {
-                                    (
-                                        DiagnosticCode::FallbackType,
-                                        format!(
-                                            "E_FALLBACK_TYPE: conflicting type arguments for \
-                                             type parameter '{}' in call to '{}': {} vs {}",
-                                            conflict.param,
-                                            name,
-                                            conflict.existing,
-                                            conflict.incoming
-                                        ),
-                                    )
+                                let (code, prefix) = if is_fallback_combinator(name) {
+                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
                                 } else {
-                                    (
-                                        DiagnosticCode::FnTypeArgConflict,
-                                        format!(
-                                            "conflicting type arguments for type parameter '{}' \
-                                             in call to '{}': {} vs {}",
-                                            conflict.param,
-                                            name,
-                                            conflict.existing,
-                                            conflict.incoming
-                                        ),
-                                    )
+                                    (DiagnosticCode::FnTypeArgConflict, "")
                                 };
+                                let message = format!(
+                                    "{}conflicting type arguments for type parameter \
+                                     '{}' in call to '{}': {} vs {}",
+                                    prefix,
+                                    conflict.param,
+                                    name,
+                                    conflict.existing,
+                                    conflict.incoming
+                                );
                                 return make_poison_literal(
                                     diagnostics,
                                     Diagnostic::error(message)

@@ -1370,9 +1370,11 @@ pub enum DiagnosticCode {
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnTypeArgConflict,
     /// An Option-recovery or Map-recovery combinator call supplies a default
-    /// value whose type does not unify with the subject's element type
-    /// (Option recovery: `unwrap_or` / `or_default` / `fallback`; Map
-    /// recovery: `get_or`).
+    /// value whose type does not unify with the subject's element type.
+    /// The authoritative combinator set is `FALLBACK_COMBINATORS` in
+    /// `crates/reify-compiler/src/expr.rs` (currently: `unwrap_or`,
+    /// `or_default`, `fallback`, `get_or`).  Edit that constant to add or
+    /// remove members — the doc comments here do not need to be kept in sync.
     ///
     /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
     /// (the `OverloadResolution::Resolved` generic type-arg-conflict arm),
