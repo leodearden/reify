@@ -1,0 +1,37 @@
+# verify-pipeline-paths.txt — static manifest of NON-source-derivable
+# verify-pipeline load-bearing paths.
+#
+# Purpose:
+#   Lists repo-relative paths that load-bear the --scope all verify pipeline
+#   but are NOT derivable from verify.sh's 'source "$SCRIPT_DIR/..."' lines
+#   (those are auto-derived live by scripts/verify-pipeline-guard.sh).
+#   Together, this manifest + the live source derivation form the canonical
+#   load-bearing set consulted by the drift-guard oracle.
+#
+# Format:
+#   One repo-relative path per line.
+#   '#' comment lines and blank lines are ignored.
+#   Consuming code: scripts/verify-pipeline-guard.sh
+#
+# Rationale for each entry:
+#   - scripts/occt-touching-crates.txt: read by occt-scope-lib.sh to determine
+#     the OCCT-touching crate set; changes shift the plan shape.
+#   - scripts/release-sensitive-crates.txt: read by release-scope-lib.sh; same.
+#   - scripts/verify-pipeline-infra-tests.txt: read by verify.sh's
+#     select_infra_tests(); changes shift which infra tests are pulled in.
+#   - scripts/gen-nextest-config.sh: generates .config/nextest.toml profile
+#     content; changing it changes the nextest config used by all test passes.
+#   - .config/nextest.toml: nextest configuration; profile changes alter which
+#     tests are run and how.
+#
+# NOTE: The sourced libs (occt-scope-lib.sh, release-scope-lib.sh,
+# affected-crates-lib.sh, lib_test_semaphore.sh) are NOT listed here — they
+# are auto-derived live from verify.sh's 'source "$SCRIPT_DIR/..."' lines by
+# scripts/verify-pipeline-guard.sh, and auto-coverage is self-healing for
+# future additions.  Listing them here too would be harmless but redundant.
+#
+scripts/occt-touching-crates.txt
+scripts/release-sensitive-crates.txt
+scripts/verify-pipeline-infra-tests.txt
+scripts/gen-nextest-config.sh
+.config/nextest.toml
