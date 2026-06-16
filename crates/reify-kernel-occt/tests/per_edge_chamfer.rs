@@ -197,6 +197,7 @@ fn top4_edges(kernel: &OcctKernelHandle, box_id: GeometryHandleId) -> Vec<Geomet
 ///     (each of its 4 edges is chamfered) → /2 recovers the top setback;
 ///   - each vertical side face has ONLY its top edge chamfered, so its z-extent
 ///     shrinks by exactly that edge's side setback.
+///
 /// Pooling top-derived and side-derived values guarantees a ~1 mm and a ~2 mm
 /// entry regardless of which adjacent face the kernel picks as the reference F.
 fn measure_top_chamfer_setbacks(
