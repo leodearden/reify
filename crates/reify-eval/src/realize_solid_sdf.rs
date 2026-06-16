@@ -148,6 +148,229 @@ mod tests {
         );
     }
 
+    // ── step-3 RED: success path + densify-Err degradation ──────────────────
+    //
+    // (a) is RED under step-2: the placeholder returns None, but (a) expects Some.
+    // (b) is accidentally GREEN under step-2: the placeholder returns None and (b)
+    //     expects None (the densify-Err path).  Step-4 fixes (a) by wiring the
+    //     full tessellate→ingest→densify recipe.
+
+    /// Closed box mesh (±1.0 mm on each axis, 12 triangles).
+    /// Same fixture as realization_content.rs::box_2mm; defined without a
+    /// `cfg(has_openvdb)` gate so TessellatingBoxKernel can be used in both
+    /// the cfg(has_openvdb) success test and the cfg-independent densify-Err test.
+    fn box_2mm() -> reify_ir::Mesh {
+        let v: Vec<f32> = vec![
+            -1.0, -1.0, -1.0,  1.0, -1.0, -1.0,  1.0,  1.0, -1.0, -1.0,  1.0, -1.0,
+            -1.0, -1.0,  1.0,  1.0, -1.0,  1.0,  1.0,  1.0,  1.0, -1.0,  1.0,  1.0,
+        ];
+        #[rustfmt::skip]
+        let i: Vec<u32> = vec![
+            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+            2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
+        ];
+        reify_ir::Mesh { vertices: v, indices: i, normals: None }
+    }
+
+    /// Mock kernel whose `tessellate` returns the closed `box_2mm()` mesh.
+    /// Other required methods are unreachable stubs.
+    struct TessellatingBoxKernel;
+    impl reify_ir::GeometryKernel for TessellatingBoxKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            Ok(box_2mm())
+        }
+        // ingest_mesh: inherits default → Err (not used; openvdb kernel does ingest)
+    }
+
+    /// Mock kernel: `ingest_mesh` returns Ok(handle) so the chain reaches
+    /// `densify_grid_to_sampled`, which inherits the default → Err(QueryFailed).
+    /// Used under `openvdb_kernel_name()` to test the densify-Err degradation path.
+    struct IngestOkDensifyFailKernel;
+    impl reify_ir::GeometryKernel for IngestOkDensifyFailKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Ok(reify_ir::GeometryHandle {
+                id: reify_ir::GeometryHandleId(42),
+                repr: None,
+            })
+        }
+        // densify_grid_to_sampled: inherits default →
+        // Err(QueryError::QueryFailed("densify_grid_to_sampled not supported by this kernel"))
+    }
+
+    /// (a) SUCCESS: TessellatingBoxKernel (BRep→Mesh) + real OpenVdbKernel
+    /// (Mesh→Voxel→SampledField) → Some(field) with structural + φ<0 interior.
+    ///
+    /// RED under step-2: the placeholder returns None; step-4 wires the full chain.
+    #[cfg(has_openvdb)]
+    #[test]
+    fn realize_solid_sdf_realized_box_returns_sampleable_field() {
+        use reify_ir::{GeometryKernel, SampledGridKind};
+        use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
+
+        let mut engine = make_engine();
+
+        // Source kernel: TessellatingBoxKernel handles BRep→Mesh stage.
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(TessellatingBoxKernel));
+        engine.default_kernel_name = Some("occt".to_string());
+
+        // OpenVDB kernel (real): Mesh→Voxel→SampledField stage.
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+        engine
+            .geometry_kernels
+            .insert(openvdb_name.to_string(), Box::new(OpenVdbKernel::new()));
+
+        // Seed a resolvable BRep subject.
+        let r0 = RealizationNodeId::new("gamma-box-test", 0);
+        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+        let subject = GeometryHandleRef {
+            realization_ref: r0,
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        let field = engine
+            .realize_solid_sdf(subject)
+            .expect("realize_solid_sdf must return Some(SampledField) for a valid closed box");
+
+        // ── Structural checks (realization-read-api.md §3.3 δ; no tolerance) ─
+        assert_eq!(field.kind, SampledGridKind::Regular3D, "kind must be Regular3D");
+        assert_eq!(
+            field.spacing.len(),
+            3,
+            "spacing must have 3 entries for Regular3D"
+        );
+        for (i, &s) in field.spacing.iter().enumerate() {
+            assert!(
+                s > 0.0 && s.is_finite(),
+                "spacing[{i}] = {s} must be positive and finite"
+            );
+        }
+        // Bounds must cover the box extents (±1.0 mm on each axis).
+        for i in 0..3 {
+            assert!(
+                field.bounds_min[i] <= -1.0,
+                "bounds_min[{i}] = {} must be ≤ -1.0 (box half-extent)",
+                field.bounds_min[i]
+            );
+            assert!(
+                field.bounds_max[i] >= 1.0,
+                "bounds_max[{i}] = {} must be ≥ 1.0 (box half-extent)",
+                field.bounds_max[i]
+            );
+        }
+        // Data must be non-empty and finite.
+        assert!(!field.data.is_empty(), "densified field data must not be empty");
+        assert!(
+            field.data.iter().all(|v| v.is_finite()),
+            "all SampledField data values must be finite"
+        );
+        // CPU-sampleable: φ at box centre (0,0,0) must be negative (interior).
+        let phi = reify_expr::interp::interpolate_3d(
+            reify_expr::interp::InterpolationMethod::Linear,
+            &field.axis_grids[0],
+            &field.axis_grids[1],
+            &field.axis_grids[2],
+            &field.data,
+            (0.0, 0.0, 0.0),
+        )
+        .value;
+        assert!(phi.is_finite(), "SDF at (0,0,0) must be finite; got {phi}");
+        assert!(
+            phi < 0.0,
+            "SDF at box centre must be negative (interior); got {phi}"
+        );
+    }
+
+    /// (b) DENSIFY-ERR: TessellatingBoxKernel + IngestOkDensifyFailKernel
+    /// under openvdb_kernel_name() → chain reaches densify, gets Err → None.
+    /// No panic; cfg-independent.
+    #[test]
+    fn realize_solid_sdf_densify_err_returns_none_no_panic() {
+        let mut engine = make_engine();
+
+        // Source kernel: TessellatingBoxKernel returns box_2mm() from tessellate.
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(TessellatingBoxKernel));
+        engine.default_kernel_name = Some("occt".to_string());
+
+        // "OpenVDB" stub: ingest_mesh → Ok(handle), densify → Err.
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+        engine
+            .geometry_kernels
+            .insert(openvdb_name.to_string(), Box::new(IngestOkDensifyFailKernel));
+
+        // Seed a resolvable BRep subject.
+        let r0 = RealizationNodeId::new("gamma-densify-err", 0);
+        engine.realization_handles.insert(r0.clone(), GeometryHandleId(1));
+        let subject = GeometryHandleRef {
+            realization_ref: r0,
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: GeometryHandleId(1),
+        };
+
+        assert!(
+            engine.realize_solid_sdf(subject).is_none(),
+            "densify Err path must return None (no panic)"
+        );
+    }
+
     /// (c) Stub build: Engine::with_registered_kernels omits openvdb from the
     /// registry (register.rs:157 cfg-gates the submit!) → no openvdb kernel in
     /// geometry_kernels → realize_solid_sdf returns None, no fabricated field.
