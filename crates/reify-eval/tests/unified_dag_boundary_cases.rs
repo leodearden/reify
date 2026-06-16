@@ -21,12 +21,13 @@
 mod differential;
 
 use differential::{
-    AUTO_GEOMETRY_CONSTRAINT_SRC, CorpusCase, LEX_PARENT_MULTIBODY_SRC,
-    assert_equivalent_or_allowed, build_case, build_case_keep_engine, build_with_kernel_stdlib,
-    residue_for, seeded_build_volume_kernel,
+    AUTO_GEOMETRY_CONSTRAINT_SRC, CROSS_LET_4275_SRC, CorpusCase, Divergence,
+    LEX_PARENT_MULTIBODY_SRC, assert_equivalent_or_allowed, build_case, build_case_keep_engine,
+    build_with_kernel_stdlib, fits_build_volume_satisfaction, residue_for, seeded_build_volume_kernel,
 };
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::BuildScheduler;
+use reify_ir::Satisfaction;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // step-11 (RED): auto + geometry-backed constraint → `EvalUnresolved`.
@@ -167,4 +168,65 @@ fn cross_sub_multi_body_assembly_exports_equivalently() {
          got {} unpopped node(s): {residue:?}",
         residue.len(),
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-15 (RED): the 4275 single-instance `let proc = FdmPrinter()` definite
+// differential. UnifiedDag folds the cross-`let` bounding_box(proc.build_volume)
+// leaf POST-geometry (PRD §3.3) → a DEFINITE verdict; LegacyMultiPass freezes the
+// pre-geometry Indeterminate. This is a REASONED divergence (not an equivalence),
+// expressed through `assert_equivalent_or_allowed` carrying a
+// `Divergence::ConstraintFlips`. COUNT == 1 deliberately: the multi-instance
+// same-def form is declined to Indeterminate (ε #4628, def-name-keyed snapshot
+// cannot disambiguate instances) and must NOT be used as a definite-verdict case.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// RED until step-16: `fits_build_volume_satisfaction` (the harness verdict
+/// extractor) and the reasoned `REASONED_4275_BOUNDARY` allow-list are not
+/// authored yet, so this fails to compile.
+#[test]
+fn cross_sub_4275_let_bound_form_is_definite_differential() {
+    let legacy = build_with_kernel_stdlib(
+        CROSS_LET_4275_SRC,
+        BuildScheduler::LegacyMultiPass,
+        seeded_build_volume_kernel(),
+    );
+    let unified = build_with_kernel_stdlib(
+        CROSS_LET_4275_SRC,
+        BuildScheduler::UnifiedDag,
+        seeded_build_volume_kernel(),
+    );
+
+    // (1) DIRECT: UnifiedDag reaches a DEFINITE verdict (Satisfied OR Violated,
+    // NEVER a fixed polarity — the OCCT verdict-FLIP e2e is η's); legacy is frozen
+    // Indeterminate.
+    let unified_sat = fits_build_volume_satisfaction(&unified);
+    let legacy_sat = fits_build_volume_satisfaction(&legacy);
+    assert_ne!(
+        unified_sat,
+        Satisfaction::Indeterminate,
+        "UnifiedDag must fold the 4275 single-instance cross-`let` \
+         bounding_box(proc.build_volume) leaf to a DEFINITE verdict (legacy_sat={legacy_sat:?}); \
+         constraint_results={:?}",
+        unified.constraint_results,
+    );
+    assert_eq!(
+        legacy_sat,
+        Satisfaction::Indeterminate,
+        "LegacyMultiPass must freeze the pre-geometry Indeterminate; constraint_results={:?}",
+        legacy.constraint_results,
+    );
+
+    // (2) REASONED: the SAME divergence expressed through the per-case allow-list —
+    // the gate ADMITS exactly the `FitsBuildVolume` ConstraintFlips (+ the
+    // consequent vanished `ConstraintIndeterminate` warning) and nothing else.
+    let case = CorpusCase {
+        name: "cross_sub_4275_let_bound_definite",
+        source: CROSS_LET_4275_SRC,
+        needs_stdlib: true,
+        allowed: REASONED_4275_BOUNDARY,
+        expects_cycle: false,
+        kernel: Some(seeded_build_volume_kernel),
+    };
+    assert_equivalent_or_allowed(&case, &legacy, &unified);
 }
