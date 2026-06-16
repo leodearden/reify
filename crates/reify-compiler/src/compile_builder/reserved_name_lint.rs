@@ -2,17 +2,19 @@
 //!
 //! Walks the parsed AST once and emits a Warning diagnostic
 //! ([`DiagnosticCode::ReservedTypeName`]) whenever a user `enum`,
-//! `structure`, `occurrence`, or `trait` declaration uses a name that is
-//! also resolvable by the builtin type resolver ([`resolve_type_name`]).
+//! `structure`, `occurrence`, `trait`, or `type` alias declaration uses a
+//! name that is also resolvable by the builtin type resolver
+//! ([`resolve_type_name`]).
 //!
 //! # Why warn
 //!
 //! `resolve_type_with_aliases` checks builtin types BEFORE user-declared
-//! structure/trait names; enum names chain after builtin resolution via
-//! `resolve_enum_type`. A user `enum Direction`, `structure Frame`, or
-//! `trait Axis` is therefore silently shadowed by the builtin with no
-//! diagnostic. This lint surfaces the collision so authors can rename
-//! their declarations or are at minimum aware of the precedence.
+//! type aliases, structure/trait names; enum names chain after builtin
+//! resolution via `resolve_enum_type`. A user `enum Direction`,
+//! `structure Frame`, `trait Axis`, or `type Direction = Bool` is
+//! therefore silently shadowed by the builtin with no diagnostic. This
+//! lint surfaces the collision so authors can rename their declarations or
+//! are at minimum aware of the precedence.
 //!
 //! # Severity
 //!
@@ -25,6 +27,15 @@
 //! The collision predicate is exactly `resolve_type_name(name).is_some()`,
 //! using the function as the single source of truth. This automatically
 //! covers future builtin additions without requiring a hardcoded name list.
+//!
+//! # Diagnostic label span
+//!
+//! The label is attached to the whole declaration span (e.g., the entire
+//! `enum Direction { In, Out }` range) because the AST declaration types
+//! (`EnumDecl`, `StructureDef`, `OccurrenceDef`, `TraitDecl`,
+//! `TypeAliasDecl`) do not expose a dedicated `name_span` field. Using a
+//! name-only span would reduce noise for multi-line declarations, but
+//! adding `name_span` to those structs is out of scope for task 4591.
 
 use reify_ast::ParsedModule;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
@@ -47,6 +58,7 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
             Declaration::Structure(s) => ("structure", s.name.as_str(), s.span),
             Declaration::Occurrence(o) => ("occurrence", o.name.as_str(), o.span),
             Declaration::Trait(t) => ("trait", t.name.as_str(), t.span),
+            Declaration::TypeAlias(a) => ("type alias", a.name.as_str(), a.span),
             _ => continue,
         };
 

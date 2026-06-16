@@ -2,13 +2,14 @@
 //!
 //! The lint walks the top-level declarations once and emits a Warning
 //! diagnostic with [`DiagnosticCode::ReservedTypeName`] whenever a user
-//! `enum`, `structure`, `occurrence`, or `trait` declaration uses a name
-//! that is resolvable by the builtin type resolver (`resolve_type_name`).
-//! The builtin still wins in type-annotation position; the warning exists
-//! to alert the author.
+//! `enum`, `structure`, `occurrence`, `trait`, or `type` alias declaration
+//! uses a name that is resolvable by the builtin type resolver
+//! (`resolve_type_name`). The builtin still wins in type-annotation
+//! position; the warning exists to alert the author.
 
+use reify_compiler::{TopologyTemplate, ValueCellDecl, ValueCellKind};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{compile_source, warnings_only};
-use reify_core::{DiagnosticCode, Severity};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -224,4 +225,103 @@ structure Beam {
         reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     assert_eq!(reserved[0].severity, Severity::Warning);
+}
+
+// ── Amendment: TypeAlias coverage (suggestion 1) ─────────────────────────────
+
+/// A `type` alias whose name collides with a builtin must also emit exactly
+/// one ReservedTypeName warning.  `resolve_type_with_aliases` checks builtins
+/// BEFORE the alias registry (precedence order: builtins → type params →
+/// alias registry → structure names → trait names), so `type Direction = Bool`
+/// is silently shadowed by the builtin in type-annotation position.
+#[test]
+fn type_alias_named_after_builtin_emits_reserved_type_name_warning() {
+    let source = "type Direction = Bool";
+    let module = compile_source(source);
+    let warnings = warnings_only(&module);
+    let reserved = reserved_name_warnings(&warnings);
+    assert_eq!(
+        reserved.len(),
+        1,
+        "expected 1 ReservedTypeName warning for `type Direction = Bool`, got {}: {:?}",
+        reserved.len(),
+        reserved.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert_eq!(reserved[0].severity, Severity::Warning);
+    assert!(!reserved[0].labels.is_empty());
+    assert!(
+        !reserved[0].labels[0].span.is_empty(),
+        "first label span must be non-empty"
+    );
+}
+
+// ── Amendment: stronger precedence assertion (suggestion 2) ──────────────────
+
+/// Helper: find the first template named `name` in the module.
+fn find_template<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("expected template '{name}' in module; templates: {:?}", {
+            module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        }))
+}
+
+/// Helper: find a `Param` cell by member name within a template.
+fn find_param_cell<'a>(template: &'a TopologyTemplate, member: &str) -> &'a ValueCellDecl {
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.kind == ValueCellKind::Param && vc.id.member == member)
+        .unwrap_or_else(|| panic!(
+            "expected param '{member}' in template '{}'; value_cells: {:?}",
+            template.name,
+            template.value_cells.iter().map(|vc| &vc.id).collect::<Vec<_>>()
+        ))
+}
+
+/// Precedence pin: `param d : Direction` in a structure must compile with
+/// `cell_type == Type::Direction` (the builtin datum direction type), confirming
+/// that builtin resolution wins over the user-declared `enum Direction` in
+/// type-annotation position.
+///
+/// This test pins the ACTUAL resolved type — not just error-absence — so a
+/// future change that lets the user enum win in type position would fail here
+/// explicitly rather than silently.
+#[test]
+fn param_type_resolves_to_builtin_direction_when_user_enum_collides() {
+    let source = r#"
+enum Direction { In, Out }
+structure Beam {
+    param d : Direction
+}
+"#;
+    let module = compile_source(source);
+
+    // No errors expected (warning-only guarantee).
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error-severity diagnostics, got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // The param's resolved cell_type must be the builtin Type::Direction.
+    let template = find_template(&module, "Beam");
+    let param_d = find_param_cell(template, "d");
+    assert_eq!(
+        param_d.cell_type,
+        Type::Direction,
+        "param 'd : Direction' must resolve to Type::Direction (builtin wins); \
+         got: {:?}",
+        param_d.cell_type
+    );
 }
