@@ -271,3 +271,244 @@ structure S {
         v_expr.result_type
     );
 }
+
+// ── (g) or_default resolves and substitutes return type ───────────────────────
+
+/// `or_default(o, 6mm)` where `o : Option<Length>` must resolve and the
+/// result type must be substituted to `Type::length()`. Zero Error diagnostics.
+///
+/// or_default is an alias of unwrap_or (PRD fork F2-a); this test ensures its
+/// signature is identical and the generic resolver handles it correctly.
+#[test]
+fn or_default_resolves_and_substitutes_to_element_type() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = or_default(o, 6mm)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for or_default(o, 6mm), got: {:?}",
+        errors
+    );
+
+    let v_expr = cell_expr_stdlib(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "or_default(o, 6mm) result_type should be substituted to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}
+
+// ── (h) fallback resolves and substitutes return type ─────────────────────────
+
+/// `fallback(o, 6mm)` where `o : Option<Length>` must resolve and the result
+/// type must be substituted to `Type::length()`. Zero Error diagnostics.
+///
+/// fallback is the free-function alias of unwrap_or (PRD fork F2-a / D6).
+#[test]
+fn fallback_resolves_and_substitutes_to_element_type() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = fallback(o, 6mm)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for fallback(o, 6mm), got: {:?}",
+        errors
+    );
+
+    let v_expr = cell_expr_stdlib(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "fallback(o, 6mm) result_type should be substituted to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+}
+
+// ── (i) is_none resolves to Bool ─────────────────────────────────────────────
+
+/// `is_none(o)` where `o : Option<Length>` must resolve and the result type
+/// must be `Type::Bool`. Zero Error diagnostics.
+///
+/// Complements the is_some test (c); ensures the Bool return type is correct
+/// for the negative predicate.
+#[test]
+fn is_none_resolves_to_bool() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let b = is_none(o)
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for is_none(o), got: {:?}",
+        errors
+    );
+
+    let b_expr = cell_expr_stdlib(&module, "b");
+    assert_eq!(
+        b_expr.result_type,
+        Type::Bool,
+        "is_none(o) result_type should be Bool, got {:?}",
+        b_expr.result_type
+    );
+}
+
+// ── (j) or_default E_FALLBACK_TYPE on mismatch ───────────────────────────────
+
+/// `or_default(o, "x")` where `o : Option<Length>` binds T=Length via the
+/// first arg, then "x" (String) conflicts as T.  Must emit exactly one Error
+/// diagnostic with code == DiagnosticCode::FallbackType and message containing
+/// "E_FALLBACK_TYPE".
+///
+/// Ensures or_default is genuinely in `FALLBACK_COMBINATORS` — a regression
+/// that dropped it would emit FnTypeArgConflict instead.
+#[test]
+fn or_default_default_element_type_mismatch_emits_e_fallback_type() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = or_default(o, "x")
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for or_default(o, \"x\"), got: {:?}",
+        errors
+    );
+
+    let diag = &errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::FallbackType),
+        "expected DiagnosticCode::FallbackType for or_default conflict, got: {:?}",
+        diag.code
+    );
+    assert!(
+        diag.message.contains("E_FALLBACK_TYPE"),
+        "expected diagnostic message to contain \"E_FALLBACK_TYPE\", got: {:?}",
+        diag.message
+    );
+}
+
+// ── (k) fallback E_FALLBACK_TYPE on mismatch ─────────────────────────────────
+
+/// `fallback(o, "x")` where `o : Option<Length>` emits E_FALLBACK_TYPE.
+/// Ensures fallback is in `FALLBACK_COMBINATORS`.
+#[test]
+fn fallback_default_element_type_mismatch_emits_e_fallback_type() {
+    let source = r#"
+structure S {
+    param o : Option<Length> = none
+    let v = fallback(o, "x")
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for fallback(o, \"x\"), got: {:?}",
+        errors
+    );
+
+    let diag = &errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::FallbackType),
+        "expected DiagnosticCode::FallbackType for fallback conflict, got: {:?}",
+        diag.code
+    );
+    assert!(
+        diag.message.contains("E_FALLBACK_TYPE"),
+        "expected diagnostic message to contain \"E_FALLBACK_TYPE\", got: {:?}",
+        diag.message
+    );
+}
+
+// ── (l) get_or E_FALLBACK_TYPE on value-type mismatch ────────────────────────
+
+/// `get_or(m, "k", "x")` where `m : Map<String, Length>` binds V=Length via
+/// the map type, then "x" (String) conflicts as V.  Must emit exactly one Error
+/// diagnostic with code == DiagnosticCode::FallbackType.
+///
+/// get_or has a distinct code path (Map<K,V>, three arguments, K+V binding),
+/// so this test independently verifies E_FALLBACK_TYPE emission for it.
+/// A regression that dropped get_or from `FALLBACK_COMBINATORS` would emit
+/// FnTypeArgConflict instead.
+#[test]
+fn get_or_default_value_type_mismatch_emits_e_fallback_type() {
+    let source = r#"
+structure S {
+    param m : Map<String, Length> = map{"k" => 1mm}
+    let v = get_or(m, "k", "x")
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error diagnostic for get_or(m, \"k\", \"x\"), got: {:?}",
+        errors
+    );
+
+    let diag = &errors[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticCode::FallbackType),
+        "expected DiagnosticCode::FallbackType for get_or conflict, got: {:?}",
+        diag.code
+    );
+    assert!(
+        diag.message.contains("E_FALLBACK_TYPE"),
+        "expected diagnostic message to contain \"E_FALLBACK_TYPE\", got: {:?}",
+        diag.message
+    );
+}
