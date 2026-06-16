@@ -1369,6 +1369,26 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_FN_TYPE_ARG_CONFLICT`
     /// (severity convention: `W_*` → Warning, `E_*` → Error).
     FnTypeArgConflict,
+    /// An Option-recovery or Map-recovery combinator call supplies a default
+    /// value whose type does not unify with the subject's element type.
+    /// The authoritative combinator set is `FALLBACK_COMBINATORS` in
+    /// `crates/reify-compiler/src/expr.rs` (currently: `unwrap_or`,
+    /// `or_default`, `fallback`, `get_or`).  Edit that constant to add or
+    /// remove members — the doc comments here do not need to be kept in sync.
+    ///
+    /// Origin site: `crates/reify-compiler/src/expr.rs::compile_expr_guarded`
+    /// (the `OverloadResolution::Resolved` generic type-arg-conflict arm),
+    /// emitted when `type_compat::unify` returns `Err(TypeArgConflict)` for a
+    /// call whose name is in the recovery-combinator set
+    /// (`is_fallback_combinator`).  The conflict is between the default-value
+    /// argument type and the element type bound by the subject argument.
+    ///
+    /// Canonical message form:
+    /// `"E_FALLBACK_TYPE: conflicting type arguments for type parameter '<P>' in call to '<name>': <existing> vs <incoming>"`
+    ///
+    /// The PRD-prose mnemonic is `E_FALLBACK_TYPE`; contract C-3 of
+    /// `docs/prds/v0_6/result-and-fallback.md`.
+    FallbackType,
     /// A generic function call's type argument(s) cannot be inferred from the
     /// supplied arguments, leaving the call's result type wholly undetermined.
     ///
