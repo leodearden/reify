@@ -2574,9 +2574,26 @@ impl Engine {
                             // ended); the post-process block below re-runs the same
                             // passes over all cells, so this is an additive early
                             // hydration, not the sole resolution site.
-                            let kernel = self.geometry_kernels.get_mut(name).expect(
-                                "default kernel must remain in the map across the schedule walk",
-                            );
+                            //
+                            // Robustness (reviewer): degrade to SKIPPING this early
+                            // hydration rather than aborting the whole build if the
+                            // default kernel is somehow absent mid-walk. The invariant
+                            // holds today — `name` was `contains_key`-checked at the top
+                            // of this geometry_output block — so a miss is only reachable
+                            // via a future refactor that removes a kernel mid-walk, not a
+                            // runtime condition; `debug_assert!` surfaces it in dev/test.
+                            // Skipping is safe precisely because the hydration is additive:
+                            // the whole-template post-process below re-runs the same passes
+                            // over every cell, so the cell still resolves before export —
+                            // only the in-loop timing is lost (a downstream curated fillet
+                            // would fall back to its all-edges path, the pre-ε behaviour).
+                            let Some(kernel) = self.geometry_kernels.get_mut(name) else {
+                                debug_assert!(
+                                    false,
+                                    "default kernel must remain in the map across the schedule walk"
+                                );
+                                continue;
+                            };
                             Engine::hydrate_value_cell_in_loop(
                                 template,
                                 cell_id,
@@ -2697,6 +2714,21 @@ impl Engine {
                     // call in the post-process block below. Skipped under
                     // LegacyMultiPass (`unified_pass` is `None`), so that path keeps
                     // its single post-loop hydration and stays byte-identical.
+                    //
+                    // COST (reviewer): the helper loops over ALL of the template's
+                    // realizations each call (short-circuiting those not yet in
+                    // `named_steps`), so invoking it after every Realize makes the
+                    // per-realization hydration O(R²)-over-realizations across a
+                    // template with R realizations, vs. Legacy's single O(R) post-loop
+                    // call. The re-work is purely idempotent (re-inserting already
+                    // resolved handles + re-recording the same freshness cache nodes),
+                    // so it is correctness-neutral, and acceptable for the typical
+                    // small-R template. If profiling ever shows it dominating on a
+                    // many-realization, many-handle-cell template, restrict this call
+                    // to the just-completed realization (the helper would need a
+                    // single-realization filter param threaded through its 3 call
+                    // sites — build / build_snapshot / tessellate_from_values) rather
+                    // than rescanning the full realization list each iteration.
                     if unified_pass.is_some() {
                         Engine::post_process_geometry_handle_cells(
                             template,
@@ -6252,6 +6284,11 @@ impl Engine {
     /// after the consuming realization) differs from the whole-template
     /// post-process below, and only under UnifiedDag. Pinned by
     /// `unified_dag_curated_fillet_resolves_edges_in_loop`.
+    ///
+    /// SYNC REQUIREMENT: this single-cell ladder and the whole-template pass order
+    /// in [`Engine::run_post_processes`] MUST change together — see the matching
+    /// "SYNC REQUIREMENT" note on that function. A divergence would change which
+    /// helper wins for a given cell only under UnifiedDag, only in-loop.
     #[allow(clippy::too_many_arguments)]
     fn hydrate_value_cell_in_loop(
         template: &reify_compiler::TopologyTemplate,
@@ -6404,6 +6441,20 @@ impl Engine {
     /// `functions` / `meta_map` build the `EvalContext` that
     /// `post_process_geometry_queries` uses to recompute nested geometry-query
     /// expressions (GHR-ζ step-10, e.g. `mass = volume(g) * material.density`).
+    ///
+    /// # SYNC REQUIREMENT with [`Engine::hydrate_value_cell_in_loop`] (task 4358 ε)
+    ///
+    /// The UnifiedDag schedule-driven build loop hydrates a SINGLE value cell at
+    /// its scheduled slot via [`Engine::hydrate_value_cell_in_loop`], which mirrors
+    /// the per-cell resolution ladder this whole-template pass applies (geometry
+    /// query → selector→list → topology selector → resolve-selector coercion). The
+    /// two sites MUST stay in sync: if the ORDER or the SET of helpers below
+    /// changes, the in-loop single-cell ladder in `hydrate_value_cell_in_loop` must
+    /// change identically, or a cell's resolution would diverge (which helper
+    /// "wins") only under UnifiedDag, only when that cell is hydrated in-loop ahead
+    /// of a consuming realization. See that function's doc comment for the matching
+    /// ladder and the rationale for the one deliberate divergence (a
+    /// realization-consumed selector is resolved one step further, to a `List`).
     //
     // `functions` + `meta_map` (added by GHR-ζ for the geometry-query EvalContext)
     // push this consolidator to 8 args; matches the sibling post-process helpers'
