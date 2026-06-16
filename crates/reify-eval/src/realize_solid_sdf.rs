@@ -12,7 +12,65 @@
 // (engine_build.rs:4899-4970) directly.
 
 impl crate::Engine {
-    // Method lands here in step-2 / step-4.
+    /// Turn an already-realized BRep solid into a CPU-resident queryable SDF.
+    ///
+    /// Demands a Voxel realization by driving β's BRep→Mesh→Voxel chain, then
+    /// densifying via α.  Returns `None` on every degradation path (PRD §4 D5):
+    /// the caller ζ maps `None` → self-describing `Undef` + diagnostic +
+    /// `Indeterminate`, never a fabricated number.
+    ///
+    /// PRD §4 D1 — post-build direct recipe: γ does NOT re-enter the dispatcher
+    /// BFS / realization loop and does NOT modify `demanded_reprs_for_template`.
+    /// The subject is already realized; γ runs the same recipe β's executor runs
+    /// (engine_build.rs:4899-4970) directly.
+    ///
+    /// Degradation paths → `None`:
+    ///  1. `subject.realization_ref` absent from `realization_handles` AND
+    ///     `subject.kernel_handle == GeometryHandleId::INVALID` (resolution fails).
+    ///  2. No `default_kernel_name` configured (no source kernel to tessellate).
+    ///  3. No kernel registered under `openvdb_kernel_name()` — absent in stub
+    ///     builds where `cfg(any(has_openvdb, feature="stub_register"))` omits
+    ///     the `inventory::submit!` (register.rs:157).  This is the D5 mechanism.
+    ///  4. `tessellate`, `ingest_mesh`, or `densify_grid_to_sampled` returns
+    ///     `Err` (chain failure).
+    pub(crate) fn realize_solid_sdf(
+        &mut self,
+        subject: reify_ir::value::GeometryHandleRef,
+    ) -> Option<reify_ir::SampledField> {
+        // ── 1. Resolve the BRep handle ──────────────────────────────────────
+        // Prefer the realization_handles table (set by post_process_geometry_handle_cells
+        // during build); fall back to subject.kernel_handle when it is not INVALID
+        // (mirrors engine_constraints.rs:1087 `resolve_handle` pattern).
+        let brep_id = self
+            .realization_handles
+            .get(&subject.realization_ref)
+            .copied()
+            .or_else(|| {
+                (subject.kernel_handle != reify_ir::GeometryHandleId::INVALID)
+                    .then_some(subject.kernel_handle)
+            })?;
+
+        // ── 2. Source kernel (for tessellation) ──────────────────────────────
+        // Clone to release the immutable borrow on `self` before the `get_mut`
+        // calls below (mirrors measure_dfm_rules:813 pattern).
+        let source = self.default_kernel_name.clone()?;
+        if !self.geometry_kernels.contains_key(&source) {
+            return None;
+        }
+
+        // ── 3. OpenVDB presence guard ─────────────────────────────────────────
+        // Absence means a stub build omitted the registration (D5) or the kernel
+        // was never loaded — honest None, no panic, no fabricated number.
+        let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
+        self.geometry_kernels.get(openvdb_name)?;
+
+        // ── step-4: tessellate → ingest → densify ─────────────────────────
+        // Guards above (resolution, source, openvdb) cover the step-1
+        // degradation contract. Step-4 replaces this placeholder with the
+        // real tessellate→ingest→densify recipe.
+        let _ = brep_id;
+        None
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
