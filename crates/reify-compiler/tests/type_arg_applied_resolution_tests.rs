@@ -8,7 +8,7 @@
 //! (c) `DiagnosticCode::TypeArgBound` on bound-violating type arg
 //!     (phase_pending_bound_checks walk, step-8).
 
-use reify_core::{Severity, Type};
+use reify_core::{diagnostics::DiagnosticCode, Severity, Type};
 use reify_test_support::compile_source;
 
 // ─── Shared fixture source ───────────────────────────────────────────────────
@@ -185,5 +185,89 @@ fn bare_structure_ref_unchanged_when_no_type_args() {
         Type::StructureRef("Coupling".to_string()),
         "bare `Coupling` (no type args) must resolve to StructureRef(\"Coupling\"), got {:?}",
         d_cell.cell_type
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 5 — RED: arity diagnostics (step-6 makes these GREEN)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Arity-too-many: `Coupling<Prismatic, Revolute>` supplies 2 args to a
+/// 1-param generic — must emit exactly one `TypeArgArity` diagnostic.
+///
+/// RED until step-6: no arity check on the member-annotation path.
+#[test]
+fn arity_too_many_args_emits_type_arg_arity() {
+    let source = format!(
+        "{}\nstructure def Bad {{ param c : Coupling<Prismatic, Revolute> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    let arity_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+
+    assert_eq!(
+        arity_errors.len(),
+        1,
+        "Coupling<Prismatic, Revolute> (2 args vs 1 param) must emit exactly one \
+         TypeArgArity diagnostic; got: {:?}",
+        arity_errors
+    );
+}
+
+/// Arity-on-non-generic: `Foo<Prismatic>` supplies 1 arg to a non-generic
+/// structure (0 params) — must emit exactly one `TypeArgArity` diagnostic.
+///
+/// RED until step-6.
+#[test]
+fn arity_args_on_non_generic_structure_emits_type_arg_arity() {
+    let source = format!(
+        "{}\nstructure def Bad2 {{ param c : Foo<Prismatic> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    let arity_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+
+    assert_eq!(
+        arity_errors.len(),
+        1,
+        "Foo<Prismatic> (1 arg vs 0 params) must emit exactly one TypeArgArity diagnostic; \
+         got: {:?}",
+        arity_errors
+    );
+}
+
+/// Correct arity: `Coupling<Prismatic>` (1 arg, 1 param) must NOT emit
+/// `TypeArgArity` — only valid-arity uses are error-free on the arity check.
+///
+/// Must stay GREEN through step-6.
+#[test]
+fn correct_arity_emits_no_type_arg_arity() {
+    let source = format!(
+        "{}\nstructure def Ok {{ param c : Coupling<Prismatic> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    let arity_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+
+    assert!(
+        arity_errors.is_empty(),
+        "Coupling<Prismatic> (correct 1 arg, 1 param) must emit NO TypeArgArity; \
+         got: {:?}",
+        arity_errors
     );
 }
