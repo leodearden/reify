@@ -148,17 +148,44 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
-        // chamfer(target, distance)
-        "chamfer" => compile_modify_2arg(
-            "chamfer",
-            ModifyKind::Chamfer,
-            "distance",
-            compiled_args,
-            target,
-            expr_span,
-            diagnostics,
-            sub_ops,
-        ),
+        // chamfer(target, distance)        — 2-arg all-edges back-compat
+        // chamfer(target, edges, distance) — 3-arg curated edge selection
+        "chamfer" => match compiled_args.len() {
+            2 => compile_modify_2arg(
+                "chamfer",
+                ModifyKind::Chamfer,
+                "distance",
+                compiled_args,
+                target,
+                expr_span,
+                diagnostics,
+                sub_ops,
+            ),
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::Chamfer,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("edges".to_string(), it.next().unwrap()),
+                        ("distance".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // chamfer accepts only the 2-arg all-edges form or the 3-arg
+            // curated-edges form; the 4-arg asymmetric form is chamfer_asymmetric.
+            // Emit a labeled diagnostic mirroring fillet's range-arity message.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!("chamfer() expects 2 or 3 arguments, got {got}"))
+                        .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
         // fillet(target, radius)             — 2-arg all-edges back-compat
         // fillet(target, edges, radius)      — 3-arg curated edge selection
         "fillet" => match compiled_args.len() {

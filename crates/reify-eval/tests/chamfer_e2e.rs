@@ -45,9 +45,13 @@ fn chamfer_compiler_rejects_one_arg() {
     );
 }
 
-/// chamfer() with 3 args should produce diagnostics (too many args).
+/// chamfer() with 3 args is the curated-edge form `chamfer(solid, edges,
+/// distance)` (task β, step-10). It is no longer an arity error: the compiler
+/// recognises it and lowers it to a `Modify(Chamfer)` op carrying the curated
+/// `edges` slot ([target, edges, distance]), mirroring fillet's 2/3-arg
+/// dispatch. (Before β the 3-arg form was rejected as "too many args".)
 #[test]
-fn chamfer_compiler_rejects_three_args() {
+fn chamfer_compiler_accepts_three_args_curated_edges() {
     let source = r#"structure S {
     param target: Length = 5mm
     param dist: Length = 2mm
@@ -57,24 +61,25 @@ fn chamfer_compiler_rejects_three_args() {
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
-    let has_chamfer_op = realizations.iter().any(|r| {
-        r.operations.iter().any(|op| {
-            matches!(
-                op,
-                reify_compiler::CompiledGeometryOp::Modify {
-                    kind: reify_compiler::ModifyKind::Chamfer,
-                    ..
-                }
-            )
+    // The 3-arg form is recognised and lowered to a Modify(Chamfer) op carrying
+    // the curated-edge "edges" slot — NOT rejected with an arity diagnostic.
+    let chamfer_args = realizations.iter().find_map(|r| {
+        r.operations.iter().find_map(|op| match op {
+            reify_compiler::CompiledGeometryOp::Modify {
+                kind: reify_compiler::ModifyKind::Chamfer,
+                args,
+                ..
+            } => Some(args.clone()),
+            _ => None,
         })
     });
-    assert!(
-        !compiled.diagnostics.is_empty(),
-        "expected error diagnostic for wrong arg count (3 args)"
-    );
-    assert!(
-        !has_chamfer_op,
-        "should not produce Modify(Chamfer) op with wrong arg count (3 args)"
+    let args =
+        chamfer_args.expect("3-arg chamfer should produce a Modify(Chamfer) op (curated edges)");
+    let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["target", "edges", "distance"],
+        "3-arg chamfer must lower to the curated-edge arg shape [target, edges, distance]"
     );
 }
 

@@ -860,13 +860,119 @@ pub(crate) fn compile_geometry_op(
                         }
                     }
                 }
-                reify_compiler::ModifyKind::Chamfer => Ok(reify_ir::GeometryOp::Chamfer {
-                    target: target_id,
-                    // step-6: mechanical field add (empty = all-edges back-compat).
-                    // The curated-edge resolution is wired in step-10.
-                    edges: vec![],
-                    distance: eval_arg("distance")?,
-                }),
+                reify_compiler::ModifyKind::Chamfer => {
+                    // Evaluate distance FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live — keeps the
+                    // missing-distance behaviour identical to the 2-arg path.
+                    let distance = eval_arg("distance")?;
+                    // Presence of an "edges" named arg distinguishes the 3-arg
+                    // `chamfer(solid, edges, distance)` form from the 2-arg
+                    // `chamfer(solid, distance)` back-compat form. This mirrors the
+                    // Fillet arm exactly (no new ModifyKind for symmetric chamfer);
+                    // NLL ends the `eval_arg` borrow here so the empty-selection
+                    // arm below can push its own EmptyEdgeSelection diagnostic.
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    match edges_expr {
+                        // 2-arg form: no selector → empty edges = all-edges
+                        // back-compat (legacy `chamfer(solid, distance)`).
+                        None => Ok(reify_ir::GeometryOp::Chamfer {
+                            target: target_id,
+                            edges: vec![],
+                            distance,
+                        }),
+                        // 3-arg form: evaluate the selector and resolve it.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &edges_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Extract each sub-handle's kernel_handle,
+                                    // ERRORING on any element that is NOT a
+                                    // Geometry sub-handle — mirroring
+                                    // `resolve_subhandle_list`'s strictness (and the
+                                    // Fillet arm) so a partially-malformed selector
+                                    // surfaces an error rather than silently
+                                    // chamfering only the surviving subset. This
+                                    // legacy P2 arm cannot run the cross-solid
+                                    // membership gate (the parent handle is not
+                                    // realized here — that is engine-unified-build-
+                                    // dag η's in-loop job), but it SHARES both the
+                                    // reject-non-handle policy AND the
+                                    // `canonical_subhandle_ids` (ascending order +
+                                    // dedup) canonicalization, so the two never
+                                    // drift from fillet.
+                                    let mut raw_ids: Vec<GeometryHandleId> =
+                                        Vec::with_capacity(elems.len());
+                                    for (i, e) in elems.iter().enumerate() {
+                                        match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => raw_ids.push(*kernel_handle),
+                                            other => {
+                                                return Err(format!(
+                                                    "chamfer(solid, edges, distance): edge \
+                                                     selector element [{}] is not a Geometry \
+                                                     sub-handle (got {:?}) — the edge selector \
+                                                     must be a List of edge handles",
+                                                    i, other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let resolved = canonical_subhandle_ids(raw_ids);
+                                    // ANTI-ZERO-EDGES: a present selector that
+                                    // resolves to ZERO edges must NEVER silently
+                                    // fall through to the all-edges path (the
+                                    // task-3295 fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "chamfer(solid, edges, distance): edge selector \
+                                                 resolved to zero edges — refusing to silently \
+                                                 chamfer all edges",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "chamfer: edge selector resolved to zero edges"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::Chamfer {
+                                        target: target_id,
+                                        edges: resolved,
+                                        distance,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on the
+                                // legacy pipeline it is `Undef` (the edges selector
+                                // resolves in P4, after this P2 arm). This is NOT an
+                                // empty selection, so do NOT emit E_EMPTY_SELECTION
+                                // (that would false-positive on every legacy 3-arg
+                                // chamfer); return a USER-ACTIONABLE Err so the cell
+                                // stays Undef and η resolves it in-loop. Mirrors the
+                                // Fillet arm; removed once engine-unified-build-dag
+                                // η/ε (tasks 4360/4358) make curated selection
+                                // reachable end-to-end.
+                                other => Err(format!(
+                                    "chamfer(solid, edges, distance): curated edge selection is \
+                                     not yet available on the current build pipeline — the edge \
+                                     selector cannot be resolved at the point this chamfer runs. \
+                                     Use 2-arg chamfer(solid, distance) to chamfer all edges, or \
+                                     wait for curated edge selection (engine-unified-build-dag \
+                                     tasks 4360/4358). [edge selector evaluated to {:?}]",
+                                    other
+                                )),
+                            }
+                        }
+                    }
+                }
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...
