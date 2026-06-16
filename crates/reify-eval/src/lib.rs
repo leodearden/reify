@@ -11,6 +11,8 @@ pub use compute_cache_key::compute_cache_key;
 mod concurrent;
 pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
+pub mod observed_demand;
+pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
 pub mod deps;
 pub mod dirty;
 pub mod undef_tracer;
@@ -428,6 +430,19 @@ pub struct Engine {
     build_scheduler: BuildScheduler,
     /// Demand registry tracking which nodes are demanded.
     demand: DemandRegistry,
+    /// Observed-demand registry (selective-demand precondition, task 4532).
+    /// A PASSIVE side-channel populated by the GUI from what it is actually
+    /// displaying (viewport-visible realizations, property-panel cells,
+    /// constraint-panel constraints). NEVER fed into `compute_eval_set` — it is
+    /// read only by the would-prune measurement block in `edit_param`.
+    /// Production `demand` and evaluation semantics are left untouched.
+    observed_demand: DemandRegistry,
+    /// Most recent passive would-prune measurement (task 4532), recorded at the
+    /// end of each `edit_param` (and thus `edit_check`). `None` before the first
+    /// edit. ALWAYS present (NOT cfg-gated): the GUI production build reads it to
+    /// ship the selective-demand measurement DTO. Observational only — writing
+    /// it never affects `EvalResult` / `last_eval_set`.
+    last_demand_prune_measurement: Option<DemandPruneMeasurement>,
     /// Counter for snapshot IDs.
     next_snapshot_id: u64,
     /// Counter for version IDs.

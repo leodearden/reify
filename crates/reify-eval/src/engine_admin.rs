@@ -244,6 +244,12 @@ impl Engine {
             // override post-construction via `set_build_scheduler`.
             build_scheduler: crate::engine_fixpoint::BuildScheduler::from_env(),
             demand: DemandRegistry::new(),
+            // Task 4532: passive observed-demand side-channel + would-prune
+            // measurement. Both ALWAYS present (not cfg-gated) — the GUI prod
+            // build reads the measurement. `observed_demand` is never fed into
+            // `compute_eval_set`.
+            observed_demand: DemandRegistry::new(),
+            last_demand_prune_measurement: None,
             next_snapshot_id: 0,
             next_version_id: 0,
             last_eval_set: Vec::new(),
@@ -1303,6 +1309,18 @@ impl Engine {
     /// Access the eval set from the last eval() or edit_param() call.
     pub fn last_eval_set(&self) -> &[NodeId] {
         &self.last_eval_set
+    }
+
+    /// Access the most recent passive would-prune measurement (task 4532),
+    /// recorded at the end of each `edit_param` (and thus `edit_check`).
+    ///
+    /// `None` before the first edit. NON-cfg-gated (mirrors `last_eval_set`):
+    /// the GUI production build reads this to ship the selective-demand
+    /// measurement DTO. The measurement is OBSERVATIONAL ONLY — it reflects what
+    /// a selective-demand scheduler WOULD prune given the observed-demand cone,
+    /// and never affects evaluation results.
+    pub fn last_demand_prune_measurement(&self) -> Option<&crate::DemandPruneMeasurement> {
+        self.last_demand_prune_measurement.as_ref()
     }
 
     /// **Test-instrumentation only — not a stable public metric.**

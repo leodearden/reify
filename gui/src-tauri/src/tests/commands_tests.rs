@@ -724,6 +724,92 @@ fn set_parameter_impl_recovers_from_poisoned_mutex() {
     );
 }
 
+/// step-8 (task 4532): the `sync_observed_demand` tauri command wrapper
+/// (`sync_observed_demand_impl`) registers the GUI's observed-demand sources
+/// through the same `&Mutex<EngineSession>` session shim the other command
+/// tests use, leaves production evaluation unchanged, and the NEXT
+/// `set_parameter` surfaces the passive would-prune measurement on the returned
+/// `GuiState.demand_prune_measurement`.
+///
+/// RED until `sync_observed_demand_impl` exists (step-9).
+#[test]
+fn sync_observed_demand_impl_is_zero_behavior_change_and_surfaces_measurement() {
+    use crate::commands::{set_parameter_impl, sync_observed_demand_impl};
+
+    // ── Control: drive the edit through the command shim with NO sync. ────────
+    let control = Mutex::new(make_loaded_session());
+    let control_state =
+        set_parameter_impl(&control, "Bracket.thickness", "2mm").expect("control set_parameter");
+
+    // ── Synced: register the visible realization R0 + the displayed thickness
+    //    cell through the COMMAND shim before the edit. No panel constraints, so
+    //    the constraints fall OUTSIDE the observed cone (would-prune). ─────────
+    let synced = Mutex::new(make_loaded_session());
+    sync_observed_demand_impl(
+        &synced,
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    )
+    .expect("sync_observed_demand_impl should succeed");
+    let synced_state =
+        set_parameter_impl(&synced, "Bracket.thickness", "2mm").expect("synced set_parameter");
+
+    // (a) Zero behavior change through the command path: parameter values are
+    //     byte-identical to the no-sync control.
+    assert_eq!(
+        synced_state.values, control_state.values,
+        "command-path observed-demand sync must NOT change GuiState parameter values"
+    );
+
+    // (b) The returned GuiState carries a populated measurement reflecting the
+    //     registered sources.
+    let m = synced_state
+        .demand_prune_measurement
+        .as_ref()
+        .expect("synced GuiState must carry a demand_prune_measurement after the edit");
+    let would_prune_total = m.would_prune.value
+        + m.would_prune.constraint
+        + m.would_prune.realization
+        + m.would_prune.resolution
+        + m.would_prune.compute;
+    assert!(
+        m.observed_retained >= 1,
+        "the visible realization R0 (+ thickness cell) must be retained, got {}",
+        m.observed_retained
+    );
+    assert_eq!(
+        m.would_prune.realization, 0,
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
+        m.would_prune.realization
+    );
+    assert!(
+        would_prune_total > 0,
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
+        m.would_prune
+    );
+    assert_eq!(
+        m.observed_retained + would_prune_total,
+        m.eval_set_size,
+        "invariant: observed_retained + would_prune-total == eval_set_size"
+    );
+
+    // The no-sync control surfaces a measurement too — with nothing retained and
+    // the SAME production eval-set size (zero behavior change).
+    let control_m = control_state
+        .demand_prune_measurement
+        .as_ref()
+        .expect("control GuiState also carries a measurement (empty observed cone)");
+    assert_eq!(
+        control_m.observed_retained, 0,
+        "with no observed registration, nothing is retained"
+    );
+    assert_eq!(
+        control_m.eval_set_size, m.eval_set_size,
+        "production eval-set size is identical with and without observed sync"
+    );
+}
+
 #[test]
 fn update_source_impl_recovers_from_poisoned_mutex() {
     use crate::commands::update_source_impl;

@@ -212,6 +212,79 @@ pub struct GuiState {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_surfaces: Vec<TensegritySurfaceData>,
+    /// Passive selective-demand measurement for the most recent edit (task 4532).
+    ///
+    /// `Some` only on the post-edit success build path (`set_parameter` →
+    /// `build_gui_state`); `None` on cold-start / preview / empty snapshots.
+    /// Mirrors `reify_eval::DemandPruneMeasurement` — a PURELY OBSERVATIONAL
+    /// record of how much of the production eval-set a selective-demand
+    /// scheduler WOULD prune, given the GUI's observed-demand sources (see
+    /// `EngineSession::sync_observed_demand`). Production evaluation is never
+    /// affected by populating or reading this field.
+    ///
+    /// `#[serde(default)]` keeps older payloads (without this field) deserializable.
+    #[serde(default)]
+    pub demand_prune_measurement: Option<DemandPruneMeasurementDto>,
+}
+
+/// GUI-facing mirror of `reify_eval::DemandPruneMeasurement` (selective-demand
+/// precondition, task 4532).
+///
+/// A passive, per-edit measurement: given the GUI's observed-demand sources
+/// (viewport-visible realizations, displayed property cells, panel
+/// constraints), how much of the production eval-set WOULD a selective-demand
+/// scheduler prune? Surfaced on [`GuiState`] so the frontend can inspect the
+/// would-prune distribution. Production evaluation is never affected.
+///
+/// Invariant (inherited from the engine measurement):
+/// `observed_retained + would_prune.total() == eval_set_size`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DemandPruneMeasurementDto {
+    /// Total size of the production eval-set for the edit.
+    pub eval_set_size: usize,
+    /// Eval-set nodes that ARE in the observed cone — a selective-demand
+    /// scheduler would still evaluate these.
+    pub observed_retained: usize,
+    /// Eval-set nodes NOT in the observed cone, broken down by node kind.
+    pub would_prune: WouldPruneByKindDto,
+}
+
+/// GUI-facing mirror of `reify_eval::WouldPruneByKind` (task 4532): would-prune
+/// counts split by `NodeId` kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WouldPruneByKindDto {
+    /// `Value`-kind nodes that would be pruned.
+    pub value: usize,
+    /// `Constraint`-kind nodes that would be pruned.
+    pub constraint: usize,
+    /// `Realization`-kind nodes that would be pruned.
+    pub realization: usize,
+    /// `Resolution`-kind nodes that would be pruned.
+    pub resolution: usize,
+    /// `Compute`-kind nodes that would be pruned.
+    pub compute: usize,
+}
+
+impl From<&reify_eval::DemandPruneMeasurement> for DemandPruneMeasurementDto {
+    fn from(m: &reify_eval::DemandPruneMeasurement) -> Self {
+        Self {
+            eval_set_size: m.eval_set_size,
+            observed_retained: m.observed_retained,
+            would_prune: WouldPruneByKindDto::from(&m.would_prune),
+        }
+    }
+}
+
+impl From<&reify_eval::WouldPruneByKind> for WouldPruneByKindDto {
+    fn from(w: &reify_eval::WouldPruneByKind) -> Self {
+        Self {
+            value: w.value,
+            constraint: w.constraint,
+            realization: w.realization,
+            resolution: w.resolution,
+            compute: w.compute,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -12415,6 +12415,154 @@ fn build_constraints_sorts_constraints_by_node_id() {
     );
 }
 
+// ── Observed-demand sync (selective-demand precondition, task 4532) ───────────
+
+/// step-6 (task 4532): `EngineSession::sync_observed_demand` registers the GUI's
+/// observed-demand sources — viewport-visible realizations (mesh keys),
+/// displayed property cells, and panel constraints — on the engine's
+/// SIDE-CHANNEL observed-demand registry, rebuilds the observed cone, and the
+/// next edit records a PASSIVE would-prune measurement — all WITHOUT perturbing
+/// production evaluation.
+///
+/// This pins three things:
+///   (a) zero behavior change through the GUI path — GuiState parameter values
+///       and the production `last_eval_set` are byte-identical to a control run
+///       with no sync (observed_* never feed `compute_eval_set`);
+///   (b) the synced engine records a `DemandPruneMeasurement` reflecting the
+///       registered sources — the visible realization R0 is retained, so
+///       `would_prune.realization == 0`, while non-observed nodes (volume,
+///       constraints) are counted as would-prune;
+///   (c) the measurement invariant `observed_retained + would_prune.total()
+///       == eval_set_size`.
+///
+/// RED until `EngineSession::sync_observed_demand` exists (step-7).
+#[test]
+fn sync_observed_demand_is_zero_behavior_change_and_records_measurement() {
+    // ── Control run: NO observed-demand sync ─────────────────────────────────
+    let mut control = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    control
+        .load_from_source(bracket_source(), "bracket")
+        .expect("control load_from_source should succeed");
+    let control_state = control
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("control set_parameter should succeed");
+    let control_eval_set: Vec<_> = control
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // ── Sync run: register the visible realization R0 + the displayed thickness
+    //    cell as observed demand BEFORE editing. No panel constraints, so the
+    //    constraints fall OUTSIDE the observed cone (would-prune). ────────────
+    let mut synced = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    synced
+        .load_from_source(bracket_source(), "bracket")
+        .expect("synced load_from_source should succeed");
+    synced.sync_observed_demand(
+        &["Bracket#realization[0]".to_string()],
+        &["Bracket.thickness".to_string()],
+        &[],
+    );
+    let synced_state = synced
+        .set_parameter("Bracket.thickness", "2mm")
+        .expect("synced set_parameter should succeed");
+    let synced_eval_set: Vec<_> = synced
+        .core_state_for_test()
+        .engine()
+        .last_eval_set()
+        .to_vec();
+
+    // (a) Zero behavior change through the GUI path.
+    assert_eq!(
+        synced_state.values, control_state.values,
+        "observed-demand sync must NOT change GuiState parameter values"
+    );
+    // Constraint DATA must be identical, compared ORDER-INSENSITIVELY. The
+    // `constraints` Vec order is derived from HashSet/HashMap iteration in the
+    // engine's constraint-check path, whose per-allocation RandomState seed is
+    // perturbed by the extra `HashSet` allocations `sync_observed_demand`
+    // performs (reset + rebuild of the side-channel observed-demand registry).
+    // That seed drift can reorder the Vec between the two independent engines
+    // WITHOUT changing any constraint's data — `observed_demand` never feeds the
+    // constraint check (it is read only by the passive measurement). Sorting
+    // both sides by `node_id` isolates the data-equality the zero-behavior-change
+    // contract actually guarantees.
+    let mut synced_constraints = synced_state.constraints.clone();
+    let mut control_constraints = control_state.constraints.clone();
+    synced_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    control_constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    assert_eq!(
+        synced_constraints, control_constraints,
+        "observed-demand sync must NOT change GuiState constraint data \
+         (order-insensitive: only HashSet-seeded Vec order may differ)"
+    );
+    assert_eq!(
+        synced_eval_set, control_eval_set,
+        "observed-demand sync must NOT change the production last_eval_set \
+         (observed_* never feed compute_eval_set)"
+    );
+
+    // (b) The synced engine records a measurement reflecting the registered
+    //     sources.
+    let m = synced
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("synced engine must record a DemandPruneMeasurement after edit")
+        .clone();
+    assert_eq!(
+        m.eval_set_size,
+        synced_eval_set.len(),
+        "measurement eval_set_size must equal last_eval_set().len()"
+    );
+    assert!(
+        m.observed_retained >= 1,
+        "the visible realization must be retained (observed_retained >= 1), got {}",
+        m.observed_retained
+    );
+    assert_eq!(
+        m.would_prune.realization, 0,
+        "the visible realization R0 is observed → must NOT be in would_prune; got {}",
+        m.would_prune.realization
+    );
+    assert!(
+        m.would_prune.total() > 0,
+        "non-observed nodes (volume, constraints) must be counted as would-prune; got {:?}",
+        m.would_prune
+    );
+
+    // (c) Measurement invariant.
+    assert_eq!(
+        m.observed_retained + m.would_prune.total(),
+        m.eval_set_size,
+        "invariant: observed_retained + would_prune.total() == eval_set_size"
+    );
+
+    // The control run (no observed registration) records a measurement too, but
+    // with nothing retained — and the SAME production eval-set size.
+    let control_m = control
+        .core_state_for_test()
+        .engine()
+        .last_demand_prune_measurement()
+        .expect("control engine also records a measurement (empty observed cone)")
+        .clone();
+    assert_eq!(
+        control_m.observed_retained, 0,
+        "with no observed registration, nothing is retained"
+    );
+    assert_eq!(
+        control_m.eval_set_size, m.eval_set_size,
+        "the production eval-set size is identical with and without observed sync"
+    );
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
