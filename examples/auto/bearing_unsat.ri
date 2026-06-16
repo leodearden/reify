@@ -1,0 +1,94 @@
+// bearing_unsat.ri — ζ NoCandidate negative fixture.
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-resolution-completion.md
+// Tasks: 4437 (ζ — NoCandidate negative, all candidates violated)
+//
+// # What this fixture demonstrates
+//
+// `Bearing<T: Seal>` has a member constraint that reads the `seal` param's
+// `thickness` field:
+//
+//     constraint seal.thickness < bore_radius
+//
+// With bore_radius=3mm and TWO Seal candidates (ThickSeal=5mm, HugeSeal=8mm)
+// that BOTH violate the constraint (5mm ≥ 3mm, 8mm ≥ 3mm), Phase B finds
+// ZERO feasible candidates:
+//
+//   ThickSeal: seal.thickness=5mm < bore_radius=3mm → FALSE → Violated
+//   HugeSeal:  seal.thickness=8mm < bore_radius=3mm → FALSE → Violated
+//
+// FeasibilityResult::Empty → select_candidate emits
+// E_AUTO_TYPE_PARAM_NO_CANDIDATE (Error), naming each candidate's violated
+// constraint via rejection_summary: "'{name}' rejected by constraint {entity}#{index}".
+// No substitution is produced (clean diagnostic, no silent Undef).
+//
+// # Relation to bearing_constraint_select.ri
+//
+// This fixture mirrors bearing_constraint_select.ri structurally:
+//   - same Seal trait (with `param thickness : Length` declared, per task 4596)
+//   - same Bearing template (same bore_radius=3mm, same constraint)
+//   - same STRICT `auto: Seal`
+//   - DIFFERENT candidates: ThickSeal+HugeSeal (both violated) vs
+//     ThinSeal+ThickSeal (one feasible, one violated)
+//
+// The ONLY behavioural delta from bearing_constraint_select.ri is survivor-count:
+//   bearing_constraint_select.ri: 1 survivor (ThinSeal) → Selected
+//   bearing_unsat.ri:             0 survivors           → NoCandidate
+//
+// # Compile-time behaviour
+//
+// Under BOTH the stub checker (CompileTimeIndeterminateChecker) and the real
+// checker (SimpleConstraintChecker), the member reads on the TypeParam receiver
+// (task 4596's branch) evaluate correctly:
+//   - stub: returns Indeterminate → all candidates stub-feasible → ≥2 feasible
+//           → E_AUTO_TYPE_PARAM_AMBIGUOUS (Ambiguous, NOT NoCandidate)
+//   - real: evaluates the per-candidate ValueMap → ThickSeal Violated,
+//           HugeSeal Violated → Empty → E_AUTO_TYPE_PARAM_NO_CANDIDATE
+//
+// This fixture therefore emits an Error under EVERY checker and cannot pass
+// the zero-Error corpus walk; it is registered in BOTH SKIP_SETs
+// (examples_smoke.rs and auto_type_param_determinism_tests.rs).
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+//
+// Declares `param thickness : Length` so that `seal.thickness` on the
+// unresolved TypeParam receiver compiles correctly (task 4596's branch
+// reads the bound trait's field declaration for the static type).
+
+trait Seal {
+    param thickness : Length
+}
+
+// ── Two Seal-conformant candidates — BOTH violate the constraint ──────────────
+//
+// ThickSeal: thickness=5mm > bore_radius=3mm → Violated
+// HugeSeal:  thickness=8mm > bore_radius=3mm → Violated
+// (neither satisfies `seal.thickness < bore_radius=3mm`)
+
+structure def ThickSeal : Seal {
+    param thickness : Length = 5mm
+}
+
+structure def HugeSeal : Seal {
+    param thickness : Length = 8mm
+}
+
+// ── Parameterized template: same structure as bearing_constraint_select.ri ────
+//
+// bore_radius=3mm; both candidates' thickness exceeds bore_radius:
+// 5mm ≥ 3mm (ThickSeal) and 8mm ≥ 3mm (HugeSeal) → zero survivors.
+
+structure def Bearing<T: Seal> {
+    param bore_radius : Length = 3mm
+    param seal : T
+    constraint seal.thickness < bore_radius
+}
+
+// ── Assembly exercising STRICT `auto: Seal` (zero feasible → NoCandidate) ─────
+//
+// Under the real checker: FeasibilityResult::Empty → E_AUTO_TYPE_PARAM_NO_CANDIDATE
+// naming each violated candidate. No substitution produced.
+
+structure def BearingUnsat {
+    sub bearing = Bearing<auto: Seal>()
+}

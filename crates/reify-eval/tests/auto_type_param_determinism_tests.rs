@@ -108,6 +108,15 @@ const SKIP_SET: &[(&str, &str)] = &[
          task ζ's reify-eval e2e. Mirrored from examples_smoke.rs::SKIP_SET (task 4434 γ).",
     ),
     (
+        "auto/bearing_unsat.ri",
+        "ζ negative fixture: strict `auto: Seal` with TWO candidates that BOTH violate the \
+         member constraint `seal.thickness < bore_radius=3mm` (ThickSeal=5mm, HugeSeal=8mm). \
+         Emits an Error under any checker (NoCandidate under real checker, Ambiguous under stub) \
+         — check_source_with_stdlib panics on compile errors. Exercised by task ζ's reify-eval \
+         auto_type_param_completion_e2e harness (bearing_unsat_emits_no_candidate_naming_constraint). \
+         Mirrored from examples_smoke.rs::SKIP_SET (task 4437 ζ).",
+    ),
+    (
         "conditional_compilation/main.ri",
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
