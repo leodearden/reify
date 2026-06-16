@@ -18,8 +18,8 @@ mod differential;
 
 use differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, SEED_CORPUS, assert_equivalent_or_allowed,
-    assert_unified_byte_identical, build_under, build_with_kernel_stdlib, project_build_result,
-    seeded_build_volume_kernel,
+    assert_unified_byte_identical, build_under, build_under_keep_engine, build_with_kernel_stdlib,
+    project_build_result, residue_for, seeded_build_volume_kernel,
 };
 use reify_core::DiagnosticCode;
 use reify_eval::BuildScheduler;
@@ -169,5 +169,59 @@ fn allow_list_admits_only_reasoned_divergence() {
 fn unified_runs_are_byte_identical() {
     for case in SEED_CORPUS {
         assert_unified_byte_identical(case);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step-7 (RED): the Stage-1 `residue == ∅` gate. PRD §6 requires that on every
+// ACYCLIC legacy-passing case the unified Kahn worklist drains COMPLETELY — every
+// node is popped. A non-empty residue is either a false-positive cycle or a
+// "stranded-without-SCC" node (left Undef, emitting NO diagnostic), so a
+// diagnostics-only check (the δ cycle-contract test) cannot catch it. We observe
+// the residue set DIRECTLY by re-running the pure planner over the post-build
+// `eval_state`. We additionally assert the build emitted NO spurious EvalCycle /
+// EvalUnresolved (no false cycle, no spurious auto-read decline).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// For every acyclic SEED corpus entry, build under `UnifiedDag` and assert the
+/// Stage-1 residue is ∅ (observed directly via `residue_for`) AND no EvalCycle /
+/// EvalUnresolved diagnostic was emitted.
+///
+/// RED until step-8: neither `build_under_keep_engine` (which retains the engine
+/// so its post-build `eval_state` stays observable) nor `residue_for` exists yet.
+#[test]
+fn acyclic_corpus_residue_is_empty() {
+    for case in SEED_CORPUS {
+        if case.expects_cycle {
+            continue;
+        }
+        let (engine, result) =
+            build_under_keep_engine(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+
+        let residue = residue_for(&engine);
+        assert!(
+            residue.is_empty(),
+            "acyclic case `{}`: Stage-1 residue MUST be ∅ under UnifiedDag — a non-empty \
+             residue is a false-positive cycle or a stranded-without-SCC node (left Undef, \
+             emitting NO diagnostic). Got {} unpopped node(s): {:?}",
+            case.name,
+            residue.len(),
+            residue,
+        );
+
+        let codes: Vec<Option<DiagnosticCode>> =
+            result.diagnostics.iter().map(|d| d.code).collect();
+        assert!(
+            !codes.contains(&Some(DiagnosticCode::EvalCycle)),
+            "acyclic case `{}`: UnifiedDag emitted a spurious EvalCycle (false-positive cycle) \
+             on an acyclic module",
+            case.name,
+        );
+        assert!(
+            !codes.contains(&Some(DiagnosticCode::EvalUnresolved)),
+            "acyclic case `{}`: UnifiedDag emitted a spurious EvalUnresolved (the auto-read \
+             guard fired without an auto-driven geometry-backed constraint)",
+            case.name,
+        );
     }
 }
