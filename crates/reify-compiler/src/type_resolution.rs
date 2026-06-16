@@ -3804,4 +3804,87 @@ mod tests {
             "Range with 2 type-args should return None (arity guard)",
         );
     }
+
+    // ── task 4602 β: substitute_type_params for Applied / Projection ─────────
+    // Pins that the recursive rebuild is correct: args are individually
+    // substituted, the base is substituted, and the name/member are carried
+    // through unchanged.  β = recurse/rebuild only — no projection reduction.
+    // Uses the existing `subst_of` helper defined earlier in this test module.
+
+    /// Applied{name, [TypeParam(T)]} with {T: StructureRef(X)} → Applied{name, [StructureRef(X)]}.
+    #[test]
+    fn substitute_applied_args_rebuilt_with_subst() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let applied = Type::applied("C", vec![Type::TypeParam("T".to_string())]);
+        let result = substitute_type_params(&applied, &subst);
+        assert_eq!(
+            result,
+            Type::applied("C", vec![Type::StructureRef("X".to_string())]),
+            "Applied arg containing TypeParam(T) must be substituted"
+        );
+    }
+
+    /// Applied{name, [StructureRef(Y), TypeParam(T)]} with {T: Int} →
+    /// Applied{name, [StructureRef(Y), Int]}: partial substitution, first arg unchanged.
+    #[test]
+    fn substitute_applied_partial_arg_substitution() {
+        let subst = subst_of(&[("T", Type::Int)]);
+        let applied = Type::applied(
+            "C",
+            vec![
+                Type::StructureRef("Y".to_string()),
+                Type::TypeParam("T".to_string()),
+            ],
+        );
+        let result = substitute_type_params(&applied, &subst);
+        assert_eq!(
+            result,
+            Type::applied("C", vec![Type::StructureRef("Y".to_string()), Type::Int]),
+            "Only the TypeParam arg should be substituted; concrete arg unchanged"
+        );
+    }
+
+    /// Projection{TypeParam(T), "M"} with {T: StructureRef(X)} → Projection{StructureRef(X), "M"}.
+    #[test]
+    fn substitute_projection_base_rebuilt_with_subst() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let proj = Type::projection(Type::TypeParam("T".to_string()), "M");
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::StructureRef("X".to_string()), "M"),
+            "Projection base containing TypeParam(T) must be substituted"
+        );
+    }
+
+    /// Projection with an Applied base: Projection{Applied{C,[TypeParam(T)]}, "M"}
+    /// with {T: StructureRef(X)} → Projection{Applied{C,[StructureRef(X)]}, "M"}.
+    /// Exercises recursive substitution through nested constructors.
+    #[test]
+    fn substitute_projection_over_applied_base_recursively_rebuilt() {
+        let subst = subst_of(&[("T", Type::StructureRef("X".to_string()))]);
+        let proj = Type::projection(
+            Type::applied("C", vec![Type::TypeParam("T".to_string())]),
+            "M",
+        );
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::applied("C", vec![Type::StructureRef("X".to_string())]), "M"),
+            "Nested Applied inside Projection base must be recursively substituted"
+        );
+    }
+
+    /// Projection with a concrete (non-TypeParam) base is an identity under substitution.
+    #[test]
+    fn substitute_projection_concrete_base_identity() {
+        let subst = subst_of(&[("T", Type::Int)]);
+        let proj = Type::projection(Type::StructureRef("X".to_string()), "M");
+        let result = substitute_type_params(&proj, &subst);
+        assert_eq!(
+            result,
+            Type::projection(Type::StructureRef("X".to_string()), "M"),
+            "Projection with concrete base must be unchanged by substitution"
+        );
+    }
 }
