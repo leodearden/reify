@@ -427,6 +427,24 @@ pub enum DiagnosticCode {
     /// secondary label naming the canonical dimensions when both are known
     /// (e.g. `"Money and Force are different dimensions and cannot be combined directly"`).
     DimensionMismatch,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    ///          (`resolve_type_expr_with_aliases_kinded`, bare-Scalar guard, task 4375 γ).
+    /// Canonical message form:
+    /// `"bare \`Scalar\` is not a valid type: write \`Scalar<Q>\` or a named dimension like \`Length\`"`.
+    ///
+    /// Emitted as `Severity::Error` when the resolver encounters the unparameterized
+    /// identifier `Scalar` (i.e. `type_args.is_empty()`) at a type-expression position.
+    /// The guard returns `Some(Type::Error)` (poison sentinel) so callers suppress their
+    /// generic `UnresolvedType` cascade — the user sees exactly one clean E_BARE_SCALAR
+    /// diagnostic rather than two cascaded errors.
+    ///
+    /// Note: `Scalar<Q>` with valid or invalid type args is **not** covered by this code —
+    /// `Scalar<Length>` is fine; `Scalar<NotADimension>` surfaces a precise dimension error
+    /// emitted by the parameterized-builtin path. The `type_args.is_empty()` guard enforces
+    /// the distinction.
+    ///
+    /// PRD mnemonic: `E_BARE_SCALAR`. See `docs/prds/v0_6/real-dimensionless-unification.md`.
+    BareScalarType,
     /// Origin: `crates/reify-compiler/src/compile_builder/shadow_lint.rs`.
     /// Emitted as a Warning when a child-scope binder (e.g. lambda parameter,
     /// quantifier-bound variable) uses the same name as a name visible from an
@@ -4252,6 +4270,41 @@ mod tests {
         // Attachable via the builder; code reads back correctly.
         let d = Diagnostic::warning("x").with_code(DiagnosticCode::ReservedTypeName);
         assert_eq!(d.code, Some(DiagnosticCode::ReservedTypeName));
+    }
+
+    // --- BareScalarType tests (task 4375 — E_BARE_SCALAR) ---
+    // Pairs with the bare-Scalar guard in
+    // `crates/reify-compiler/src/type_resolution.rs` (resolve_type_expr_with_aliases_kinded).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::BareScalarType` round-trips through
+    /// `Diagnostic::error(...).with_code(...)` and the severity is `Severity::Error`.
+    /// Shape mirrors `diagnostic_code_geometry_unbounded_with_code_round_trips`;
+    /// a future enum reorganisation that drops `BareScalarType` is caught here.
+    ///
+    /// RED until step-2 adds the variant.
+    #[test]
+    fn diagnostic_code_bare_scalar_type_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error(
+            "bare `Scalar` is not a valid type: write `Scalar<Q>` or a named dimension like `Length`",
+        )
+        .with_code(DiagnosticCode::BareScalarType);
+        assert_eq!(d.code, Some(DiagnosticCode::BareScalarType));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::BareScalarType` serializes as
+    /// `"BareScalarType"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-2 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_bare_scalar_type_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::BareScalarType).unwrap();
+        assert_eq!(s, "\"BareScalarType\"");
     }
 }
 

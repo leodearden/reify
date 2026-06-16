@@ -257,7 +257,9 @@ pub(crate) fn resolve_dimension_type(
     }
     // "Dimensionless" is intentionally absent from NAMED_DIMENSIONS (canonical_name returns
     // None for it), but resolve_dimension_type must still accept it.
-    if name == "Dimensionless" {
+    // "Real" is the unified dimension-position synonym for "Dimensionless" (PRD Open Q2):
+    // Vector3<Real>, Scalar<Real>, Point3<Real> resolve identically to their <Dimensionless> form.
+    if name == "Dimensionless" || name == "Real" {
         return Some(DimensionVector::DIMENSIONLESS);
     }
     // Unknown name: emit a diagnostic whose expected-names list is derived from the shared
@@ -559,7 +561,11 @@ pub(crate) fn compile_unit(
 /// `resolve_dimension_type` — because it is intentionally absent from `NAMED_DIMENSIONS`.
 pub(crate) fn resolve_type_name(name: &str) -> Option<Type> {
     match name {
-        "Scalar" => Some(Type::length()), // Default scalar is length-dimensioned in M1
+        // NOTE: bare "Scalar" (no type arg) is intentionally absent here.
+        // It previously resolved to Some(Type::length()) as an M1 default, but that default
+        // was removed in task 4375 γ (E_BARE_SCALAR).  Bare `Scalar` now triggers a hard error
+        // in resolve_type_expr_with_aliases_kinded and returns Some(Type::Error) (poison sentinel).
+        // Parameterised `Scalar<Q>` continues to resolve through resolve_parameterized_builtin_type.
         "Solid" => Some(Type::Geometry),  // Surface-syntax alias for the geometry-handle type
         "Geometry" => Some(Type::Geometry), // Canonical surface spelling of the geometry-handle type (Solid is the legacy alias)
         "DatumRef" => Some(Type::Geometry), // datum-reference handle aliases the geometry-handle type (PRD §8 Q1 / task #3116)
@@ -1365,6 +1371,34 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(ty);
     }
 
+    // E_BARE_SCALAR guard: bare `Scalar` (no type arg) is not a valid type.
+    //
+    // Fires ONLY when name == "Scalar" AND type_args is empty — which means:
+    //   • The parameterised-builtin check above did NOT fire (type_args was empty).
+    //   • The simple-name block above did NOT resolve it (Scalar has no default in
+    //     resolve_type_name since task 4375 γ removed the `Type::length()` arm).
+    //   • No user-defined alias named "Scalar" is in scope (that would have matched).
+    //
+    // Guard placement rationale: fires after builtins/type-params/aliases/structures/traits
+    // have all failed, so a user alias named "Scalar" still wins.  The `type_args.is_empty()`
+    // condition keeps `Scalar<BadDim>` routing to the parameterised-builtin path where it
+    // surfaces the precise dimension error (task 4375 γ design decision D2).
+    //
+    // Returns Some(Type::Error) (poison sentinel) + one BareScalarType diagnostic,
+    // suppressing the generic UnresolvedType cascade so the user sees exactly one clean
+    // E_BARE_SCALAR error (mirrors the DimParamKind anti-cascade pattern at line 1341).
+    if name == "Scalar" && type_args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "bare `Scalar` is not a valid type: write `Scalar<Q>` or a named dimension \
+                 like `Length`",
+            )
+            .with_code(DiagnosticCode::BareScalarType)
+            .with_label(DiagnosticLabel::new(type_expr.span, "bare `Scalar` type")),
+        );
+        return Some(Type::Error);
+    }
+
     // Check parameterized alias instantiation
     if let Some(alias_entry) = alias_registry.lookup(name)
         && !alias_entry.type_params.is_empty()
@@ -1983,17 +2017,15 @@ fn classify_dim_slot<'a>(
 ///   diagnostics and propagate `None` so the alias stays unresolved.  Falling
 ///   through to a subsequent `resolve_type_name` lookup would silently bind the
 ///   builtin's default type and produce a wrong-type cascade at use sites
-///   (see task #2841: `Scalar` default → `Type::length()`).
+///   (see task #2841; the `Scalar` default `Type::length()` was removed in
+///   task 4375 γ via E_BARE_SCALAR, handled upstream in
+///   `resolve_type_expr_with_aliases_kinded` before reaching this function).
 /// - **`tmp_diags` empty** → no named arm matched (the `_ => return None` arm
 ///   fired); falling through to the user-parametric alias check is safe because
-///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, and `Point3`
-///   have no `resolve_type_name` default.
-///
-/// `Scalar` is the one builtin parametric with a `resolve_type_name` default
-/// (`Type::length()`).  It satisfies the invariant because its failure path
-/// always routes through `resolve_type_alias_expr_to_dimension`, which pushes a
-/// diagnostic before returning `None` — keeping `tmp_diags` non-empty whenever
-/// the `Scalar` arm matched and failed (task #2843).
+///   `List`, `Set`, `Map`, `Option`, `Tensor`, `Matrix`, `Vector3`, `Point3`,
+///   and `Scalar` have no `resolve_type_name` default (bare `Scalar` is handled
+///   upstream by the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`
+///   before this function is reached, so it never arrives here bare).
 ///
 /// The `debug_assert!` at the end of this function is forward-looking scaffolding
 /// that catches any future arm that synthesises `None` directly without pushing a
@@ -3885,6 +3917,307 @@ mod tests {
             result,
             Type::projection(Type::StructureRef("X".to_string()), "M"),
             "Projection with concrete base must be unchanged by substitution"
+        );
+    }
+
+    // ── Real = Dimensionless in dimension position (task 4375 γ step-3) ───────
+    // These four tests pin the Real-as-synonym-for-Dimensionless contract in
+    // dimension-position resolution (resolve_dimension_type,
+    // resolve_type_alias_expr_to_dimension, and the parameterized-builtin arms).
+    // Tests (a)–(c) are RED until step-4 extends resolve_dimension_type.
+    // Test (d) is already GREEN from α/4373 (type-position half); it is included
+    // here as a regression-lock contract only.
+
+    /// (a) `resolve_dimension_type("Real")` returns `Some(DIMENSIONLESS)` with
+    /// zero diagnostics, and equals the `"Dimensionless"` result.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to the Dimensionless guard.
+    #[test]
+    fn resolve_dimension_type_real_is_dimensionless_synonym() {
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real = resolve_dimension_type(&te_real, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim = resolve_dimension_type(&te_dimensionless, &mut diags_dim);
+
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_dimension_type(\"Real\") should return Some(DIMENSIONLESS)"
+        );
+        assert!(
+            diags_real.is_empty(),
+            "resolve_dimension_type(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "resolve_dimension_type(\"Real\") must equal resolve_dimension_type(\"Dimensionless\")"
+        );
+    }
+
+    /// (b) `resolve_type_alias_expr_to_dimension` returns the same value for
+    /// `"Real"` and `"Dimensionless"`, with no diagnostics on either call.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_type_alias_expr_to_dimension_real_equals_dimensionless() {
+        let reg = TypeAliasRegistry::new();
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real =
+            resolve_type_alias_expr_to_dimension(&te_real, &reg, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim =
+            resolve_type_alias_expr_to_dimension(&te_dimensionless, &reg, &mut diags_dim);
+
+        assert!(
+            diags_real.is_empty(),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        // Positive assertion: Real must actually resolve to DIMENSIONLESS, not just
+        // match Dimensionless vacuously (e.g. both returning None with no diagnostic).
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should return Some(DIMENSIONLESS)"
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "Real and Dimensionless must resolve to the same dimension"
+        );
+    }
+
+    /// (c) `Vector3<Real> == Vector3<Dimensionless>` and `Scalar<Real> == Scalar<Dimensionless>`,
+    /// both `Some(...)`, no diagnostics.
+    ///
+    /// Calls `resolve_parameterized_builtin_type` with the current 8-arg signature
+    /// (dim_param_names: &HashSet<String> was added in task 4234/ε).
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_parameterized_builtin_type_real_equals_dimensionless_for_vector3_and_scalar() {
+        let reg = TypeAliasRegistry::new();
+
+        // Vector3<Real> vs Vector3<Dimensionless>
+        let args_real = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Real".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+        let args_dim = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Dimensionless".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+
+        let mut diags_v3_real = Vec::new();
+        let vec3_real = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_real,
+            &reg,
+            &mut diags_v3_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_v3_dim = Vec::new();
+        let vec3_dim = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_dim,
+            &reg,
+            &mut diags_v3_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(vec3_real.is_some(), "Vector3<Real> should resolve to Some(...)");
+        assert!(
+            diags_v3_real.is_empty(),
+            "Vector3<Real> should produce no diagnostics; got: {:?}",
+            diags_v3_real
+        );
+        assert_eq!(vec3_real, vec3_dim, "Vector3<Real> must equal Vector3<Dimensionless>");
+
+        // Scalar<Real> vs Scalar<Dimensionless>
+        let mut diags_sc_real = Vec::new();
+        let scalar_real = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_real,
+            &reg,
+            &mut diags_sc_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_sc_dim = Vec::new();
+        let scalar_dim = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_dim,
+            &reg,
+            &mut diags_sc_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(scalar_real.is_some(), "Scalar<Real> should resolve to Some(...)");
+        assert!(
+            diags_sc_real.is_empty(),
+            "Scalar<Real> should produce no diagnostics; got: {:?}",
+            diags_sc_real
+        );
+        assert_eq!(scalar_real, scalar_dim, "Scalar<Real> must equal Scalar<Dimensionless>");
+    }
+
+    /// (d) Contract-lock: `resolve_type_name("Real") == resolve_type_name("Dimensionless")`.
+    ///
+    /// Already GREEN from α/4373 (`"Real" => Some(Type::dimensionless_scalar())`);
+    /// included here only as a regression pin for the type-position half of the contract.
+    #[test]
+    fn resolve_type_name_real_equals_dimensionless_contract_lock() {
+        assert_eq!(
+            resolve_type_name("Real"),
+            resolve_type_name("Dimensionless"),
+            "resolve_type_name(\"Real\") must equal resolve_type_name(\"Dimensionless\") \
+             (type-position contract, task 4375 γ)"
+        );
+    }
+
+    // ── bare-Scalar rejection (task 4375 γ step-5) ───────────────────────────
+    // These three tests pin the E_BARE_SCALAR contract:
+    // (a) `resolve_type_name("Scalar")` returns `None` (no default arm).
+    // (b) Bare `Scalar` through `resolve_type_expr_with_aliases` returns
+    //     `Some(Type::Error)` + exactly one `BareScalarType` diagnostic.
+    // (c) `Scalar<NotADimension>` emits at least one diagnostic but NONE
+    //     with `BareScalarType` (the `type_args.is_empty()` guard lets the
+    //     precise dimension error through).
+    // All three are RED until step-6 removes the `"Scalar" => Some(Type::length())`
+    // arm and adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+
+    /// (a) `resolve_type_name("Scalar")` must return `None` once the default
+    /// `Type::length()` arm is removed.
+    ///
+    /// RED until step-6 deletes the `"Scalar" => Some(Type::length())` arm.
+    #[test]
+    fn resolve_type_name_scalar_returns_none_without_default_arm() {
+        assert_eq!(
+            resolve_type_name("Scalar"),
+            None,
+            "resolve_type_name(\"Scalar\") should return None \
+             after the bare-Scalar default arm is removed (E_BARE_SCALAR, task 4375 γ)"
+        );
+    }
+
+    /// (b) Bare `Scalar` (no type args) through `resolve_type_expr_with_aliases`
+    /// must return `Some(Type::Error)` and push exactly one `BareScalarType`
+    /// diagnostic with `Severity::Error`.
+    ///
+    /// RED until step-6 adds the E_BARE_SCALAR guard in `resolve_type_expr_with_aliases_kinded`.
+    #[test]
+    fn resolve_type_expr_with_aliases_bare_scalar_emits_bare_scalar_type() {
+        let te = named_type_expr("Scalar"); // empty type_args
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            result,
+            Some(Type::Error),
+            "bare `Scalar` must resolve to Some(Type::Error) (poison sentinel, E_BARE_SCALAR)"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "bare `Scalar` must emit exactly one diagnostic; got: {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            Some(DiagnosticCode::BareScalarType),
+            "the diagnostic code must be BareScalarType; got: {:?}",
+            diagnostics[0].code
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Error,
+            "the diagnostic severity must be Error; got: {:?}",
+            diagnostics[0].severity
+        );
+    }
+
+    /// (c) `Scalar<NotADimension>` must NOT emit a `BareScalarType` diagnostic —
+    /// only a bare unparameterised `Scalar` triggers E_BARE_SCALAR.
+    ///
+    /// The `type_args.is_empty()` guard in step-6 lets the precise "unknown
+    /// dimension" error surface instead.
+    ///
+    /// RED until step-6 adds the guard (currently `Scalar<Q>` hits the Scalar
+    /// default arm and the bad dimension arg may or may not error).
+    #[test]
+    fn resolve_type_expr_with_aliases_scalar_bad_dim_no_bare_scalar_type() {
+        // Construct TypeExpr for `Scalar<NotADimension>` (one bad type arg).
+        let te = reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Scalar".to_string(),
+                type_args: vec![named_type_expr("NotADimension")],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        };
+        let reg = TypeAliasRegistry::new();
+        let mut diagnostics = Vec::new();
+
+        let _result = resolve_type_expr_with_aliases(
+            &te,
+            &HashSet::new(),
+            &reg,
+            &mut diagnostics,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        // Must emit at least one diagnostic (unknown dimension "NotADimension"),
+        // but NONE of them may have code BareScalarType.
+        assert!(
+            !diagnostics.is_empty(),
+            "Scalar<NotADimension> should produce at least one diagnostic (unknown dimension)"
+        );
+        let bare_scalar_diags: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::BareScalarType))
+            .collect();
+        assert!(
+            bare_scalar_diags.is_empty(),
+            "Scalar<NotADimension> must NOT emit BareScalarType — \
+             the type_args.is_empty() guard must let the dimension error through; \
+             got BareScalarType diagnostics: {:?}",
+            bare_scalar_diags
         );
     }
 }
