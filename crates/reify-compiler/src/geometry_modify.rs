@@ -571,6 +571,109 @@ mod tests {
         }
     }
 
+    /// 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` is recognised by
+    /// `compile_modify_op` and lowered to named args `[target, edges, d1, d2]`
+    /// with `ModifyKind::ChamferAsymmetric` (the NEW per-edge two-distance form,
+    /// β / task 4185). The asymmetric op always carries an explicit `edges` arg.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` and the
+    /// `chamfer_asymmetric` dispatch arm.
+    #[test]
+    fn compile_modify_op_chamfer_asymmetric_4arg_builds_args() {
+        let args: Vec<CompiledExpr> = vec![
+            scalar_literal(1.0),
+            scalar_literal(2.0),
+            scalar_literal(3.0),
+            scalar_literal(4.0),
+        ];
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let target = GeomRef::Step(7);
+        let span = SourceSpan::new(0, 0);
+        let result = compile_modify_op(
+            "chamfer_asymmetric",
+            args,
+            target.clone(),
+            span,
+            &mut diagnostics,
+            vec![],
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
+        let ops = result.expect("compile_modify_op chamfer_asymmetric (4-arg) should return Some");
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            CompiledGeometryOp::Modify {
+                kind: ModifyKind::ChamferAsymmetric,
+                target: op_target,
+                args: op_args,
+            } => {
+                assert_eq!(*op_target, target);
+                let names: Vec<&str> = op_args.iter().map(|(n, _)| n.as_str()).collect();
+                assert_eq!(names, vec!["target", "edges", "d1", "d2"]);
+            }
+            other => panic!(
+                "expected Modify(ChamferAsymmetric) with 4 args, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `chamfer_asymmetric` accepts ONLY the exact 4-arg form: a 3-arg and a
+    /// 5-arg call each return None and emit ≥1 arity diagnostic.
+    ///
+    /// RED until step-12 adds the `chamfer_asymmetric` arm (today the name hits
+    /// the `_ => unreachable!()` fallthrough in `compile_modify_op`).
+    #[test]
+    fn compile_modify_op_chamfer_asymmetric_rejects_3arg_and_5arg() {
+        let span = SourceSpan::new(10, 20);
+        // 3 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> =
+                vec![scalar_literal(1.0), scalar_literal(2.0), scalar_literal(3.0)];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer_asymmetric",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 3-arg chamfer_asymmetric");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 3-arg chamfer_asymmetric"
+            );
+        }
+        // 5 args → None + ≥1 diagnostic
+        {
+            let args: Vec<CompiledExpr> = vec![
+                scalar_literal(1.0),
+                scalar_literal(2.0),
+                scalar_literal(3.0),
+                scalar_literal(4.0),
+                scalar_literal(5.0),
+            ];
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_modify_op(
+                "chamfer_asymmetric",
+                args,
+                GeomRef::Step(0),
+                span,
+                &mut diagnostics,
+                vec![],
+            );
+            assert!(result.is_none(), "expected None for 5-arg chamfer_asymmetric");
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for 5-arg chamfer_asymmetric"
+            );
+        }
+    }
+
     #[test]
     fn compile_modify_2arg_rejects_wrong_arg_count_with_label() {
         let args: Vec<CompiledExpr> = vec![scalar_literal(1.0)]; // only 1 arg, need 2

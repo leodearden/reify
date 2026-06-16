@@ -1545,6 +1545,16 @@ mod tests {
         assert!(is_geometry_function("draft"));
     }
 
+    /// `chamfer_asymmetric` is the 4-arg per-edge two-distance chamfer form
+    /// (β, task 4185). It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-12 adds "chamfer_asymmetric" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_chamfer_asymmetric_recognized() {
+        assert!(is_geometry_function("chamfer_asymmetric"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"chamfer_asymmetric"));
+    }
+
     // --- Boolean function recognition tests (step-1) ---
 
     #[test]

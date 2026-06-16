@@ -10866,6 +10866,152 @@ mod tests {
         );
     }
 
+    // ── ChamferAsymmetric eval-arm: distinct d1/d2 + curated edges + anti-zero ──
+    // The 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` form lowers to the NEW
+    // `ModifyKind::ChamferAsymmetric` → `GeometryOp::ChamferAsymmetric` (β, task 4185).
+    // The edge-resolution + EmptyEdgeSelection logic is shared with the Chamfer arm.
+
+    /// ASYMMETRIC (a) BUILDS VARIANT: a 4-arg ChamferAsymmetric whose `edges`
+    /// selector resolves to a List of `Value::GeometryHandle` sub-handles threads
+    /// the canonical edge ids (ascending kernel_handle order, deduped) and BOTH
+    /// distinct setbacks `d1`/`d2` onto a `GeometryOp::ChamferAsymmetric`. Supplies
+    /// two handles in REVERSE order so the canonical-sort is observable (h7 < h42 →
+    /// [7, 42]); supplies distinct d1≠d2 so the two-distance threading is observable.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` + its eval arm.
+    #[test]
+    fn compile_geometry_op_chamfer_asymmetric_builds_variant() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::ChamferAsymmetric,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                (
+                    "edges".into(),
+                    geometry_handle_list_literal(vec![
+                        GeometryHandleId(42),
+                        GeometryHandleId(7),
+                    ]),
+                ),
+                ("d1".into(), literal_length(0.001)),
+                ("d2".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert_eq!(
+                    edges,
+                    vec![GeometryHandleId(7), GeometryHandleId(42)],
+                    "edges must be canonically sorted (ascending kernel_handle id), \
+                     got {:?}",
+                    edges
+                );
+                assert_eq!(
+                    d1.as_f64(),
+                    Some(0.001),
+                    "d1 setback must thread through, got {:?}",
+                    d1
+                );
+                assert_eq!(
+                    d2.as_f64(),
+                    Some(0.002),
+                    "d2 setback must thread through (distinct from d1), got {:?}",
+                    d2
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::ChamferAsymmetric) for 4-arg \
+                 chamfer_asymmetric with curated edges, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a curated-edges chamfer_asymmetric must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ASYMMETRIC (b) ANTI-ZERO-EDGES: a 4-arg ChamferAsymmetric whose `edges`
+    /// arg is PRESENT but evaluates to an empty `Value::List` must NOT silently
+    /// fall through to the all-edges path. `compile_geometry_op` returns `Err`,
+    /// pushes exactly one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`,
+    /// and produces NO `GeometryOp`. Shares the Chamfer arm's anti-zero guard;
+    /// closes the task-3295 fake-done trap for the asymmetric form too.
+    ///
+    /// RED until step-12 adds `ModifyKind::ChamferAsymmetric` + its eval arm.
+    #[test]
+    fn compile_geometry_op_chamfer_asymmetric_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::ChamferAsymmetric,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("d1".into(), literal_length(0.001)),
+                ("d2".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present chamfer_asymmetric edge selector resolving to zero edges \
+             must Err (never fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
     // ── Draft eval-arm: faces resolution + anti-zero + 3-arg back-compat ──
 
     /// Helper: build a `Value::GeometryHandle` sub-handle with the given
