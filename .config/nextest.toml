@@ -62,12 +62,13 @@ test-group = 'occt'
 # gen-nextest-config.sh full-copy + anchored-sed preserves these blocks verbatim
 # (the sed only rewrites the occt max-threads literal line).
 
-# Initial uniform tier — all 5 heavy binaries schedule early (before default=0).
-# tensegrity_t0a will be raised to priority = 100 (top tier) in a follow-up to
-# enforce strict LPT ordering (longest job first); uniform = 50 here is step-2.
+# Tier 1 — the >180s straggler: priority = 100 (top tier).
+# MUST start at t=0 to define the critical path and allow the rest of the suite
+# to overlap it.  Priority 100 is the highest value in nextest's signed-8-bit
+# -100..100 range; any other test can only match or be lower.
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(tensegrity_t0a)'
-priority = 50
+priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(fea_diagnostics_e2e)'
