@@ -237,7 +237,7 @@ param wall_thickness : Length = auto(free)     // Free -- exploration mode
 
 **Subtyping rule:** `Int` promotes to `Real` implicitly, but `Real` does NOT promote to `Int`.
 
-**`Real` and the dimensional type system:** `Real` is identical to `Scalar<Dimensionless>` -- they are the same type. `Dimensionless` is the dimension whose exponent vector is all zeros. Bare real numbers participate in dimensional arithmetic naturally: `3.14 * 5mm` produces `Scalar<Length>` because `Scalar<Dimensionless> * Scalar<Length> = Scalar<Length>` (dimension exponent vectors add).
+**`Real` and the dimensional type system:** `Real` is identical to `Scalar<Dimensionless>` -- they are the same type. At the type layer there is only one type: `Scalar<Dimensionless>`; `Real` is the name the resolver binds that type to. `Dimensionless` is the dimension whose exponent vector is all zeros. Bare real numbers participate in dimensional arithmetic naturally: `3.14 * 5mm` produces `Scalar<Length>` because `Scalar<Dimensionless> * Scalar<Length> = Scalar<Length>` (dimension exponent vectors add). `Real` is also accepted wherever `Dimensionless` appears, including in dimension position: `Vector3<Real>` is valid and identical to `Vector3<Dimensionless>`.
 
 **`Int` in dimensional arithmetic:** When `Int` appears in arithmetic with a dimensioned quantity, it promotes to `Real` (= `Scalar<Dimensionless>`) first. Thus `3 * 5mm` evaluates as `Scalar<Dimensionless> * Scalar<Length>` = `15mm`. When both operands are `Int`, no promotion occurs -- `Int` arithmetic stays `Int` (except division; see Section 5.1). An `Int` literal immediately followed by a unit (`5mm`) is a quantity literal (Section 2.6), not a promotion -- it directly produces a `Scalar<Length>`.
 
@@ -259,9 +259,9 @@ CostPerMass  = [0, -1, 0, 0, 0, 0, 0, 0, 0, 1]   // Money*Mass^-1
 
 Multiplication adds exponent vectors. Division subtracts. Checked at compile time with zero runtime cost.
 
-**Angle as 8th base dimension:** Angles are dimensionless in SI (radians = m/m), but treating them as dimensionless is a known error source. Torque/energy confusion (both `N*m`) is the canonical example. Adding Angle as a base dimension catches `torque + energy` as a type error. Cost: trig functions need explicit typing (`sin : Angle -> Dimensionless`).
+**Angle as 8th base dimension:** Angles are dimensionless in SI (radians = m/m), but treating them as dimensionless is a known error source. Torque/energy confusion (both `N*m`) is the canonical example. Adding Angle as a base dimension catches `torque + energy` as a type error. Cost: trig functions need explicit typing (`sin : Angle -> Real`).
 
-**SolidAngle as 9th base dimension:** Solid angles are dimensionless in SI (steradians = m²/m²), but tracking them separately prevents confusion between planar-angle and solid-angle quantities. Enables correct typing of luminous intensity (`cd = lm/sr`), beam-pattern calculations, and radiation-pattern integrals. Cost: spherical functions need explicit typing (`steradians -> Dimensionless`).
+**SolidAngle as 9th base dimension:** Solid angles are dimensionless in SI (steradians = m²/m²), but tracking them separately prevents confusion between planar-angle and solid-angle quantities. Enables correct typing of luminous intensity (`cd = lm/sr`), beam-pattern calculations, and radiation-pattern integrals. Cost: spherical functions need explicit typing (`steradians -> Dimensionless` — a physical ratio; `Dimensionless` is used here rather than `Real` because steradians is a derived ratio, not a plain number; see the `Real`/`Dimensionless` connotation note in `std.math.trig`).
 
 **Money as 10th base dimension:** Monetary units (`USD`, `GBP`, `EUR`, etc.) are declared with the `unit` keyword. All monetary values within a project use constant conversion factors. Time-varying exchange rates are out of scope. Enables expressions like `25USD/kg` for cost estimation. Money composes with physical dimensions via multiplication/division like any other dimension.
 
@@ -326,7 +326,9 @@ Scalar<Q: Dimension>           // Dimensioned number -- independent type
 
 `Scalar<Q>` is an independent type representing a single dimensioned value. Unlike `Vector` and higher-rank tensors, `Scalar` does not carry a spatial dimensionality parameter -- a rank-0 tensor has no spatial indices, so `N` is meaningless.
 
-`Scalar<Dimensionless>` is identical to `Real` (see Section 3.1).
+`Scalar<Dimensionless>` is identical to `Real` (see Section 3.1). `Real` is accepted wherever `Dimensionless` is, including in dimension position (e.g. `Vector3<Real>`).
+
+**Bare `Scalar` is rejected:** bare `Scalar` without a dimension parameter (i.e., no `<Q>`) is not a usable type. The type resolver recognises the name and emits `E_BARE_SCALAR` ("write `Scalar<Q>` or a named dimension like `Length`"). Only `Scalar<Q>` (or the `Real`/`Dimensionless` aliases for the all-zero case) is valid in type-annotation position.
 
 **Tensor conversion:** `Scalar<Q>` converts implicitly to `Tensor<0, N, Q>` for any `N`, and vice versa. This allows scalars to participate seamlessly in generic tensor expressions.
 
@@ -1828,7 +1830,8 @@ Imported names enter the module's top-level namespace. They do not participate i
 The following names are reserved by the type resolver and take precedence over user declarations in type-annotation position:
 
 - **Datum types:** `Direction`, `Axis`, `Plane`, `Frame`
-- **Scalar primitives:** `Bool`, `Int`, `Real`, `String`, `Dimensionless`, `Scalar`
+- **Scalar primitives:** `Bool`, `Int`, `Real`, `String`, `Dimensionless`
+- **Reserved-but-rejected scalar:** `Scalar` (bare, without `<Q>`) — reserved so the type resolver can emit `E_BARE_SCALAR`; it is **not** a usable type. Write `Scalar<Q>` for a parameterized dimensioned number, or a named dimension like `Length`.
 - **Selector family:** `Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`
 - **Geometry / solid types:** `Geometry`, `Solid`, `DatumRef`
 - **Named physical dimensions:** `Length`, `Mass`, `Time`, `Force`, `Pressure`, `Energy`, `Power`, `Torque`, `Density`, `Area`, `Volume`, `Angle`, `Temperature`, `Velocity`, `Acceleration`, and all other named physical-quantity singletons in the standard dimension table.
