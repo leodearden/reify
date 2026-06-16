@@ -126,6 +126,18 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
+/// Returns `true` for the Option/Map recovery combinators whose default
+/// argument type must unify with the subject's element type (contract C-3,
+/// PRD docs/prds/v0_6/result-and-fallback.md).
+///
+/// These names emit `DiagnosticCode::FallbackType` (E_FALLBACK_TYPE) instead
+/// of `FnTypeArgConflict` when a type-arg conflict is detected in the generic
+/// call resolver.  or_else / is_some / is_none are excluded: they have no
+/// default-vs-element contract.
+fn is_fallback_combinator(name: &str) -> bool {
+    matches!(name, "unwrap_or" | "or_default" | "fallback" | "get_or")
+}
+
 /// §7.2 syntactic-zero coercion for binary operator operands (task-4485/β).
 ///
 /// If exactly one operand is a **syntactic literal zero** (see
@@ -1705,25 +1717,49 @@ pub(crate) fn compile_expr_guarded(
                         {
                             // A type-param double-binding to two different types is
                             // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
-                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            // For recovery combinators (unwrap_or / or_default /
+                            // fallback / get_or — the default-must-match-element
+                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
+                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
+                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
+                            // bit-for-bit unchanged.  Both paths poison the call via
+                            // make_poison_literal (D3: result_type = Type::Error
+                            // inference sentinel, not a payload).
                             if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
                             {
+                                let (code, message) = if is_fallback_combinator(name) {
+                                    (
+                                        DiagnosticCode::FallbackType,
+                                        format!(
+                                            "E_FALLBACK_TYPE: conflicting type arguments for \
+                                             type parameter '{}' in call to '{}': {} vs {}",
+                                            conflict.param,
+                                            name,
+                                            conflict.existing,
+                                            conflict.incoming
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        DiagnosticCode::FnTypeArgConflict,
+                                        format!(
+                                            "conflicting type arguments for type parameter '{}' \
+                                             in call to '{}': {} vs {}",
+                                            conflict.param,
+                                            name,
+                                            conflict.existing,
+                                            conflict.incoming
+                                        ),
+                                    )
+                                };
                                 return make_poison_literal(
                                     diagnostics,
-                                    Diagnostic::error(format!(
-                                        "conflicting type arguments for type parameter '{}' \
-                                         in call to '{}': {} vs {}",
-                                        conflict.param,
-                                        name,
-                                        conflict.existing,
-                                        conflict.incoming
-                                    ))
-                                    .with_code(DiagnosticCode::FnTypeArgConflict)
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "conflicting type argument",
-                                    )),
+                                    Diagnostic::error(message)
+                                        .with_code(code)
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "conflicting type argument",
+                                        )),
                                 );
                             }
                         }
