@@ -10587,6 +10587,179 @@ mod tests {
         );
     }
 
+    // ── Chamfer eval-arm: curated edges resolution + anti-zero + 2-arg back-compat ──
+    // These mirror the Fillet eval-arm tests above; ModifyKind::Chamfer is reused
+    // (no new kind) for the symmetric 2/3-arg form.
+
+    /// CHAMFER (a) ANTI-ZERO-EDGES: a 3-arg Chamfer whose `edges` arg is PRESENT
+    /// but evaluates to an empty `Value::List` must NOT silently fall through to
+    /// the all-edges path. `compile_geometry_op` returns `Err`, pushes exactly
+    /// one diagnostic carrying `DiagnosticCode::EmptyEdgeSelection`, and produces
+    /// NO `GeometryOp::Chamfer`. Mirrors the Fillet arm; closes the task-3295 trap.
+    #[test]
+    fn compile_geometry_op_chamfer_empty_edge_selection_errors_with_code() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // 3-arg form: args carry "target" (the solid expr), an "edges" selector
+        // that evaluates to Value::List(vec![]), and "distance".
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), empty_list_literal()),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        assert!(
+            result.is_err(),
+            "a present chamfer edge selector resolving to zero edges must Err \
+             (never fall through to all-edges), got {:?}",
+            result
+        );
+        let empty_sel: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code == Some(reify_core::DiagnosticCode::EmptyEdgeSelection))
+            .collect();
+        assert_eq!(
+            empty_sel.len(),
+            1,
+            "expected exactly one EmptyEdgeSelection diagnostic, got diagnostics: {:?}",
+            diagnostics
+        );
+    }
+
+    /// CHAMFER (b) 2-arg back-compat: a Chamfer with NO `edges` arg lowers to
+    /// `GeometryOp::Chamfer{edges: vec![], ..}` (the all-edges path) with NO
+    /// `EmptyEdgeSelection` diagnostic — "no selector" is legitimately all-edges,
+    /// distinct from "selector present but empty".
+    #[test]
+    fn compile_geometry_op_chamfer_2arg_back_compat_builds_empty_edges() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        match result {
+            Ok(reify_ir::GeometryOp::Chamfer { target, edges, .. }) => {
+                assert_eq!(
+                    target,
+                    GeometryHandleId(10),
+                    "target must resolve via Step(0)"
+                );
+                assert!(
+                    edges.is_empty(),
+                    "2-arg chamfer (no edges arg) must lower to empty edges \
+                     (all-edges back-compat), got {:?}",
+                    edges
+                );
+            }
+            other => panic!(
+                "expected Ok(GeometryOp::Chamfer) for 2-arg chamfer, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "2-arg chamfer must NOT emit an EmptyEdgeSelection diagnostic, got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// CHAMFER (c) MALFORMED ELEMENT: a 3-arg Chamfer whose `edges` selector
+    /// resolves to a List containing a NON-handle element must `Err` on the bad
+    /// element rather than silently chamfering only the surviving handle subset.
+    /// Mirrors the Fillet arm's reject-non-handle strictness so the chamfer eval
+    /// arm and the full resolver share one validation policy. The malformed case
+    /// is distinct from an EMPTY selection, so it must NOT trip EmptyEdgeSelection.
+    #[test]
+    fn compile_geometry_op_chamfer_malformed_element_errors_not_empty_selection() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // "edges" resolves to a List with a non-handle element (a bare Real) — a
+        // partially-malformed selector that a `filter_map` would silently drop.
+        let malformed_selector = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::List(vec![reify_ir::Value::Real(1.0)]),
+            reify_core::Type::List(Box::new(reify_core::Type::dimensionless_scalar())),
+        );
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::Chamfer,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("target".into(), literal_length(0.0)),
+                ("edges".into(), malformed_selector),
+                ("distance".into(), literal_length(0.002)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+
+        let msg = match result {
+            Err(msg) => msg,
+            Ok(other) => panic!(
+                "a selector with a non-handle element must Err (never silently \
+                 chamfer the surviving subset), got Ok({:?})",
+                other
+            ),
+        };
+        assert!(
+            msg.contains("not a Geometry sub-handle"),
+            "diagnostic must flag the non-handle element, got: {msg:?}"
+        );
+        // A malformed element is NOT an empty selection — it must error on the
+        // element, never reach (and so never trip) the anti-zero-edges guard.
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != Some(reify_core::DiagnosticCode::EmptyEdgeSelection)),
+            "a malformed-element chamfer selector must NOT emit EmptyEdgeSelection, got: {:?}",
+            diagnostics
+        );
+    }
+
     // ── Draft eval-arm: faces resolution + anti-zero + 3-arg back-compat ──
 
     /// Helper: build a `Value::GeometryHandle` sub-handle with the given
