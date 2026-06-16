@@ -376,9 +376,17 @@ pub fn min_wall_thickness(
         return Ok(MinWallThickness::NoMeasurement);
     }
 
-    // Honest-floor: BelowResolution branch added in step-4 (task δ).
-    // For now (step-2), all finite measurements are returned as Measured.
-    Ok(MinWallThickness::Measured(min_sum))
+    // G6 honest-floor (PRD §3b / task δ step-4): split on raw vs. resolution
+    // floor. The threshold is `2·h` (two voxel-widths) — the smallest
+    // distance that can be reliably resolved by the bidirectional walk at
+    // voxel size h. The decision is on the RAW sum (not a floored copy)
+    // so the 2h threshold semantics stay exact.
+    let floor = 2.0 * h;
+    if min_sum < floor {
+        Ok(MinWallThickness::BelowResolution { raw: min_sum, floor })
+    } else {
+        Ok(MinWallThickness::Measured(min_sum))
+    }
 }
 
 /// Compute the per-voxel medial mask for a Regular3D narrow-band SDF.
