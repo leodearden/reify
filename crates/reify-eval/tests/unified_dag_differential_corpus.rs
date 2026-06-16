@@ -17,12 +17,12 @@
 mod differential;
 
 use differential::{
-    CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS,
+    CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS, assert_cell_definite,
     assert_equivalent_or_allowed, assert_unified_byte_identical, build_case, build_case_keep_engine,
     build_under, build_under_keep_engine, build_with_kernel_stdlib, project_build_result,
     residue_for, seeded_build_volume_kernel,
 };
-use reify_core::DiagnosticCode;
+use reify_core::{DiagnosticCode, ValueCellId};
 use reify_eval::BuildScheduler;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,5 +293,40 @@ fn golden_idioms_equivalent_under_both_schedulers() {
              on an acyclic module",
             case.name,
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Robustness guard (reviewer #4): `seeded_physical_kernel` hardcodes
+// `GeometryHandleId(1)` on the premise that handle assignment is deterministic AND
+// identical across both schedulers. `golden_idioms_equivalent_under_both_schedulers`
+// asserts the two schedulers AGREE, but two identical FAILURES (both `undef`) would
+// also satisfy that empty-allow-list equivalence — a silent degradation if a future
+// handle-numbering change made the seeded reply miss. This pins the DOWNSTREAM
+// EFFECT so the assumption fails LOUDLY instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `seeded_physical_kernel` seeds `volume` / `centroid` replies for
+/// `GeometryHandleId(1)` — the handle `Bracket.geometry = box(10mm, 20mm, 30mm)`
+/// realizes to. The `Physical` trait derives `Bracket.mass` / `Bracket.centroid`
+/// from those queries, so pinning both cells DEFINITE under BOTH schedulers proves
+/// the seeded replies actually REACHED the queries. A renumbering reverts
+/// mass/centroid to `undef` and fails HERE, rather than `golden_idioms_…` silently
+/// passing on a both-sides-`undef` "equivalence".
+#[test]
+fn seeded_physical_kernel_reaches_mass_and_centroid_under_both_schedulers() {
+    let case = GOLDEN_CORPUS
+        .iter()
+        .find(|c| c.name == "golden:spec_shape_physical")
+        .expect("GOLDEN_CORPUS must carry the seeded spec_shape_physical idiom");
+    for scheduler in [BuildScheduler::LegacyMultiPass, BuildScheduler::UnifiedDag] {
+        let result = build_case(case, scheduler);
+        for member in ["mass", "centroid"] {
+            assert_cell_definite(
+                &result,
+                &ValueCellId::new("Bracket", member),
+                &format!("seeded_physical_kernel under {scheduler:?}"),
+            );
+        }
     }
 }

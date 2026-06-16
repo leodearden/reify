@@ -190,6 +190,33 @@ pub fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
         .satisfaction
 }
 
+/// Assert the geometry-derived value `cell` resolved to a DEFINITE (present,
+/// non-[`Value::Undef`]) value in `result` — the LOUD-failure guard for a seeded
+/// kernel's hardcoded [`GeometryHandleId`].
+///
+/// The seeded kernels (`seeded_physical_kernel`, `seeded_build_volume_kernel`) key
+/// their replies on concrete handle ids on the premise that handle assignment is
+/// deterministic AND identical across both schedulers. If a future handle-numbering
+/// change made a seeded reply MISS, the geometry query would silently fall back to
+/// undecided and the equivalence comparison would degrade into "two identical
+/// FAILURE modes" — a false pass. Pinning the downstream `cell` DEFINITE turns that
+/// silent rot into a hard failure. `label` (e.g. the scheduler) is surfaced in the
+/// panic. Renders via `Display` (not `Debug`) so it leans on nothing beyond what
+/// `project_value` already requires of [`Value`].
+pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &str) {
+    let rendered = match result.values.get(cell) {
+        Some(v) if !v.is_undef() => return, // definite — the seeded query reached it.
+        Some(v) => format!("{v}"),          // present but `Undef` (query unresolved).
+        None => "<absent>".to_string(),
+    };
+    panic!(
+        "{label}: geometry-derived cell `{cell}` MUST resolve to a DEFINITE value \
+         (the seeded kernel's hardcoded GeometryHandleId must reach the realized solid); \
+         got `{rendered}`. A handle-numbering change likely made the seeded reply MISS — \
+         the equivalence gate would otherwise silently compare two identical failures.",
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Corpus data types + the reasoned, PER-CASE allow-list (no blanket patterns).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -763,6 +790,13 @@ const SRC_COST_AGGREGATION: &str =
 /// match the analytic box (vol = 0.01·0.02·0.03 m³; centroid at the corner-origin
 /// box's centre) but accuracy is immaterial here — equivalence only requires both
 /// schedulers to see identical replies.
+///
+/// HANDLE-REACH CANARY: the hardcoded `GeometryHandleId(1)` assumption is asserted
+/// LOUDLY by `seeded_physical_kernel_reaches_mass_and_centroid_under_both_schedulers`
+/// (the corpus binary) — it pins `Bracket.mass` / `Bracket.centroid` DEFINITE under
+/// BOTH schedulers, so a future handle-numbering change reverts them to `undef` and
+/// fails there, rather than silently degrading the `golden_idioms_…` equivalence
+/// sweep into a both-sides-`undef` false pass.
 pub fn seeded_physical_kernel() -> Box<dyn GeometryKernel> {
     let centroid_json = Value::String(r#"{"x":0.005,"y":0.01,"z":0.015}"#.to_string());
     let kernel = MockGeometryKernel::new()
@@ -991,6 +1025,15 @@ pub const WARM_PREDICATE_SRC: &str = r#"structure WarmPredicate {
 /// decidability). Boxed for direct use with [`build_with_kernel_stdlib`]; a fresh
 /// kernel per call (each build consumes its kernel). Lifted from
 /// `tests/unified_dag_geometry_executors.rs:468-480`.
+///
+/// HANDLE-REACH CANARY: the hardcoded `GeometryHandleId(1..=4)` assumption is
+/// asserted LOUDLY by `cross_sub_4275_let_bound_form_is_definite_differential`'s
+/// `unified_sat != Indeterminate` check — a DEFINITE verdict is only reachable if
+/// the seeded bbox replies actually reached the constraint under UnifiedDag. A
+/// future handle-numbering change therefore fails there, not silently. (The
+/// auto+geometry case shares this kernel and is declined under BOTH schedulers, so
+/// it has no definite downstream cell of its own to pin — the 4275 case is its
+/// canary.)
 pub fn seeded_build_volume_kernel() -> Box<dyn GeometryKernel> {
     let bbox = |hi: f64| {
         Value::String(format!(

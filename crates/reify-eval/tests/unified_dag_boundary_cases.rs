@@ -224,7 +224,10 @@ fn cross_sub_4275_let_bound_form_is_definite_differential() {
 
     // (1) DIRECT: UnifiedDag reaches a DEFINITE verdict (Satisfied OR Violated,
     // NEVER a fixed polarity — the OCCT verdict-FLIP e2e is η's); legacy is frozen
-    // Indeterminate.
+    // Indeterminate. This DEFINITE check doubles as the HANDLE-REACH canary for
+    // `seeded_build_volume_kernel`'s hardcoded GeometryHandleId(1..=4): a definite
+    // verdict is only reachable if the seeded bbox replies actually reached the
+    // constraint, so a future handle-numbering change fails LOUDLY here.
     let unified_sat = fits_build_volume_satisfaction(&unified);
     let legacy_sat = fits_build_volume_satisfaction(&legacy);
     assert_ne!(
