@@ -92,6 +92,20 @@ edit.
 
 ## 4. Measurement distributions (min / median / max over scripted session)
 
+> **Generated tables — regenerate after any fixture or graph-semantics change.**
+> The numbers below are emitted by the `emit_distribution_table` test in
+> `crates/reify-eval/tests/selective_demand_measurement.rs`; they are **not**
+> auto-pinned to the test output. Reproduce with:
+>
+> ```
+> cargo test -p reify-eval --test selective_demand_measurement \
+>     emit_distribution_table -- --nocapture
+> ```
+>
+> If the bracket / two-body fixtures or the dirty-cone semantics change, re-run
+> the command and update these tables so a reviewer catches drift here rather
+> than trusting stale figures.
+
 ### Scenario A: bracket, body hidden — `thickness` property observed only
 
 | Metric                  | min / median / max |
