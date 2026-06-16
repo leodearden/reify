@@ -286,3 +286,87 @@ fn e2e_unwrap_or_some_5mm_with_stdlib() {
         "e2e: unwrap_or(some(5mm), 0mm) compiled via stdlib must evaluate to 5mm"
     );
 }
+
+// ── step-5: or_else ───────────────────────────────────────────────────────────
+//
+// or_else(o, alt): subject=some(x)->return whole Value::Option(Some(x))
+// unchanged; subject=none->return alt; subject=undef->Undef.
+// Result type is Option<Length>.
+//
+// RED today: or_else not yet in is_combinator → falls through →
+// eval_user_function_call → function not found (simple ctx) → Undef.
+
+/// or_else(none, some(3mm)) == Value::Option(Some(3mm))
+///
+/// RED today: or_else not intercepted → Undef.
+#[test]
+fn or_else_none_returns_alt() {
+    let three_mm = Value::Scalar {
+        si_value: 0.003,
+        dimension: DimensionVector::LENGTH,
+    };
+    let expr_some_3mm = CompiledExpr::option_some(
+        CompiledExpr::literal(three_mm.clone(), Type::length()),
+        Type::Option(Box::new(Type::length())),
+    );
+    let call = CompiledExpr::user_function_call(
+        "or_else".to_string(),
+        vec![expr_none_length(), expr_some_3mm],
+        Type::Option(Box::new(Type::length())),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Option(Some(Box::new(three_mm))),
+        "or_else(none, some(3mm)) must return the alternative some(3mm)"
+    );
+}
+
+/// or_else(some(5mm), some(3mm)) == Value::Option(Some(5mm))
+///
+/// Subject is some → return the subject Option unchanged (not the alternative).
+///
+/// RED today: or_else not intercepted → Undef.
+#[test]
+fn or_else_some_returns_subject() {
+    let expr_some_3mm = CompiledExpr::option_some(
+        CompiledExpr::literal(
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        ),
+        Type::Option(Box::new(Type::length())),
+    );
+    let call = CompiledExpr::user_function_call(
+        "or_else".to_string(),
+        vec![expr_some_5mm(), expr_some_3mm],
+        Type::Option(Box::new(Type::length())),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Option(Some(Box::new(val_5mm()))),
+        "or_else(some(5mm), some(3mm)) must return subject some(5mm) unchanged"
+    );
+}
+
+/// or_else(undef, some(3mm)) == Value::Undef  (INV-2 subject passthrough)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn or_else_undef_subject_returns_undef() {
+    let expr_some_3mm = CompiledExpr::option_some(
+        CompiledExpr::literal(
+            Value::Scalar { si_value: 0.003, dimension: DimensionVector::LENGTH },
+            Type::length(),
+        ),
+        Type::Option(Box::new(Type::length())),
+    );
+    let call = CompiledExpr::user_function_call(
+        "or_else".to_string(),
+        vec![expr_undef_option_length(), expr_some_3mm],
+        Type::Option(Box::new(Type::length())),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "or_else(undef, some(3mm)) must propagate Undef (INV-2)"
+    );
+}
