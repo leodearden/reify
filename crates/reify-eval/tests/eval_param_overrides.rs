@@ -462,7 +462,7 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 #[test]
 fn eval_honors_override_on_guarded_group_active_member_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module(true, "Scalar", "5mm");
+    let module = guarded_module(true, "Length", "5mm");
     let x_id = ValueCellId::new("S", "x");
 
     // Initial eval: x is inside the active branch, default should be 5mm = 0.005m.
@@ -500,7 +500,7 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 #[test]
 fn eval_honors_override_on_guarded_group_else_member_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else("Scalar", "10mm");
+    let module = guarded_module_with_else("Length", "10mm");
     let x_id = ValueCellId::new("S", "x");
     let y_id = ValueCellId::new("S", "y");
 
@@ -548,7 +548,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a matching override.
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
@@ -583,7 +583,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = guarded_module(true, "Scalar", "5mm");
+    let module_a_again = guarded_module(true, "Length", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -610,7 +610,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a LENGTH override.
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
@@ -660,7 +660,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
-    let module_a_again = guarded_module(true, "Scalar", "5mm");
+    let module_a_again = guarded_module(true, "Length", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -695,7 +695,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // matching LENGTH override.
-    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let module_a = guarded_module_with_else("Length", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
@@ -730,7 +730,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let module_a_again = guarded_module_with_else("Length", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
@@ -768,7 +768,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // LENGTH override.
-    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let module_a = guarded_module_with_else("Length", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
@@ -818,7 +818,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
-    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let module_a_again = guarded_module_with_else("Length", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
@@ -1130,7 +1130,7 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
 /// neither journal events nor cache writes for any of its four value-write paths.
 /// Task-2195 fixes that. This test drives the implementation.
 ///
-/// Setup: `guarded_module(true, "Scalar", "5mm")` — guard is `active: Bool = true`
+/// Setup: `guarded_module(true, "Length", "5mm")` — guard is `active: Bool = true`
 /// so the `members` loop runs `eval_guarded_group_param_cell` on `S.x`. The
 /// override bucket is empty on a fresh engine, so the default-eval path fires
 /// and produces `Value::Scalar { si_value: 0.005, dimension: LENGTH }`.
@@ -1145,7 +1145,7 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
 #[test]
 fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module(true, "Scalar", "5mm");
+    let module = guarded_module(true, "Length", "5mm");
     engine.eval(&module);
 
     let x_id = ValueCellId::new("S", "x");
@@ -1200,7 +1200,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 /// (engine_eval.rs else_members loop). Step-4 updated BOTH call sites; this test
 /// would catch a partial fix that only updated the `members` call site.
 ///
-/// Setup: `guarded_module_with_else("Scalar", "10mm")` — guard is
+/// Setup: `guarded_module_with_else("Length", "10mm")` — guard is
 /// `active: Bool = false`, so the `else_members` loop runs the helper on `S.y`.
 /// With a fresh engine (no override), the default-eval path fires and produces
 /// `Value::Scalar { si_value: 0.01, dimension: LENGTH }` (10mm = 0.01 m SI).
@@ -1211,7 +1211,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 #[test]
 fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else("Scalar", "10mm");
+    let module = guarded_module_with_else("Length", "10mm");
     engine.eval(&module);
 
     let y_id = ValueCellId::new("S", "y");
@@ -1539,8 +1539,8 @@ fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
 ///
 /// Uses two separate engine instances so each arm can be exercised independently
 /// (a single module's guard is either true or false, not both at once):
-///   (1) `engine_a` with `guarded_module(true, "Scalar", "5mm")` — members call site.
-///   (2) `engine_b` with `guarded_module_with_else("Scalar", "10mm")` — else_members call site.
+///   (1) `engine_a` with `guarded_module(true, "Length", "5mm")` — members call site.
+///   (2) `engine_b` with `guarded_module_with_else("Length", "10mm")` — else_members call site.
 ///
 /// If either call site threads a different or stale version (e.g., a future
 /// refactor moves the `param_ctx` initialization into the wrong scope and captures
@@ -1549,7 +1549,7 @@ fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
 fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_both_call_sites() {
     // (1) members call site — guard is true, x is evaluated via the members loop.
     let mut engine_a = fresh_engine();
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     engine_a.eval(&module_a);
 
     let x_id = ValueCellId::new("S", "x");
@@ -1572,7 +1572,7 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
 
     // (2) else_members call site — guard is false, y is evaluated via the else_members loop.
     let mut engine_b = fresh_engine();
-    let module_b = guarded_module_with_else("Scalar", "10mm");
+    let module_b = guarded_module_with_else("Length", "10mm");
     engine_b.eval(&module_b);
 
     let y_id = ValueCellId::new("S", "y");
