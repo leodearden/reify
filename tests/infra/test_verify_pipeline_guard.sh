@@ -104,4 +104,49 @@ assert_exit "usage: unknown flag --bogus exits 2" 2 \
 assert_exit "usage: no subcommand exits 2" 2 \
     run_guard
 
+# ---------------------------------------------------------------------------
+# Pair B — live sourced-lib auto-derivation (self-healing coverage)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "-- Pair B: sourced-lib auto-derivation --"
+
+# REAL-LIB regression: independently derive the live sourced libs from
+# verify.sh using the exact anchored grep idiom from make_branch_fixture in
+# test_verify_throughput.sh.  For each derived lib L, assert that
+# requires-full-gate scripts/L exits 0.  The test never hardcodes the lib set
+# — it derives it dynamically, so future additions are automatically covered.
+while IFS= read -r _lib; do
+    assert_exit "REAL-LIB: scripts/$_lib is load-bearing (sourced by verify.sh)" 0 \
+        run_guard requires-full-gate "scripts/$_lib"
+done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$REPO_ROOT/scripts/verify.sh" \
+         | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p')
+
+# Incident-sim: a lib-only diff (the #4618/#4624 class) must NOT fast-path.
+# These tasks bumped plan-affecting sourced libs and landed green via the
+# config-only fast-path, ambushing the next Rust task (#4288) with a RED
+# test_verify_throughput.sh (root-caused in esc-4288-206).
+assert_exit "INCIDENT-SIM: scripts/occt-scope-lib.sh (lib diff) -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate scripts/occt-scope-lib.sh
+
+# SYNTHETIC self-healing: build a throwaway verify.sh copy with a fake source
+# line appended, prove the classifier auto-covers the new lib via
+# REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — no manifest edit needed.
+_SYNTH_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_SYNTH_DIR")
+_SYNTH_VERIFY="$_SYNTH_DIR/verify.sh"
+cp "$REPO_ROOT/scripts/verify.sh" "$_SYNTH_VERIFY"
+printf '\nsource "$SCRIPT_DIR/zzz-synthetic-lib.sh"\n' >> "$_SYNTH_VERIFY"
+
+assert_exit "SYNTHETIC: zzz-synthetic-lib.sh auto-covered after injection (exit 0)" 0 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-synthetic-lib.sh' \
+    _ "$_SYNTH_VERIFY" "$GUARD_SH"
+
+# DERIVATION PRECISION: a sibling that is NOT source'd must remain fast-path-safe.
+# Proves the classifier flags ONLY actually-sourced libs, not every script
+# under scripts/.
+assert_exit "PRECISION: scripts/zzz-not-sourced.sh NOT sourced -> fast-path-safe (exit 1)" 1 \
+    bash -c 'REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH="$1" bash "$2" requires-full-gate scripts/zzz-not-sourced.sh' \
+    _ "$_SYNTH_VERIFY" "$GUARD_SH"
+
 test_summary
