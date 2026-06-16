@@ -480,3 +480,120 @@ fn is_none_undef_returns_undef() {
         "is_none(undef) must return Undef (Kleene three-valued, INV-2)"
     );
 }
+
+// ── step-9: get_or (Map<K,V> miss recovery) ───────────────────────────────────
+//
+// get_or(m, key, dflt): key present -> m[key]; key absent -> dflt (§9.2.6
+// map-miss recovery); m=undef -> Undef.
+// Result type is Type::length() (the map value type V).
+//
+// RED today: get_or not yet in is_combinator → falls through →
+// eval_user_function_call → function not found (simple ctx) → Undef.
+
+fn val_1mm() -> Value {
+    Value::Scalar {
+        si_value: 0.001,
+        dimension: DimensionVector::LENGTH,
+    }
+}
+
+/// Build a Map<String,Length> literal with one entry: "k" => 1mm.
+fn expr_map_k_1mm() -> CompiledExpr {
+    CompiledExpr::map_literal(
+        vec![(
+            CompiledExpr::literal(Value::String("k".to_string()), Type::String),
+            CompiledExpr::literal(val_1mm(), Type::length()),
+        )],
+        Type::Map(Box::new(Type::String), Box::new(Type::length())),
+    )
+}
+
+/// get_or(map{"k"=>1mm}, "k", 0mm) == 1mm  (present key)
+///
+/// RED today: get_or not intercepted → Undef.
+#[test]
+fn get_or_present_key_returns_value() {
+    let call = CompiledExpr::user_function_call(
+        "get_or".to_string(),
+        vec![
+            expr_map_k_1mm(),
+            CompiledExpr::literal(Value::String("k".to_string()), Type::String),
+            expr_0mm(),
+        ],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_1mm(),
+        "get_or(map{{k=>1mm}}, \"k\", 0mm) must return the map value 1mm"
+    );
+}
+
+/// get_or(map{"k"=>1mm}, "absent", 0mm) == 0mm  (absent key recovers to dflt)
+///
+/// RED today: get_or not intercepted → Undef.
+#[test]
+fn get_or_absent_key_returns_default() {
+    let call = CompiledExpr::user_function_call(
+        "get_or".to_string(),
+        vec![
+            expr_map_k_1mm(),
+            CompiledExpr::literal(Value::String("absent".to_string()), Type::String),
+            expr_0mm(),
+        ],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_0mm(),
+        "get_or(map{{k=>1mm}}, \"absent\", 0mm) must return the default 0mm (§9.2.6 map-miss)"
+    );
+}
+
+/// get_or(undef, "k", 0mm) == Value::Undef  (undef map subject passthrough)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn get_or_undef_map_returns_undef() {
+    let undef_map = CompiledExpr::literal(
+        Value::Undef,
+        Type::Map(Box::new(Type::String), Box::new(Type::length())),
+    );
+    let call = CompiledExpr::user_function_call(
+        "get_or".to_string(),
+        vec![
+            undef_map,
+            CompiledExpr::literal(Value::String("k".to_string()), Type::String),
+            expr_0mm(),
+        ],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "get_or(undef, \"k\", 0mm) must propagate Undef — undef map passthrough"
+    );
+}
+
+/// End-to-end: `get_or(map{"k" => 1mm}, "absent", 0mm)` compiled with the
+/// stdlib must evaluate to 0mm (absent key recovers to default).
+///
+/// RED today: placeholder body returns dflt regardless → 0mm coincidentally
+/// correct for the absent-key case, but the present-key case above (step-9
+/// primary signal) is RED.  Pinned here to prove the compiler-emitted
+/// UserFunctionCall function_name+arity reaches the intercept.
+#[test]
+fn e2e_get_or_absent_key_with_stdlib() {
+    let module = reify_test_support::compile_source_with_stdlib(
+        r#"structure S { let v = get_or(map{"k" => 1mm}, "absent", 0mm) }"#,
+    );
+    let expr = cell_expr_stdlib(&module, "v");
+    let values = ValueMap::new();
+    let ctx = reify_expr::EvalContext::new(&values, &module.functions);
+    let result = reify_expr::eval_expr(expr, &ctx);
+    assert_eq!(
+        result,
+        val_0mm(),
+        "e2e: get_or(map{{k=>1mm}}, \"absent\", 0mm) compiled via stdlib must evaluate to 0mm"
+    );
+}
