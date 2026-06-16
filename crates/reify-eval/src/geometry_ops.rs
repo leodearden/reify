@@ -3956,18 +3956,26 @@ pub(crate) fn resolve_selector_to_list(
     match crate::topology_selectors::resolve_with_attributes(&sv, kernel, table, diagnostics) {
         Ok(ids) => {
             // task 4536: an attribute-role leaf (e.g. `mid_surface(body)`) that
-            // matched NO entities means the realized body carries no such derived
-            // attribute — a non-shell body has no mid-surface. The mid_surface
-            // contract is `Value::Undef` + a diagnostic in that case, NOT a silent
-            // empty list. Generic empty selections (a `faces_by_area` window with
-            // no match, a ByRole leaf nested in a 4119 composite, …) keep
-            // returning an empty `Value::List`.
+            // matched NO entities means NO body in this design recorded that role
+            // — the threaded table is build-global, so this is a per-DESIGN, not
+            // a per-body, statement (see the SCOPE note on the `ByRole` arm in
+            // topology_selectors.rs). The contract is `Value::Undef` + a
+            // diagnostic in that case, NOT a silent empty list. Generic empty
+            // selections (a `faces_by_area` window with no match, a ByRole leaf
+            // nested in a 4119 composite, …) keep returning an empty
+            // `Value::List`.
             if ids.is_empty()
                 && let Some(role) = selector_is_attribute_role_leaf(&sv)
             {
+                // Role-GENERIC wording: phrased in terms of the matched `role`
+                // (not a hardcoded "mid-surface"), because
+                // `selector_is_attribute_role_leaf` admits ANY ByRole leaf, and
+                // as a per-DESIGN claim ("no body in this design"), because the
+                // build-global table spans every body in the build.
                 diagnostics.push(Diagnostic::warning(format!(
-                    "topology-attribute selector matched no entities with role {role:?}; \
-                     body has no such derived mid-surface attribute; result undefined"
+                    "topology-attribute selector matched no entities with role \
+                     {role:?}; no body in this design carries a {role:?} \
+                     attribute; result undefined"
                 )));
                 return Some(reify_ir::Value::Undef);
             }
@@ -4018,13 +4026,18 @@ fn first_leaf_target(
 /// `mid_surface(body)`-style attribute-role selector (task 4536).
 ///
 /// Used by [`resolve_selector_to_list`] to distinguish a genuinely-empty role
-/// match (a non-shell body carries no `MidSurfaceFace` attribute → the
-/// `mid_surface` contract is `Value::Undef` + a diagnostic) from a generic
-/// empty selection (e.g. a `faces_by_area` window matching nothing → an empty
-/// `Value::List`). Composite selectors (`Union`/`Intersect`/`Difference`) and
-/// every other leaf query return `None`, so a ByRole leaf nested inside a 4119
-/// composition still follows the generic empty-list path rather than collapsing
-/// the whole composition to `Undef`.
+/// match (no body in this design carries the matched role → the contract is
+/// `Value::Undef` + a diagnostic) from a generic empty selection (e.g. a
+/// `faces_by_area` window matching nothing → an empty `Value::List`). Composite
+/// selectors (`Union`/`Intersect`/`Difference`) and every other leaf query
+/// return `None`, so a ByRole leaf nested inside a 4119 composition still
+/// follows the generic empty-list path rather than collapsing the whole
+/// composition to `Undef`.
+///
+/// Role-GENERIC: returns whatever [`reify_ir::Role`] the leaf carries, not just
+/// `MidSurfaceFace`. The empty→`Undef` contract it gates is per-DESIGN (the
+/// `ByRole` resolution table is build-global), NOT per-body — see the SCOPE
+/// note on the `ByRole` arm in `topology_selectors.rs`.
 fn selector_is_attribute_role_leaf(
     sv: &reify_ir::value::SelectorValue,
 ) -> Option<reify_ir::Role> {
@@ -19853,6 +19866,125 @@ mod tests {
                     m.contains("mid") || m.contains("midsurfaceface") || m.contains("role")
                 }),
                 "[{label}] expected a diagnostic naming the missing mid-surface / role; got {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Multi-body fixture documenting the single-shell-per-design LIMITATION
+    /// (design decision #4, reviewer suggestion 2, task 4536).
+    ///
+    /// `ByRole` resolution matches by ROLE only over the BUILD-GLOBAL
+    /// `TopologyAttributeTable`; it does NOT correlate `attr.feature_id` to the
+    /// target body handle. So when two shell-extracted bodies both record
+    /// `MidSurfaceFace`, `mid_surface(body_a)` returns the UNION of BOTH bodies'
+    /// mid-surface faces, and a target that itself has no mid-surface does NOT
+    /// collapse to `Undef` while another body has entries. This test LOCKS that
+    /// current (leaky) behavior so a future per-body-scoping task
+    /// (persistent-naming-v2, 2570/2302) must consciously update it — it is the
+    /// documented limitation, NOT the desired end state.
+    #[test]
+    fn resolve_mid_surface_multi_body_returns_union_documenting_single_shell_limitation() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two distinct bodies, each with two MidSurfaceFace patches, recorded
+        // under distinct feature_ids. Ids/local_index chosen so the canonical
+        // (local_index, id) sort interleaves the two bodies.
+        let face_a0 = GeometryHandleId(7101); // body_a, local_index 0
+        let face_a1 = GeometryHandleId(7102); // body_a, local_index 1
+        let face_b0 = GeometryHandleId(7201); // body_b, local_index 0
+        let face_b1 = GeometryHandleId(7202); // body_b, local_index 1
+        let attr = |feature: &str, local_index: u32| reify_ir::TopologyAttribute {
+            feature_id: reify_ir::FeatureId::new(feature),
+            role: reify_ir::Role::MidSurfaceFace,
+            local_index,
+            user_label: None,
+            mod_history: vec![],
+        };
+        let mut table = reify_ir::TopologyAttributeTable::default();
+        table.record(face_a0, attr("body_a", 0));
+        table.record(face_a1, attr("body_a", 1));
+        table.record(face_b0, attr("body_b", 0));
+        table.record(face_b1, attr("body_b", 1));
+
+        // Two target cells: a real shell body ("body_a") and a body with no
+        // mid-surface entry of its own ("non_shell"). Resolution ignores the
+        // target, so BOTH must yield the same cross-body UNION.
+        let body_a_handle = GeometryHandleId(1);
+        let non_shell_handle = GeometryHandleId(2);
+        let mut named_steps = HashMap::new();
+        named_steps.insert("body_a".to_string(), kh(body_a_handle));
+        named_steps.insert("non_shell".to_string(), kh(non_shell_handle));
+        let mut values = reify_ir::ValueMap::new();
+        for (name, handle) in [("body_a", body_a_handle), ("non_shell", non_shell_handle)] {
+            values.insert(
+                ValueCellId::new("MidSurfaceMultiBody", name),
+                reify_ir::Value::GeometryHandle {
+                    realization_ref: RealizationNodeId::new("MidSurfaceMultiBody", 0),
+                    upstream_values_hash: [0x55; 32],
+                    kernel_handle: handle,
+                },
+            );
+        }
+
+        // Canonical (local_index, id) order across BOTH bodies.
+        let expected_ids = [face_a0, face_b0, face_a1, face_b1];
+
+        for target_cell in ["body_a", "non_shell"] {
+            let inner = topology_selector_call_one_value_ref(
+                "mid_surface",
+                "MidSurfaceMultiBody",
+                target_cell,
+                Type::Geometry,
+                Type::Selector(reify_core::ty::SelectorKind::Face),
+            );
+            let expr = reify_ir::CompiledExpr::resolve_selector(inner);
+            let mut kernel = MockGeometryKernel::new();
+            let mut diagnostics = Vec::new();
+            let result = super::try_eval_resolve_selector(
+                &expr,
+                &named_steps,
+                &values,
+                &mut kernel,
+                &table,
+                &mut diagnostics,
+            );
+
+            let list = match result {
+                Some(reify_ir::Value::List(ref elems)) => elems.clone(),
+                other => panic!(
+                    "[target={target_cell}] build-global ByRole resolution must yield the \
+                     cross-body UNION as Some(Value::List(..)); got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            // Cross-body leak: 4 faces (both bodies), NOT just the target's 2,
+            // and NOT Undef for the `non_shell` target.
+            assert_eq!(
+                list.len(),
+                4,
+                "[target={target_cell}] expected the UNION of both bodies' mid-surface \
+                 faces (documented single-shell limitation), got {} elems",
+                list.len()
+            );
+            for (i, (elem, expected_id)) in list.iter().zip(&expected_ids).enumerate() {
+                match elem {
+                    reify_ir::Value::GeometryHandle { kernel_handle, .. } => assert_eq!(
+                        kernel_handle, expected_id,
+                        "[target={target_cell}] elem[{i}] kernel_handle in (local_index, id) order"
+                    ),
+                    other => panic!(
+                        "[target={target_cell}] elem[{i}] must be Value::GeometryHandle, got {:?}",
+                        other
+                    ),
+                }
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "[target={target_cell}] a non-empty (leaky) resolve emits no Undef diagnostic; \
+                 got {:?}",
                 diagnostics
             );
         }

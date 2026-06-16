@@ -1499,19 +1499,34 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             Ok(Vec::new())
         }
         LeafQuery::ByRole(role) => {
-            // Task 4536: pure, total, kernel-free filter over the realized
-            // body's recorded topology attributes. The synthetic mid-surface
-            // sub-shapes (`Role::MidSurfaceFace`) are NOT enumerable via
+            // Task 4536: pure, total, kernel-free filter over the recorded
+            // topology attributes. The synthetic mid-surface sub-shapes
+            // (`Role::MidSurfaceFace`) are NOT enumerable via
             // `extract_faces`/`extract_edges`, so resolution reads the
-            // `TopologyAttributeTable` directly (no kernel query — `handle` is
-            // unused on this arm). Results are ordered canonically by
-            // `(local_index, id)` so the output is independent of the
-            // HashMap-backed table's unspecified iteration/insertion order
-            // (exactly the collect-and-sort discipline `iter()`'s doc-comment
-            // prescribes). An empty match is a valid empty `Ok`; the
-            // empty→`Value::Undef` + diagnostic decision lives one layer up in
-            // `resolve_selector_to_list`, keeping this arm uniform with the
-            // other pure leaf arms.
+            // `TopologyAttributeTable` directly (no kernel query). Results are
+            // ordered canonically by `(local_index, id)` so the output is
+            // independent of the HashMap-backed table's unspecified
+            // iteration/insertion order (exactly the collect-and-sort
+            // discipline `iter()`'s doc-comment prescribes). An empty match is
+            // a valid empty `Ok`; the empty→`Value::Undef` + diagnostic
+            // decision lives one layer up in `resolve_selector_to_list`,
+            // keeping this arm uniform with the other pure leaf arms.
+            //
+            // SCOPE / single-shell-per-design limitation (design decision #4):
+            // this matches by ROLE only. `target` (the parent body handle) is
+            // intentionally UNUSED here, and the threaded `table` is
+            // BUILD-GLOBAL — the Engine resets `topology_attribute_table` once
+            // per build, NOT once per body. So in a design with two
+            // shell-extracted bodies that both record `MidSurfaceFace`,
+            // `mid_surface(body_a)` returns the UNION of both bodies'
+            // mid-surface faces, and `mid_surface(non_shell_body)` does NOT
+            // resolve to empty if some OTHER body contributed entries.
+            // Correlating `attr.feature_id` to the target body needs the
+            // persistent-naming-v2 body→feature map (2570/2302), explicitly NOT
+            // pulled forward by this task (it must stay orthogonal to the
+            // `LeafQuery::Named`/FeatureTagTable path). The empty→Undef contract
+            // one layer up therefore holds per-DESIGN ("no body carries this
+            // role"), NOT per-BODY.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.role == *role)
