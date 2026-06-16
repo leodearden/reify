@@ -805,6 +805,21 @@ impl Engine {
     /// [`check_constraints_against_templates`] so it is a drop-in re-check source
     /// for the 4229 merge loop in `build()`. When no default kernel is present
     /// (nothing to fold against) it defers verbatim to the kernel-less path.
+    ///
+    /// AUTO-CONSTRAINT GUARD (step-12): `declined` is the set of constraints whose
+    /// transitive auto-read closure reaches an `auto` cell, computed by δ's
+    /// [`crate::engine_fixpoint::constraints_reaching_auto`] — EXACTLY the
+    /// constraints for which δ emits `E_EVAL_UNRESOLVED`. Each such constraint is
+    /// SKIPPED here (dropped from `active_constraints` BEFORE the geometry fold and
+    /// the checker dispatch), so it is OMITTED from the returned results. The 4229
+    /// merge loop then finds no re-check entry for it and leaves its pre-geometry
+    /// `Indeterminate` untouched — δ's `E_EVAL_UNRESOLVED` stays the sole signal,
+    /// with no contradicting definite/Indeterminate-from-`Undef` verdict.
+    ///
+    /// Dropping the expr BEFORE the fold also satisfies the esc-4358-124 ordering
+    /// invariant: a declined constraint's expr may still carry an unfolded
+    /// `CrossSubGeometryRef` whose closure is auto-blocked, and `eval_expr`
+    /// `unreachable!()`-PANICS on that node — so it must never reach the checker.
     pub(crate) fn check_constraints_post_geometry(
         &self,
         module: &CompiledModule,
@@ -812,6 +827,7 @@ impl Engine {
         module_named_steps: &HashMap<String, HashMap<String, KernelHandle>>,
         default_kernel_name: &str,
         determinacy: Option<&PersistentMap<ValueCellId, (Value, DeterminacyState)>>,
+        declined: &HashSet<ConstraintNodeId>,
     ) -> (Vec<ConstraintCheckEntry>, Vec<Diagnostic>) {
         // No default kernel → no geometry to fold; the folding pass would be a
         // no-op, so defer to the kernel-less re-check verbatim (keeps the
@@ -826,6 +842,21 @@ impl Engine {
 
         for template in &module.templates {
             let active_constraints = Self::collect_active_constraints(template, values);
+
+            // Task 4358 ε step-12: DECLINE constraints whose transitive auto-read
+            // closure reaches an `auto` cell. Filtering BEFORE the fold/dispatch
+            // (a) omits them from the returned results so the 4229 merge loop
+            // leaves their pre-geometry `Indeterminate` intact (δ's
+            // `E_EVAL_UNRESOLVED` is the sole signal — no bogus verdict), and
+            // (b) drops their expr before any `eval_expr`, honouring the
+            // esc-4358-124 ordering invariant (an unfolded `CrossSubGeometryRef`
+            // reaching the checker PANICS). `declined` is empty on every path that
+            // is not UnifiedDag-with-an-auto-reaching constraint, so this is a
+            // no-op elsewhere.
+            let active_constraints: Vec<&CompiledConstraint> = active_constraints
+                .into_iter()
+                .filter(|c| !declined.contains(&c.id))
+                .collect();
 
             if active_constraints.is_empty() {
                 continue;

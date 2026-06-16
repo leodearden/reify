@@ -2977,12 +2977,30 @@ impl Engine {
                 == crate::engine_fixpoint::BuildScheduler::UnifiedDag
                 && let Some(kernel_name) = default_kernel_name.as_deref()
             {
+                // Task 4358 ε step-12: the auto-constraint guard's decline set.
+                // Constraints whose transitive auto-read closure reaches an `auto`
+                // cell are SKIPPED by the executor (δ already emits their
+                // `E_EVAL_UNRESOLVED` via `unresolved_diagnostics`). Deriving the
+                // skip-set from the SAME `constraints_reaching_auto` predicate δ
+                // uses guarantees the decline and the diagnostic cannot diverge.
+                // Empty when no `eval_state` (then the executor has nothing to skip).
+                let declined = self
+                    .eval_state
+                    .as_ref()
+                    .map(|s| {
+                        crate::engine_fixpoint::constraints_reaching_auto(
+                            &s.snapshot.graph,
+                            &s.trace_map,
+                        )
+                    })
+                    .unwrap_or_default();
                 self.check_constraints_post_geometry(
                     module,
                     &values,
                     &module_named_steps,
                     kernel_name,
                     determinacy,
+                    &declined,
                 )
             } else {
                 self.check_constraints_against_templates(module, &values, determinacy)
