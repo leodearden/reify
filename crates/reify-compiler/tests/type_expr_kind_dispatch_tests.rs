@@ -286,7 +286,7 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
             name: "test_field".into(),
             is_pub: false,
             domain_type,
-            codomain_type: named("Scalar"),
+            codomain_type: named("Length"),
             source: FieldSource::Analytical {
                 expr: Expr {
                     kind: ExprKind::Lambda {
@@ -296,10 +296,12 @@ fn module_with_field_domain(domain_type: TypeExpr) -> ParsedModule {
                             span: dummy_span(),
                         }],
                         body: Box::new(Expr {
-                            // Use a Scalar literal (1.0m) so the lambda body's inferred type
-                            // matches the declared codomain `Scalar`. This prevents the new
-                            // FieldCodomainMismatch check from firing a second diagnostic on
-                            // top of the expected "unresolved field type" domain error.
+                            // Use a Length literal (1.0m) so the lambda body's inferred type
+                            // matches the declared codomain `Length` (= Scalar[m]). This prevents
+                            // FieldCodomainMismatch from firing a second diagnostic on top of the
+                            // expected "unresolved field type" domain error.
+                            // Note: bare `Scalar` (no type arg) is banned by task γ (E_BARE_SCALAR),
+                            // so we use `Length` instead of `Scalar`.
                             kind: ExprKind::QuantityLiteral {
                                 value: 1.0,
                                 unit: UnitExpr::Unit("m".to_string()),
