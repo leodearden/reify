@@ -299,6 +299,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a planar curve by distance, producing a fresh curve.
+    ModifyOffsetCurve,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -847,6 +849,24 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         offset: Value,
     },
+    /// Offset a planar curve (wire) by `distance`, producing a fresh curve.
+    ///
+    /// Three overloads share this single variant; the optional `reference`
+    /// and `direction` are mutually exclusive and selected at eval time:
+    /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
+    /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
+    ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
+    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    ///
+    /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
+    /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
+    /// execute path, like [`GeometryOp::Thicken`].
+    OffsetCurve {
+        target: GeometryHandleId,
+        distance: Value,
+        reference: Option<GeometryHandleId>,
+        direction: Option<[f64; 3]>,
+    },
     /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
     ZoneSlab {
         target: GeometryHandleId,
@@ -966,6 +986,7 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::OffsetCurve { .. } => "OffsetCurve",
             GeometryOp::ZoneSlab { .. } => "ZoneSlab",
             GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
@@ -6927,6 +6948,15 @@ mod tests {
                 },
             ),
             (
+                "OffsetCurve",
+                GeometryOp::OffsetCurve {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                    reference: None,
+                    direction: None,
+                },
+            ),
+            (
                 "ZoneSlab",
                 GeometryOp::ZoneSlab {
                     target: GeometryHandleId(1),
@@ -6988,7 +7018,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 47;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 48;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,

@@ -1206,6 +1206,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        // OffsetCurve's `reference` (a faces() sub-handle) is a constraint
+        // surface, not a propagating parent — analogous to Draft's `plane`.
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
@@ -1279,6 +1282,7 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => {
@@ -1431,6 +1435,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::OffsetCurve { .. } => Operation::ModifyOffsetCurve,
         GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
         GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
@@ -12179,6 +12184,16 @@ mod tests {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetCurve {
+                    target: h(1),
+                    distance: r(0.002),
+                    reference: None,
+                    direction: None,
+                },
+                expected: Operation::ModifyOffsetCurve,
+                label: "OffsetCurve → ModifyOffsetCurve",
             },
             // Transform
             Case {
