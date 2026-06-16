@@ -68,16 +68,88 @@ fn collect_value_refs_with_types(
             collect_value_refs_with_types(index, out);
         }
         CompiledExprKind::Literal(_) => {}
-        _ => {
-            // For any other node kinds (lambda, conditional, etc.): recurse
-            // via collect_value_refs() which handles them correctly.
-            for id in expr.collect_value_refs() {
-                // We don't know the type for these nested refs without
-                // full traversal, but we can collect the ids for key checks.
-                // In practice our synthetic modules only produce BinOp/ValueRef.
-                let _ = id;
+        CompiledExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_value_refs_with_types(condition, out);
+            collect_value_refs_with_types(then_branch, out);
+            collect_value_refs_with_types(else_branch, out);
+        }
+        CompiledExprKind::Match { discriminant, arms } => {
+            collect_value_refs_with_types(discriminant, out);
+            for arm in arms {
+                collect_value_refs_with_types(&arm.body, out);
             }
         }
+        CompiledExprKind::UserFunctionCall { args, .. } => {
+            for arg in args {
+                collect_value_refs_with_types(arg, out);
+            }
+        }
+        CompiledExprKind::Lambda { body, .. } => {
+            collect_value_refs_with_types(body, out);
+        }
+        CompiledExprKind::ListLiteral(items)
+        | CompiledExprKind::SetLiteral(items)
+        | CompiledExprKind::ReflectiveCellList(items) => {
+            for item in items {
+                collect_value_refs_with_types(item, out);
+            }
+        }
+        CompiledExprKind::MapLiteral(pairs) => {
+            for (k, v) in pairs {
+                collect_value_refs_with_types(k, out);
+                collect_value_refs_with_types(v, out);
+            }
+        }
+        CompiledExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            collect_value_refs_with_types(collection, out);
+            collect_value_refs_with_types(predicate, out);
+        }
+        CompiledExprKind::OptionSome(inner) => {
+            collect_value_refs_with_types(inner, out);
+        }
+        CompiledExprKind::AdHocSelector { base, args, .. } => {
+            collect_value_refs_with_types(base, out);
+            for arg in args {
+                collect_value_refs_with_types(arg, out);
+            }
+        }
+        CompiledExprKind::ResolveSelector { selector } => {
+            collect_value_refs_with_types(selector, out);
+        }
+        CompiledExprKind::RangeConstructor { lower, upper, .. } => {
+            if let Some(lo) = lower {
+                collect_value_refs_with_types(lo, out);
+            }
+            if let Some(hi) = upper {
+                collect_value_refs_with_types(hi, out);
+            }
+        }
+        CompiledExprKind::StructureInstanceCtor {
+            ordered_args,
+            defaults,
+            ..
+        } => {
+            // Note: `lets` are intentionally NOT traversed (see CompiledExprKind
+            // doc — they reference template-local ids, not surrounding-scope refs).
+            for (_, arg) in ordered_args {
+                collect_value_refs_with_types(arg, out);
+            }
+            for (_, default) in defaults {
+                collect_value_refs_with_types(default, out);
+            }
+        }
+        // Terminal nodes with no child expressions:
+        // OptionNone, MetaAccess, DeterminacyPredicate,
+        // PurposeReflectiveAggregation, CrossSubGeometryRef.
+        _ => {}
     }
 }
 
@@ -188,7 +260,8 @@ fn type_param_member_access_emits_flat_value_ref_when_trait_declares_field() {
 /// Must emit exactly one `TypeParamMemberNotInBound` Error whose message names
 /// the accessed member ("thickness") and the bound trait ("Seal").
 /// The generic "member access not yet supported" message must be ABSENT.
-/// No compiled node may carry `Type::TypeParam(_)` as its result_type.
+/// No `ValueRef` leaf node may carry `Type::TypeParam(_)` as its result_type
+/// (the soundness contract; intermediate BinOp/etc. result_types are not checked).
 #[test]
 fn type_param_member_access_emits_named_diagnostic_when_trait_lacks_field_empty_trait() {
     let source = r#"
@@ -254,7 +327,10 @@ fn type_param_member_access_emits_named_diagnostic_when_trait_lacks_field_empty_
         generic_poison
     );
 
-    // No compiled node (in any template) may carry Type::TypeParam(_) as result_type.
+    // No ValueRef node (in any template) may carry Type::TypeParam(_) as result_type.
+    // Note: collect_value_refs_with_types only records result_types for ValueRef
+    // leaf nodes; BinOp/Conditional/etc. intermediate result_types are not
+    // collected (their types derive from the leaf types).
     for template in &compiled.templates {
         for constraint in &template.constraints {
             let refs_with_types: Vec<(ValueCellId, Type)> = {
@@ -265,7 +341,7 @@ fn type_param_member_access_emits_named_diagnostic_when_trait_lacks_field_empty_
             for (id, ty) in refs_with_types {
                 assert!(
                     !matches!(ty, Type::TypeParam(_)),
-                    "compiled node ValueRef({id:?}) in template '{}' must NOT carry \
+                    "ValueRef({id:?}) in template '{}' must NOT carry \
                      Type::TypeParam(_) as result_type (soundness contract); got {ty:?}",
                     template.name
                 );
@@ -342,6 +418,7 @@ fn type_param_member_access_emits_named_diagnostic_when_trait_lacks_field_wrong_
         generic_poison
     );
 
+    // No ValueRef node (in any template) may carry Type::TypeParam(_) as result_type.
     for template in &compiled.templates {
         for constraint in &template.constraints {
             let refs_with_types: Vec<(ValueCellId, Type)> = {
@@ -352,7 +429,7 @@ fn type_param_member_access_emits_named_diagnostic_when_trait_lacks_field_wrong_
             for (id, ty) in refs_with_types {
                 assert!(
                     !matches!(ty, Type::TypeParam(_)),
-                    "compiled node ValueRef({id:?}) in template '{}' must NOT carry \
+                    "ValueRef({id:?}) in template '{}' must NOT carry \
                      Type::TypeParam(_) as result_type; got {ty:?}",
                     template.name
                 );

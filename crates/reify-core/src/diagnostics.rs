@@ -2495,9 +2495,15 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-compiler/src/expr.rs` — `MemberAccess` handler,
     /// `Type::TypeParam` branch (task 4596).
     ///
-    /// Canonical message form:
-    /// `"type parameter '<param>' (bound <trait>) has no member '<member>': \
-    ///   the bound trait does not declare '<member>'"`.
+    /// Canonical message forms (see `expr.rs`, `MemberAccess` handler):
+    ///
+    /// - When the type parameter has bound trait(s):
+    ///   `"type parameter '<param>' (bound: <trait1>, <trait2>) has no member \
+    ///    '<member>': the bound trait does not declare '<member>'"`
+    /// - When the type parameter has NO bounds:
+    ///   `"type parameter '<param>' (bound: (no bounds on type parameter \
+    ///    '<param>')) has no member '<member>': the bound trait does not \
+    ///    declare '<member>'"`
     ///
     /// Emitted as `Severity::Error` (anti-cascade: one diagnostic + poison
     /// literal via `make_poison_literal`) when a member-access expression

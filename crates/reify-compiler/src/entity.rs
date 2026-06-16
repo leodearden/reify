@@ -538,6 +538,16 @@ pub(crate) fn compile_entity(
     scope.is_entity_scope = true;
     scope.set_template_registry(&entity_template_registry);
 
+    // Collect the set of trait names actually referenced by this structure's
+    // type-param bounds.  Only these traits need a (member_name → Type) map;
+    // the full trait_registry may be large and building a HashMap per trait for
+    // every entity would be avoidable allocation.
+    let bound_trait_names: HashSet<&str> = structure
+        .type_params
+        .iter()
+        .flat_map(|tp| tp.bounds.iter().map(|b| b.as_str()))
+        .collect();
+
     // Populate trait member index for qualified access resolution,
     // and trait_member_types for TypeParam member-access type resolution (task 4596).
     for (trait_name, compiled_trait) in trait_registry {
@@ -553,16 +563,18 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
-        // Build the (member_name → Type) map for value-bearing required members.
-        // This is the companion to trait_members that carries the declared types,
-        // used by the Type::TypeParam member-access branch in expr.rs (task 4596).
-        let member_types: HashMap<String, Type> = compiled_trait
-            .value_bearing_members()
-            .map(|(name, ty)| (name.to_owned(), ty.clone()))
-            .collect();
-        scope
-            .trait_member_types
-            .insert(trait_name.clone(), member_types);
+        // Build the (member_name → Type) map only for traits that appear in
+        // some type-param bound on this structure — avoids cloning every trait's
+        // value-bearing member types when they will never be queried.
+        if bound_trait_names.contains(trait_name.as_str()) {
+            let member_types: HashMap<String, Type> = compiled_trait
+                .value_bearing_members()
+                .map(|(name, ty)| (name.to_owned(), ty.clone()))
+                .collect();
+            scope
+                .trait_member_types
+                .insert(trait_name.clone(), member_types);
+        }
     }
 
     // Populate type_param_bounds so the TypeParam member-access branch (task 4596)
