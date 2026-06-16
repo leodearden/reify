@@ -127,6 +127,12 @@ fn tanh(x: Real) -> Real
 
 Trig functions take `Angle` (not `Real`), enforcing the 8th-dimension distinction.
 
+**`Real` vs `Dimensionless` — style guide:** `Real` and `Dimensionless` are the same type (`Scalar<Dimensionless>` at the type layer); both spellings are interchangeable everywhere. The project convention is connotation-only:
+- Use `Real` for plain numbers — trig results (`sin` → `Real`), math-constant returns, and quantities that are conceptually just numbers with no physical-ratio meaning.
+- Use `Dimensionless` for physical/derived ratios — strain (`ΔL/L`), unit-vector components (`Length/Length`), efficiency (`Power_out/Power_in`), and similar quantities where the "dimensionless" origin is meaningful.
+
+Neither spelling is wrong. The distinction is documentation intent, not type enforcement.
+
 ### 1.3 `std.math.linalg`
 
 ```
