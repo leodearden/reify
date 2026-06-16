@@ -44,7 +44,15 @@ structure BucklingMultiCaseSmoke {
     // Expected: "overload" (2× load ⇒ ~½× eigenvalue).
     let worst = worst_buckling_case(mcbr)
 
-    // Envelope critical load: min over cases of eigenvalue × reference_load.
-    // Matches critical_load(result_for(mcbr, "overload"), 1kN).
+    // Envelope critical load: min(λ) × reference_load.
+    //
+    // IMPORTANT — reference_load semantics (DD-1):
+    //   envelope_critical_load computes min(λᵢ) × ref, NOT min-over-cases of
+    //   (λᵢ × each-case's-applied-load).  The `reference_load` is a shared
+    //   scalar applied uniformly across all cases.  Pass the same value you
+    //   would use in per-case critical_load(result_for(mcbr, name), ref) calls
+    //   so the envelope result is directly comparable to those singletons.
+    //
+    // Here: min(λ) × 1kN = λ_overload × 1kN = critical_load(result_for(mcbr, "overload"), 1kN).
     let envelope = envelope_critical_load(mcbr, 1000.0 * 1N)
 }
