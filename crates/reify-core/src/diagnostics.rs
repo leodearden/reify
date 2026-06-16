@@ -2544,6 +2544,29 @@ pub enum DiagnosticCode {
     /// `E_TYPE_PARAM_MEMBER_NOT_IN_BOUND` (see
     /// `docs/prds/v0_3/auto-type-param-resolution-completion.md` §4596).
     TypeParamMemberNotInBound,
+
+    /// Origin: `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
+    ///
+    /// Emitted as a `Warning` when a user-declared `enum`, `structure`, `occurrence`,
+    /// or `trait` declaration uses a name that is also resolvable by the builtin type
+    /// resolver (`resolve_type_name`). The builtin type still wins in type-annotation
+    /// position; this warning exists to alert the author that the user declaration is
+    /// silently shadowed.
+    ///
+    /// Canonical message form:
+    /// `"<kind> '<name>' shadows a builtin type name; the builtin takes precedence in type position"`
+    ///
+    /// One label accompanies the warning at the user declaration's span:
+    /// `"shadows a builtin type name"`.
+    ///
+    /// Builtin names covered: the datum types (`Direction`, `Axis`, `Plane`, `Frame`),
+    /// scalar primitives (`Bool`, `Int`, `Real`, `String`), the selector family
+    /// (`Selector`, `FaceSelector`, `EdgeSelector`, `BodySelector`), geometry/solid types
+    /// (`Geometry`, `Solid`, `DatumRef`), `Dimensionless`, and every named physical
+    /// dimension (`Length`, `Mass`, `Force`, `Energy`, `Area`, `Volume`, `Angle`, …).
+    ///
+    /// The PRD-prose mnemonic for this code is `W_RESERVED_TYPE_NAME`.
+    ReservedTypeName,
 }
 
 /// A diagnostic message with location and optional labels.
