@@ -77,6 +77,51 @@ pub fn build_with_kernel_stdlib(
     engine.build(&compiled, ExportFormat::Step)
 }
 
+/// Like [`build_under`] but RETAINS the engine so its post-build
+/// [`Engine::eval_state`] — the `snapshot.graph` + `trace_map` the residue gate
+/// re-plans over — stays observable. A FRESH engine per call (the cold-start
+/// `eval()` runs and populates `trace_map`; a second build on the same engine
+/// would hit `eval_cached`). Returns `(engine, result)`. The residue gate
+/// (`residue_for`) consumes the returned engine.
+pub fn build_under_keep_engine(
+    source: &str,
+    scheduler: BuildScheduler,
+    needs_stdlib: bool,
+) -> (Engine, BuildResult) {
+    let compiled = if needs_stdlib {
+        compile_source_with_stdlib(source)
+    } else {
+        compile_source(source)
+    };
+    let kernel: Box<dyn GeometryKernel> = Box::new(MockGeometryKernel::new());
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(scheduler);
+    let result = engine.build(&compiled, ExportFormat::Step);
+    (engine, result)
+}
+
+/// The Stage-1 residue set, observed DIRECTLY: re-run the pure unified planner
+/// (`run_unified_pass`) over the engine's post-build `eval_state`
+/// (`snapshot.graph` + `trace_map`) and return its `residue` — the node-set
+/// members the Kahn worklist never popped (cyclic nodes plus anything stranded
+/// downstream of a cycle).
+///
+/// Re-running the pure planner POST-build is sound: the realization loop mutates
+/// only node `produced_*` fields, never graph topology or `trace_map` (see
+/// `engine_build.rs:2413`), so this residue equals the one the build's own
+/// Stage-1 pass computed. A diagnostics-only check cannot substitute — a
+/// stranded-without-SCC node is left Undef and emits NO diagnostic yet IS
+/// residue, exactly the false-negative this direct observation closes.
+///
+/// `engine` MUST be a freshly cold-built engine (use [`build_under_keep_engine`]);
+/// `eval_state()` is `None` until the first `eval()`/`build()` populates it.
+pub fn residue_for(engine: &Engine) -> std::collections::HashSet<reify_eval::cache::NodeId> {
+    let state = engine
+        .eval_state()
+        .expect("eval_state is populated after a cold build()");
+    reify_eval::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map).residue
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Corpus data types + the reasoned, PER-CASE allow-list (no blanket patterns).
 // ─────────────────────────────────────────────────────────────────────────────
