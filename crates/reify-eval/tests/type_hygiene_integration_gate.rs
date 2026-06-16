@@ -41,7 +41,7 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{
     MockGeometryKernel, check_source, check_source_with_stdlib, compile_source_with_stdlib,
-    errors_only, eval_source, parse_and_compile_with_stdlib,
+    eval_source, parse_and_compile_with_stdlib,
 };
 
 // ── Path constants ────────────────────────────────────────────────────────────
@@ -178,14 +178,9 @@ fn ci_example_compiles_clean_and_evaluates_green() {
              (task #4495 step-2 creates it)"
         );
 
-    // Compile with stdlib — zero Error diagnostics is the primary green signal.
+    // Compile with stdlib — panics on any Error-severity diagnostic; that's the
+    // primary green signal (auto-gated by examples_smoke.rs too).
     let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "type_hygiene_surface.ri should compile with no error-severity diagnostics \
-         (auto-gated by examples_smoke.rs), got:\n{:#?}",
-        errors_only(&compiled)
-    );
 
     // Skip OCCT-dependent eval assertions on runners without OCCT.
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -335,7 +330,7 @@ structure def MoiRejection {
     assert!(
         density_warn.is_some(),
         "§10 row 7b: inline density rejection must emit a Warning containing 'expects Density' \
-         and '7850kg/m^3' hint (ε never-silent; arg_acceptance.rs:54); \
+         and '7850kg/m^3' hint (ε never-silent; resolve_density_arg in arg_acceptance.rs); \
          build diagnostics: {:#?}",
         result.diagnostics
     );
@@ -350,8 +345,7 @@ structure def MoiRejection {
 /// argument; δ converts the silent Undef fall-through into a loud diagnostic.
 /// Kernel-independent: the density ladder runs before any geometry query.
 ///
-/// References `dynamics_ops.rs:1534` (the δ rejection arm in
-/// `resolve_body_density`).
+/// References `resolve_body_density` in `dynamics_ops.rs` (the δ rejection arm).
 #[test]
 fn row_8_body_mass_props_pressure_as_density_warns() {
     const SRC: &str = r#"
@@ -361,8 +355,10 @@ structure def BmpPressure {
     let mp = body_mass_props(b, p)
 }
 "#;
-    let compiled = parse_and_compile_with_stdlib(SRC);
-    // Compile may or may not flag the pressure arg — we care about the runtime Warning.
+    // compile_source_with_stdlib: non-panicking variant so a future δ/ζ compile-time
+    // guard on the Pressure arg does not pre-empt the runtime-Warning assertion.
+    // (Analogous to row_7b which also uses compile_source_with_stdlib for the same reason.)
+    let compiled = compile_source_with_stdlib(SRC);
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
@@ -374,7 +370,7 @@ structure def BmpPressure {
     assert!(
         pressure_warn.is_some(),
         "§10 row 8: body_mass_props with a Pressure density-arg must emit a Warning \
-         containing 'expects Density' and 'Pressure' (δ loud reject, dynamics_ops.rs:1534); \
+         containing 'expects Density' and 'Pressure' (δ loud reject, resolve_body_density); \
          build diagnostics: {:#?}",
         result.diagnostics
     );
@@ -404,12 +400,8 @@ structure def BmpNoMaterial {
     let mp = body_mass_props(body)
 }
 "#;
+    // parse_and_compile_with_stdlib panics on any Error-severity diagnostic.
     let compiled = parse_and_compile_with_stdlib(SRC);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "BmpNoMaterial should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -471,8 +463,7 @@ structure def BmpNoMaterial {
 /// `DiagnosticCode::ConstraintIndeterminate` Warning; only the message text
 /// differs.
 ///
-/// Characterises the `classify_undef` discriminant in
-/// `reify-constraints/src/lib.rs:63–185`.
+/// Characterises the `classify_undef` discriminant in `reify-constraints`.
 #[test]
 fn row_13_distinct_indeterminacy_messages() {
     // ── Branch 1: undefined inputs ─────────────────────────────────────────────
@@ -604,12 +595,9 @@ fn row_14_rnea_numerically_identical_post_kappa() {
     let source = std::fs::read_to_string(PENDULUM_IDYN_PATH)
         .expect("examples/dynamics/pendulum_idyn.ri must exist (authored prior to task #4495)");
 
+    // parse_and_compile_with_stdlib panics on any Error-severity diagnostic
+    // (κ is a type-only change; no new compile errors expected).
     let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "pendulum_idyn.ri should compile with no error-severity diagnostics post-κ, got:\n{:#?}",
-        errors_only(&compiled)
-    );
 
     // Kernel-independent: inverse_dynamics reads mass from MassProperties solid.
     let checker = SimpleConstraintChecker;
