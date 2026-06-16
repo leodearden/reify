@@ -2383,6 +2383,22 @@ fn dispatch_geometry_query_call(
 /// default (a conservative downgrade, never a wrong value). Extend this match
 /// if a future trait nests a geometry query inside a richer wrapper.
 ///
+/// CROSS-SCHEDULER REACH (task 4358 ε amendment): the non-query `FunctionCall`-
+/// args recursion arm below is NOT UnifiedDag-only — this function is shared
+/// geometry-fold code reached on BOTH scheduler paths. On `LegacyMultiPass` it
+/// runs inside `post_process_geometry_queries` → `try_eval_geometry_query`
+/// case (b) for every VALUE CELL whose `default_expr` is a non-query
+/// `FunctionCall` wrapping a geometry-query leaf (e.g.
+/// `let fits = fits_build_volume(bounding_box(part), bounding_box(envelope))`).
+/// Before ε added this arm the outer call fell through the `_` arm un-folded, so
+/// its inner leaves never folded and `eval_expr` (kernel-less) yielded `Undef`;
+/// with the arm the leaves fold first and `eval_expr` computes a concrete value.
+/// This is therefore a shared CORRECTNESS fix (Undef/error → real value), and the
+/// one documented exception to ε's "LegacyMultiPass stays byte-identical" claim —
+/// limited to that specific non-query-wrapper cell shape. Pinned on the legacy
+/// path by `tests/unified_dag_geometry_executors.rs::
+/// legacy_multipass_folds_nonquery_functioncall_value_cell`.
+///
 /// PERFORMANCE: every geometry-query leaf is dispatched independently, so an
 /// expression repeating an identical call (e.g. `volume(g) + volume(g)`) issues
 /// one kernel round-trip per occurrence, and the enclosing
@@ -2393,7 +2409,7 @@ fn dispatch_geometry_query_call(
 /// `(function_name, GeometryHandleId)` within a single rewrite so repeated
 /// leaves reuse one round-trip — deliberately NOT done here as it is
 /// unobservable at the current single-query scope.
-fn rewrite_geometry_queries(
+pub(crate) fn rewrite_geometry_queries(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     kernel: &dyn reify_ir::GeometryKernel,
@@ -2413,6 +2429,38 @@ fn rewrite_geometry_queries(
             )
             .unwrap_or(reify_ir::Value::Undef);
             reify_ir::CompiledExpr::literal(value, expr.result_type.clone())
+        }
+        // Non-query outer FunctionCall (task 4358 ε): recurse into each argument
+        // so inner geometry-query leaves fold, but leave the outer call's
+        // identity (function + arity + result type) intact. The leaf arm above
+        // (guarded by `is_geometry_query_call`) wins for recognised query calls;
+        // this arm handles every OTHER FunctionCall — e.g. the constraint shape
+        // `fits_build_volume(bounding_box(..), bounding_box(..))` — so its inner
+        // query leaves resolve instead of being left un-folded (→ Undef) by the
+        // `_` fallthrough. Reached on BOTH scheduler paths (it also folds legacy
+        // non-query-wrapper VALUE cells via `post_process_geometry_queries`) — see
+        // the CROSS-SCHEDULER REACH note in this function's doc comment.
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+            let rewritten_args: Vec<reify_ir::CompiledExpr> = args
+                .iter()
+                .map(|a| rewrite_geometry_queries(a, named_steps, kernel, diagnostics))
+                .collect();
+            // No public `function_call` constructor: rebuild manually with a
+            // fresh content hash mirroring `compile_expr`'s combine order
+            // (qualified_name + each arg hash), per expr.rs `map_value_refs`.
+            let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+                .combine(reify_core::ContentHash::of_str(&function.qualified_name));
+            for a in &rewritten_args {
+                content_hash = content_hash.combine(a.content_hash);
+            }
+            reify_ir::CompiledExpr {
+                kind: reify_ir::CompiledExprKind::FunctionCall {
+                    function: function.clone(),
+                    args: rewritten_args,
+                },
+                result_type: expr.result_type.clone(),
+                content_hash,
+            }
         }
         reify_ir::CompiledExprKind::BinOp { op, left, right } => reify_ir::CompiledExpr::binop(
             *op,
@@ -3695,7 +3743,7 @@ fn eval_named_leaf_selector_ctor(
 /// indexing (`faces(b)[i]`, filtered == canonical) and single-element
 /// `single(predicate(...))` — filtered position equals the intended element.
 /// Canonical-index recovery for multi-element predicate `[i]` is a follow-up.
-fn resolve_selector_to_list(
+pub(crate) fn resolve_selector_to_list(
     selector_expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
     values: &reify_ir::ValueMap,
@@ -5654,19 +5702,65 @@ fn resolve_owner_solid_handle(
     None
 }
 
-/// Resolve a `CompiledExprKind::ValueRef` geometry-arg to a `GeometryHandleId`
-/// via `named_steps`. Returns `None` for any non-`ValueRef` shape or missing
-/// `named_steps` entry — caller maps to the "unsupported arg shape → fall
-/// through" behaviour.
+/// Resolve a geometry-handle arg to a `GeometryHandleId` via `named_steps`.
+///
+/// Matches three structural shapes — never evaluating the arg (the ordering
+/// invariant esc-4358-124: a geometry-query leaf must reduce to a `Literal`
+/// structurally, before any `eval_expr` pass):
+///
+/// * `CompiledExprKind::ValueRef(id)` / `CrossSubGeometryRef(id)` — the
+///   established OR-pattern convention (reify-ir/src/expr.rs). The `self.<sub>`
+///   cross-sub `proc.build_volume` arg resolves whether it lowered to a
+///   forward-declared scoped `ValueRef` or a genuine-realization
+///   `CrossSubGeometryRef`. A cross-sub handle carries a scoped
+///   `<parent>.<sub>` entity stamp, and `seed_cross_sub_named_steps` keys it in
+///   `named_steps` by the composed `"<sub>.<member>"` key (engine_build.rs), so
+///   a dotted entity looks up that composed key; a plain same-template ref
+///   (dot-free entity) keeps the bare-member lookup.
+/// * `CompiledExprKind::IndexAccess { object: ValueRef(proc), index:
+///   Literal("build_volume") }` — the cross-`let` structure-instance member
+///   access shape: `let proc = FdmPrinter()` is a `StructureRef`-typed value
+///   cell (NOT a `sub`) whose `.member` projection lowers to `IndexAccess` via
+///   SIR-α field projection (reify-compiler/src/expr.rs). Compose the same
+///   `"<binding>.<member>"` key that the cross-`let` seeding in
+///   `check_constraints_post_geometry` stamps — `<binding>` is the object
+///   ValueRef's bare member (the `proc` binding name), `<member>` is the
+///   string-literal index (task 4358 ε step-10).
+///
+/// Returns `None` for any other expr shape or a missing `named_steps` entry —
+/// caller maps to the "unsupported arg shape → fall through" behaviour.
 fn resolve_geometry_handle_arg(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
 ) -> Option<GeometryHandleId> {
-    let cell_id = match &expr.kind {
-        reify_ir::CompiledExprKind::ValueRef(id) => id,
+    let key = match &expr.kind {
+        reify_ir::CompiledExprKind::ValueRef(id)
+        | reify_ir::CompiledExprKind::CrossSubGeometryRef(id) => {
+            // `rsplit_once('.')` is exactly "if entity contains '.', take the
+            // last segment as the sub name": `Some((_, sub))` ⟺ dotted entity,
+            // `sub` = everything after the final '.'
+            // (== `entity.rsplit('.').next().unwrap()`).
+            match id.entity.rsplit_once('.') {
+                Some((_, sub)) => format!("{}.{}", sub, id.member),
+                None => id.member.clone(),
+            }
+        }
+        reify_ir::CompiledExprKind::IndexAccess { object, index } => {
+            let (reify_ir::CompiledExprKind::ValueRef(obj_id)
+            | reify_ir::CompiledExprKind::CrossSubGeometryRef(obj_id)) = &object.kind
+            else {
+                return None;
+            };
+            let reify_ir::CompiledExprKind::Literal(reify_ir::Value::String(member)) =
+                &index.kind
+            else {
+                return None;
+            };
+            format!("{}.{}", obj_id.member, member)
+        }
         _ => return None,
     };
-    named_steps.get(&cell_id.member).map(|kh| kh.id)
+    named_steps.get(&key).map(|kh| kh.id)
 }
 
 /// Resolve a `CompiledExprKind::ValueRef` arg to the full parent
@@ -12523,6 +12617,213 @@ mod tests {
             "no diagnostics expected for successful KernelHandle Sub resolution, \
              got: {:?}",
             diagnostics
+        );
+    }
+
+    // ── rewrite_geometry_queries FunctionCall-args recursion (task 4358 ε) ───
+    //
+    // Pins that `rewrite_geometry_queries` recurses into the ARGUMENTS of a
+    // non-query outer FunctionCall, folding each inner geometry-query leaf to a
+    // `Literal` while leaving the outer call's identity (function name + arity +
+    // result type) intact. Before step-2 the `_ => expr.clone()` fallthrough
+    // returns the outer call verbatim, so the inner `bounding_box(...)` leaves
+    // never fold — the bug behind `fits_build_volume(bounding_box(..),
+    // bounding_box(..))` constraints folding to Undef.
+
+    /// Build a single-arg geometry-query call `<name>(<entity>.<member>)` whose
+    /// sole arg is a `ValueRef`. Mirrors `conformance_call`'s manual
+    /// `FunctionCall` construction (no public `function_call` constructor).
+    fn geom_query_call(
+        name: &str,
+        entity: &str,
+        member: &str,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let arg = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new(entity, member),
+            reify_core::Type::Geometry,
+        );
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        content_hash = content_hash.combine(arg.content_hash);
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args: vec![arg],
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// Build an N-arg outer FunctionCall `<name>(args...)`.
+    fn outer_function_call(
+        name: &str,
+        args: Vec<reify_ir::CompiledExpr>,
+        result_type: reify_core::Type,
+    ) -> reify_ir::CompiledExpr {
+        let mut content_hash = reify_core::ContentHash::of(&[reify_ir::TAG_FUNCTION_CALL])
+            .combine(reify_core::ContentHash::of_str(name));
+        for a in &args {
+            content_hash = content_hash.combine(a.content_hash);
+        }
+        reify_ir::CompiledExpr {
+            kind: reify_ir::CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: name.to_string(),
+                },
+                args,
+            },
+            result_type,
+            content_hash,
+        }
+    }
+
+    /// RED until step-2: `rewrite_geometry_queries` over a NON-query outer call
+    /// `fits_build_volume(bounding_box(S.part), bounding_box(S.envelope))` must
+    /// preserve the outer call (name + arity) but fold each inner
+    /// `bounding_box(..)` leaf to a `Literal(Value::BoundingBox{..})`. Today the
+    /// `_ => expr.clone()` arm returns the outer call verbatim (args still
+    /// `FunctionCall` query nodes), so the per-arg `Literal(BoundingBox)`
+    /// assertion fails.
+    #[test]
+    fn rewrite_geometry_queries_folds_function_call_args() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        // Two handles, each answered with a valid bbox JSON wire reply
+        // (`dispatch_bounding_box` → `parse_bbox_axis_extents` expects a
+        // `Value::String` of `{"xmin":..,..,"zmax":..}`).
+        let h1 = reify_ir::GeometryHandleId(11);
+        let h2 = reify_ir::GeometryHandleId(22);
+        let bbox_json_1 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.01,\"ymax\":0.02,\"zmax\":0.03}"
+                .to_string(),
+        );
+        let bbox_json_2 = reify_ir::Value::String(
+            "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.0,\"xmax\":0.1,\"ymax\":0.2,\"zmax\":0.3}"
+                .to_string(),
+        );
+        let kernel = MockGeometryKernel::new()
+            .with_bbox_result(h1, bbox_json_1)
+            .with_bbox_result(h2, bbox_json_2);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        named_steps.insert("part".to_string(), kh(h1));
+        named_steps.insert("envelope".to_string(), kh(h2));
+
+        // Outer NON-query call: fits_build_volume(bounding_box(S.part),
+        // bounding_box(S.envelope)).
+        let arg1 = geom_query_call("bounding_box", "S", "part", reify_core::Type::Geometry);
+        let arg2 = geom_query_call("bounding_box", "S", "envelope", reify_core::Type::Geometry);
+        let outer = outer_function_call("fits_build_volume", vec![arg1, arg2], reify_core::Type::Bool);
+
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let rewritten = rewrite_geometry_queries(&outer, &named_steps, &kernel, &mut diags);
+
+        match &rewritten.kind {
+            reify_ir::CompiledExprKind::FunctionCall { function, args } => {
+                assert_eq!(
+                    function.name, "fits_build_volume",
+                    "outer non-query call name must be preserved"
+                );
+                assert_eq!(args.len(), 2, "outer call arity must be preserved");
+                for (i, arg) in args.iter().enumerate() {
+                    match &arg.kind {
+                        reify_ir::CompiledExprKind::Literal(reify_ir::Value::BoundingBox {
+                            ..
+                        }) => {}
+                        other => panic!(
+                            "arg {i} must fold to Literal(Value::BoundingBox); got {other:?}"
+                        ),
+                    }
+                }
+            }
+            other => panic!("expected outer FunctionCall preserved, got {other:?}"),
+        }
+    }
+
+    // ── resolve_geometry_handle_arg cross-sub resolution (task 4358 ε) ────────
+    //
+    // Pins that `resolve_geometry_handle_arg` resolves the cross-sub
+    // `proc.build_volume` geometry-handle arg. Per the CORRECTED esc-4358-124
+    // premise, that arg lowers (via try_resolve_cross_sub_geometry_value_ref,
+    // reify-compiler/src/expr.rs) to one of two shapes, BOTH carrying a scoped
+    // `<parent>.<sub>` entity stamp:
+    //   * `CrossSubGeometryRef(ValueCellId)` — a genuine child realization.
+    //   * a forward-declared scoped `ValueRef(ValueCellId)`.
+    // Either way the live handle is keyed in `named_steps` under the composed
+    // `<sub>.<member>` key that `seed_cross_sub_named_steps` stamps
+    // ("proc.build_volume", engine_build.rs) — NOT the bare member. The arm must
+    // reconstruct that composed key for any dotted-entity id while still
+    // resolving a plain same-template `ValueRef` via its bare member and
+    // returning None for a missing key.
+    //
+    // RED until step-4: resolve_geometry_handle_arg matches ONLY ValueRef and
+    // looks up named_steps by the BARE member ("build_volume"), so the dotted
+    // cross-sub entity misses the "proc.build_volume" key → None (shape b), and
+    // the CrossSubGeometryRef shape isn't matched at all → None (shape a).
+    #[test]
+    fn resolve_geometry_handle_arg_resolves_cross_sub_composed_key() {
+        let cross_handle = reify_ir::GeometryHandleId(91);
+        let bare_handle = reify_ir::GeometryHandleId(7);
+
+        let mut named_steps: HashMap<String, reify_ir::KernelHandle> = HashMap::new();
+        // Cross-sub handle keyed by the composed "<sub>.<member>" key, exactly as
+        // seed_cross_sub_named_steps stamps it (engine_build.rs).
+        named_steps.insert("proc.build_volume".to_string(), kh(cross_handle));
+        // Same-template let-bound geometry keyed by its bare member.
+        named_steps.insert("part".to_string(), kh(bare_handle));
+
+        // The scoped ValueCellId both cross-sub shapes carry: entity
+        // "<parent>.<sub>" ("Parent.proc"), member "build_volume".
+        let scoped_id = reify_core::ValueCellId::new("Parent.proc", "build_volume");
+
+        // (a) CrossSubGeometryRef shape (genuine child realization).
+        let cross_ref = reify_ir::CompiledExpr::cross_sub_geometry_ref(
+            scoped_id.clone(),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&cross_ref, &named_steps),
+            Some(cross_handle),
+            "CrossSubGeometryRef(Parent.proc.build_volume) must resolve via the \
+             composed \"proc.build_volume\" named_steps key"
+        );
+
+        // (b) forward-declared scoped ValueRef shape (same scoped id).
+        let fwd_ref = reify_ir::CompiledExpr::value_ref(scoped_id, reify_core::Type::Geometry);
+        assert_eq!(
+            resolve_geometry_handle_arg(&fwd_ref, &named_steps),
+            Some(cross_handle),
+            "forward-declared scoped ValueRef(Parent.proc.build_volume) must also \
+             resolve via the composed \"proc.build_volume\" key"
+        );
+
+        // (c) regression: a plain same-template ValueRef (dot-free entity)
+        // still resolves via its bare member.
+        let plain_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "part"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&plain_ref, &named_steps),
+            Some(bare_handle),
+            "plain ValueRef(S.part) must still resolve via its bare member \"part\""
+        );
+
+        // (d) regression: a missing key returns None.
+        let missing_ref = reify_ir::CompiledExpr::value_ref(
+            reify_core::ValueCellId::new("S", "absent"),
+            reify_core::Type::Geometry,
+        );
+        assert_eq!(
+            resolve_geometry_handle_arg(&missing_ref, &named_steps),
+            None,
+            "a ValueRef whose member is absent from named_steps must return None"
         );
     }
 
