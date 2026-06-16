@@ -9,7 +9,7 @@
 // PRD §4 D1 — post-build direct recipe: γ does NOT re-enter the dispatcher BFS
 // / realization loop and does NOT modify `demanded_reprs_for_template`.  The
 // subject is already realized; γ runs the same recipe β's executor runs
-// (engine_build.rs:4899-4970) directly.
+// (`execute_realization_ops` Voxelize stage) directly.
 
 impl crate::Engine {
     /// Turn an already-realized BRep solid into a CPU-resident queryable SDF.
@@ -22,15 +22,15 @@ impl crate::Engine {
     /// PRD §4 D1 — post-build direct recipe: γ does NOT re-enter the dispatcher
     /// BFS / realization loop and does NOT modify `demanded_reprs_for_template`.
     /// The subject is already realized; γ runs the same recipe β's executor runs
-    /// (engine_build.rs:4899-4970) directly.
+    /// (`execute_realization_ops` Voxelize stage) directly.
     ///
     /// Degradation paths → `None`:
     ///  1. `subject.realization_ref` absent from `realization_handles` AND
     ///     `subject.kernel_handle == GeometryHandleId::INVALID` (resolution fails).
     ///  2. No `default_kernel_name` configured (no source kernel to tessellate).
     ///  3. No kernel registered under `openvdb_kernel_name()` — absent in stub
-    ///     builds where `cfg(any(has_openvdb, feature="stub_register"))` omits
-    ///     the `inventory::submit!` (register.rs:157).  This is the D5 mechanism.
+    ///     builds where the `cfg(any(has_openvdb, feature="stub_register"))` gate
+    ///     on `inventory::submit!` is not satisfied.  This is the D5 mechanism.
     ///  4. `tessellate`, `ingest_mesh`, or `densify_grid_to_sampled` returns
     ///     `Err` (chain failure).
     #[allow(dead_code)] // consumed by δ=4424, ε=4425, ζ=4426 (future tasks)
@@ -41,7 +41,7 @@ impl crate::Engine {
         // ── 1. Resolve the BRep handle ──────────────────────────────────────
         // Prefer the realization_handles table (set by post_process_geometry_handle_cells
         // during build); fall back to subject.kernel_handle when it is not INVALID
-        // (mirrors engine_constraints.rs:1087 `resolve_handle` pattern).
+        // (mirrors the `resolve_handle` pattern in engine_constraints.rs).
         let brep_id = self
             .realization_handles
             .get(&subject.realization_ref)
@@ -53,11 +53,8 @@ impl crate::Engine {
 
         // ── 2. Source kernel (for tessellation) ──────────────────────────────
         // Clone to release the immutable borrow on `self` before the `get_mut`
-        // calls below (mirrors measure_dfm_rules:813 pattern).
+        // calls below (mirrors the source-kernel selection pattern in measure_dfm_rules.rs).
         let source = self.default_kernel_name.clone()?;
-        if !self.geometry_kernels.contains_key(&source) {
-            return None;
-        }
 
         // ── 3. OpenVDB presence guard ─────────────────────────────────────────
         // Absence means a stub build omitted the registration (D5) or the kernel
@@ -80,21 +77,21 @@ impl crate::Engine {
         let mesh = self
             .geometry_kernels
             .get(&source)?
-            // DEFAULT_TESSELLATION_TOLERANCE = 0.0001 (mirrors engine_build.rs:3773)
+            // DEFAULT_TESSELLATION_TOLERANCE = 0.0001 (mirrors engine_build.rs DEFAULT_TESSELLATION_TOLERANCE)
             .tessellate(brep_id, 0.0001)
             .ok()?;
 
         // Ingest Mesh→Voxel: first production Voxel demand in reify-eval.
         // Uses the live openvdb instance from geometry_kernels (NOT ad-hoc
         // OpenVdbKernel::new() — that would recreate the C-17 orphan; mirrors
-        // realization_content.rs δ-arm:187-188).
+        // the `project_realization_read_handle` δ-arm in realization_content.rs).
         let voxel = self
             .geometry_kernels
             .get_mut(openvdb_name)?
             .ingest_mesh(&mesh)
             .ok()?;
 
-        // Densify Voxel→SampledField (CPU-resident; medial.rs:602).
+        // Densify Voxel→SampledField (CPU-resident after this call; see medial.rs).
         // The same openvdb instance holds the grid across ingest→densify
         // (stateful kernel keyed by handle id, per realization_content.rs δ tests).
         let field = self
