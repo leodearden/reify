@@ -156,6 +156,116 @@ fn unwrap_or_some_with_undef_default_returns_inner() {
     );
 }
 
+// ── step-3: or_default and fallback aliases ───────────────────────────────────
+//
+// or_default and fallback have identical extract-or-default semantics to
+// unwrap_or.  RED today: is_combinator does not yet handle these names so they
+// fall through to eval_user_function_call → function not found → Undef.
+
+/// or_default(some(5mm), 0mm) == 5mm
+///
+/// RED today: or_default not intercepted → Undef.
+#[test]
+fn or_default_some_returns_inner() {
+    let call = CompiledExpr::user_function_call(
+        "or_default".to_string(),
+        vec![expr_some_5mm(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_5mm(),
+        "or_default(some(5mm), 0mm) must return the inner value 5mm"
+    );
+}
+
+/// or_default(none, 0mm) == 0mm
+///
+/// RED today: or_default not intercepted → Undef.
+#[test]
+fn or_default_none_returns_default() {
+    let call = CompiledExpr::user_function_call(
+        "or_default".to_string(),
+        vec![expr_none_length(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_0mm(),
+        "or_default(none, 0mm) must return the default 0mm"
+    );
+}
+
+/// or_default(undef, 0mm) == Value::Undef  (INV-2)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn or_default_undef_subject_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "or_default".to_string(),
+        vec![expr_undef_option_length(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "or_default(undef, 0mm) must propagate Undef"
+    );
+}
+
+/// fallback(some(5mm), 0mm) == 5mm
+///
+/// RED today: fallback not intercepted → Undef.
+#[test]
+fn fallback_some_returns_inner() {
+    let call = CompiledExpr::user_function_call(
+        "fallback".to_string(),
+        vec![expr_some_5mm(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_5mm(),
+        "fallback(some(5mm), 0mm) must return the inner value 5mm"
+    );
+}
+
+/// fallback(none, 0mm) == 0mm
+///
+/// RED today: fallback not intercepted → Undef.
+#[test]
+fn fallback_none_returns_default() {
+    let call = CompiledExpr::user_function_call(
+        "fallback".to_string(),
+        vec![expr_none_length(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        val_0mm(),
+        "fallback(none, 0mm) must return the default 0mm"
+    );
+}
+
+/// fallback(undef, 0mm) == Value::Undef  (INV-2)
+///
+/// GREEN today (coincidentally): any-arg-undef shortcircuit fires.
+#[test]
+fn fallback_undef_subject_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "fallback".to_string(),
+        vec![expr_undef_option_length(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "fallback(undef, 0mm) must propagate Undef"
+    );
+}
+
+// ── step-1: end-to-end via compile_source_with_stdlib ────────────────────────
+
 /// End-to-end: `unwrap_or(some(5mm), 0mm)` compiled with the stdlib must
 /// evaluate to 5mm.
 ///
