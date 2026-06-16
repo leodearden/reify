@@ -318,6 +318,26 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
             "std.fields",
             include_str!("../stdlib/fields.ri").to_owned(),
         ),
+        // `std.option_recovery` declares the 7 generic Option/Map recovery
+        // combinators (unwrap_or / or_else / or_default / fallback /
+        // is_some / is_none / get_or) as `pub fn` with typecheck-only
+        // placeholder bodies (task α — PRD docs/prds/v0_6/result-and-fallback.md
+        // §8 Phase 1).  Resolution and return-type substitution are delivered
+        // free by the existing generic-fn resolver (resolve_function_overload →
+        // type_compat::unify → substitute_type_params).  Real tag-driven
+        // recovery eval is task β (intercept in reify-expr per §11 Q1).
+        //
+        // No import edges → compile_modules_topo keeps the identity order.
+        // MUST be inserted BEFORE std.determinacy.purposes (which MUST remain
+        // LAST; see its comment below).  Placement after std.fields satisfies
+        // both constraints and keeps the load order stable.
+        //
+        // map_or is intentionally omitted — it needs an arrow-type grammar
+        // production that does not exist; owned by task 4595.
+        (
+            "std.option_recovery",
+            include_str!("../stdlib/option_recovery.ri").to_owned(),
+        ),
         // `std.determinacy.purposes` ships the two standard determinacy-check
         // purposes (simulation_ready + design_review, PRD §5) that are merged
         // into every user module via merge_prelude_purposes (task-4016 ζ).
