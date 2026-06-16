@@ -831,7 +831,7 @@ mod tests {
         // In Reify, entity imports use uppercase first letter per convention.
         let source = "import math.Sqrt\nstructure Circle {\n    param r: Length = 5mm\n    let d = Sqrt(r)\n}";
         // Target file declares 'fn Sqrt(...)'
-        let target_source = "fn Sqrt(x: Length) -> Scalar {\n    x\n}";
+        let target_source = "fn Sqrt(x: Length) -> Length {\n    x\n}";
         let math_uri = Url::parse("file:///project/math.ri").unwrap();
 
         let mut map = std::collections::HashMap::new();

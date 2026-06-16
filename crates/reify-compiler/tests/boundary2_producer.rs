@@ -239,7 +239,7 @@ fn type_error_dimension_mismatch() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -334,7 +334,7 @@ fn constraint_non_bool_produces_warning() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -357,7 +357,7 @@ fn constraint_non_bool_produces_warning() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(20, 26),
@@ -747,7 +747,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),
@@ -770,7 +770,7 @@ fn mul_div_different_dimensions_no_diagnostic() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(20, 26),
@@ -1807,7 +1807,7 @@ fn scalar_plus_int_type_error() {
                     is_priv: false,
                     type_expr: Some(TypeExpr {
                         kind: TypeExprKind::Named {
-                            name: "Scalar".into(),
+                            name: "Length".into(),
                             type_args: vec![],
                         },
                         span: SourceSpan::new(0, 6),

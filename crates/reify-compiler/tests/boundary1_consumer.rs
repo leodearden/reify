@@ -239,7 +239,7 @@ fn handle_parse_errors_gracefully() {
                 doc: None,
                 type_expr: Some(TypeExpr {
                     kind: TypeExprKind::Named {
-                        name: "Scalar".into(),
+                        name: "Length".into(),
                         type_args: vec![],
                     },
                     span: SourceSpan::new(0, 6),

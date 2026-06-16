@@ -394,7 +394,7 @@ fn self_error_in_fn_body() {
     // `self` inside a function body is invalid — functions have no enclosing entity scope.
     // The implementation may reject this at parse time or compile time; both are valid.
     // Use the same branch-on-parse-errors pattern as self_error_at_module_scope.
-    let source = r#"fn f(x: Length) -> Scalar {
+    let source = r#"fn f(x: Length) -> Length {
     self.x
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_self"));
@@ -739,7 +739,7 @@ fn self_inside_lambda_in_fn_body_errors() {
     // is_entity_scope=false from the enclosing fn scope (via scope.clone()), so
     // `self` falls through to the unresolved-name error path.
     // Mirror the dual-path pattern used by self_error_in_fn_body (step-7).
-    let source = r#"fn f(x: Length) -> Scalar {
+    let source = r#"fn f(x: Length) -> Length {
     let g = |y| y + self.x
     g(x)
 }"#;
