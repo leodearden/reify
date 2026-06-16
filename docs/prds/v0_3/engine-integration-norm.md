@@ -161,6 +161,17 @@ These seam-shaped surfaces are real but outside the in-engine norm:
 
 Catalog churn: new seams added by the PRD that introduces them, in the same commit as that PRD's resolution. See §13 question 2 for the governance question (Leo-owned).
 
+### §3.11 — Check-time GD&T conformance measurement walk seam
+
+| | |
+|---|---|
+| **Call site** | `Engine::measure_gdt_conformance` — `crates/reify-eval/src/engine_constraints.rs:1003`, invoked from `Engine::check` (`engine_constraints.rs:1335`) beside `check_constraints_against_templates`. |
+| **Invoked from** | `Engine::check` — a check-time walk over the module's active `Conforms` constraints that carry an **explicit `actual`** binding (the η detection signal, C3). For each such constraint the pass resolves the `actual` geometry handle from the realized state, runs `GeometryQuery::MaxDeviation` of `actual` against the tolerance callout's nominal `feature`, and overrides the matching scalar `ConstraintCheckEntry` in the results vector with a geometric verdict (`Satisfied` / `Violated` / `Indeterminate`). Structurally a sibling of `measure_dfm_rules` (§3.8), which lands its DFM-rule walk at the same call-site level in `check()`. |
+| **Registration** | None — this is a walk, not a registry (same shape as §3.6 and §3.8); the plug-in is a call edge (whether `Engine::check` invokes `measure_gdt_conformance`). |
+| **Plug-ins / selectors** | The deviation measurement rides the **existing §3.1 op-execute / `GeometryKernel` query path** via `GeometryQuery::MaxDeviation` (ζ/task 4479) against the realized `actual` + nominal `feature` handles — no norm change for the query primitive; only the walk (this pass) is the new seam. |
+| **Contract owner** | `gdt-geometric-zones-and-containment.md` (PRD v0_6, task θ/4481 introduces this seam entry). Sibling: `measure_dfm_rules` (§3.8, `process-dfm-overhang-draft.md`, task 4408) is the same seam shape and landed first — cross-reference per PRD §7 "whichever lands second cites the first". |
+| **Consumer policy** | No default kernel → no realized geometry handle → the pass degrades to `Indeterminate` / no-op, **never** a false `Violated` (C1 invariant; mirrors the `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path and the DFM walk guard at `engine_constraints.rs:812`). |
+
 ## §4 — Per-seam consumer policy
 
 A mechanism-kind-to-seam matrix. When authoring a PRD that introduces a kernel module, match the kind to the seam.
@@ -182,7 +193,7 @@ A mechanism that plausibly fits multiple seams gets a PRD-time decision. Mesh-mo
 
 When `/prd`'s G1 (consumer named) is walked during PRD-authoring for any PRD that introduces a kernel-module mechanism, also walk this checklist. Concretely:
 
-1. **Name the seam.** Pick from §3.1–§3.8. If none fit, escalate to add a new §3 entry (see §13 question 2).
+1. **Name the seam.** Pick from §3.1–§3.11. If none fit, escalate to add a new §3 entry (see §13 question 2).
 2. **Name the consumer call site.** File:line (or function name) in `reify-eval` where the seam will invoke this PRD's producer. If the call site doesn't exist yet (the seam itself is in-flight), reference the seam-owning PRD as a prereq and recognize this PRD blocks until that PRD lands the call site.
 3. **Name the user-observable signal.** Same artifact `/prd` G2 demands — CLI difference, viewport state, LSP behavior, diagnostic, or stdlib `.ri` example that runs in CI.
 4. **Confirm the seam's owner.** If the seam is owned by another PRD's contract (CN-contract for §3.4; multi-kernel-phase-3 for §3.1/§3.3; persistent-naming-v2 *or* multi-kernel for §3.7 — contested), reference that contract as a hard prereq.
@@ -306,6 +317,7 @@ The G-tool baseline at `docs/architecture-audit/g-tool-baseline-report.md` is th
 | `docs/prds/v0_3/mesh-morphing.md` | consumes (§7 worked example) | §3.2 + §3.4 application | mesh-morph PRD + CN-contract task κ | §12 task δ adds cross-ref |
 | `docs/architecture-audit/gr021-shell-extract-engine-bridge-session-prompt.md` (PRD pending) | consumes (§7.2 mention) | §3.2 (likely) + §3.4 (likely) | future GR-021 PRD | future — referenced for visibility |
 | `docs/prds/freshness-4-variant.md` | this PRD lists; freshness-4-variant resolves the orphan call | §3.6 propagate_freshness_only | freshness-4-variant | listed; production caller fix belongs to that PRD |
+| `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` | this PRD lists, gdt-geometric-zones owns | §3.11 GD&T conformance walk | gdt-geometric-zones-and-containment | wired (task θ/4481 — the §3.11 sibling of §3.8 DFM) |
 | `docs/prds/persistent-naming-v2.md` | listed; ownership of §3.7 is contested | §3.7 KernelAttributeHook | contested with multi-kernel-phase-3 | unresolved per breadcrumb-map §3 #2 — flagged for future PRD-resolve |
 | `docs/prds/v0_3/gui-event-channel-inventory.md` | sibling norm | (out of scope per §10) | gui-event-channel-inventory | sibling — GR-016 owns frontend↔backend IPC norm |
 | `.claude/skills/prd/references/gates.md` | consumes (§5 G1 checklist) | gate G1 reference | `/prd` skill | wired upon §12 task β |

@@ -1,0 +1,59 @@
+// gdt_oracle_inside.ri — B5 query-vs-boolean oracle cross-check: INSIDE case
+//   (task 4481 θ, GD&T geometric-zones PRD §9 B5)
+//
+// Validates that max_deviation (query oracle) and volume(difference) (boolean
+// oracle) AGREE on an "inside" verdict: actual translated d=0.05mm in X,
+// zone grown by t=0.1mm on every side → d < t → both oracles = INSIDE.
+//
+// Geometry setup:
+//   nominal  = box(10mm, 10mm, 10mm)     — centered at origin, ±5mm per axis
+//   actual   = translate(nominal, 0.05mm, 0mm, 0mm) — shifted 0.05mm in X
+//   zone     = box(10.2mm, 10.2mm, 10.2mm) — centered at origin, ±5.1mm per axis
+//              (= nominal grown by t=0.1mm on every side; no translate needed
+//               because box() is corner-at-(−w/2,−h/2,−d/2) → centered)
+//
+// Oracle derivations (analytic):
+//   Query oracle: dev = max_deviation(actual, nominal)
+//     Planar-face translate → max deviation = |d| = 0.05mm = 5e-5 m
+//     Verdict: dev < t = 0.1mm = 1e-4 m  → INSIDE ✓
+//
+//   Boolean oracle: diff = difference(actual, zone); pokeout = volume(diff)
+//     actual (±4.95mm..±5.05mm in X) lies fully inside zone (±5.1mm in X)
+//     → OCCT Cut returns an empty compound → pokeout ≈ 0.0 m³
+//     Verdict: pokeout < FLOOR = 1e-9 m³ → INSIDE ✓
+//
+//   Agreement: both oracles say INSIDE BY CONSTRUCTION.
+//   Near-coincident booleans (d ≈ t) excluded by design (PRD §4 fragile case).
+//
+// `reify eval` output (under OCCT):
+//   GdtOracleInside.dev    ≈ 5e-05 m   (max_deviation = d exactly)
+//   GdtOracleInside.pokeout ≈ 0 m^3    (empty Cut → GProp volume = 0)
+//
+// Kernel-free: `dev` and `pokeout` resolve to `undef`; eval still exits 0.
+
+structure GdtOracleInside {
+    // ── Nominal feature and as-built actual ──────────────────────────────────
+    // nominal: 10mm cube centered at origin (box() is centered: corner at −w/2,−h/2,−d/2).
+    let nominal = box(10mm, 10mm, 10mm)
+    // actual: same cube shifted 0.05mm in X (d = 0.05mm < t = 0.1mm → INSIDE).
+    let actual  = translate(nominal, 0.05mm, 0mm, 0mm)
+
+    // ── Containment zone (SOLID outer boundary) ───────────────────────────────
+    // zone = nominal grown by t=0.1mm on every side.
+    // box(10.2mm,10.2mm,10.2mm) is centered, so it covers ±5.1mm per axis —
+    // exactly nominal(±5mm) + t(0.1mm) on each face.  No translate needed.
+    let zone = box(10.2mm, 10.2mm, 10.2mm)
+
+    // ── Query oracle: max_deviation(actual, nominal) → Scalar<Length> ─────────
+    // Measures the maximum deviation of `actual` from `nominal`.
+    // For an axis-aligned planar-face translate of d=0.05mm: deviation = d exactly.
+    // Named handle required (geometry_ops fold resolves named-handle query args).
+    let dev = max_deviation(actual, nominal)
+
+    // ── Boolean oracle: volume(difference(actual, zone)) → Scalar<Volume> ─────
+    // diff = actual − zone = the portion of actual outside zone.
+    // Since actual (X range −4.95mm..5.05mm) ⊂ zone (X range −5.1mm..5.1mm),
+    // the Cut is empty → OCCT GProp returns 0.0 m³.
+    let diff    = difference(actual, zone)
+    let pokeout = volume(diff)
+}

@@ -1836,6 +1836,90 @@ fn record_failed_autos(
     }
 }
 
+/// γ (task 4323): post-eval pass — record `OpContractFailed` causes for undef cells
+/// whose `default_expr` returned `Value::Undef` with ALL inputs determined.
+///
+/// Called immediately after [`classify_undef_origins`] inside the
+/// `if self.capture_undef_causes` block.  For each cell that:
+///
+/// - is undef in `snap_values`,
+/// - has **no** cause yet recorded by α (`!causes.contains_key(id)`),
+/// - has a `decl` in `decls`, and
+/// - has `Some(default_expr)`,
+///
+/// it re-evaluates `default_expr` via `reify_expr::eval_expr` with a fresh
+/// undef-cause sink attached (no diagnostics sink — existing diagnostics must
+/// not double-emit).  If the sink receives any `OpContractFailed` push (from
+/// `push_op_contract_failure` in reify-expr), we insert
+/// `UndefCause::OpContractFailed { code, span: decl.span }` into `causes` —
+/// re-stamping the span with the cell's declaration span because
+/// `CompiledExpr` carries no span (spans are lost at compile).
+///
+/// **Re-eval faithfulness**: value cells are already evaluated via
+/// `reify_expr::eval_expr` in `evaluate_params_and_lets_unified`, so re-eval
+/// reproduces main-eval exactly for value cells.  Geometry occurrences are not
+/// value cells and are NOT reached here (OUT OF SCOPE for γ; they would need
+/// a separate capture-during-geometry-eval mechanism).
+///
+/// **A1/G3 structural transparency**: `snap_values` and `decls` are read-only;
+/// this function only modifies `causes`.  The hot eval loop remains completely
+/// untouched; all pushes are no-ops when no sink is attached (the normal path).
+fn record_op_contract_failures(
+    causes: &mut HashMap<ValueCellId, reify_ir::UndefCause>,
+    snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    decls: &HashMap<&ValueCellId, &reify_compiler::ValueCellDecl>,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) {
+    use reify_ir::UndefCause;
+
+    for (id, (val, _)) in snap_values.iter() {
+        // Skip determined cells.
+        if !val.is_undef() {
+            continue;
+        }
+        // Skip cells already classified by α (Unbound, UserUndef, AwaitingSolve, SolveFailed).
+        if causes.contains_key(id) {
+            continue;
+        }
+        // Skip cells with no decl (synthetic/guard/list/sub-elaborated cells).
+        let Some(decl) = decls.get(id) else {
+            continue;
+        };
+        // Skip cells with no default_expr (required params — α would have
+        // recorded Unbound for them; if somehow missed, skip gracefully).
+        let Some(default_expr) = &decl.default_expr else {
+            continue;
+        };
+
+        // Re-evaluate the default_expr with a fresh undef-cause sink to detect
+        // genuine op/builtin contract failures with ALL inputs determined.
+        // No diagnostics sink — α's existing diagnostics must not double-emit.
+        let sink: RefCell<Vec<UndefCause>> = RefCell::new(Vec::new());
+        let ctx = eval_ctx_with_meta(values, functions, meta_map)
+            .with_determinacy(snap_values)
+            .with_undef_cause_sink(&sink);
+        let _ = reify_expr::eval_expr(default_expr, &ctx);
+
+        // If the sink has any OpContractFailed, record the first one for this
+        // cell — re-stamping the span with decl.span (CompiledExpr has no span).
+        let sink_borrow = sink.borrow();
+        for cause in sink_borrow.iter() {
+            if let UndefCause::OpContractFailed { code, .. } = cause {
+                causes.insert(
+                    id.clone(),
+                    UndefCause::OpContractFailed {
+                        code: *code,
+                        span: decl.span,
+                    },
+                );
+                break;
+            }
+        }
+    }
+}
+
 /// Classify the origin of every undef cell in `snap_values`, returning a map
 /// from originating-cell id to its `UndefCause`.
 ///
@@ -2865,6 +2949,18 @@ impl Engine {
                 .collect();
             self.last_undef_causes =
                 classify_undef_origins(&snapshot.values, &decls, &solve_failed_autos);
+            // γ (task 4323): fill in OpContractFailed for cells α left unclassified
+            // (the `_ => continue` arm in classify_undef_origins: non-undef default_expr
+            // with all determined inputs). Re-evaluates each such cell's default_expr with
+            // a fresh undef-cause sink; the first OpContractFailed found is recorded.
+            record_op_contract_failures(
+                &mut self.last_undef_causes,
+                &snapshot.values,
+                &decls,
+                &values,
+                &functions,
+                &self.meta_map,
+            );
         }
 
         // Store internal state for incremental evaluation
