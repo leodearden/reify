@@ -3887,4 +3887,179 @@ mod tests {
             "Projection with concrete base must be unchanged by substitution"
         );
     }
+
+    // ── Real = Dimensionless in dimension position (task 4375 γ step-3) ───────
+    // These four tests pin the Real-as-synonym-for-Dimensionless contract in
+    // dimension-position resolution (resolve_dimension_type,
+    // resolve_type_alias_expr_to_dimension, and the parameterized-builtin arms).
+    // Tests (a)–(c) are RED until step-4 extends resolve_dimension_type.
+    // Test (d) is already GREEN from α/4373 (type-position half); it is included
+    // here as a regression-lock contract only.
+
+    /// (a) `resolve_dimension_type("Real")` returns `Some(DIMENSIONLESS)` with
+    /// zero diagnostics, and equals the `"Dimensionless"` result.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to the Dimensionless guard.
+    #[test]
+    fn resolve_dimension_type_real_is_dimensionless_synonym() {
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real = resolve_dimension_type(&te_real, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim = resolve_dimension_type(&te_dimensionless, &mut diags_dim);
+
+        assert_eq!(
+            result_real,
+            Some(DimensionVector::DIMENSIONLESS),
+            "resolve_dimension_type(\"Real\") should return Some(DIMENSIONLESS)"
+        );
+        assert!(
+            diags_real.is_empty(),
+            "resolve_dimension_type(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "resolve_dimension_type(\"Real\") must equal resolve_dimension_type(\"Dimensionless\")"
+        );
+    }
+
+    /// (b) `resolve_type_alias_expr_to_dimension` returns the same value for
+    /// `"Real"` and `"Dimensionless"`, with no diagnostics on either call.
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_type_alias_expr_to_dimension_real_equals_dimensionless() {
+        let reg = TypeAliasRegistry::new();
+        let te_real = named_type_expr("Real");
+        let te_dimensionless = named_type_expr("Dimensionless");
+
+        let mut diags_real = Vec::new();
+        let result_real =
+            resolve_type_alias_expr_to_dimension(&te_real, &reg, &mut diags_real);
+
+        let mut diags_dim = Vec::new();
+        let result_dim =
+            resolve_type_alias_expr_to_dimension(&te_dimensionless, &reg, &mut diags_dim);
+
+        assert!(
+            diags_real.is_empty(),
+            "resolve_type_alias_expr_to_dimension(\"Real\") should produce no diagnostics; got: {:?}",
+            diags_real
+        );
+        assert_eq!(
+            result_real, result_dim,
+            "Real and Dimensionless must resolve to the same dimension"
+        );
+    }
+
+    /// (c) `Vector3<Real> == Vector3<Dimensionless>` and `Scalar<Real> == Scalar<Dimensionless>`,
+    /// both `Some(...)`, no diagnostics.
+    ///
+    /// Calls `resolve_parameterized_builtin_type` with the current 8-arg signature
+    /// (dim_param_names: &HashSet<String> was added in task 4234/ε).
+    ///
+    /// RED until step-4 adds `|| name == "Real"` to resolve_dimension_type.
+    #[test]
+    fn resolve_parameterized_builtin_type_real_equals_dimensionless_for_vector3_and_scalar() {
+        let reg = TypeAliasRegistry::new();
+
+        // Vector3<Real> vs Vector3<Dimensionless>
+        let args_real = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Real".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+        let args_dim = [reify_ast::TypeExpr {
+            kind: reify_ast::TypeExprKind::Named {
+                name: "Dimensionless".to_string(),
+                type_args: vec![],
+            },
+            span: reify_core::SourceSpan::new(0, 0),
+        }];
+
+        let mut diags_v3_real = Vec::new();
+        let vec3_real = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_real,
+            &reg,
+            &mut diags_v3_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_v3_dim = Vec::new();
+        let vec3_dim = resolve_parameterized_builtin_type(
+            "Vector3",
+            &args_dim,
+            &reg,
+            &mut diags_v3_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(vec3_real.is_some(), "Vector3<Real> should resolve to Some(...)");
+        assert!(
+            diags_v3_real.is_empty(),
+            "Vector3<Real> should produce no diagnostics; got: {:?}",
+            diags_v3_real
+        );
+        assert_eq!(vec3_real, vec3_dim, "Vector3<Real> must equal Vector3<Dimensionless>");
+
+        // Scalar<Real> vs Scalar<Dimensionless>
+        let mut diags_sc_real = Vec::new();
+        let scalar_real = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_real,
+            &reg,
+            &mut diags_sc_real,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        let mut diags_sc_dim = Vec::new();
+        let scalar_dim = resolve_parameterized_builtin_type(
+            "Scalar",
+            &args_dim,
+            &reg,
+            &mut diags_sc_dim,
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &HashSet::new(), // dim_param_names: none in scope
+        );
+
+        assert!(scalar_real.is_some(), "Scalar<Real> should resolve to Some(...)");
+        assert!(
+            diags_sc_real.is_empty(),
+            "Scalar<Real> should produce no diagnostics; got: {:?}",
+            diags_sc_real
+        );
+        assert_eq!(scalar_real, scalar_dim, "Scalar<Real> must equal Scalar<Dimensionless>");
+    }
+
+    /// (d) Contract-lock: `resolve_type_name("Real") == resolve_type_name("Dimensionless")`.
+    ///
+    /// Already GREEN from α/4373 (`"Real" => Some(Type::dimensionless_scalar())`);
+    /// included here only as a regression pin for the type-position half of the contract.
+    #[test]
+    fn resolve_type_name_real_equals_dimensionless_contract_lock() {
+        assert_eq!(
+            resolve_type_name("Real"),
+            resolve_type_name("Dimensionless"),
+            "resolve_type_name(\"Real\") must equal resolve_type_name(\"Dimensionless\") \
+             (type-position contract, task 4375 γ)"
+        );
+    }
 }
