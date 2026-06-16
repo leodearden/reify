@@ -1607,6 +1607,9 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Modify { kind, .. } => match kind {
             ModifyKind::Fillet => Operation::ModifyFillet,
             ModifyKind::Chamfer => Operation::ModifyChamfer,
+            // Asymmetric chamfer shares the symmetric chamfer's BRep kernel
+            // capability (BRepFilletAPI_MakeChamfer) — same Operation (β, task 4185).
+            ModifyKind::ChamferAsymmetric => Operation::ModifyChamfer,
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,

@@ -37,6 +37,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "offset_solid",
     "draft",
     "chamfer",
+    "chamfer_asymmetric",
     "fillet",
     "fillet_all",
     "union",

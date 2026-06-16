@@ -973,6 +973,120 @@ pub(crate) fn compile_geometry_op(
                         }
                     }
                 }
+                reify_compiler::ModifyKind::ChamferAsymmetric => {
+                    // Evaluate BOTH setbacks FIRST, while the `eval_arg` closure
+                    // (which borrows `diagnostics` mutably) is still live — keeps
+                    // the missing-arg behaviour identical to the Chamfer/Fillet
+                    // arms. The two distinct distances d1/d2 are what separate the
+                    // asymmetric form from symmetric Chamfer (β, task 4185).
+                    let d1 = eval_arg("d1")?;
+                    let d2 = eval_arg("d2")?;
+                    // The 4-arg `chamfer_asymmetric(solid, edges, d1, d2)` form
+                    // ALWAYS carries an `edges` selector at the .ri surface; the
+                    // None branch (empty = all-edges) is reachable only via direct
+                    // IR. NLL ends the `eval_arg` borrow here so the empty-selection
+                    // arm below can push its own EmptyEdgeSelection diagnostic.
+                    let edges_expr = args.iter().find(|(n, _)| n == "edges").map(|(_, e)| e);
+                    match edges_expr {
+                        // No selector → empty edges = all-edges (direct-IR only).
+                        None => Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                            target: target_id,
+                            edges: vec![],
+                            d1,
+                            d2,
+                        }),
+                        // Curated form: evaluate the selector and resolve it with
+                        // the SAME inline canonical_subhandle_ids + reject-non-handle
+                        // + EmptyEdgeSelection logic as the symmetric Chamfer arm, so
+                        // the two never drift.
+                        Some(expr) => {
+                            let edges_val = reify_expr::eval_expr(
+                                expr,
+                                &eval_ctx_with_meta(values, functions, meta_map),
+                            );
+                            match &edges_val {
+                                reify_ir::Value::List(elems) => {
+                                    // Reject any element that is NOT a Geometry
+                                    // sub-handle (mirrors resolve_subhandle_list's
+                                    // strictness and the Chamfer arm) so a
+                                    // partially-malformed selector surfaces an error
+                                    // rather than silently chamfering only the
+                                    // surviving subset. The cross-solid membership
+                                    // gate is deferred to engine-unified-build-dag
+                                    // η/ε (tasks 4360/4358); the reject-non-handle
+                                    // policy + canonical_subhandle_ids canonicalization
+                                    // are shared with Chamfer.
+                                    let mut raw_ids: Vec<GeometryHandleId> =
+                                        Vec::with_capacity(elems.len());
+                                    for (i, e) in elems.iter().enumerate() {
+                                        match e {
+                                            reify_ir::Value::GeometryHandle {
+                                                kernel_handle,
+                                                ..
+                                            } => raw_ids.push(*kernel_handle),
+                                            other => {
+                                                return Err(format!(
+                                                    "chamfer_asymmetric(solid, edges, d1, d2): \
+                                                     edge selector element [{}] is not a Geometry \
+                                                     sub-handle (got {:?}) — the edge selector \
+                                                     must be a List of edge handles",
+                                                    i, other
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let resolved = canonical_subhandle_ids(raw_ids);
+                                    // ANTI-ZERO-EDGES: a present selector that
+                                    // resolves to ZERO edges must NEVER silently fall
+                                    // through to the all-edges path (the task-3295
+                                    // fake-done trap). Emit a blocking
+                                    // E_EMPTY_SELECTION and return Err.
+                                    if resolved.is_empty() {
+                                        diagnostics.push(
+                                            Diagnostic::error(
+                                                "chamfer_asymmetric(solid, edges, d1, d2): edge \
+                                                 selector resolved to zero edges — refusing to \
+                                                 silently chamfer all edges",
+                                            )
+                                            .with_code(
+                                                reify_core::DiagnosticCode::EmptyEdgeSelection,
+                                            ),
+                                        );
+                                        return Err(
+                                            "chamfer_asymmetric: edge selector resolved to zero \
+                                             edges"
+                                                .to_string(),
+                                        );
+                                    }
+                                    Ok(reify_ir::GeometryOp::ChamferAsymmetric {
+                                        target: target_id,
+                                        edges: resolved,
+                                        d1,
+                                        d2,
+                                    })
+                                }
+                                // The selector did not resolve to a List — on the
+                                // legacy pipeline it is `Undef` (the edges selector
+                                // resolves in P4, after this P2 arm). This is NOT an
+                                // empty selection, so do NOT emit E_EMPTY_SELECTION;
+                                // return a USER-ACTIONABLE Err so the cell stays Undef
+                                // and η resolves it in-loop. Mirrors the Chamfer arm;
+                                // removed once engine-unified-build-dag η/ε (tasks
+                                // 4360/4358) make curated selection reachable
+                                // end-to-end.
+                                other => Err(format!(
+                                    "chamfer_asymmetric(solid, edges, d1, d2): curated edge \
+                                     selection is not yet available on the current build \
+                                     pipeline — the edge selector cannot be resolved at the \
+                                     point this chamfer_asymmetric runs. Wait for curated edge \
+                                     selection (engine-unified-build-dag tasks 4360/4358). \
+                                     [edge selector evaluated to {:?}]",
+                                    other
+                                )),
+                            }
+                        }
+                    }
+                }
                 reify_compiler::ModifyKind::Shell => {
                     let thickness = eval_arg("thickness")?;
                     // Collect face indices from face_0, face_1, ...

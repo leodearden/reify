@@ -186,6 +186,34 @@ pub(crate) fn compile_modify_op(
                 None
             }
         },
+        // chamfer_asymmetric(target, edges, d1, d2) — 4-arg per-edge two-distance
+        // chamfer (β, task 4185). Unlike chamfer, this form ALWAYS carries an
+        // explicit `edges` selector and the two distinct setbacks `d1`/`d2`; it
+        // lowers to ModifyKind::ChamferAsymmetric → GeometryOp::ChamferAsymmetric.
+        "chamfer_asymmetric" => {
+            if !check_arg_count_exact(
+                "chamfer_asymmetric",
+                compiled_args.len(),
+                4,
+                expr_span,
+                diagnostics,
+            ) {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let op = CompiledGeometryOp::Modify {
+                kind: ModifyKind::ChamferAsymmetric,
+                target,
+                args: vec![
+                    ("target".to_string(), it.next().unwrap()),
+                    ("edges".to_string(), it.next().unwrap()),
+                    ("d1".to_string(), it.next().unwrap()),
+                    ("d2".to_string(), it.next().unwrap()),
+                ],
+            };
+            sub_ops.push(op);
+            Some(sub_ops)
+        }
         // fillet(target, radius)             — 2-arg all-edges back-compat
         // fillet(target, edges, radius)      — 3-arg curated edge selection
         "fillet" => match compiled_args.len() {
@@ -841,6 +869,7 @@ mod tests {
     {
         static CASES: &[(ModifyKind, &str, &[&str])] = &[
             (ModifyKind::Chamfer, "chamfer", &["distance"]),
+            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric", &["edges", "d1", "d2"]),
             (ModifyKind::Fillet, "fillet", &["radius"]),
             (ModifyKind::Thicken, "thicken", &["offset"]),
             (ModifyKind::Shell, "shell", &["thickness"]),
@@ -859,6 +888,7 @@ mod tests {
         // ModifyKind variant causes a compile error here, requiring an explicit update.
         let _ = |k: ModifyKind| match k {
             ModifyKind::Chamfer
+            | ModifyKind::ChamferAsymmetric
             | ModifyKind::Fillet
             | ModifyKind::Thicken
             | ModifyKind::Shell
