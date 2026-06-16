@@ -23,7 +23,11 @@ use std::sync::{Arc, Mutex};
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DimensionVector, ValueCellId};
 use reify_eval::{BuildScheduler, Engine};
-use reify_ir::{ExportFormat, GeometryOp, Value};
+use reify_ir::{
+    AttributeHistory, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError,
+    GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
+    KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value,
+};
 use reify_test_support::{compile_source, errors_only};
 
 #[test]
@@ -125,4 +129,145 @@ fn fillet_curated_edges_3205_e2e() {
         "curated fillet volume must differ from all-edges fillet: \
          v_cur={v_cur_si:.15e}, v_all={v_all_si:.15e}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RecordingKernel: transparent GeometryKernel proxy that captures executed ops.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A transparent [`GeometryKernel`] proxy that records every [`GeometryOp`]
+/// dispatched through [`execute`](GeometryKernel::execute) and
+/// [`execute_with_history`](GeometryKernel::execute_with_history), forwarding
+/// ALL calls to the inner kernel unchanged.
+///
+/// The curated `Fillet` op may dispatch through either path under the unified-DAG
+/// executor (cf. `topology_attribute_local_features_e2e.rs` routing fillet through
+/// `execute_with_history`), so **both** paths push `op.clone()` before delegating.
+///
+/// Clone the shared [`Arc`] via [`ops_ref`](Self::ops_ref) **before** moving `self`
+/// into `Box<dyn GeometryKernel>` to retain visibility after the move.
+struct RecordingKernel {
+    inner: Box<dyn GeometryKernel>,
+    ops: Arc<Mutex<Vec<GeometryOp>>>,
+}
+
+impl RecordingKernel {
+    /// Wrap `inner` in a recording proxy with an empty op log.
+    fn new(inner: Box<dyn GeometryKernel>) -> Self {
+        Self {
+            inner,
+            ops: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Clone the shared op-log [`Arc`].
+    ///
+    /// Must be called **before** moving `self` into `Box<dyn GeometryKernel>`.
+    fn ops_ref(&self) -> Arc<Mutex<Vec<GeometryOp>>> {
+        Arc::clone(&self.ops)
+    }
+}
+
+impl GeometryKernel for RecordingKernel {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        self.ops.lock().unwrap().push(op.clone());
+        self.inner.execute(op)
+    }
+
+    fn execute_with_history(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<(GeometryHandle, AttributeHistory), GeometryError> {
+        self.ops.lock().unwrap().push(op.clone());
+        self.inner.execute_with_history(op)
+    }
+
+    fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
+        self.inner.query(query)
+    }
+
+    fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+        self.inner.query_many(queries)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn export_with_options(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        options: &ExportOptions,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<Vec<ExportWarning>, ExportError> {
+        self.inner.export_with_options(handle, format, options, writer)
+    }
+
+    fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+
+    fn extract_edges(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_edges(handle)
+    }
+
+    fn extract_faces(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_faces(handle)
+    }
+
+    fn extract_vertices(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        self.inner.extract_vertices(handle)
+    }
+
+    fn densify_grid_to_sampled(
+        &mut self,
+        handle: GeometryHandleId,
+    ) -> Result<SampledField, QueryError> {
+        self.inner.densify_grid_to_sampled(handle)
+    }
+
+    fn execute_split(
+        &mut self,
+        op: &GeometryOp,
+    ) -> Result<Vec<GeometryHandleId>, GeometryError> {
+        self.inner.execute_split(op)
+    }
+
+    fn make_compound(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        self.inner.make_compound(handles)
+    }
+
+    fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        self.inner.ingest_mesh(mesh)
+    }
+
+    fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
+        self.inner.attribute_hook()
+    }
+
+    fn measure_mesh_deviation(
+        &self,
+        handle: GeometryHandleId,
+        mesh: &Mesh,
+    ) -> Option<f64> {
+        self.inner.measure_mesh_deviation(handle, mesh)
+    }
 }

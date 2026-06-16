@@ -72,14 +72,47 @@ fn dfm_fits_build_volume_4275_e2e() {
 }
 
 /// Build `source` template through stdlib + `UnifiedDag` + real OCCT kernel.
+///
+/// Compiles with the stdlib prelude (so `import std.process` / `FitsBuildVolume` /
+/// `Adding` resolve), asserts no error-severity diagnostics, then runs on a fresh
+/// `Engine` with `set_build_scheduler(UnifiedDag)` and returns the full `BuildResult`.
 fn build_occt_unified(source: &str) -> BuildResult {
-    build_occt_unified_impl(source)
+    let compiled = parse_and_compile_with_stdlib(source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "fixture should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.build(&compiled, ExportFormat::Step)
 }
 
 /// Locate the single `FitsBuildVolume` constraint result and return its satisfaction.
-/// Panics with the full list if no `FitsBuildVolume` entry is present.
+///
+/// Matches on the `.label` field containing `"FitsBuildVolume"` (the stdlib def's
+/// instantiation is labelled `"FitsBuildVolume#0[0]"`). Mirrors
+/// `fits_build_volume_satisfaction` in `unified_dag_geometry_executors.rs:728`.
+/// Panics with the full constraint list if no such entry is present.
 fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
-    fits_build_volume_satisfaction_impl(result)
+    result
+        .constraint_results
+        .iter()
+        .find(|e| {
+            e.label
+                .as_deref()
+                .is_some_and(|l| l.contains("FitsBuildVolume"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a FitsBuildVolume constraint result, got: {:?}",
+                result.constraint_results
+            )
+        })
+        .satisfaction
 }
 
 /// Build the shared FdmPrinter+Part source with `part_dims` substituted.
