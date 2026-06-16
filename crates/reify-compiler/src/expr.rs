@@ -752,6 +752,26 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Resolve a single-instance (non-collection) sub reference to a `StructureRef` value.
+///
+/// This is the **shared sub-resolution helper** for single-instance subs, called from
+/// BOTH the bare-`ExprKind::Ident` fallback and the `self.<sub>` `MemberAccess` arm of
+/// `compile_expr_guarded`, guaranteeing that `self.bolt` and bare `bolt` compile to
+/// identical `CompiledExpr`s by construction — the same guarantee that
+/// `resolve_collection_sub_to_list` provides for collection subs (`self.bolts` ≡ `bolts`).
+///
+/// Precondition: `sub_name` is present in `scope.sub_component_types` and absent from
+/// `scope.collection_sub_names` (both conditions are checked at every call site).
+fn resolve_non_collection_sub_to_structure_ref(
+    scope: &CompilationScope,
+    sub_name: &str,
+) -> CompiledExpr {
+    let structure_name = scope.sub_component_types[sub_name].clone();
+    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+    let sub_id = ValueCellId::new(&scoped_entity, "__self");
+    CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name))
+}
+
 /// Build the canonical namespaced symbol for a trait-static function.
 ///
 /// This is the **sole source of truth** for the `"Trait::method"` mangling used
@@ -975,6 +995,18 @@ pub(crate) fn compile_expr_guarded(
                     // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
                         return resolve_collection_sub_to_list(scope, name.as_str());
+                    }
+                    // Check if this is a single-instance (non-collection) sub — delegate to
+                    // the shared helper that also handles `self.<sub>` in the MemberAccess arm.
+                    // This makes bare `bolt` ≡ `self.bolt` for single-instance subs, mirroring
+                    // how `resolve_collection_sub_to_list` already makes `bolts` ≡ `self.bolts`.
+                    // Placed AFTER the collection-sub check (collection subs already
+                    // early-returned above) and BEFORE builtins (subs shadow builtins, consistent
+                    // with the collection-sub precedence established above).
+                    if scope.sub_component_types.contains_key(name.as_str())
+                        && !scope.collection_sub_names.contains(name.as_str())
+                    {
+                        return resolve_non_collection_sub_to_structure_ref(scope, name.as_str());
                     }
                     // Check built-in constants (pi, tau, …) after scope and collection
                     // sub-name resolution so that user definitions always shadow builtins.
@@ -2385,13 +2417,12 @@ pub(crate) fn compile_expr_guarded(
                     // self.sub — for single-instance subs, return a StructureRef so outer
                     // chaining works. Collection subs are excluded here and handled below
                     // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
+                    // Delegates to resolve_non_collection_sub_to_structure_ref (the shared
+                    // helper also called from the bare-Ident fallback) so self.bolt ≡ bolt.
                     if scope.sub_component_types.contains_key(member.as_str())
                         && !scope.collection_sub_names.contains(member.as_str())
                     {
-                        let structure_name = scope.sub_component_types[member.as_str()].clone();
-                        let scoped_entity = format!("{}.{}", scope.entity_name, member);
-                        let sub_id = ValueCellId::new(&scoped_entity, "__self");
-                        return CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name));
+                        return resolve_non_collection_sub_to_structure_ref(scope, member.as_str());
                     }
                     // Collection sub accessed through self: delegate to the same helper used
                     // by the bare-ident collection-sub resolution in the Identifier arm of
