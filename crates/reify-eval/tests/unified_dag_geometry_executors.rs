@@ -558,3 +558,114 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
         })
         .satisfaction
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Amendment (reviewer_comprehensive, test_coverage): the schedule-driven build
+// loop's fallback-append branch — `for r_idx in 0..len { if !realized.contains(…)
+// { Realize(r_idx) } }` in `engine_build.rs` — appends every realization NOT
+// covered by the Kahn schedule (residue downstream of a cycle, or a node with no
+// trace entry) in declaration order. The happy-path ε tests above only exercise
+// SCHEDULED realizations; this pins the residue/fallback path: under a cyclic
+// module, every realization must still dispatch EXACTLY ONCE — no duplicate
+// `Realize` (the `realized` dedup set) and no dropped realization (the append).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A module mixing SCHEDULED and RESIDUE realizations under `UnifiedDag`:
+///
+///   * `a ↔ b` is a mutual `let`-cycle (the same shape proven cyclic by
+///     `tests/unified_dag_cycle_contract.rs`), so δ's planner reports the cycle
+///     and any realization transitively reading it lands in `residue`.
+///   * `p` (`box(10mm,…)`) and `q` (`box(20mm,…)`) are independent, valid box
+///     realizations with in-degree 0 → the Kahn schedule covers them (inserted
+///     into the `realized` dedup set during the schedule walk).
+///   * `r = box(a, …)` reads the cyclic cell `a` → it is downstream of the cycle
+///     → `residue` → its `NodeId::Realization` is NOT in `pass.schedule`, so it
+///     reaches dispatch ONLY through the `for r_idx in 0..len { if !realized … }`
+///     fallback-append branch. `a` folds to `Value::Undef` (so `r`'s recorded box
+///     carries `width: Undef`), but its `height`/`depth` are the concrete literal
+///     `5mm` — distinct from `p`'s 10mm and `q`'s 20mm — so `r` is STILL directly
+///     observable, by HEIGHT, in the recorded ops. This lets the test pin the
+///     fallback-append branch dispatching the residue realization exactly once.
+///
+/// Every box carries `height == width`, so matching recorded boxes by their
+/// concrete `Scalar` HEIGHT keys all three realizations uniformly (`p` → 0.010m,
+/// `q` → 0.020m, `r` → 0.005m) even though `r`'s WIDTH folded to `Undef`.
+///
+/// Asserts, under `UnifiedDag`:
+///   (a) δ surfaces `DiagnosticCode::EvalCycle` (confirming the planner is on the
+///       cyclic/residue path, so the fallback-append branch is live), AND
+///   (b) each realization dispatched EXACTLY ONCE — `p` (10mm) and `q` (20mm) via
+///       the Kahn schedule + `realized` dedup, and `r` (5mm) via the fallback
+///       append. A broken dedup set would double-count a scheduled box; a removed
+///       fallback append would zero-count `r`; a dropped realization would
+///       zero-count its box.
+#[test]
+fn unified_dag_residue_realizations_dispatch_exactly_once() {
+    // `let a` / `let b` form a Length-typed mutual cycle (the `+ 1mm` literal
+    // anchors both to `Length`), so `r = box(a, …)` type-checks while `a` itself
+    // is cyclic (→ `Undef` at eval, → residue at planning).
+    let source = r#"structure S {
+    let a = b + 1mm
+    let b = a + 1mm
+    let p = box(10mm, 10mm, 10mm)
+    let q = box(20mm, 20mm, 20mm)
+    let r = box(a, 5mm, 5mm)
+}"#;
+
+    // Capture the op recorder BEFORE the kernel is boxed/moved into the engine
+    // (mirrors `unified_dag_curated_fillet_resolves_edges_in_loop`).
+    let kernel = MockGeometryKernel::new();
+    let ops_ref = kernel.operations_ref();
+    let result = build_with_kernel(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    // (a) the planner reports the a↔b cycle → `r` is residue → the fallback-append
+    //     branch is the only path that can dispatch it.
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(reify_core::DiagnosticCode::EvalCycle)),
+        "expected DiagnosticCode::EvalCycle under UnifiedDag for the a↔b let-cycle \
+         (residue must be non-empty so the fallback-append branch runs); diagnostics={:?}",
+        result
+            .diagnostics
+            .iter()
+            .map(|d| (d.code, d.severity, d.message.clone()))
+            .collect::<Vec<_>>(),
+    );
+
+    // (b) exactly-once dispatch for every realization, keyed by the box's concrete
+    //     `Scalar` HEIGHT (robust to `r`'s `Undef` width).
+    let ops = ops_ref.lock().unwrap().clone();
+    let recorded: Vec<&GeometryOp> = ops.iter().map(|rec| &rec.op).collect();
+    let box_height_count = |si_metres: f64| -> usize {
+        ops.iter()
+            .filter(|rec| match &rec.op {
+                GeometryOp::Box {
+                    height: Value::Scalar { si_value, .. },
+                    ..
+                } => (*si_value - si_metres).abs() < 1e-9,
+                _ => false,
+            })
+            .count()
+    };
+    assert_eq!(
+        box_height_count(0.010),
+        1,
+        "the scheduled `p` (box 10mm) must dispatch EXACTLY ONCE — no duplicate \
+         Realize, no dropped realization; recorded ops={recorded:?}",
+    );
+    assert_eq!(
+        box_height_count(0.020),
+        1,
+        "the scheduled `q` (box 20mm) must dispatch EXACTLY ONCE — no duplicate \
+         Realize, no dropped realization; recorded ops={recorded:?}",
+    );
+    assert_eq!(
+        box_height_count(0.005),
+        1,
+        "the RESIDUE `r` (box 5mm, reads cyclic `a`) must dispatch EXACTLY ONCE via \
+         the `for r_idx in 0..len {{ if !realized … }}` fallback-append branch — \
+         not dropped (zero) and not double-appended (two); recorded ops={recorded:?}",
+    );
+}
