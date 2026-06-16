@@ -225,8 +225,19 @@ pub enum Divergence {
         constraint: &'static str,
         reason: &'static str,
     },
-    /// A diagnostic carrying `code` is present under UnifiedDag but not legacy
-    /// (e.g. `EvalCycle` / `EvalUnresolved`). Matched by exact `DiagnosticCode`.
+    /// A diagnostic carrying `code` is present on exactly ONE side — matched by
+    /// exact `DiagnosticCode` in EITHER direction (added under UnifiedDag, e.g.
+    /// `EvalCycle` / `EvalUnresolved`, OR removed relative to legacy). The
+    /// bidirectional match is LOAD-BEARING, not an oversight: a constraint flip can
+    /// add a unified-only diagnostic OR delete a legacy-only one — the 4275 case
+    /// admits the legacy-only `ConstraintIndeterminate` warning that VANISHES once
+    /// unified resolves the verdict. (The variant name reads historically as
+    /// "Added"; treat it as "one-sided diagnostic, either direction".)
+    ///
+    /// NOTE: a one-sided diagnostic whose `code` is `None` can never be matched
+    /// (`Some(*ac) != None`), so it always surfaces as an unreasoned divergence.
+    /// That is intended — an unstructured (codeless) divergence must be investigated,
+    /// never allow-listed by code.
     DiagnosticAdded {
         code: DiagnosticCode,
         reason: &'static str,
@@ -310,7 +321,11 @@ fn project_value(id: impl std::fmt::Display, v: &Value) -> ProjectedValue {
 /// map is rendered to a sorted `Vec` so iteration order can never leak into the
 /// comparison:
 /// - `values` / `resolved_params`: sorted by `ValueCellId` (Display `Entity.member`),
-///   each value rendered with a stable `{:?}`;
+///   each value projected to a canonical `content_hash` fingerprint for equality —
+///   NOT a `{:?}` render (a raw Debug render leaks `PersistentMap` iteration order
+///   and ephemeral per-Engine handles; see [`ProjectedValue`] for why it was
+///   rejected). A readable `Display` render is kept for diff messages only, and is
+///   deliberately EXCLUDED from equality;
 /// - `constraint_results`: sorted by constraint-id Display then label, as
 ///   `(id, label, satisfaction)`;
 /// - `diagnostics`: kept in EMISSION order (the δ driver pins one total order for
@@ -453,6 +468,9 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
         .chain(unified_only.iter().map(|d| ("unified-only", d)))
     {
         let mut matched = false;
+        // `DiagnosticAdded` matches by exact code in EITHER direction (see its doc):
+        // `side` is informational only — a codeless (`code == None`) one-sided
+        // diagnostic can never match here and always falls through as unreasoned.
         for (i, d) in allowed.iter().enumerate() {
             if let Divergence::DiagnosticAdded { code: ac, .. } = d
                 && Some(*ac) == *code
