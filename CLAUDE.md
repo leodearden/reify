@@ -100,6 +100,20 @@ The dirty-start guard targets `/home/leo/src/reify` (the `--config` project_root
 
 The merge worker's **trivial-pass** fast-path (scope=config, diff touches only non-Rust/non-TS files) lands config-only changes (e.g. `orchestrator.yaml` tweaks) without a full `--scope all` verify. This makes the commit/land-first step fast for pure config deploys.
 
+**Drift-guard exception — verify-pipeline files are NOT trivially config-only.** Changes touching `scripts/verify.sh`, its live `source`d libs (`occt-scope-lib.sh`, `release-scope-lib.sh`, `affected-crates-lib.sh`, `lib_test_semaphore.sh`), or the verify-pipeline data files (`.config/nextest.toml`, `scripts/occt-touching-crates.txt`, `scripts/release-sensitive-crates.txt`, `scripts/verify-pipeline-infra-tests.txt`, `scripts/gen-nextest-config.sh`) are NOT safe to fast-path even though they are non-Rust/non-TS — these files load-bear the `--scope all` plan, and a plan-count change that skips the full gate ambushes the next Rust task with a RED `tests/infra/test_verify_throughput.sh` (root-caused via esc-4288-206; the #4618/#4624 → #4288 ambush is the canonical incident).
+
+The canonical source of truth for the load-bearing set is:
+- `scripts/verify-pipeline-paths.txt` — static manifest of non-`source`-derivable deps
+- verify.sh's live `source "$SCRIPT_DIR/..."` lines — auto-derived, self-healing for future additions
+
+The consultable oracle is `scripts/verify-pipeline-guard.sh`:
+```
+bash scripts/verify-pipeline-guard.sh requires-full-gate <changed-files...>
+```
+Exit 0 → route to the full `--scope all` gate (or at minimum run `tests/infra/test_verify_throughput.sh` + `tests/infra/test_verify_scope.sh`). Exit 1 → fast-path safe. Exit 2 → usage error.
+
+**Cross-repo seam:** the merge-worker trivial-pass classifier is dark-factory code and **must be wired to consult this script** before taking the config-only fast-path (the same class of seam as the `advance_main`/`main_gate_mark_command` notes above). Reify ships the oracle; dark-factory does the wiring (tracked separately as a non-blocking follow-up to esc-4288-206).
+
 ### Env knobs
 
 | Variable | Default | Purpose |
