@@ -6067,7 +6067,7 @@ mod tests {
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
-            // Modify (7)
+            // Modify (8)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -6075,6 +6075,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetCurve,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -6179,6 +6180,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -7018,6 +7020,49 @@ mod tests {
             "Split",
             "GeometryOp::Split must return \"Split\" from kind_name()"
         );
+    }
+
+    /// RED step-5 (task 4193): `GeometryOp::OffsetCurve` must be constructible in
+    /// all three overload shapes (2-D, +reference Surface, +direction Vector3) and
+    /// `kind_name()` must return the stable token "OffsetCurve". Also pins that the
+    /// `Operation::ModifyOffsetCurve` capability-taxonomy variant exists.
+    ///
+    /// References the not-yet-existing variant/Operation — compile-fails RED until
+    /// step-6 adds `GeometryOp::OffsetCurve { target, distance, reference, direction }`,
+    /// its "OffsetCurve" arm in `kind_name()`, and `Operation::ModifyOffsetCurve`.
+    #[test]
+    fn offset_curve_variant_constructs_and_kind_name_is_offset_curve() {
+        // Overload 1 — planar 2-D offset (no reference, no direction).
+        let plain = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: None,
+        };
+        // Overload 2 — offset on a reference Surface (a faces() sub-handle).
+        let on_surface = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: Some(GeometryHandleId(2)),
+            direction: None,
+        };
+        // Overload 3 — offset in a given direction Vector3.
+        let directional = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: Some([0.0, 0.0, 1.0]),
+        };
+        for op in [&plain, &on_surface, &directional] {
+            assert_eq!(
+                op.kind_name(),
+                "OffsetCurve",
+                "GeometryOp::OffsetCurve must return \"OffsetCurve\" from kind_name()"
+            );
+        }
+
+        // The capability-taxonomy Operation variant must exist for this op.
+        let _op: Operation = Operation::ModifyOffsetCurve;
     }
 
     /// RED step-1 (task 4190): the default `execute_split` impl on
