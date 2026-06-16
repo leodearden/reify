@@ -33,6 +33,11 @@
 //! reuse `eval_index_access` (which returns Undef on a miss, conflating absence
 //! with undef passthrough).
 //!
+//! An undef *key* in `get_or` (a key expression that produced `Value::Undef`)
+//! also propagates `Value::Undef` — mirroring `eval_index_access` in `lib.rs`.
+//! A failed key computation must not be conflated with a legitimate key miss
+//! (which recovers to `dflt`).
+//!
 //! `or_default` and `fallback` are aliases of `unwrap_or` (PRD fork F2-a,
 //! decision D6) — they share the same extract-or-default match arm.
 //!
@@ -175,13 +180,22 @@ fn eval_is_none(subject: &Value) -> Value {
     }
 }
 
-/// get_or: map[key] if present, else dflt.  Undef map -> Undef.
+/// get_or: map[key] if present, else dflt.  Undef map or undef key -> Undef.
 ///
 /// Performs its own `BTreeMap::get` lookup — must NOT delegate to
 /// `eval_index_access`, which returns `Value::Undef` on a miss and would
 /// conflate an absent key (should recover to dflt) with undef passthrough.
+///
+/// An undef *key* propagates `Value::Undef` — mirroring `eval_index_access`
+/// in `lib.rs`, which returns `Undef` whenever the index is undef.  A failed
+/// key computation must not be silently conflated with a legitimate key miss
+/// (which recovers to `dflt`).
 #[inline]
 fn eval_get_or(subject: &Value, key: &Value, dflt: &Value) -> Value {
+    // Undef key propagates Undef regardless of the subject.
+    if key.is_undef() {
+        return Value::Undef;
+    }
     match subject {
         Value::Map(entries) => entries.get(key).cloned().unwrap_or_else(|| dflt.clone()),
         Value::Undef => Value::Undef,

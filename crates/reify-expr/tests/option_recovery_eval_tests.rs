@@ -597,3 +597,119 @@ fn e2e_get_or_absent_key_with_stdlib() {
         "e2e: get_or(map{{k=>1mm}}, \"absent\", 0mm) compiled via stdlib must evaluate to 0mm"
     );
 }
+
+// ── get_or: undef key propagation ────────────────────────────────────────────
+
+/// get_or(map{"k"=>1mm}, undef_key, 0mm) == Value::Undef
+///
+/// An undef key (failed key computation) must not be silently conflated with a
+/// legitimate key miss (which recovers to dflt).  Mirrors the
+/// `eval_index_access` behaviour in `lib.rs` — both return Undef when the
+/// index/key is undef.
+///
+/// Without the guard: BTreeMap::get(&Undef) returns None → dflt (0mm).
+/// With the guard: the undef-key short-circuit fires before the BTreeMap
+/// lookup → Undef.
+#[test]
+fn get_or_undef_key_returns_undef() {
+    let call = CompiledExpr::user_function_call(
+        "get_or".to_string(),
+        vec![
+            expr_map_k_1mm(),
+            CompiledExpr::literal(Value::Undef, Type::String),
+            expr_0mm(),
+        ],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "get_or(map, undef_key, dflt) must propagate Undef — undef key mirrors eval_index_access"
+    );
+}
+
+// ── type-error degradation: `_` arms ─────────────────────────────────────────
+//
+// Each combinator's `_` arm degrades gracefully to Value::Undef when the
+// subject carries the wrong tag (Option-family combinators expect Value::Option;
+// get_or expects Value::Map).  These arms prevent panics or undefined behaviour
+// when a type error reaches the runtime.
+
+/// unwrap_or(5mm, 0mm) == Value::Undef — non-Option subject degrades gracefully.
+#[test]
+fn unwrap_or_non_option_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "unwrap_or".to_string(),
+        vec![expr_5mm(), expr_0mm()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "unwrap_or with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
+/// or_else(5mm, none) == Value::Undef — non-Option subject degrades gracefully.
+#[test]
+fn or_else_non_option_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "or_else".to_string(),
+        vec![expr_5mm(), expr_none_length()],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "or_else with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
+/// is_some(5mm) == Value::Undef — non-Option subject degrades gracefully.
+#[test]
+fn is_some_non_option_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "is_some".to_string(),
+        vec![expr_5mm()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "is_some with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
+/// is_none(5mm) == Value::Undef — non-Option subject degrades gracefully.
+#[test]
+fn is_none_non_option_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "is_none".to_string(),
+        vec![expr_5mm()],
+        Type::Bool,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "is_none with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
+/// get_or(5mm, "k", 0mm) == Value::Undef — non-Map subject degrades gracefully.
+#[test]
+fn get_or_non_map_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "get_or".to_string(),
+        vec![
+            expr_5mm(),
+            CompiledExpr::literal(Value::String("k".to_string()), Type::String),
+            expr_0mm(),
+        ],
+        Type::length(),
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "get_or with non-Map subject must degrade to Undef (graceful type-error)"
+    );
+}
