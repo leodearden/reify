@@ -100,6 +100,42 @@ pub fn build_under_keep_engine(
     (engine, result)
 }
 
+/// Build a [`CorpusCase`] under `scheduler`, honoring its optional seeded
+/// `kernel`: `None` ⇒ the default unseeded [`build_under`]; `Some(f)` ⇒ a FRESH
+/// `f()` kernel (so geometry queries resolve identically under both schedulers).
+/// The single corpus-sweep entry point — every gate routes through it so a case's
+/// kernel seeding is applied uniformly.
+pub fn build_case(case: &CorpusCase, scheduler: BuildScheduler) -> BuildResult {
+    match case.kernel {
+        Some(make) => {
+            if case.needs_stdlib {
+                build_with_kernel_stdlib(case.source, scheduler, make())
+            } else {
+                build_with_kernel(case.source, scheduler, make())
+            }
+        }
+        None => build_under(case.source, scheduler, case.needs_stdlib),
+    }
+}
+
+/// Like [`build_case`] but RETAINS the engine for the residue gate (mirrors
+/// [`build_under_keep_engine`], honoring the case's optional seeded `kernel`).
+pub fn build_case_keep_engine(case: &CorpusCase, scheduler: BuildScheduler) -> (Engine, BuildResult) {
+    let compiled = if case.needs_stdlib {
+        compile_source_with_stdlib(case.source)
+    } else {
+        compile_source(case.source)
+    };
+    let kernel: Box<dyn GeometryKernel> = match case.kernel {
+        Some(make) => make(),
+        None => Box::new(MockGeometryKernel::new()),
+    };
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(scheduler);
+    let result = engine.build(&compiled, ExportFormat::Step);
+    (engine, result)
+}
+
 /// The Stage-1 residue set, observed DIRECTLY: re-run the pure unified planner
 /// (`run_unified_pass`) over the engine's post-build `eval_state`
 /// (`snapshot.graph` + `trace_map`) and return its `residue` — the node-set
@@ -144,6 +180,14 @@ pub struct CorpusCase {
     /// True iff the source contains a genuine eval cycle (so the residue==∅ and
     /// no-`EvalCycle` gates are skipped for it).
     pub expects_cycle: bool,
+    /// Optional seeded-kernel factory. `None` ⇒ a default unseeded
+    /// [`MockGeometryKernel`]. `Some(f)` ⇒ `f()` builds a FRESH seeded kernel per
+    /// build (each build consumes its kernel), so geometry QUERIES
+    /// (`volume`/`centroid`/`bbox`) reach results under BOTH schedulers — making
+    /// the case a fair equivalence test rather than a comparison of two distinct
+    /// unseeded-mock FAILURE modes (which is itself a scheduler-ordering artifact,
+    /// not a semantic divergence — see `seeded_physical_kernel`).
+    pub kernel: Option<fn() -> Box<dyn GeometryKernel>>,
 }
 
 /// One reasoned, per-case divergence between the LegacyMultiPass and UnifiedDag
@@ -499,8 +543,8 @@ pub fn assert_equivalent_or_allowed(case: &CorpusCase, legacy: &BuildResult, uni
 /// diagnostics — but happened to leave geometry bytes unchanged — would still be
 /// caught.
 pub fn assert_unified_byte_identical(case: &CorpusCase) {
-    let first = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
-    let second = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+    let first = build_case(case, BuildScheduler::UnifiedDag);
+    let second = build_case(case, BuildScheduler::UnifiedDag);
 
     assert_eq!(
         first.geometry_output, second.geometry_output,
@@ -555,6 +599,7 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
         needs_stdlib: false,
         allowed: &[],
         expects_cycle: false,
+        kernel: None,
     },
     CorpusCase {
         name: "boolean_union",
@@ -562,6 +607,7 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
         needs_stdlib: false,
         allowed: &[],
         expects_cycle: false,
+        kernel: None,
     },
     CorpusCase {
         name: "two_sub_assembly",
@@ -569,6 +615,188 @@ pub const SEED_CORPUS: &[CorpusCase] = &[
         needs_stdlib: false,
         allowed: &[],
         expects_cycle: false,
+        kernel: None,
+    },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GOLDEN corpus — the five committed `tests/golden` source idioms PLUS a handful
+// of language-breadth entries, each lifted verbatim from a committed `examples/`
+// file via `include_str!` (so the corpus tracks the real, regression-locked user
+// programs, not a hand-rolled paraphrase). Discharges the "+ tests/golden corpus"
+// clause of §8-ζ.
+//
+// `include_str!` resolves relative to THIS file, but the `#[path]`-include leaves
+// that ambiguous; `concat!(env!("CARGO_MANIFEST_DIR"), …)` pins the path to the
+// crate manifest dir (`crates/reify-eval`) unambiguously regardless of where the
+// module is textually included.
+//
+// Every entry starts with an EMPTY allow-list: these are user-facing programs the
+// unified driver MUST reproduce byte-for-byte. A divergence that shows up here is
+// a real ε defect surfaced by the gate → fix/escalate, never blanket-allow.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `examples/structure-instance.ri` — SIR-α: flat + nested structure-instance
+/// construction (Steel/PointLoad/Beam/NestedAssembly). Pure value evaluation, no
+/// geometry. (golden: `tests/golden/structure_instance.txt`.)
+const SRC_STRUCTURE_INSTANCE: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/structure-instance.ri"));
+
+/// `examples/tensegrity_t_prism.ri` — T0a/T1b: a `Tensegrity` instance, an
+/// `@optimized` `form_find_free` ComputeNode, and `tensegrity_wires`. Exercises
+/// list values + the optimized-trampoline path. (golden:
+/// `tests/golden/tensegrity_t_prism.txt`.)
+const SRC_TENSEGRITY_T_PRISM: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/tensegrity_t_prism.ri"));
+
+/// `examples/tensegrity_membrane_patch.ri` — M0: a `Tensegrity` with a
+/// `surfaces` field, a `Membrane`, and `tensegrity_surfaces`. (golden:
+/// `tests/golden/tensegrity_membrane_patch.txt`.)
+const SRC_TENSEGRITY_MEMBRANE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/tensegrity_membrane_patch.ri"
+));
+
+/// `examples/materials_starter_library.ri` — SIR-β-mat: the three wave-2
+/// materials + member-access field reads. (golden:
+/// `tests/golden/materials_starter_library.txt`.)
+const SRC_MATERIALS_LIBRARY: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/materials_starter_library.ri"
+));
+
+/// `examples/spec-shape-physical.ri` — GHR-ζ: a `Bracket : Physical` with a
+/// concrete `box(10mm,20mm,30mm)` geometry + a `Material`, whose `mass`/`centroid`
+/// derive from geometry queries. (golden: `tests/golden/spec_shape_physical.txt`.)
+const SRC_SPEC_SHAPE_PHYSICAL: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/spec-shape-physical.ri"));
+
+/// `examples/pattern_composition.ri` — geometry breadth: `linear_pattern_2d`
+/// (degenerate/grid/composed), `arbitrary_pattern`, and a `union_all` boolean
+/// fold across multiple `box` primitives (multiple realizations per structure).
+const SRC_PATTERN_COMPOSITION: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pattern_composition.ri"));
+
+/// `examples/m9_constraint_def.ri` — constraint breadth: `constraint def`s
+/// (single/multi-predicate, `pub`), structures consuming them, named args out of
+/// declaration order, and `where`-guarded active/inactive constraints.
+const SRC_M9_CONSTRAINT_DEF: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m9_constraint_def.ri"));
+
+/// `examples/m5_guarded_enum.ri` — control-flow breadth: an `enum`, a
+/// `where`-guarded param group (`where shape == Shape.Round { … } else { … }`),
+/// and a `match` expression.
+const SRC_M5_GUARDED_ENUM: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/m5_guarded_enum.ri"));
+
+/// `examples/cost_aggregation.ri` — aggregation breadth: `Costed : Buy` line
+/// items and a dimension-preserving `[…].sum : Scalar<Money>` total over a
+/// two-`sub` BOM assembly.
+const SRC_COST_AGGREGATION: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/cost_aggregation.ri"));
+
+/// A FRESH [`MockGeometryKernel`] seeded so `examples/spec-shape-physical.ri`'s
+/// geometry QUERIES resolve identically under BOTH schedulers. `Bracket.geometry =
+/// box(10mm,20mm,30mm)` realizes to `GeometryHandleId(1)`; the `Physical` trait
+/// then computes `mass = volume(geometry) * material.density` and `centroid =
+/// centroid(geometry)`, dispatching `volume`/`centroid` queries against that
+/// handle. With an UNSEEDED mock those queries fail, and the two schedulers
+/// surface that failure differently (UnifiedDag dispatches post-geometry per PRD
+/// §3.3 and warns; legacy does not) — a scheduler-ordering ARTIFACT of the
+/// unseeded mock, not a semantic divergence. Seeding the replies makes the case a
+/// genuine equivalence test: both schedulers consume the SAME query results.
+///
+/// `volume` returns a raw `Value::Real` (kernel contract; the stdlib `volume()`
+/// wrapper dimensionalizes it) and `centroid` returns an `{"x","y","z"}` JSON
+/// string (the same shape the selector-vocabulary mocks use). Concrete values
+/// match the analytic box (vol = 0.01·0.02·0.03 m³; centroid at the corner-origin
+/// box's centre) but accuracy is immaterial here — equivalence only requires both
+/// schedulers to see identical replies.
+pub fn seeded_physical_kernel() -> Box<dyn GeometryKernel> {
+    let centroid_json = Value::String(r#"{"x":0.005,"y":0.01,"z":0.015}"#.to_string());
+    let kernel = MockGeometryKernel::new()
+        .with_volume_result(GeometryHandleId(1), Value::Real(0.01 * 0.02 * 0.03))
+        .with_centroid_result(GeometryHandleId(1), centroid_json);
+    Box::new(kernel)
+}
+
+/// The committed golden idioms + language-breadth entries. Every entry must be
+/// equivalent-or-reasoned under both schedulers, 2× byte-identical, and (acyclic)
+/// residue==∅. All currently carry EMPTY allow-lists (plain equivalence expected).
+pub const GOLDEN_CORPUS: &[CorpusCase] = &[
+    // ── the five committed `tests/golden` idioms ──
+    CorpusCase {
+        name: "golden:structure_instance",
+        source: SRC_STRUCTURE_INSTANCE,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "golden:tensegrity_t_prism",
+        source: SRC_TENSEGRITY_T_PRISM,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "golden:tensegrity_membrane_patch",
+        source: SRC_TENSEGRITY_MEMBRANE,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "golden:materials_starter_library",
+        source: SRC_MATERIALS_LIBRARY,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "golden:spec_shape_physical",
+        source: SRC_SPEC_SHAPE_PHYSICAL,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: Some(seeded_physical_kernel),
+    },
+    // ── language-breadth entries (transform / pattern / constraint / guard / cost) ──
+    CorpusCase {
+        name: "breadth:pattern_composition",
+        source: SRC_PATTERN_COMPOSITION,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "breadth:m9_constraint_def",
+        source: SRC_M9_CONSTRAINT_DEF,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "breadth:m5_guarded_enum",
+        source: SRC_M5_GUARDED_ENUM,
+        needs_stdlib: false,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
+    },
+    CorpusCase {
+        name: "breadth:cost_aggregation",
+        source: SRC_COST_AGGREGATION,
+        needs_stdlib: true,
+        allowed: &[],
+        expects_cycle: false,
+        kernel: None,
     },
 ];
 

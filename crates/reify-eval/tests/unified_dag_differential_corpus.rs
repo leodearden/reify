@@ -18,9 +18,9 @@ mod differential;
 
 use differential::{
     CROSS_LET_4275_SRC, CorpusCase, Divergence, GOLDEN_CORPUS, SEED_CORPUS,
-    assert_equivalent_or_allowed, assert_unified_byte_identical, build_under,
-    build_under_keep_engine, build_with_kernel_stdlib, project_build_result, residue_for,
-    seeded_build_volume_kernel,
+    assert_equivalent_or_allowed, assert_unified_byte_identical, build_case, build_case_keep_engine,
+    build_under, build_under_keep_engine, build_with_kernel_stdlib, project_build_result,
+    residue_for, seeded_build_volume_kernel,
 };
 use reify_core::DiagnosticCode;
 use reify_eval::BuildScheduler;
@@ -97,7 +97,14 @@ const STALE_4275: &[Divergence] = &[
 ];
 
 fn case_4275(name: &'static str, allowed: &'static [Divergence]) -> CorpusCase {
-    CorpusCase { name, source: CROSS_LET_4275_SRC, needs_stdlib: true, allowed, expects_cycle: false }
+    CorpusCase {
+        name,
+        source: CROSS_LET_4275_SRC,
+        needs_stdlib: true,
+        allowed,
+        expects_cycle: false,
+        kernel: None,
+    }
 }
 
 /// RED until step-4: `assert_equivalent_or_allowed` today (step-2) is plain
@@ -253,9 +260,11 @@ fn golden_idioms_equivalent_under_both_schedulers() {
         "GOLDEN_CORPUS must carry the committed golden idioms + language-breadth entries",
     );
     for case in GOLDEN_CORPUS {
-        // (1) equivalence-or-reasoned across the two schedulers.
-        let legacy = build_under(case.source, BuildScheduler::LegacyMultiPass, case.needs_stdlib);
-        let unified = build_under(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+        // (1) equivalence-or-reasoned across the two schedulers. `build_case`
+        // honors the case's optional seeded kernel (so geometry-query idioms like
+        // spec_shape_physical resolve identically under both schedulers).
+        let legacy = build_case(case, BuildScheduler::LegacyMultiPass);
+        let unified = build_case(case, BuildScheduler::UnifiedDag);
         assert_equivalent_or_allowed(case, &legacy, &unified);
 
         // (2) 2× byte-identical determinism gate (δ guarantee) on every idiom.
@@ -265,8 +274,7 @@ fn golden_idioms_equivalent_under_both_schedulers() {
         if case.expects_cycle {
             continue;
         }
-        let (engine, result) =
-            build_under_keep_engine(case.source, BuildScheduler::UnifiedDag, case.needs_stdlib);
+        let (engine, result) = build_case_keep_engine(case, BuildScheduler::UnifiedDag);
         let residue = residue_for(&engine);
         assert!(
             residue.is_empty(),
