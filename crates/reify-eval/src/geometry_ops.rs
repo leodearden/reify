@@ -4036,6 +4036,8 @@ pub(crate) fn try_eval_topology_selector(
         "angle_between_surfaces" => TopologySelectorHelper::AngleBetweenSurfaces,
         "edges" => TopologySelectorHelper::Edges,
         "faces" => TopologySelectorHelper::Faces,
+        // task 4536 — role-addressed mid-surface leaf ctor
+        "mid_surface" => TopologySelectorHelper::MidSurface,
         "center_of_mass" => TopologySelectorHelper::CenterOfMass,
         "moment_of_inertia" => TopologySelectorHelper::MomentOfInertia,
         "edges_by_length" => TopologySelectorHelper::EdgesByLength,
@@ -4128,6 +4130,7 @@ pub(crate) fn try_eval_topology_selector(
                 TopologySelectorHelper::AngleBetweenSurfaces
                 | TopologySelectorHelper::Edges
                 | TopologySelectorHelper::Faces
+                | TopologySelectorHelper::MidSurface
                 | TopologySelectorHelper::CenterOfMass
                 | TopologySelectorHelper::MomentOfInertia
                 | TopologySelectorHelper::EdgesByLength
@@ -4545,6 +4548,23 @@ pub(crate) fn try_eval_topology_selector(
                 reify_core::ty::SelectorKind::Face,
                 target,
                 reify_ir::value::LeafQuery::All,
+                &function.name,
+                diagnostics,
+            )
+        }
+        TopologySelectorHelper::MidSurface => {
+            // Task 4536: kernel-FREE construction mirroring `Faces`, differing
+            // only in the leaf query — a `ByRole(MidSurfaceFace)` leaf that
+            // resolution (resolve_with_attributes) filters from the realized
+            // body's TopologyAttributeTable (the shell-extract synthetic
+            // mid-surface faces). Zero kernel queries here (K2/BT7); K1
+            // kind-closure (Face leaf ⇔ Face selector) is enforced by
+            // build_leaf_selector via SelectorValue::leaf.
+            let target = resolve_selector_target(&args[0], values)?;
+            build_leaf_selector(
+                reify_core::ty::SelectorKind::Face,
+                target,
+                reify_ir::value::LeafQuery::ByRole(reify_ir::Role::MidSurfaceFace),
                 &function.name,
                 diagnostics,
             )
@@ -5071,6 +5091,14 @@ enum TopologySelectorHelper {
     /// `faces(geometry) -> List<Geometry>` — extract the unique faces of a
     /// shape (task 3560).
     Faces,
+    /// `mid_surface(geometry) -> Selector(Face)` — role-addressed leaf ctor
+    /// (task 4536). Builds a kind-typed `Value::Selector(Face)` LEAF carrying
+    /// `LeafQuery::ByRole(Role::MidSurfaceFace)`; resolution filters the realized
+    /// body's `TopologyAttributeTable` for the shell-extract synthetic
+    /// mid-surface faces (which are NOT enumerable via `extract_faces`). Arity 1,
+    /// kernel-FREE at construction (K2/BT7). Composes with 4119's
+    /// union/intersect as a first-class kind-typed leaf.
+    MidSurface,
     /// `center_of_mass(geometry, density) -> Point3<Length>` — uniform-density
     /// center of mass (task 3560).
     CenterOfMass,
@@ -5288,6 +5316,7 @@ impl TopologySelectorHelper {
             | TopologySelectorHelper::SolidBody => 2,
             TopologySelectorHelper::Edges
             | TopologySelectorHelper::Faces
+            | TopologySelectorHelper::MidSurface
             | TopologySelectorHelper::Length
             | TopologySelectorHelper::Perimeter => 1,
             TopologySelectorHelper::FacesByNormal
