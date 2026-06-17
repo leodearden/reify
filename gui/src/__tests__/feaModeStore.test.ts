@@ -313,4 +313,59 @@ describe('feaModeStore', () => {
       });
     });
   });
+
+  // ── Task 3026 step-7: RED — availableCases + applyFeaCaseChanged ──
+  describe('availableCases', () => {
+    it('(a) state.availableCases defaults to []', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        expect(store.state.availableCases).toEqual([]); // FAILS until step-8 adds the field
+      });
+    });
+
+    it('(b) applyFeaCaseChanged sets availableCases and activeCaseId', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.applyFeaCaseChanged({ // FAILS until step-8 adds applyFeaCaseChanged
+          active_case_id: 'operating',
+          available_cases: ['operating', 'overload', 'transport'],
+        });
+        expect(store.state.availableCases).toEqual(['operating', 'overload', 'transport']);
+        expect(store.state.activeCaseId).toBe('operating');
+      });
+    });
+
+    it('(c) applyFeaCaseChanged with empty available_cases resets availableCases to [] (single-case → dropdown hidden)', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        // First apply a multi-case payload
+        store.applyFeaCaseChanged({ // FAILS until step-8 adds applyFeaCaseChanged
+          active_case_id: 'operating',
+          available_cases: ['operating', 'overload'],
+        });
+        expect(store.state.availableCases).toEqual(['operating', 'overload']);
+        // Now apply an empty payload (single-case scene)
+        store.applyFeaCaseChanged({
+          active_case_id: 'default',
+          available_cases: [],
+        });
+        expect(store.state.availableCases).toEqual([]);
+        expect(store.state.activeCaseId).toBe('default');
+      });
+    });
+
+    it('(d) applyFeaCaseChanged does not mutate other fields (enabled, channel, etc.)', () => {
+      withRoot(() => {
+        const store = createFeaModeStore();
+        store.setEnabled(true);
+        store.setChannel('displacement_magnitude');
+        store.applyFeaCaseChanged({ // FAILS until step-8 adds applyFeaCaseChanged
+          active_case_id: 'transport',
+          available_cases: ['operating', 'overload', 'transport'],
+        });
+        expect(store.state.enabled).toBe(true);
+        expect(store.state.channel).toBe('displacement_magnitude');
+      });
+    });
+  });
 });

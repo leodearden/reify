@@ -960,6 +960,22 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       return { ok: true, path };
     },
 
+    // Frontend landing point for the Rust `query_frontend("apply_gui_state", ...)` push
+    // from `handle_set_fea_case`.  Applies the re-sourced GuiState (new scalar_channels
+    // from the active FEA case) WITHOUT resetting the view — geometry is shared across
+    // cases so the camera must stay fixed; only the contour colours change per screenshot.
+    apply_gui_state: (params) => {
+      const rawGuiState = params.guiState as RawGuiState | undefined;
+      if (!rawGuiState) return { error: 'guiState is required' };
+
+      const guiState = convertRawGuiState(rawGuiState);
+      ctx.stores.engine.initFromState(guiState);
+      // Intentionally NO viewState.resetToDefaultView() — preserves camera so the
+      // three per-case visual-regression screenshots differ only in the contour colours.
+
+      return { ok: true, case: params.case };
+    },
+
     wait_for: async (params) => {
       const predicate = params.predicate;
       if (predicate === null || typeof predicate !== 'object' || Array.isArray(predicate)) {

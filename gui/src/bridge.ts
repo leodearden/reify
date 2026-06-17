@@ -738,6 +738,24 @@ export async function onFeaCaseChanged(
 }
 
 /**
+ * Wire the inbound `fea-case-changed` event into a store (task 3026 step-10).
+ *
+ * Calls `onFeaCaseChanged` and routes each valid payload into
+ * `store.applyFeaCaseChanged`, populating `state.availableCases` and
+ * `state.activeCaseId`.
+ *
+ * Returns the Tauri UnlistenFn promise so the caller can unsubscribe on
+ * cleanup (e.g. component teardown in Viewport via onCleanup).
+ */
+export function subscribeFeaCaseToStore(
+  store: { applyFeaCaseChanged(payload: FeaCaseChanged): void },
+): Promise<UnlistenFn> {
+  return onFeaCaseChanged((payload) => {
+    store.applyFeaCaseChanged(payload);
+  });
+}
+
+/**
  * Subscribe to `solver-progress` Tauri events (GR-016 ζ).
  *
  * Emitted at the end of each CG iteration by `solve_cg_with_progress` in
@@ -799,6 +817,21 @@ export async function onModeShapeFrame(
     }
     callback(p as unknown as ModeShapeFrame);
   });
+}
+
+/**
+ * Invoke the `set_active_fea_case` Tauri command (task 3026 step-14).
+ *
+ * Tells the engine to switch the active FEA load case and rebuild the
+ * per-case scalar channels (von-Mises / displaced_positions) from the
+ * named case's ElasticResult.  The returned GuiState is applied by the
+ * existing state-apply path in the caller.
+ *
+ * The `case` parameter name matches the Rust handler's `#[tauri::command]`
+ * parameter: `set_active_fea_case(case: String)`.
+ */
+export async function setActiveFeaCase(caseName: string): Promise<void> {
+  return invoke('set_active_fea_case', { case: caseName });
 }
 
 /**

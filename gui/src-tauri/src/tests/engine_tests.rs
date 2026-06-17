@@ -10606,7 +10606,7 @@ fn apply_fea_channels_with_elastic_result_fills_channels() {
     let map = make_elastic_result_value_map(stress_sf, disp_sf);
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     let vertex_count = mesh.vertices.len() / 3; // = 3
@@ -10667,7 +10667,7 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
     let map = reify_ir::ValueMap::new(); // no ElasticResult
     let mut meshes = vec![make_test_mesh_data()];
 
-    crate::engine::apply_fea_channels(&mut meshes, &map);
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
 
     let mesh = &meshes[0];
     assert!(
@@ -12081,6 +12081,472 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
         warn_line,
         bad_lines.len()
     );
+}
+
+// ── Task 3026 step-1: RED — apply_fea_channels multi-case sourcing ────────────
+//
+// Tests:
+//   (a) MultiCaseResult ValueMap + active_case=None  → uses lex-first case
+//       ("operating" < "overload") — von Mises from 100 MPa stress field.
+//   (b) MultiCaseResult ValueMap + active_case=Some("overload") → uses "overload"
+//       (200 MPa stress field — distinct, larger von Mises than "operating").
+//   (c) Single top-level ElasticResult (no multi-case wrapper) still works
+//       unchanged with active_case=None (regression guard for the 4087 path).
+//
+// All three tests call `apply_fea_channels(&mut meshes, &map, active_case)` with
+// a NEW third parameter that does not yet exist in the function signature.
+// This file fails to compile (RED) until step-2 adds `active_case: Option<&str>`
+// to `apply_fea_channels`.
+
+/// Build a synthetic `Value::StructureInstance("ElasticResult")` (not a ValueMap).
+///
+/// Used as the per-case payload in `multi_case_result_value` for multi-case tests.
+/// Mirrors `make_elastic_result_value_map` but returns the inner Value directly
+/// instead of wrapping it in a top-level ValueMap cell.
+fn make_elastic_result_value(
+    stress_sf: reify_ir::SampledField,
+    disp_sf: reify_ir::SampledField,
+) -> reify_ir::Value {
+    use reify_ir::{FieldSourceKind, Value};
+    use std::sync::Arc;
+
+    let stress_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(stress_sf)),
+    };
+    let disp_field = Value::Field {
+        domain_type: reify_core::Type::dimensionless_scalar(),
+        codomain_type: reify_core::Type::dimensionless_scalar(),
+        source: FieldSourceKind::Sampled,
+        lambda: Arc::new(Value::SampledField(disp_sf)),
+    };
+
+    let mut fields = reify_ir::PersistentMap::new();
+    fields.insert("stress".to_string(), stress_field);
+    fields.insert("displacement".to_string(), disp_field);
+    fields.insert("max_von_mises".to_string(), Value::Real(100e6));
+
+    Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
+        type_id: reify_ir::StructureTypeId(0),
+        type_name: "ElasticResult".to_string(),
+        version: 1,
+        fields,
+    }))
+}
+
+/// Build a stress SampledField with 200e6 uniaxial at node (0,0,0).
+///
+/// Distinct from `make_stress_field()` (100e6 at (0,0,0)), used as the
+/// "overload" case so the two cases produce distinguishable von Mises values.
+fn make_overload_stress_field() -> reify_ir::SampledField {
+    let mut data = Vec::with_capacity(8 * 9);
+    // (0,0,0): uniaxial 200 MPa — von Mises = 200e6 (2× the "operating" case)
+    data.extend_from_slice(&[200e6_f64, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,0,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (0,1,1)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,0)
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,0,1)
+    let nan9 = [f64::NAN; 9];
+    data.extend_from_slice(&nan9);          // (1,1,0): NaN out-of-solid
+    data.extend_from_slice(&[0.0_f64; 9]); // (1,1,1)
+
+    reify_ir::SampledField {
+        name: "stress".to_string(),
+        kind: reify_ir::SampledGridKind::Regular3D,
+        bounds_min: vec![0.0, 0.0, 0.0],
+        bounds_max: vec![1.0, 1.0, 1.0],
+        spacing: vec![1.0, 1.0, 1.0],
+        axis_grids: vec![vec![0.0, 1.0], vec![0.0, 1.0], vec![0.0, 1.0]],
+        interpolation: reify_ir::InterpolationKind::NearestNeighbor,
+        data,
+        oob_emitted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+/// Build a ValueMap whose single cell is a MultiCaseResult with "operating" (100 MPa)
+/// and "overload" (200 MPa) ElasticResult cases.
+///
+/// Lex order: "operating" < "overload", so "operating" is the lex-first default.
+fn make_multi_case_value_map() -> reify_ir::ValueMap {
+    use reify_test_support::multi_case_result_value;
+
+    let er_op = make_elastic_result_value(make_stress_field(), make_disp_field());
+    let er_ov = make_elastic_result_value(make_overload_stress_field(), make_disp_field());
+    let mcr = multi_case_result_value(&[("operating", er_op), ("overload", er_ov)]);
+
+    let mut map = reify_ir::ValueMap::new();
+    let cell_id = reify_core::ValueCellId::new("FEABracket", "result");
+    map.insert(cell_id, mcr);
+    map
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=None uses lex-first ("operating").
+///
+/// "operating" < "overload" lexicographically, so the lex-first default picks "operating"
+/// (the 100 MPa stress case). von Mises must be positive at v0 and sentinel at v2 (OOB).
+#[test]
+fn apply_fea_channels_multi_case_no_active_uses_lex_first() {
+    let map = make_multi_case_value_map();
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3; // = 3
+
+    // active_case = None  →  lex-first case "operating" (100 MPa)
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("vonMises must be filled from lex-first MultiCaseResult case");
+    assert_eq!(vm.len(), vertex_count, "vonMises len must == vertex_count");
+
+    // v0 (0.05, 0.05, 0.05) is in-bounds near node (0,0,0); "operating" stress = 100 MPa
+    assert!(
+        vm[0] > 0.0 && vm[0] != crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "in-bounds vertex must have positive von Mises from 'operating' case, got {}",
+        vm[0]
+    );
+    // v2 is OOB → sentinel
+    assert_eq!(
+        vm[2],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "OOB vertex must equal SCALAR_CHANNEL_OOB_SENTINEL"
+    );
+
+    // displaced_positions must be Some with correct length
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some after multi-case apply_fea_channels");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
+
+/// apply_fea_channels with MultiCaseResult + active_case=Some("overload") uses "overload".
+///
+/// "overload" has 200 MPa vs "operating" 100 MPa: the von Mises at v0 must be
+/// strictly larger for "overload" than for "operating".
+#[test]
+fn apply_fea_channels_multi_case_active_overload_uses_overload_case() {
+    let map = make_multi_case_value_map();
+    let mut meshes_op = vec![make_test_mesh_data()];
+    let mut meshes_ov = vec![make_test_mesh_data()];
+
+    crate::engine::apply_fea_channels(&mut meshes_op, &map, None);
+    crate::engine::apply_fea_channels(&mut meshes_ov, &map, Some("overload"));
+
+    let vm_op = meshes_op[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'operating' case must fill vonMises");
+    let vm_ov = meshes_ov[0]
+        .scalar_channels
+        .get("vonMises")
+        .expect("'overload' case must fill vonMises");
+
+    // v0 in "operating" = 100 MPa von Mises; v0 in "overload" = 200 MPa von Mises.
+    assert!(
+        vm_ov[0] > vm_op[0],
+        "overload (200 MPa) von Mises ({}) must exceed operating (100 MPa) von Mises ({}) at v0",
+        vm_ov[0],
+        vm_op[0]
+    );
+    // Both in-bounds → neither should equal the OOB sentinel.
+    assert_ne!(
+        vm_op[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "operating in-bounds v0 must not equal OOB sentinel"
+    );
+    assert_ne!(
+        vm_ov[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        "overload in-bounds v0 must not equal OOB sentinel"
+    );
+}
+
+/// Regression: top-level single ElasticResult (no multi-case wrapper) still works with
+/// active_case=None.
+///
+/// Guards the original 4087 `extract_elastic_result_fields` / single-case path;
+/// it must remain unaffected after the multi-case extension.
+#[test]
+fn apply_fea_channels_single_case_top_level_unchanged_regression() {
+    let stress_sf = make_stress_field();
+    let disp_sf = make_disp_field();
+    let map = make_elastic_result_value_map(stress_sf, disp_sf);
+    let mut meshes = vec![make_test_mesh_data()];
+    let vertex_count = meshes[0].vertices.len() / 3;
+
+    crate::engine::apply_fea_channels(&mut meshes, &map, None);
+
+    let mesh = &meshes[0];
+    let vm = mesh
+        .scalar_channels
+        .get("vonMises")
+        .expect("single-case top-level ElasticResult must fill vonMises");
+    assert_eq!(vm.len(), vertex_count);
+    assert!(vm[0] >= 0.0, "in-bounds vertex must have non-negative von Mises");
+    assert_eq!(vm[2], crate::types::SCALAR_CHANNEL_OOB_SENTINEL);
+
+    let dp = mesh
+        .displaced_positions
+        .as_ref()
+        .expect("displaced_positions must be Some for single-case regression");
+    assert_eq!(dp.len(), mesh.vertices.len());
+}
+
+// ── Task 3026 step-3: RED — EngineSession active-case state + re-source ──────
+//
+// Tests:
+//   (a) get_active_fea_case() returns None initially (no explicit case set;
+//       lex-first "operating" is used implicitly by apply_fea_channels).
+//   (b) set_active_fea_case("overload") returns Ok(GuiState) and makes
+//       get_active_fea_case() return Some("overload").
+//   (c) The returned GuiState's scalar_channels["vonMises"] reflects the
+//       "overload" case (200 MPa), distinct from the "operating" case (100 MPa).
+//   (d) mesh vertices/indices are byte-identical to the pre-switch values
+//       (geometry served from the cached tessellation snapshot, not re-tessellated).
+//
+// Fails to COMPILE until step-4 adds:
+//   - active_fea_case: Option<String> on EngineSession (init None)
+//   - get_active_fea_case(&self) -> Option<String>
+//   - set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String>
+//   - inject_check_for_test(&mut self, check: CheckResult) test helper
+
+/// EngineSession active-case: None default → switch to "overload" → verify scalar channels and no re-tessellation.
+#[test]
+fn engine_session_active_fea_case_default_then_switch() {
+    use reify_eval::CheckResult;
+
+    // Build session with a recording kernel so we can count tessellation calls.
+    let kernel = MockGeometryKernel::new();
+    let tess_arc = kernel.tessellate_tolerances_ref();
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // Load bracket_source: this is a non-FEA scene, so tess_mesh_cache is NOT
+    // populated (gated on FEA presence since amendment 3).
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source must succeed for bracket_source");
+
+    let tess_count_after_load = tess_arc.lock().unwrap().len();
+    assert!(tess_count_after_load > 0, "initial load must produce ≥1 tessellation call");
+
+    // Inject a MultiCaseResult CheckResult with "operating" (100 MPa) and
+    // "overload" (200 MPa) Sampled-field ElasticResult cases.
+    // This simulates what happens in production when check() returns FEA values.
+    let values = make_multi_case_value_map();
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+    };
+    session.inject_check_for_test(check); // FAILS TO COMPILE (step-4 adds this)
+
+    // Rebuild GuiState with FEA values so tess_mesh_cache is populated (FEA-gated).
+    // In production, build_gui_state is always called after check() returns FEA data;
+    // inject_check_for_test is test-only and does not trigger a rebuild automatically.
+    let fea_state = session.build_gui_state()
+        .expect("build_gui_state must succeed with injected FEA check");
+    let tess_count_after_rebuild = tess_arc.lock().unwrap().len();
+    assert!(
+        tess_count_after_rebuild >= tess_count_after_load,
+        "rebuild tessellates again (tess_count_after_load={}, tess_count_after_rebuild={})",
+        tess_count_after_load, tess_count_after_rebuild
+    );
+
+    // Capture vertices from the FEA-enabled rebuild (these are what the cache holds).
+    let vertices_before: Vec<f32> = fea_state.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_before: Vec<u32> = fea_state.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
+
+    // (a) Initial active case is None — lex-first "operating" is the implicit default.
+    assert_eq!(session.get_active_fea_case(), None); // FAILS TO COMPILE (step-4 adds this)
+
+    // Switch to "overload".
+    let state_overload = session
+        .set_active_fea_case("overload") // FAILS TO COMPILE (step-4 adds this)
+        .expect("set_active_fea_case('overload') must succeed");
+
+    // (b) Getter returns Some("overload") after switch.
+    assert_eq!(
+        session.get_active_fea_case(),
+        Some("overload".to_string()),
+        "get_active_fea_case must return 'overload' after set"
+    );
+
+    // (d) Vertices/indices are byte-identical — tessellation was NOT repeated
+    // (set_active_fea_case serves geometry from tess_mesh_cache, no kernel call).
+    let vertices_after: Vec<f32> = state_overload.meshes.iter()
+        .flat_map(|m| m.vertices.iter().cloned())
+        .collect();
+    let indices_after: Vec<u32> = state_overload.meshes.iter()
+        .flat_map(|m| m.indices.iter().cloned())
+        .collect();
+    assert_eq!(
+        vertices_before, vertices_after,
+        "vertices must be byte-identical after case switch (no re-tessellation)"
+    );
+    assert_eq!(
+        indices_before, indices_after,
+        "indices must be byte-identical after case switch (no re-tessellation)"
+    );
+    // Tessellation count must not increase from the post-rebuild baseline.
+    let tess_count_after_set = tess_arc.lock().unwrap().len();
+    assert_eq!(
+        tess_count_after_set, tess_count_after_rebuild,
+        "set_active_fea_case must not trigger tessellation (rebuild={}, after_set={})",
+        tess_count_after_rebuild, tess_count_after_set
+    );
+
+    // (c) scalar_channels["vonMises"] reflects "overload" (200 MPa at vertex 0).
+    // MockGeometryKernel vertex 0 is at [0,0,0]; overload stress field has
+    // 200e6 Pa uniaxial at node (0,0,0) → von Mises ≈ 200e6 Pa.
+    let mesh_overload = state_overload.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('overload')");
+    let vm_overload = mesh_overload.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel after set_active_fea_case('overload')");
+    let vertex_count = vertices_before.len() / 3; // 3 floats per vertex
+    assert_eq!(vm_overload.len(), vertex_count,
+        "vonMises channel length must equal vertex count ({vertex_count})");
+
+    // Switch back to "operating" to verify the channels differ between cases.
+    let state_operating = session
+        .set_active_fea_case("operating")
+        .expect("set_active_fea_case('operating') must succeed");
+    let mesh_operating = state_operating.meshes.first()
+        .expect("must have at least one mesh after set_active_fea_case('operating')");
+    let vm_operating = mesh_operating.scalar_channels.get("vonMises")
+        .expect("mesh must have vonMises channel for 'operating' case");
+
+    // Overload (200 MPa) must produce a larger von Mises value at vertex 0 than
+    // operating (100 MPa). Both are in-bounds (vertex 0 at [0,0,0] is the
+    // nearest-neighbor for node (0,0,0) in both stress fields).
+    assert!(
+        vm_overload[0] > vm_operating[0] + 1.0_f32,
+        "overload vonMises[0] ({:.0}) must exceed operating vonMises[0] ({:.0}) by >1 Pa (ratio ~2×)",
+        vm_overload[0], vm_operating[0]
+    );
+}
+
+// ── Task 3026 step-15: RED — GUI fixture-solve de-risk ────────────────────────
+//
+// Asserts that a GUI EngineSession fed the `fea_multi_case_bracket.ri` fixture
+// produces a real multi-case solve result:
+//   - Some cell in check.values has detect_multi_case_result returning
+//     available_cases == ["operating", "overload", "transport"]
+//   - Each case's ElasticResult is a Value::StructureInstance("ElasticResult")
+//     with a non-Undef Sampled `stress` field (Value::Field with
+//     FieldSourceKind::Sampled), proving the GUI end-to-end produces data
+//     the case-picker can consume.
+//
+// FAILS TO COMPILE until step-16 creates examples/fea_multi_case_bracket.ri.
+
+/// B-fixture: GUI EngineSession end-to-end produces a 3-case MultiCaseResult.
+///
+/// Loads `examples/fea_multi_case_bracket.ri` in a fresh EngineSession
+/// (SimpleConstraintChecker + MockGeometryKernel) and asserts:
+///   - `detect_multi_case_result` fires for some cell in check.values
+///   - `available_cases == ["operating", "overload", "transport"]`
+///   - Each case's ElasticResult has a Sampled `stress` field (non-Undef)
+///
+/// Mirrors the 4086 B4 pattern (`register_compute_fns_dispatch_yields_real_elastic_result`).
+#[test]
+fn gui_fixture_multi_case_bracket_produces_three_case_result() {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let source = include_str!("../../../../examples/fea_multi_case_bracket.ri");
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    session
+        .load_from_source(source, "FeaMultiCaseBracket")
+        .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
+
+    let check = session
+        .last_check_for_test()
+        .expect("last_check_for_test must be Some after load_from_source");
+
+    // Find the first cell that is a MultiCaseResult (detect_multi_case_result returns Some).
+    let (cell_id, detected) = check
+        .values
+        .iter()
+        .filter_map(|(id, v)| {
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v)
+                .map(|d| (id, d))
+        })
+        .next()
+        .unwrap_or_else(|| {
+            let all_ids: Vec<_> = check.values.iter().map(|(id, _)| id).collect();
+            panic!(
+                "no cell in check.values matched detect_multi_case_result; \
+                 cells present: {all_ids:?}"
+            )
+        });
+
+    // Available cases must be exactly ["operating", "overload", "transport"].
+    assert_eq!(
+        detected.available_cases,
+        vec!["operating".to_string(), "overload".to_string(), "transport".to_string()],
+        "cell {cell_id:?}: available_cases mismatch"
+    );
+
+    // Each case must carry a real ElasticResult with a Sampled stress field.
+    let outer_map = match check.values.get(cell_id).unwrap() {
+        Value::Map(m) => m,
+        other => panic!("cell {cell_id:?} must be Value::Map (MultiCaseResult), got: {other:?}"),
+    };
+    let cases_map = match outer_map.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        other => panic!("cell {cell_id:?}: 'cases' key must be Value::Map, got: {other:?}"),
+    };
+
+    for case_name in ["operating", "overload", "transport"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| panic!("cases map must contain \"{case_name}\""));
+
+        // Each case must be a Value::StructureInstance("ElasticResult").
+        let er_fields = match case_val {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "ElasticResult",
+                    "case \"{case_name}\" must be StructureInstance(\"ElasticResult\"), \
+                     got type_name=\"{}\"",
+                    data.type_name
+                );
+                &data.fields
+            }
+            other => panic!(
+                "case \"{case_name}\" must be Value::StructureInstance(\"ElasticResult\"), \
+                 got: {other:?}"
+            ),
+        };
+
+        // The `stress` field must be a Sampled Field (non-Undef).
+        let stress_val = er_fields
+            .get("stress")
+            .unwrap_or_else(|| panic!("case \"{case_name}\": stress field missing from ElasticResult"));
+        match stress_val {
+            Value::Field { source, .. } => {
+                assert!(
+                    matches!(source, FieldSourceKind::Sampled),
+                    "case \"{case_name}\": stress source must be Sampled, got: {source:?}"
+                );
+            }
+            other => panic!(
+                "case \"{case_name}\": expected stress to be Value::Field (Sampled), got: {other:?}"
+            ),
+        }
+    }
 }
 
 // ── β-inject no-op-contract guard ─────────────────────────────────────────────

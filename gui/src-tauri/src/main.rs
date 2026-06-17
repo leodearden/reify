@@ -657,6 +657,37 @@ fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
     reify_gui::commands::cancel_solve_impl(&*state)
 }
 
+/// Return the currently active FEA case name (task 3026 case-picker).
+///
+/// `None` means the active case has never been set (engine defaults to
+/// lex-first). Returns `Some(name)` after a `set_active_fea_case` call.
+#[tauri::command]
+fn get_active_fea_case(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    reify_gui::commands::get_active_fea_case_impl(&state.engine)
+}
+
+/// Switch to the named FEA case and return a rebuilt GuiState (task 3026 case-picker).
+///
+/// Stores the case name in the engine session, re-applies FEA scalar channels
+/// from the cached tessellation snapshot (no re-evaluation, no re-tessellation),
+/// and returns the updated GuiState so the frontend can apply the re-sourced
+/// contour.  Unknown case names fall back to the lex-first default.
+#[tauri::command]
+fn set_active_fea_case(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    case: String,
+) -> Result<reify_gui::types::GuiState, String> {
+    let result = reify_gui::commands::set_active_fea_case_impl(&state.engine, &case);
+    if let Ok(ref gui_state) = result {
+        let delta = compute_delta(&state.last_state, gui_state);
+        emit_delta(&app, &delta);
+    }
+    result
+}
+
 fn main() {
     // Sweep stale tempfiles and orphan directories from the persistent cache
     // before any engine work. Best-effort: resolver errors are logged at
@@ -852,6 +883,8 @@ fn main() {
             read_view_sidecar,
             write_view_sidecar,
             cancel_solve,
+            get_active_fea_case,
+            set_active_fea_case,
         ])
         .on_window_event(|window, event| {
             // Gracefully shut down the sidecar when the window closes.

@@ -65,3 +65,81 @@ describe("SCENARIOS catalogue", () => {
     }
   });
 });
+
+// ── Task 3026 step-19: RED — Scenario.feaCase field + fea-multi-load entries ──
+//
+// These tests FAIL until step-20 adds `feaCase?: string` to the Scenario
+// interface and appends the three fea-multi-load entries to SCENARIOS.
+
+describe("fea-multi-load scenarios (task 3026)", () => {
+  const FEA_CASES = ["operating", "overload", "transport"] as const;
+  const FEA_FIXTURE = "examples/fea_multi_case_bracket.ri";
+
+  it("(a) SCENARIOS contains exactly three fea_multi_load_* entries", () => {
+    const entries = SCENARIOS.filter((s) =>
+      s.name.startsWith("fea_multi_load_"),
+    );
+    expect(entries).toHaveLength(3);
+  });
+
+  it("(b) each fea_multi_load entry points at fea_multi_case_bracket.ri", () => {
+    for (const caseName of FEA_CASES) {
+      const name = `fea_multi_load_${caseName}`;
+      const entry = SCENARIOS.find((s) => s.name === name);
+      expect(
+        entry,
+        `expected SCENARIOS to contain an entry named '${name}'`,
+      ).toBeDefined();
+      expect(entry!.fixture).toBe(FEA_FIXTURE);
+    }
+  });
+
+  it("(c) each fea_multi_load entry has the matching feaCase value", () => {
+    for (const caseName of FEA_CASES) {
+      const name = `fea_multi_load_${caseName}`;
+      const entry = SCENARIOS.find((s) => s.name === name);
+      expect(entry).toBeDefined();
+      // feaCase must be an optional string on the Scenario interface (step-20).
+      // TypeScript will error here until step-20 adds `feaCase?: string`.
+      expect((entry as any).feaCase).toBe(caseName);
+    }
+  });
+
+  it("(d) all three fea_multi_load entries share the same camera", () => {
+    const entries = FEA_CASES.map((c) =>
+      SCENARIOS.find((s) => s.name === `fea_multi_load_${c}`),
+    ).filter(Boolean) as (typeof SCENARIOS)[number][];
+    expect(entries).toHaveLength(3);
+    const [first, ...rest] = entries;
+    for (const entry of rest) {
+      expect(entry.camera).toEqual(first.camera);
+    }
+  });
+
+  it("(e) Scenario interface accepts optional feaCase string (type-level)", () => {
+    // This is a compile-time check: once step-20 adds `feaCase?: string` to
+    // the Scenario interface, the cast below should compile without error.
+    // At runtime we just verify that the property is either a string or absent
+    // on every SCENARIO entry.
+    for (const s of SCENARIOS) {
+      const feaCase = (s as any).feaCase;
+      expect(
+        feaCase === undefined || typeof feaCase === "string",
+        `scenario '${s.name}': feaCase must be string or undefined, got ${typeof feaCase}`,
+      ).toBe(true);
+    }
+  });
+
+  it("(f) SCENARIOS[0] is still 'm5_geometry_flange' (bootstrap invariant)", () => {
+    expect(SCENARIOS[0].name).toBe("m5_geometry_flange");
+  });
+
+  it("(g) fea_multi_case_bracket.ri fixture file exists on disk", () => {
+    const repoRoot = resolveRepoRoot(import.meta.url);
+    const abs = path.join(repoRoot, FEA_FIXTURE);
+    expect(
+      fs.existsSync(abs),
+      `fea_multi_case_bracket.ri not found at ${abs}`,
+    ).toBe(true);
+  });
+});
