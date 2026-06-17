@@ -764,6 +764,68 @@ fn trait_declares_assoc_type(
             .any(|d| d.name.as_deref() == Some(member) && matches!(d.kind, DefaultKind::AssocType(_)))
 }
 
+/// Look up a compiled associated-type binding by `member` name on `template`.
+///
+/// Returns the bound [`Type`] (which may itself be `Type::Projection` if the
+/// binding is symbolic — e.g. `type MotionValue = P::MotionValue` stores
+/// `Projection{TypeParam("P"),"MotionValue"}`), or `Type::Error` when the
+/// member is declared by a conformed trait but the structure never bound it
+/// (declared-but-unbound). In the declared-but-unbound case the root-cause
+/// `TraitAssocTypeNotBound` was already emitted at the producer, so this
+/// returns the poison sentinel WITHOUT a new diagnostic (anti-cascade — mirrors
+/// the `resolved_member` contract at resolve_qualified_assoc_type:781-789).
+///
+/// (task 4604 δ)
+fn lookup_assoc_type_binding(template: &TopologyTemplate, member: &str) -> Type {
+    template
+        .assoc_types
+        .iter()
+        .find(|a| a.type_name == member)
+        .map(|a| a.resolved.clone())
+        .unwrap_or(Type::Error)
+}
+
+/// Resolve a type expression that appears as a type argument inside a
+/// qualified-assoc base (e.g. `Prismatic` in `Coupling<Prismatic>::MotionValue`).
+///
+/// Handles the subset valid in this position:
+/// - Bare `Named` with no type_args: type_param → `TypeParam`; known structure → `StructureRef`
+/// - Applied `Named` with type_args: recursive → `Applied`
+/// - All other shapes (integer literal, fn, etc.): → `Type::Error` (anti-cascade sentinel)
+///
+/// (task 4604 δ)
+fn resolve_type_arg_for_projection(
+    type_expr: &reify_ast::TypeExpr,
+    type_param_names: &HashSet<String>,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+) -> Type {
+    match &type_expr.kind {
+        reify_ast::TypeExprKind::Named { name, type_args } => {
+            if type_args.is_empty() {
+                if type_param_names.contains(name.as_str()) {
+                    Type::TypeParam(name.clone())
+                } else if template_registry.contains_key(name.as_str()) {
+                    Type::StructureRef(name.clone())
+                } else {
+                    Type::Error
+                }
+            } else {
+                // Recursively applied: e.g. `Outer<Inner<X>>::Member`
+                let args = type_args
+                    .iter()
+                    .map(|a| resolve_type_arg_for_projection(a, type_param_names, template_registry))
+                    .collect();
+                Type::Applied {
+                    name: name.clone(),
+                    args,
+                }
+            }
+        }
+        // Non-Named type expressions are invalid as type arguments in this context.
+        _ => Type::Error,
+    }
+}
+
 /// Resolve a qualified associated-type type-expr (`Base::Member`, or the FORK-G
 /// paren-disambiguated `Base::(Trait::Member)`) to a concrete [`Type`], reading
 /// iota-β's resolved associated-type table off the base structure's compiled
@@ -824,14 +886,23 @@ pub(crate) fn resolve_qualified_assoc_type(
         return None;
     };
     if !type_args.is_empty() {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "qualified associated-type base `{base_name}` must not have type arguments"
-            ))
-            .with_code(DiagnosticCode::UnresolvedType)
-            .with_label(DiagnosticLabel::new(span, "remove the type arguments")),
-        );
-        return None;
+        // Applied base (e.g. `Coupling<Prismatic>::MotionValue`): resolve each type arg
+        // in the local structure/type-param context, construct `Type::Applied`, wrap in
+        // `Type::Projection`, and reduce via `normalize_type`. (task 4604 δ, PRD §4.3)
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_arg_for_projection(arg_expr, type_param_names, template_registry)
+            })
+            .collect();
+        let projection = Type::Projection {
+            base: Box::new(Type::Applied {
+                name: base_name.clone(),
+                args,
+            }),
+            member: member.to_string(),
+        };
+        return Some(normalize_type(&projection, template_registry));
     }
 
     // A type-parameter base (`T::Material`) has no concrete structure binding at a
@@ -888,22 +959,14 @@ pub(crate) fn resolve_qualified_assoc_type(
     // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
     // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
     // seeing the concrete `Type::dimensionless_scalar()` fallback would spuriously mismatch. No new
-    // diagnostic is emitted here (anti-cascade).
-    let resolved_member = || {
-        template
-            .assoc_types
-            .iter()
-            .find(|a| a.type_name == member)
-            .map(|a| a.resolved.clone())
-            .unwrap_or(Type::Error)
-    };
+    // diagnostic is emitted here (anti-cascade). See `lookup_assoc_type_binding` (δ).
 
     match trait_name {
         // Bare access (`Base::Member`): resolve only when exactly one conformed
         // trait declares `member`. Two or more is genuinely ambiguous (the
         // qualifier is required); zero is handled by a later step.
         None => match declaring_traits.len() {
-            1 => Some(resolved_member()),
+            1 => Some(lookup_assoc_type_binding(template, member)),
             n if n >= 2 => {
                 // A structure binds each associated-type name once, so the
                 // qualifier is disambiguation-only — point the user at the FORK-G
@@ -975,7 +1038,7 @@ pub(crate) fn resolve_qualified_assoc_type(
                 );
                 return None;
             }
-            Some(resolved_member())
+            Some(lookup_assoc_type_binding(template, member))
         }
     }
 }
@@ -1744,6 +1807,169 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
         | Type::Axis
         | Type::Direction
         // Relation directive (γ): a leaf with no inner `Type` to substitute.
+        | Type::Relation
+        | Type::BoundingBox
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::Error => ty.clone(),
+    }
+}
+
+/// Reduce `Type::Projection` nodes by looking up the bound associated type in
+/// the compiled template registry. (task 4604 δ, PRD §4.3)
+///
+/// Walks the entire type tree exhaustively (no `_` wildcard, mirrors
+/// [`substitute_type_params`]) so nested projections inside composite types are
+/// also reduced. Reduction rules for `Projection{base, member}`:
+///
+/// - `base = StructureRef(S)` → look up `S`'s `assoc_types` binding for `member`
+///   via [`lookup_assoc_type_binding`], then recurse to reduce further.
+/// - `base = Applied{name, args}` → look up `name`'s template, build the
+///   substitution `{type_params[i] := args[i]}`, apply it to the member binding
+///   via [`substitute_type_params`], then recurse.
+/// - `base = TypeParam(P)` → irreducible (no concrete args); return the
+///   `Projection{TypeParam(P), member}` unchanged (legitimately symbolic).
+/// - Any other base, or unknown structure / missing binding → `Type::Error`
+///   (poison sentinel WITHOUT a new diagnostic — anti-cascade, the root-cause
+///   was already emitted at the producer).
+pub(crate) fn normalize_type(
+    ty: &Type,
+    template_registry: &HashMap<String, &TopologyTemplate>,
+) -> Type {
+    match ty {
+        // ── Projection reduction ────────────────────────────────────────────
+        Type::Projection { base, member } => {
+            // First, normalize the base itself (handles nested projections).
+            let reduced_base = normalize_type(base, template_registry);
+            match &reduced_base {
+                Type::StructureRef(name) => {
+                    // Bare structure base: look up the binding directly.
+                    if let Some(template) = template_registry.get(name.as_str()) {
+                        let binding = lookup_assoc_type_binding(template, member);
+                        normalize_type(&binding, template_registry)
+                    } else {
+                        // Unknown structure — poison without a second diagnostic.
+                        Type::Error
+                    }
+                }
+                Type::Applied { name, args } => {
+                    // Applied base (e.g. `Coupling<Prismatic>`): build the substitution
+                    // {type_params[i] := args[i]}, substitute into the member binding,
+                    // then recurse to reduce the result (it may itself be a Projection).
+                    if let Some(template) = template_registry.get(name.as_str()) {
+                        let subst: HashMap<String, Type> = template
+                            .type_params
+                            .iter()
+                            .zip(args.iter())
+                            .map(|(tp, arg)| (tp.name.clone(), arg.clone()))
+                            .collect();
+                        let binding = lookup_assoc_type_binding(template, member);
+                        let substituted = substitute_type_params(&binding, &subst);
+                        normalize_type(&substituted, template_registry)
+                    } else {
+                        // Unknown structure — poison without a second diagnostic.
+                        Type::Error
+                    }
+                }
+                Type::TypeParam(_) => {
+                    // TypeParam base is irreducible (no concrete args at this call site);
+                    // return the Projection unchanged — it is legitimately symbolic.
+                    Type::Projection {
+                        base: Box::new(reduced_base),
+                        member: member.clone(),
+                    }
+                }
+                // Any other base kind (Error, Bool, Scalar, etc.) cannot project —
+                // return the poison sentinel without a second diagnostic (anti-cascade).
+                _ => Type::Error,
+            }
+        }
+
+        // ── Composite recursion ─────────────────────────────────────────────
+        // Single-inner-Type wrappers: recurse and rebuild.
+        Type::List(inner) => Type::List(Box::new(normalize_type(inner, template_registry))),
+        Type::Set(inner) => Type::Set(Box::new(normalize_type(inner, template_registry))),
+        Type::Keyed(inner) => Type::Keyed(Box::new(normalize_type(inner, template_registry))),
+        Type::Option(inner) => Type::Option(Box::new(normalize_type(inner, template_registry))),
+        Type::Complex(inner) => Type::Complex(Box::new(normalize_type(inner, template_registry))),
+        Type::Range(inner) => Type::Range(Box::new(normalize_type(inner, template_registry))),
+
+        // Two-inner-Type wrappers.
+        Type::Map(key, val) => Type::Map(
+            Box::new(normalize_type(key, template_registry)),
+            Box::new(normalize_type(val, template_registry)),
+        ),
+        Type::Field { domain, codomain } => Type::Field {
+            domain: Box::new(normalize_type(domain, template_registry)),
+            codomain: Box::new(normalize_type(codomain, template_registry)),
+        },
+
+        // Function: recurse into each param and the return type.
+        Type::Function {
+            params,
+            return_type,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| normalize_type(p, template_registry))
+                .collect(),
+            return_type: Box::new(normalize_type(return_type, template_registry)),
+        },
+
+        // Quantity-bearing aggregates: recurse into the quantity slot.
+        Type::Point { n, quantity } => Type::Point {
+            n: *n,
+            quantity: Box::new(normalize_type(quantity, template_registry)),
+        },
+        Type::Vector { n, quantity } => Type::Vector {
+            n: *n,
+            quantity: Box::new(normalize_type(quantity, template_registry)),
+        },
+        Type::Tensor { rank, n, quantity } => Type::Tensor {
+            rank: *rank,
+            n: *n,
+            quantity: Box::new(normalize_type(quantity, template_registry)),
+        },
+        Type::Matrix { m, n, quantity } => Type::Matrix {
+            m: *m,
+            n: *n,
+            quantity: Box::new(normalize_type(quantity, template_registry)),
+        },
+
+        // Union: recurse into each arm.
+        Type::Union(arms) => Type::Union(
+            arms.iter()
+                .map(|a| normalize_type(a, template_registry))
+                .collect(),
+        ),
+
+        // Applied: recurse into args (may contain Projections).
+        Type::Applied { name, args } => Type::Applied {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| normalize_type(a, template_registry))
+                .collect(),
+        },
+
+        // ── Leaves: no inner Type to normalize ─────────────────────────────
+        Type::TypeParam(_)
+        | Type::ScalarParam(_)
+        | Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Plane
+        | Type::Axis
+        | Type::Direction
         | Type::Relation
         | Type::BoundingBox
         | Type::Selector(_)
@@ -3142,48 +3368,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn qualified_assoc_base_with_type_args_emits_unresolved_type() {
-        // base is `Beam<T>` — a Named WITH type arguments.
-        let base = reify_ast::TypeExpr {
-            kind: reify_ast::TypeExprKind::Named {
-                name: "Beam".to_string(),
-                type_args: vec![named_type_expr("T")],
-            },
-            span: reify_core::SourceSpan::new(0, 0),
-        };
-        let templates: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let traits: HashMap<String, &CompiledTrait> = HashMap::new();
-        let type_params: HashSet<String> = HashSet::new();
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let resolved = resolve_qualified_assoc_type(
-            &base,
-            None,
-            "Material",
-            reify_core::SourceSpan::new(0, 0),
-            &templates,
-            &traits,
-            &type_params,
-            &mut diagnostics,
-        );
-
-        assert_eq!(resolved, None, "a base with type args must not resolve");
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "expected exactly one guard diagnostic; got: {:?}",
-            diagnostics
-        );
-        assert_eq!(diagnostics[0].code, Some(DiagnosticCode::UnresolvedType));
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("must not have type arguments"),
-            "guard message should explain the type-args rejection; got: {:?}",
-            diagnostics[0].message
-        );
-    }
+    // qualified_assoc_base_with_type_args_emits_unresolved_type was REMOVED in
+    // task 4604 δ: the applied-base rejection is gone (PRD §4.3 / §0 reversal).
+    // The new behaviour (Applied base reduces to a concrete type) is covered by
+    // the integration test `applied_base_projection_reduces_to_concrete_type` in
+    // crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs.
 
     #[test]
     fn resolve_type_name_recognises_money() {
