@@ -508,15 +508,102 @@ sys.exit(0 if ok else 1)
 fi
 
 # ============================================================================
-# Cycle ROW4 — §8 Row 4: merge-favored share in private slices.
-# (Tests added in step-9, implementation in step-10.)
+# Cycle ROW4 — §8 Row 4: merge-favored share in private hermetic slices.
+# HOST-GATED for share measurement (cgroup placement required).
+#
+# Design (step-9):
+#   Private test slices (REIFY_CPU_GOVERN_SLICE_TASK=reify-govtest-agents.slice
+#   and REIFY_CPU_GOVERN_SLICE_MERGE=reify-govtest-merge.slice) nest under
+#   shared reify-govtest.slice → they are siblings → cpu.weight ratio is
+#   comparable (C-G2 invariant: weight proportion valid among siblings only).
+#
+#   Measurement: cpu.stat usage_usec DELTA before/after contention burns.
+#   Slices (unlike scopes) are persistent, so a before/after delta isolates
+#   just the contention-burn contribution — same pattern as busy_fraction.
+#
+#   Contention: 2×NWORKERS total workers (W merge + W task, 2W > nproc)
+#   ensures real CPU contention so cgroup weight scheduling fires.
+#
+# §8 Row 4 assertion:
+#   merge_share = Δmerge / (Δmerge + Δtask)  ≥  W_merge/(W_merge+W_task) - tol
+#              = 0.75 − 0.05 = 0.70  (STATED proportional floor, not 0)
+#
+# Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
+#   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
+#   fast.  Hermetic (synthetic PSI fixture), always-on, no cgroup required.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW4: §8 Row 4 (merge-favored share, private slices) ---"
 
+# Knobs — use γ's defaults to be consistent with the lib.
+_ROW4_W_TASK="${REIFY_CPU_GOVERN_W_TASK:-100}"
+_ROW4_W_MERGE="${REIFY_CPU_GOVERN_W_MERGE:-300}"
+_ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.05}"
+_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
+
+# Private test slice names (siblings under reify-govtest.slice).
+# Must differ from production slices (reify-governed-{agents,merge}.slice)
+# to isolate usage_usec deltas from concurrent production agent placement (ζ).
+_ROW4_SLICE_TASK="reify-govtest-agents.slice"
+_ROW4_SLICE_MERGE="reify-govtest-merge.slice"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
+elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW4: python3 unavailable"
+else
+    # ── ROW4 ORCHESTRATION SEAM ──────────────────────────────────────────────
+    # (step-10 adds: slice cgroup-path discovery via a governed probe,
+    # cgroup_set_slice_weight pre-weighting the private slices to _W_MERGE/_W_TASK,
+    # usage_usec before/after reads via cpu_gov_instrument.py cgroup-usage,
+    # concurrent 2W>nproc merge+task contention burns with
+    # REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides, wait + delta computation.)
+    # ─────────────────────────────────────────────────────────────────────────
+    _ROW4_MERGE_DELTA=0  # placeholder: zero → share = 0 < 0.70 → FAIL (RED)
+    _ROW4_TASK_DELTA=1   # placeholder non-zero so division is defined
+
+    # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
+    # Asserts the C-G2 proportional cpu.weight enforcement under contention.
+    # W_merge/(W_merge+W_task) = 300/(300+100) = 0.75; floor = 0.75 - 0.05 = 0.70.
+    assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+        python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(float('${_ROW4_MERGE_DELTA}'), float('${_ROW4_TASK_DELTA}'),
+                           float('${_ROW4_W_MERGE}'), float('${_ROW4_W_TASK}'),
+                           float('${_ROW4_TOL}'))
+sys.exit(0 if ok else 1)
+"
 fi
+
+# ============================================================================
+# Cycle ROW4-BYPASS — §8 row-9 merge-bypass smoke (always-on, hermetic).
+# DF_VERIFY_ROLE=merge + high-PSI fixture → cpu-admit.sh admit exits 0 fast.
+# Uses a synthetic /proc/pressure/cpu fixture (no real PSI needed).
+# ============================================================================
+echo ""
+echo "--- Cycle ROW4-BYPASS: merge-bypass smoke (cpu-admit.sh, §8 row 9) ---"
+
+# Create synthetic high-PSI fixture: avg10=99 would block non-merge admits.
+_ROW4_PSI_FIXTURE="$WORK/row4_psi_fixture"
+printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+    > "$_ROW4_PSI_FIXTURE"
+
+# ROW4-2: DF_VERIFY_ROLE=merge bypasses PSI → cpu-admit admit exits 0 fast.
+_ROW4_BYPASS_START=$(date +%s)
+_ROW4_BYPASS_RC=0
+timeout 5 \
+    env DF_VERIFY_ROLE=merge \
+        REIFY_CPU_ADMIT_PROC_PATH="$_ROW4_PSI_FIXTURE" \
+        REIFY_CPU_ADMIT_MAX_WAIT=1 \
+        REIFY_CPU_ADMIT_POLL=1 \
+    bash "$CPU_ADMIT" admit \
+    >/dev/null 2>&1 || _ROW4_BYPASS_RC=$?
+_ROW4_BYPASS_END=$(date +%s)
+_ROW4_BYPASS_ELAPSED=$(( _ROW4_BYPASS_END - _ROW4_BYPASS_START ))
+assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 fast (rc=${_ROW4_BYPASS_RC}, elapsed=${_ROW4_BYPASS_ELAPSED}s)" \
+    test "${_ROW4_BYPASS_RC}" -eq 0
 
 # ---------------------------------------------------------------------------
 # Final summary — PASS/FAIL count from test_helpers.sh.
