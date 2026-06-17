@@ -16,8 +16,9 @@ use reify_core::{
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
 use reify_ir::{
     AutoParam, CompiledExprKind, CompiledFunction, DeterminacyState, ErrorRef, Freshness,
-    InterpolationKind, ObjectiveProvenance, PersistentMap, ResolutionProblem, SampledField,
-    SampledGridKind, SelectorKind, SnapshotProvenance, SolveResult, Value, ValueMap,
+    InterpolationKind, ObjectiveProvenance, ObjectiveSense, ObjectiveSet, PersistentMap,
+    ResolutionProblem, SampledField, SampledGridKind, SelectorKind, SnapshotProvenance,
+    SolveResult, TermContribution, Value, ValueMap,
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
@@ -2074,6 +2075,41 @@ impl reify_expr::ContainmentQuery for Engine {
 }
 
 impl Engine {
+    /// Compute `TermContribution` records for each term in `objective` by evaluating
+    /// each term's expression against the post-solve `values` map.
+    ///
+    /// Called once per resolved scope when the scope has an explicit `ObjectiveSet`.
+    /// Reuses `eval_ctx_with_meta` + `reify_expr::eval_expr` (the same machinery the
+    /// solver conceptually uses for eval_objective) to avoid duplicating solver math.
+    ///
+    /// A non-Scalar or failed eval records `realized_value = f64::NAN` (noisy sentinel).
+    /// Contribution is `weight × σ(sense) × realized_value` with σ(Minimize)=+1,
+    /// σ(Maximize)=−1 (PRD §6.2 invariant I3).
+    fn objective_term_contributions(
+        &self,
+        objective: &ObjectiveSet,
+        values: &ValueMap,
+    ) -> Vec<TermContribution> {
+        let ctx = eval_ctx_with_meta(values, &self.functions, &self.meta_map);
+        objective
+            .terms
+            .iter()
+            .map(|term| {
+                let realized_value =
+                    match reify_expr::eval_expr(&term.expr, &ctx) {
+                        Value::Scalar { si_value, .. } => si_value,
+                        _ => f64::NAN,
+                    };
+                let sigma = match term.sense {
+                    ObjectiveSense::Minimize => 1.0_f64,
+                    ObjectiveSense::Maximize => -1.0_f64,
+                };
+                let contribution = term.weight * sigma * realized_value;
+                TermContribution { sense: term.sense, weight: term.weight, realized_value, contribution }
+            })
+            .collect()
+    }
+
     /// Evaluate a compiled module, returning computed values.
     ///
     /// This is a cold-start evaluation that builds a new Snapshot and
@@ -2736,6 +2772,11 @@ impl Engine {
                                 .centrality_synthesized_scopes
                                 .contains(template.name.as_str());
                             let objective_snapshot = problem.objective.clone();
+                            // Compute per-term contributions once per scope; reuse for all cells.
+                            let term_contributions = objective_snapshot
+                                .as_ref()
+                                .map(|obj| self.objective_term_contributions(obj, &values))
+                                .unwrap_or_default();
                             for id in &resolved_ids {
                                 objective_provenance.insert(
                                     id.clone(),
@@ -2745,7 +2786,7 @@ impl Engine {
                                         combination: objective_snapshot
                                             .as_ref()
                                             .map(|o| o.combination),
-                                        term_contributions: Vec::new(), // filled by step-4
+                                        term_contributions: term_contributions.clone(),
                                         synthetic_centrality: is_synth,
                                     },
                                 );
