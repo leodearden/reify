@@ -1204,17 +1204,57 @@ pub(crate) fn compile_geometry_op(
                         distance,
                     })
                 }
-                // STUB (step-12): evaluate distance and build the planar-overload
-                // OffsetCurve with no reference/direction so the workspace compiles.
-                // The full 3rd-arg dispatch (reference Surface vs direction Vector3,
-                // disambiguated on the "third" arg's Value variant) lands in step-14.
+                // ι (task 4193): offset_curve(curve, distance[, reference|direction]).
+                // The optional 3rd arg ("third") is dispatched on its Value variant —
+                // the compiler has no per-arg type info for geometry functions, so the
+                // reference-Surface vs direction-Vector3 overloads are resolved here:
+                //   * a bound Value::GeometryHandle (a faces() sub-handle) → reference
+                //     Surface (overload 2), decoded via resolve_parent_geometry_handle_arg
+                //     exactly like split's solid arg (the kernel_handle resolves to an
+                //     OCCT face via get_shape at execute time);
+                //   * otherwise evaluate it and decode a vec3 → direction (overload 3).
+                // Neither shape → a Warning + planar fallback (reference/direction None).
                 reify_compiler::ModifyKind::OffsetCurve => {
+                    // Evaluate distance FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live; NLL then ends
+                    // that borrow so the dispatch below can push its own diagnostic
+                    // (mirrors the Fillet/Chamfer arms' borrow ordering).
                     let distance = eval_arg("distance")?;
+                    let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
+                    let (reference, direction) = match third_expr {
+                        None => (None, None),
+                        Some(expr) => {
+                            // Overload 2: a bound Value::GeometryHandle reference Surface.
+                            if let Some((_, _, kernel_handle)) =
+                                resolve_parent_geometry_handle_arg(expr, values)
+                            {
+                                (Some(kernel_handle), None)
+                            } else {
+                                // Overload 3: evaluate and decode a direction vec3.
+                                let v = reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(values, functions, meta_map),
+                                );
+                                match point3_components(&v) {
+                                    Some(dir) => (None, Some(dir)),
+                                    None => {
+                                        diagnostics.push(Diagnostic::warning(
+                                            "offset_curve: 3rd argument is neither a reference \
+                                             Surface (bound geometry handle) nor a direction \
+                                             vec3 — building a planar offset and ignoring it"
+                                                .to_string(),
+                                        ));
+                                        (None, None)
+                                    }
+                                }
+                            }
+                        }
+                    };
                     Ok(reify_ir::GeometryOp::OffsetCurve {
                         target: target_id,
                         distance,
-                        reference: None,
-                        direction: None,
+                        reference,
+                        direction,
                     })
                 }
             }
