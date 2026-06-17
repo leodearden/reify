@@ -2005,6 +2005,43 @@ fn module_has_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
         .any(|t| t.trait_bounds.iter().any(|b| b == "DFMRule"))
 }
 
+/// Returns `true` when `module` has both a `DFMRule` conformer AND at least
+/// one template that declares a `min_feature_size : Length` value cell.
+///
+/// This is a STATIC pre-eval proxy for the engine's runtime `dfm_thickness_spec`
+/// (engine_constraints.rs, which requires `applies_to.min_feature_size` to be
+/// of type `Length` at eval time).  `min_feature_size : Length` is declared on
+/// the `Subtracting`, `Adding`, and `Parting` process traits (process.ri:55,
+/// 69, 98); a conformer's template carries it as a `ValueCellDecl` with
+/// `cell_type == Type::Scalar { dimension: DimensionVector::LENGTH }` (ty.rs:81).
+///
+/// `Forming` (draft-only: `draft_angle : Angle`, no `min_feature_size`) returns
+/// `false` → `ensure_openvdb_kernel` is NOT called → alloc-cost optimization
+/// preserved (the voxelization path is never needed for draft/overhang checks).
+///
+/// Accepted limitation: over-acquires OpenVDB in a contrived module that
+/// combines a `min_feature_size` process conformer with a `DFMRule` applying
+/// to a DIFFERENT process that is Forming-only.  Cost-only (wasted allocation),
+/// never a wrong diagnostic; never under-acquires for realistic single-process
+/// fixtures.  Mirrors the accepted-limitation note on `module_has_dfm_rule`.
+///
+/// `cmd_check` calls this BEFORE `engine.ensure_openvdb_kernel()` so that
+/// non-thickness modules (Forming/overhang/draft) and non-DFM modules keep
+/// the single-pick OCCT engine (engine_admin.rs:754-760 alloc-cost contract).
+fn module_has_thickness_dfm_rule(module: &reify_compiler::CompiledModule) -> bool {
+    module_has_dfm_rule(module)
+        && module.templates.iter().any(|t| {
+            t.value_cells.iter().any(|vc| {
+                vc.id.member == "min_feature_size"
+                    && matches!(
+                        &vc.cell_type,
+                        reify_core::Type::Scalar { dimension }
+                            if *dimension == reify_core::DimensionVector::LENGTH
+                    )
+            })
+        })
+}
+
 /// Returns `true` when `diagnostics` contains at least one DFM Error-severity
 /// violation (e.g. `E_DFM_OVERHANG`, `E_DFM_UNDERCUT`, `E_DFM_DRAFT`).
 ///
