@@ -101,7 +101,7 @@ pass-1 placeholder, overwritten in pass-2"* are **KEEP** and out of scope.
 
 **Tier 2 — structurally-invalid type-expr in a type position, diagnostic already emitted → Real:**
 - `entity.rs:1505`, `:1846`, `:3422` (DimensionalOp / IntegerLiteral in a type-argument position)
-- `functions.rs:589`, `:600`, `:612`, `:666`, `:695`, `:711` (DimensionalOp / IntegerLiteral / Auto / QualifiedAssoc disallowed in field domain/codomain position — each already pushes `UnresolvedType`)
+- `functions.rs:589`, `:600`, `:612`, `:625`, `:666`, `:680`, `:695`, `:711` (DimensionalOp / IntegerLiteral / Auto / QualifiedAssoc disallowed in field domain/codomain position — each already pushes `UnresolvedType`; full symmetric set across BOTH domain and codomain per the esc-4646-3 ratification)
 - `traits.rs:44` (DimensionalOp in trait param position)
 - `entity.rs:3644` (`_ =>` unhandled `MemberDecl` variant — defensive arm, emits a diagnostic; **marginal**, included for contract uniformity)
 
@@ -123,8 +123,8 @@ pass-1 placeholder, overwritten in pass-2"* are **KEEP** and out of scope.
 **KEEP (verified legitimate, out of scope):** `entity.rs:1002` (no annotation), `:1048`/`:1274` (pass-1
 let placeholders), `:1266` (no annotation), `:4584` (transient skeleton, `throwaway_diags`, re-resolved
 authoritatively in `compile_entity`); `type_resolution.rs:604` (`"Real"` literal); `functions.rs:206`/`:436`,
-`traits.rs:155`/`:192`, `checker.rs:1000` (unannotated-return language default); `functions.rs:625`/`:644`/`:680`/`:728`
-(documented intentional); all of `math_signatures.rs`/`analysis_signatures.rs`/`joint_signatures.rs`/`builtin_signatures.rs`/`signatures_common.rs`/`units.rs`/`types.rs`/`geometry.rs`/`datum_projection.rs`
+`traits.rs:155`/`:192`, `checker.rs:1000` (unannotated-return language default); `functions.rs:644`/`:728`
+(documented intentional — Function/arrow arms only: the arrow type resolves fine, it is merely disallowed as a field domain/codomain, so it is not a resolution failure); all of `math_signatures.rs`/`analysis_signatures.rs`/`joint_signatures.rs`/`builtin_signatures.rs`/`signatures_common.rs`/`units.rs`/`types.rs`/`geometry.rs`/`datum_projection.rs`
 (85 sites — 100% genuine dimensionless op results); all `reify-ir`/`reify-eval`/`reify-expr`/`reify-core`
 runtime sites (600+ — value placeholders / empty-collection element defaults / genuine dimensionless
 results — **runtime crates do not perform type-name resolution**).
@@ -233,7 +233,7 @@ Ratified: **both** of the following (one leaf, §9 L5):
   *Signal:* `reify check` on `param p : Bogus = 5kg` emits exactly one error (`UnresolvedType`).
   *Deps:* 4640.
 - **L1 — functions.rs + traits.rs + trait_requirements.rs** — Tier-1 (`functions 99/202/393/433`,
-  `traits 57/96`) + Tier-2 (`functions 589/600/612/666/695/711`, `traits 44`) → `Type::Error`.
+  `traits 57/96`) + Tier-2 (`functions 589/600/612/625/666/680/695/711`, `traits 44`) → `Type::Error`.
   *Signal:* `reify check` on `fn f() -> Bogus { 0 }`, a trait member with an unknown type, and a
   field with an invalid domain type each emit exactly one error. *Deps:* none (distinct file from L0).
 - **L2 — conformance/checker.rs:248** — trait-member missing-annotation error path → `Type::Error`
