@@ -644,6 +644,39 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     args.iter().map(|a| eval_expr(a, ctx)).collect();
                 return option_recovery::eval_combinator(function_name, &evaluated_args);
             }
+            // map_or: ctx-aware arrow-type combinator (task 4595 — unblocks
+            // higher-order stdlib combinators incl. map_or).
+            //
+            // Unlike the seven pure combinators above (is_combinator /
+            // eval_combinator, INV-1), map_or must APPLY its function argument
+            // `f` to the unwrapped Some value, which requires the EvalContext
+            // (apply_lambda — recursion depth, scope, captures).  It therefore
+            // lives here as a dedicated ctx-aware branch rather than in the pure
+            // option_recovery path (preserving INV-1 and the is_combinator
+            // purity/sync-drift test for the original seven).
+            //
+            // map_or(o, dflt, f):
+            //   subject=some(x) -> apply_lambda(f, [x])  (f applied to the inner)
+            //   subject=none    -> dflt
+            //   subject=undef   -> Undef                 (Kleene INV-2 passthrough)
+            //   other (non-Option) -> Undef              (graceful type-error)
+            //
+            // The .ri body is a typecheck-only placeholder `{ dflt }`; correct
+            // runtime behaviour lives entirely here (same convention as the
+            // seven sibling combinators in option_recovery.rs).
+            if function_name == "map_or" && args.len() == 3 {
+                let subject = eval_expr(&args[0], ctx);
+                let dflt = eval_expr(&args[1], ctx);
+                let f = eval_expr(&args[2], ctx);
+                return match subject {
+                    Value::Option(Some(inner)) => apply_lambda(&f, &[*inner], ctx),
+                    Value::Option(None) => dflt,
+                    // undef subject (Kleene INV-2) — propagate Undef.
+                    Value::Undef => Value::Undef,
+                    // non-Option subject (type error) — degrade gracefully.
+                    _ => Value::Undef,
+                };
+            }
             eval_user_function_call(function_name, args, ctx)
         }
 
