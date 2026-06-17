@@ -1,0 +1,152 @@
+// §11 std.fields full-surface integration gate (task η #4225,
+// PRD docs/prds/v0_6/std-fields-api.md §6/§8).
+//
+// Consolidates B1/B2/B6/B7/B8/B9/B10 as constraint gates in StdFieldsSurface
+// (always Satisfied, any lane) and B5 as plain let-cells in RestrictSurface
+// (asserted via OCCT-gated cell lookup in std_fields_surface_e2e.rs).
+// B3 and B4 are error cases that cannot live in a green-eval file — they are
+// exercised as inline-source diagnostic assertions in std_fields_surface_e2e.rs.
+//
+// This file is auto-covered by:
+//   - crates/reify-compiler/tests/examples_smoke.rs (compile-clean bulk walk)
+//   - crates/reify-eval/tests/std_fields_surface_e2e.rs (eval gate + OCCT B5)
+//
+// ── Boundary signals per §11 PRD ─────────────────────────────────────────────
+//
+//   B1  fn_field       sample(fn_field(|p| 2.0*p), 3.0) == 6.0
+//   B2  from_samples   lerp at 0.5 in [0,10,20] == 5.0
+//   B3  non-grid error [error case — inline source in e2e test, NOT here]
+//   B4  RBF unsupported[error case — inline source in e2e test, NOT here]
+//   B5  restrict        inside→42.0, outside→Undef  (RestrictSurface below)
+//   B6  constant_field  sample(constant_field(42.0), 0.0) == 42.0
+//   B7  clamp_field     250.0 clamped to [10.0,200.0] → 200.0
+//       remap_field     50.0 remapped [0,100]→[0,200] → 100.0
+//       (+ Pressure case: 250MPa clamped to [10,200]MPa → 200MPa)
+//   B8  threshold       250MPa > 200MPa → true; 150MPa < 200MPa → false
+//   B9  compose         compose(f_double, g_plus1)(3.0) = 2*(3+1) = 8.0
+//   B10 chained         sample(clamp_field(fn_field(|p| 2.0*p), 10.0, 200.0), 3.0)
+//                       = clamp(6.0, 10.0, 200.0) = 6.0  … wait: 6.0 < 10.0 → clamp to 10.0
+//
+// ── Top-level field defs (shared between StdFieldsSurface and RestrictSurface) ─
+
+// f_double(x) = 2.0 * x   (B9: compose input / B1/B10: used directly via fn_field inline)
+field def f_double : Real -> Real { source = analytical { |x| 2.0 * x } }
+
+// g_plus1(x) = x + 1.0   (B9: compose input)
+field def g_plus1 : Real -> Real { source = analytical { |x| x + 1.0 } }
+
+// base_field: Point3<Length> → Real, constant 42.0 everywhere (B5: restrict input)
+field def base_field : Point3 -> Real { source = analytical { |p| 42.0 } }
+
+// ── StdFieldsSurface: B1/B2/B6/B7/B8/B9/B10 constraint gates ────────────────
+//
+// All constraint gates here evaluate in any lane (no OCCT required).
+// Each `let` cell is a Real; constraints are range or boolean checks.
+
+structure def StdFieldsSurface {
+
+    // ── B1: fn_field ───────────────────────────────────────────────────────────
+    //
+    // sample(fn_field(|p| 2.0*p), 3.0) = 2.0 * 3.0 = 6.0
+    let doubled_at_3 = sample(fn_field(|p| 2.0 * p), 3.0)
+
+    constraint doubled_at_3 > 5.999
+    constraint doubled_at_3 < 6.001
+
+    // ── B2: from_samples (Linear interpolation) ────────────────────────────────
+    //
+    // lerp between node0(0.0) and node1(10.0) at fraction 0.5 = 5.0 (exact)
+    let v_linear = sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
+
+    constraint v_linear > 4.999
+    constraint v_linear < 5.001
+
+    // ── B6: constant_field ─────────────────────────────────────────────────────
+    //
+    // Uniform field returning 42.0 at any domain point.
+    let c0 = sample(constant_field(42.0), 0.0)
+
+    constraint c0 > 41.999
+    constraint c0 < 42.001
+
+    // ── B7: clamp_field — Real ─────────────────────────────────────────────────
+    //
+    // 250.0 clamped to [10.0, 200.0] → 200.0 (above hi → hi)
+    let clamped_real = sample(clamp_field(constant_field(250.0), 10.0, 200.0), 0.0)
+
+    constraint clamped_real > 199.999
+    constraint clamped_real < 200.001
+
+    // ── B7: clamp_field — Pressure (MPa) ──────────────────────────────────────
+    //
+    // 250MPa clamped to [10MPa, 200MPa] → 200MPa (generic-over-Q value)
+    let clamped_pressure = sample(clamp_field(constant_field(250MPa), 10MPa, 200MPa), 0.0)
+
+    constraint clamped_pressure > 199.99MPa
+    constraint clamped_pressure < 200.01MPa
+
+    // ── B7: remap_field ────────────────────────────────────────────────────────
+    //
+    // remap 50.0 from [0.0, 100.0] to [0.0, 200.0] → 100.0 (midpoint→midpoint)
+    let remapped = sample(remap_field(constant_field(50.0), 0.0, 100.0, 0.0, 200.0), 0.0)
+
+    constraint remapped > 99.999
+    constraint remapped < 100.001
+
+    // ── B8: threshold — Bool field ─────────────────────────────────────────────
+    //
+    // above: 250MPa > 200MPa threshold → true  (constraint `above` is Satisfied)
+    // below: 150MPa < 200MPa threshold → false (constraint `!below` is Satisfied)
+    let above = sample(threshold(constant_field(250MPa), 200MPa), 0.0)
+    let below = sample(threshold(constant_field(150MPa), 200MPa), 0.0)
+
+    constraint above
+    constraint !below
+
+    // ── B9: compose ────────────────────────────────────────────────────────────
+    //
+    // compose(f_double, g_plus1)(3.0) = f_double(g_plus1(3.0)) = 2*(3+1) = 8.0
+    let via_compose = sample(compose(f_double, g_plus1), 3.0)
+
+    constraint via_compose > 7.999
+    constraint via_compose < 8.001
+
+    // ── B10: chained — clamp_field(fn_field) ──────────────────────────────────
+    //
+    // fn_field(|p| 2.0*p) at 3.0 = 6.0; clamp(6.0, [10.0, 200.0]) = 10.0
+    // (6.0 < lo=10.0 → clamps to lo)
+    let chained = sample(clamp_field(fn_field(|p| 2.0 * p), 10.0, 200.0), 3.0)
+
+    constraint chained > 9.999
+    constraint chained < 10.001
+}
+
+// ── RestrictSurface: B5 restrict (OCCT-gated) ────────────────────────────────
+//
+// restrict(base_field, region) — containment check via OCCT kernel.
+// No constraints here — v_in/v_out are Indeterminate in OCCT-less lanes.
+// They are asserted via OCCT-gated cell lookup in std_fields_surface_e2e.rs.
+//
+// Arg-shape contract (mirrors restrict.ri §4 invariant):
+//   region must be a let-bound cell so its GeometryHandle is hydrated before
+//   sample-time containment. Sample points carry LENGTH dimensions (0mm, 20mm).
+//
+// Box: 10mm × 10mm × 10mm centred at origin (faces at ±5mm).
+//   v_in  = sample(restricted, point3(0mm,0mm,0mm))   expected: 42.0 (inside)
+//   v_out = sample(restricted, point3(20mm,0mm,0mm))  expected: Undef (outside)
+
+structure def RestrictSurface {
+    // Let-bind the region so its GeometryHandle is hydrated before sample time.
+    let region = box(10mm, 10mm, 10mm)
+
+    // Restricted field: samples base_field inside the box, Undef outside.
+    let restricted = restrict(base_field, region)
+
+    // Query points (LENGTH-dimensioned as required by resolve_point3_length_arg).
+    let inside_pt  = point3(0mm, 0mm, 0mm)   // centre, strictly inside → 42.0
+    let outside_pt = point3(20mm, 0mm, 0mm)  // far outside             → Undef
+
+    // Cell values (no constraints — Indeterminate without OCCT).
+    let v_in  = sample(restricted, inside_pt)
+    let v_out = sample(restricted, outside_pt)
+}
