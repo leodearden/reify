@@ -552,15 +552,88 @@ if ! host_supports_governance; then
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
     echo "  SKIP ROW4: python3 unavailable"
 else
-    # ── ROW4 ORCHESTRATION SEAM ──────────────────────────────────────────────
-    # (step-10 adds: slice cgroup-path discovery via a governed probe,
-    # cgroup_set_slice_weight pre-weighting the private slices to _W_MERGE/_W_TASK,
-    # usage_usec before/after reads via cpu_gov_instrument.py cgroup-usage,
-    # concurrent 2W>nproc merge+task contention burns with
-    # REIFY_CPU_GOVERN_SLICE_TASK/MERGE overrides, wait + delta computation.)
+    # ── ROW4 ORCHESTRATION (step-10) ─────────────────────────────────────────
+
+    # (a) Discover slice cgroup rel-paths by running a trivial probe inside each
+    #     private slice via cpu-governed-exec with SLICE overrides.
+    #     /proc/self/cgroup format (cgroup-v2): "0::<rel>" → strip prefix, strip scope.
+    _ROW4_TASK_SLICE_REL=""
+    _ROW4_MERGE_SLICE_REL=""
+    _ROW4_TASK_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+    _ROW4_MERGE_SLICE_REL="$(
+        REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+        timeout 10 bash "$CPU_GOV_EXEC" --role merge -- bash -c '
+            rel=$(sed "s/^0:://" /proc/self/cgroup 2>/dev/null || echo "")
+            echo "${rel%/*}"
+        ' 2>/dev/null || echo ""
+    )"
+
+    # (b) Pre-weight the private test slices (C-G2: weight ratio among siblings).
+    #     cgroup_set_slice_weight vivifies the slice (systemctl --user start) and
+    #     then sets cpu.weight.  Runs in a subshell to avoid polluting harness env.
+    (
+        # shellcheck source=scripts/lib_cgroup.sh
+        source "$LIB_CGROUP" 2>/dev/null
+        cgroup_set_slice_weight "$_ROW4_SLICE_TASK" "$_ROW4_W_TASK" 2>/dev/null
+        cgroup_set_slice_weight "$_ROW4_SLICE_MERGE" "$_ROW4_W_MERGE" 2>/dev/null
+    ) || true
+
+    # (c) Sample usage_usec BEFORE the contention burns.
+    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
+    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    # (d) Launch concurrent contention burns:
+    #     W=nproc workers each role → 2W=2*nproc on nproc cores → 2× oversubscription.
+    #     At ≥ 2× oversubscription all workers are always runnable, so the kernel
+    #     applies cpu.weight scheduling continuously and the 3:1 ratio is observable.
+    #     (nproc/2+1 gave only 6% oversubscription — too weak for weight to manifest.)
+    _NPROC_ROW4="$(nproc)"
+    _ROW4_W="$_NPROC_ROW4"  # W per role; 2W = 2*nproc → clear 2× oversubscription
+
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role task -- \
+        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
+        >/dev/null 2>&1 &
+    _ROW4_TASK_BG=$!
+
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( _ROW4_BURN_S + 15 )) bash "$CPU_GOV_EXEC" --role merge -- \
+        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
+        >/dev/null 2>&1 &
+    _ROW4_MERGE_BG=$!
+
+    # (e) Wait for both burns to finish (natural or timeout).
+    wait "$_ROW4_TASK_BG" 2>/dev/null || true
+    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
+
+    # (f) Sample usage_usec AFTER; compute deltas.
+    _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    _ROW4_TASK_DELTA=0
+    _ROW4_MERGE_DELTA=0
+    if [ "$_ROW4_TASK_BEFORE" != "unavailable" ] && \
+       [ "$_ROW4_TASK_AFTER" != "unavailable" ]; then
+        _ROW4_TASK_DELTA=$(( _ROW4_TASK_AFTER - _ROW4_TASK_BEFORE ))
+        [ "$_ROW4_TASK_DELTA" -lt 0 ] && _ROW4_TASK_DELTA=0  # guard counter wrap
+    fi
+    if [ "$_ROW4_MERGE_BEFORE" != "unavailable" ] && \
+       [ "$_ROW4_MERGE_AFTER" != "unavailable" ]; then
+        _ROW4_MERGE_DELTA=$(( _ROW4_MERGE_AFTER - _ROW4_MERGE_BEFORE ))
+        [ "$_ROW4_MERGE_DELTA" -lt 0 ] && _ROW4_MERGE_DELTA=0
+    fi
     # ─────────────────────────────────────────────────────────────────────────
-    _ROW4_MERGE_DELTA=0  # placeholder: zero → share = 0 < 0.70 → FAIL (RED)
-    _ROW4_TASK_DELTA=1   # placeholder non-zero so division is defined
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention.
