@@ -16,9 +16,9 @@
 //!   (outside) after full Engine build.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::ValueCellId;
+use reify_core::{RealizationNodeId, ValueCellId};
 use reify_expr::ContainmentQuery;
-use reify_ir::{ExportFormat, Value};
+use reify_ir::{ExportFormat, GeometryHandleId, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
 const CONTAINS_BOX_PATH: &str = concat!(
@@ -183,5 +183,65 @@ fn restrict_field_b5_integration() {
         Some(Value::Undef),
         "v_out (outside the box) should be Value::Undef, got: {:?}",
         v_out
+    );
+}
+
+// ── Kernel-independent unit tests ────────────────────────────────────────────
+
+/// Kernel-independent unit tests for `impl ContainmentQuery for Engine`.
+///
+/// These cases short-circuit BEFORE reaching the geometry kernel, so they run
+/// unconditionally in every CI environment (no OCCT required):
+///
+///   (a) No kernel registered → `None` for any valid-looking inputs
+///       (`default_query_kernel()` returns `None`; the `?` short-circuits
+///       before calling `kernel.query()`).
+///   (b) Non-`GeometryHandle` region → `None` (early match-arm return,
+///       regardless of whether a kernel is present).
+///   (c) Non-`Point3<Length>` point → `None` (early match-arm return after
+///       extracting the kernel_handle).
+///
+/// These invariants complement the `reify-expr` mock-resolver unit tests in
+/// `field_op_dispatch_tests.rs`.  The OCCT-guarded tests above cover the full
+/// live path; this test fills the gap that runs in OCCT-less CI lanes.
+#[test]
+fn engine_containment_query_no_kernel_short_circuits() {
+    // Build an Engine with NO geometry planner / kernel so that
+    // `default_query_kernel()` always returns `None`.
+    let engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+
+    // A fake GeometryHandle — the kernel_handle value is irrelevant because
+    // the kernel is never reached (no kernel registered).
+    let fake_handle = Value::GeometryHandle {
+        realization_ref: RealizationNodeId::new("Fake", 0),
+        upstream_values_hash: [0u8; 32],
+        kernel_handle: GeometryHandleId(1),
+    };
+    let valid_point = Value::Point(vec![
+        Value::length(0.0),
+        Value::length(0.0),
+        Value::length(0.0),
+    ]);
+
+    // (a) No kernel → None for an otherwise-valid (GeometryHandle, Point3) pair.
+    //     default_query_kernel() returns None; the `?` in `...?.query(...)` exits.
+    assert_eq!(
+        engine.contains(&fake_handle, &valid_point),
+        None,
+        "no-kernel engine: valid GeometryHandle + Point3 should yield None"
+    );
+
+    // (b) Non-geometry region → None (early match-arm return before kernel lookup).
+    assert_eq!(
+        engine.contains(&Value::Real(0.0), &valid_point),
+        None,
+        "non-GeometryHandle region should yield None (no kernel required)"
+    );
+
+    // (c) Non-Point3 point → None (early match-arm return after handle extraction).
+    assert_eq!(
+        engine.contains(&fake_handle, &Value::Real(0.0)),
+        None,
+        "non-Point3 point should yield None (no kernel required)"
     );
 }
