@@ -380,19 +380,54 @@ structure def BmpNoAmbient {
 /// The test is restricted to `src/` subdirectories so that this file (under
 /// `tests/`) never self-matches the needle string.
 ///
+/// **Anti-vacuity self-checks (step-11):** the test also asserts:
+/// 1. `files_scanned > 0`: the walk actually visited production `.rs` files
+///    (guards against a silent empty-scan that would make the guard vacuous).
+/// 2. Positive-control: a scan for `"fn resolve_body_density"` (a known-present
+///    symbol in `crates/reify-eval/src/dynamics_ops.rs`, the file task 4498
+///    edited) MUST return a non-empty match list, proving the walker reaches
+///    the exact production file the water deletion landed in.
+///
 /// **RED (step-9):** `scan_rs_sources` does not exist yet.
-/// **GREEN (step-10):** the helper is implemented.
+/// **GREEN (step-10):** the helper is implemented (but walker is vacuous — bug
+/// found in review: visits 0 files because it only descends into a dir named
+/// `src` at the `crates/` root, but those children are crate dirs, not `src`).
+/// **RED (step-11):** anti-vacuity checks are added — they fail with the buggy walker.
+/// **GREEN (step-12):** the walker descent logic is fixed.
 #[test]
 fn row_8_water_default_symbol_absent_from_source() {
     // Root is `crates/` (the parent of all crates), pointed to via CARGO_MANIFEST_DIR
     // of the reify-eval crate (`crates/reify-eval/`).
     let crates_root = concat!(env!("CARGO_MANIFEST_DIR"), "/../");
 
-    let matches = scan_rs_sources(
+    let (matches, files_scanned) = scan_rs_sources(
         crates_root,
         &["DynamicsDefaultDensity", "W_DynamicsDefaultDensity"],
     );
 
+    // Anti-vacuity self-check: prove the scan actually visited production .rs files.
+    // The workspace has ~106 crates/*/src/**/*.rs files; a correct walk visits at
+    // least one. The buggy walker (step-10) visits 0 and matches.is_empty() passed
+    // trivially — giving ZERO protection against reintroduction.
+    assert!(
+        files_scanned > 0,
+        "§9 row 8 anti-vacuity: scan_rs_sources visited 0 .rs files under crates/*/src/; \
+         the scan is vacuous and gives NO protection (walk is broken — \
+         see step-12 for the fix)"
+    );
+
+    // Positive-control: 'fn resolve_body_density' lives in
+    // crates/reify-eval/src/dynamics_ops.rs (the file task 4498 edited).
+    // A correct walk MUST find it; if not, the walk is not reaching production source.
+    let (sentinel_matches, _) = scan_rs_sources(crates_root, &["fn resolve_body_density"]);
+    assert!(
+        !sentinel_matches.is_empty(),
+        "§9 row 8 positive-control: 'fn resolve_body_density' must be found in \
+         crates/*/src/**/*.rs (expected in crates/reify-eval/src/dynamics_ops.rs, \
+         the file task 4498 edited); the walker is not reaching production source"
+    );
+
+    // Real guard: the forbidden symbols must be absent from all production source.
     assert!(
         matches.is_empty(),
         "§9 row 8: `DynamicsDefaultDensity` / `W_DynamicsDefaultDensity` must be absent \
@@ -403,20 +438,24 @@ fn row_8_water_default_symbol_absent_from_source() {
 }
 
 /// Recursively scan all `*.rs` files under `src/` subdirectories of crates
-/// rooted at `crates_root`, returning a list of `"<file>:<line>"` strings
-/// for every line that contains any of the `needles`.
+/// rooted at `crates_root`, returning `(matches, files_scanned)` where
+/// `matches` is a list of `"<file>:<line>"` strings for every line containing
+/// any of the `needles`, and `files_scanned` is the count of `.rs` files
+/// actually read under `src/` dirs.
 ///
 /// Restricted to `src/` dirs: production source only; `tests/` and `benches/`
 /// are excluded so this test file cannot self-match its own needle strings.
-fn scan_rs_sources(crates_root: &str, needles: &[&str]) -> Vec<String> {
+fn scan_rs_sources(crates_root: &str, needles: &[&str]) -> (Vec<String>, usize) {
     let mut matches = Vec::new();
+    let mut files_scanned = 0_usize;
     scan_dir(
         std::path::Path::new(crates_root),
         needles,
         false,
         &mut matches,
+        &mut files_scanned,
     );
-    matches
+    (matches, files_scanned)
 }
 
 fn scan_dir(
@@ -424,6 +463,7 @@ fn scan_dir(
     needles: &[&str],
     in_src: bool,
     matches: &mut Vec<String>,
+    files_scanned: &mut usize,
 ) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -444,10 +484,11 @@ fn scan_dir(
                 name_str == "src"
             };
             if should_descend {
-                scan_dir(&path, needles, true, matches);
+                scan_dir(&path, needles, true, matches, files_scanned);
             }
         } else if in_src && name_str.ends_with(".rs") {
             // Read the file and scan for needles.
+            *files_scanned += 1;
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for (line_no, line) in content.lines().enumerate() {
                     if needles.iter().any(|n| line.contains(n)) {
