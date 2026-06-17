@@ -4760,7 +4760,8 @@ mod tests {
 
     /// Table-driven coverage: both Param and Let route through `emit_ice_unresolved`
     /// when the declared name is absent from scope.  We assert that:
-    /// 1. `Type::dimensionless_scalar()` is returned (the ICE fallback value).
+    /// 1. `Type::Error` is returned (the poison sentinel), confirming that an ICE-emitting
+    ///    producer returns the error sentinel rather than a dimensionless Real.
     /// 2. Exactly one diagnostic is pushed.
     /// 3. The diagnostic message contains `"internal compiler error"` — proving the
     ///    ICE pathway was taken, not the wildcard fallback ("unsupported member kind
@@ -4906,8 +4907,12 @@ mod tests {
 
             assert_eq!(
                 ty,
-                Type::dimensionless_scalar(),
-                "[{label}] fallback type should be Type::dimensionless_scalar()"
+                Type::Error,
+                "[{label}] ICE fallback type should be Type::Error (the poison sentinel)"
+            );
+            assert!(
+                ty.is_error(),
+                "[{label}] arm_type feeding Type::Union(arm_types) must be the poison sentinel"
             );
             assert_eq!(
                 diagnostics.len(),

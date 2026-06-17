@@ -124,10 +124,10 @@ mod tests {
     }
 
     #[test]
-    fn emit_ice_unresolved_returns_type_real() {
+    fn emit_ice_unresolved_returns_type_error() {
         let mut diags: Vec<Diagnostic> = vec![];
         let ty = emit_ice_unresolved(UnresolvedKind::Name, "x", SourceSpan::empty(0), &mut diags);
-        assert_eq!(ty, Type::dimensionless_scalar());
+        assert_eq!(ty, Type::Error);
     }
 
     #[test]
