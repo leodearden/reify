@@ -490,9 +490,17 @@ pub fn min_feature_size_measure(
         return Ok(MinFeatureSize::NoMeasurement);
     }
 
-    // NOTE: honest-floor branch added in step-4 (ε=4425).
-    // For now always return Measured (step-2 GREEN, no floor).
-    Ok(MinFeatureSize::Measured(2.0 * min_abs))
+    // G6 honest-floor (PRD §3b / task ε step-4): split on raw vs. resolution
+    // floor. The threshold is `2·h` (two voxel-widths) — the smallest feature
+    // that can be reliably resolved at voxel size h. The decision is on the
+    // RAW value so the 2h threshold semantics stay exact.
+    let min_feature = 2.0 * min_abs;
+    let floor = 2.0 * h;
+    if min_feature < floor {
+        Ok(MinFeatureSize::BelowResolution { raw: min_feature, floor })
+    } else {
+        Ok(MinFeatureSize::Measured(min_feature))
+    }
 }
 
 // ── end ε=4425 ────────────────────────────────────────────────────────────────
