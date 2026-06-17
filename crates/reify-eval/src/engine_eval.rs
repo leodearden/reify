@@ -1143,7 +1143,7 @@ fn eval_guarded_group_param_cell(
             }
             None
         }
-        Some(v) => match validate_param_override(v, &cell.cell_type, Some(registry)) {
+        Some(v) => match validate_param_override(v, &cell.cell_type, registry) {
             Ok(()) => Some(v.clone()),
             Err(ref rejection) => {
                 emit_param_override_rejection_warning(
@@ -3245,7 +3245,7 @@ impl Engine {
                     .filter(|c| matches!(c.kind, ValueCellKind::Param))
                 {
                     if let Some(v) = self.param_overrides.get(&cell.id)
-                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))
+                        && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
                     {
                         emit_param_override_rejection_warning(
                             &mut diagnostics,
@@ -3309,7 +3309,7 @@ impl Engine {
                             )> = self
                                 .param_overrides
                                 .get(&cell.id)
-                                .map(|v| (v, validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))));
+                                .map(|v| (v, validate_param_override(v, &cell.cell_type, &self.structure_registry)));
 
                             // Override-rejection warning was already emitted in the
                             // pre-check loop above (before the topological sort) so it
@@ -3980,7 +3980,7 @@ impl Engine {
             .filter(|c| matches!(c.kind, ValueCellKind::Param))
         {
             if let Some(v) = self.param_overrides.get(&cell.id)
-                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, Some(&self.structure_registry))
+                && let Err(ref rejection) = validate_param_override(v, &cell.cell_type, &self.structure_registry)
             {
                 emit_param_override_rejection_warning(
                     diagnostics,
@@ -4030,7 +4030,7 @@ impl Engine {
                             }
                             None
                         }
-                        Some(v) => match validate_param_override(v, &cell.cell_type, Some(&self.structure_registry)) {
+                        Some(v) => match validate_param_override(v, &cell.cell_type, &self.structure_registry) {
                             Ok(()) => Some(v.clone()),
                             Err(_) => {
                                 // Rejection warning already emitted in the pre-check

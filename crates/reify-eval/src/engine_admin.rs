@@ -119,33 +119,45 @@ pub(crate) fn populate_structure_registry(
 pub(crate) fn validate_param_override(
     value: &reify_ir::Value,
     cell_type: &reify_core::Type,
-    registry: Option<&reify_ir::StructureRegistry>,
+    registry: &reify_ir::StructureRegistry,
 ) -> Result<(), ParamOverrideRejection> {
-    if !crate::value_type_kind_matches(value, cell_type, registry) {
+    if !crate::value_type_kind_matches(value, cell_type, Some(registry)) {
         // Debug-build divergence: fire when a compiler-admitted
         // `StructureInstance` fails the runtime trait-conformance check because
         // the per-Engine `StructureRegistry` has no meta for the value's
         // `type_id`.  That gap is the "registry-population bug" signature
         // (compiler proved the bound, but the side-table lost the
-        // `StructureMeta`).  Scoped to TraitObject+meta-missing to avoid
+        // `StructureMeta`).  Scoped to `TraitObject + meta-missing` to avoid
         // false panics on legitimate rejections: a StructureRef nominal
         // mismatch, a StructureInstance into a non-structure cell, or a
         // structure whose meta IS present but does not declare the bound
-        // (genuine non-conformance).  Release builds skip the panic and fall
-        // through to Err(TypeKindMismatch) + caller warning + default.
+        // (genuine non-conformance — those must return Err gracefully; see the
+        // `validate_param_override_debug_no_panic_genuine_non_conformance`
+        // test).
+        //
+        // NOTE: stale param overrides (a StructureInstance value from a prior
+        // compilation where the structure was subsequently removed/renamed) can
+        // also appear here with `meta=None` in the freshly-rebuilt registry.
+        // Those are cross-cycle staleness artefacts rather than same-cycle
+        // registry-population bugs.  In release builds both cases degrade
+        // gracefully to `Err(TypeKindMismatch)` + caller warning + default.
+        // In debug builds the panic fires for both; that is intentional for the
+        // development workflow where the Engine is tied to a single long-lived
+        // session — stale overrides are expected to be rare and the loud signal
+        // helps catch genuine registry bugs that would otherwise silently
+        // corrupt param evaluation.
         #[cfg(debug_assertions)]
         if let reify_ir::Value::StructureInstance(data) = value
             && matches!(cell_type, reify_core::Type::TraitObject(_))
-            && registry.map(|r| r.meta(data.type_id).is_none()).unwrap_or(true)
+            && registry.meta(data.type_id).is_none()
         {
             panic!(
                 "StructureInstance type mismatch: value type_name={} \
-                 declared_bounds={:?} did not satisfy ty={:?}",
+                 type_id={:?} has no StructureMeta in registry \
+                 (registry-population bug or stale cross-cycle override) — \
+                 expected ty={:?}",
                 data.type_name,
-                registry
-                    .and_then(|r| r.meta(data.type_id))
-                    .map(|m| m.declared_trait_bounds.clone())
-                    .unwrap_or_default(),
+                data.type_id,
                 cell_type,
             );
         }
@@ -2755,7 +2767,7 @@ mod tests {
         let empty_registry = reify_ir::StructureRegistry::new();
         // With an empty registry type_id=0 has no meta → registry-population
         // bug → debug build must diverge with "StructureInstance type mismatch".
-        let _ = super::validate_param_override(&v, &ty, Some(&empty_registry));
+        let _ = super::validate_param_override(&v, &ty, &empty_registry);
     }
 
     /// Release-build companion: same inputs return `Err(TypeKindMismatch)`
@@ -2774,10 +2786,91 @@ mod tests {
         }));
         let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
         let empty_registry = reify_ir::StructureRegistry::new();
-        let result = super::validate_param_override(&v, &ty, Some(&empty_registry));
+        let result = super::validate_param_override(&v, &ty, &empty_registry);
         assert!(
             matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
             "expected Err(TypeKindMismatch), got {:?}",
+            result,
+        );
+    }
+
+    // ── Suggestion 1 — no-false-panic regression guards ──────────────────────
+    //
+    // The debug invariant fires ONLY on (TraitObject + meta-missing).  These
+    // tests lock down the three "must-not-panic" paths that the comment
+    // in `validate_param_override` explicitly promises:
+    //
+    //   (i)  StructureInstance into TraitObject, meta IS present but does NOT
+    //        declare the bound  → genuine non-conformance, Err(TypeKindMismatch)
+    //   (ii) StructureInstance into a non-structure cell (e.g. Scalar)
+    //        → Err(TypeKindMismatch), no registry involvement
+    //
+    // These run in debug builds (where the panic guard is active); a future
+    // change that broadens the guard would convert legitimate rejections into
+    // hard crashes and at least one of these tests would catch it.
+
+    /// (i) Meta present, bound not declared → graceful Err, no panic.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn validate_param_override_debug_no_panic_genuine_non_conformance() {
+        use reify_ir::{
+            PersistentMap, StructureInstanceData, StructureMeta, StructureRegistry, Value,
+        };
+        // Build a registry with meta for "Steel_AISI_1045" that declares
+        // "HeatResistantMaterial" — NOT "ElasticMaterial".
+        let mut registry = StructureRegistry::new();
+        let type_id = registry.intern(
+            "Steel_AISI_1045",
+            StructureMeta {
+                name: "Steel_AISI_1045".to_string(),
+                version: 1,
+                declared_trait_bounds: vec!["HeatResistantMaterial".to_string()],
+                source: None,
+                field_layout: vec![],
+            },
+        );
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id,
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        // Cell expects ElasticMaterial — meta is present but does not declare
+        // that bound.  This is genuine non-conformance (not a registry bug).
+        // The invariant must NOT fire; we must get Err(TypeKindMismatch).
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let result = super::validate_param_override(&v, &ty, &registry);
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected graceful Err(TypeKindMismatch) for genuine non-conformance, got {:?}",
+            result,
+        );
+    }
+
+    /// (ii) StructureInstance into a non-structure cell → Err, no panic.
+    /// Uses `Type::Bool` as the simplest non-structure cell type; the guard
+    /// only fires for `TraitObject + meta-missing`, so a Bool cell must never
+    /// trigger the debug panic regardless of registry state.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn validate_param_override_debug_no_panic_structure_instance_into_non_structure_cell() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureRegistry, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        // Bool cell — a StructureInstance cannot satisfy it.  Critically, the
+        // debug panic guard must NOT fire (it is scoped to TraitObject cells).
+        let ty = reify_core::Type::Bool;
+        let empty_registry = StructureRegistry::new();
+        let result = super::validate_param_override(&v, &ty, &empty_registry);
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected graceful Err(TypeKindMismatch) for StructureInstance into Bool cell, got {:?}",
             result,
         );
     }
