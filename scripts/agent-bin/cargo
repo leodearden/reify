@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# scripts/agent-bin/cargo — PSI admission shim for agent ad-hoc cargo commands.
+#
+# Task β #4631: closes the dominant ungoverned load source (PRD §2) — an
+# agent's own `cargo test`/`build` launched via its Bash tool, which was
+# ungoverned for the test-binary runtime.
+#
+# CONTRACT (PRD §4.3):
+#   C-S1 transparent — heavy subcommands {build,test,nextest,check,clippy,
+#     bench,doc,build-std} → cpu-admit.sh admit then exec real cargo (resolved
+#     by stripping the shim's own dir from PATH).  ALL other subcommands
+#     (--version, metadata, …) → exec immediately, NO gate. [v1: gates ALL]
+#   C-S2 semantics-preserving — adds only admission latency + cpu-admit's one
+#     stderr notice; args/exit-code/stdout/stderr otherwise untouched.
+#
+# KNOBS (subset of REIFY_CPU_ADMIT_* forwarded to cpu-admit.sh):
+#   REIFY_CPU_ADMIT_AGENT_THRESHOLD  — agent-path PSI ceiling (default 50).
+#     Mapped onto REIFY_CPU_ADMIT_THRESHOLD so the agent path is tunable
+#     independently of verify.sh compile_gate's 85.  [wired in step-6]
+#   REIFY_CPU_ADMIT_MAX_WAIT         — timeout in seconds (default 300)
+#   REIFY_CPU_ADMIT_POLL             — poll interval in seconds (default 5)
+#   REIFY_CPU_ADMIT_PROC_PATH        — PSI source override (testing/non-Linux)
+#   REIFY_CPU_ADMIT_DISABLE          — set to 1 for total bypass (break-glass)
+#   DF_VERIFY_ROLE=merge             — merge bypass (forwarded to cpu-admit.sh)
+
+set -euo pipefail
+
+SHIM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CPU_ADMIT="$SHIM_DIR/../cpu-admit.sh"
+
+# ---------------------------------------------------------------------------
+# Resolve the real cargo by removing our own directory from PATH exactly
+# (per-element match — avoids accidentally clipping unrelated PATH entries).
+# ---------------------------------------------------------------------------
+_stripped_path=""
+_old_ifs="${IFS}"
+IFS=:
+# Splitting $PATH by : into array elements
+for _el in $PATH; do
+    if [ "$_el" != "$SHIM_DIR" ]; then
+        if [ -z "$_stripped_path" ]; then
+            _stripped_path="$_el"
+        else
+            _stripped_path="$_stripped_path:$_el"
+        fi
+    fi
+done
+IFS="$_old_ifs"
+
+REAL_CARGO="$(PATH="$_stripped_path" command -v cargo || true)"
+if [ -z "$REAL_CARGO" ]; then
+    echo "agent-bin/cargo: ERROR — cannot resolve real cargo (no 'cargo' on PATH after stripping shim dir)" >&2
+    exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# Gate: run cpu-admit.sh in admit mode (never exits 75; fail-open if absent).
+# v1: gates EVERY invocation.  Subcommand classification added in step-4.
+# ---------------------------------------------------------------------------
+if [ -x "$CPU_ADMIT" ]; then
+    bash "$CPU_ADMIT" admit || true
+fi
+
+exec "$REAL_CARGO" "$@"
