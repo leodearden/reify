@@ -305,6 +305,53 @@ pub enum MinWallThickness {
     NoMeasurement,
 }
 
+/// Private scaffold shared by [`min_wall_thickness`] and [`min_feature_size_measure`].
+///
+/// Computes the medial mask, iterates ridge voxels with a bounds-guard,
+/// applies `per_voxel` to each in-bounds voxel index, and returns the finite
+/// minimum of all `Some(v)` values the closure yields.
+///
+/// # Returns
+///
+/// - `Ok(Some(min_val))` — at least one finite scalar contributed.
+/// - `Ok(None)` — empty mask **or** every voxel's closure returned `None` /
+///   non-finite (the two public callers both map this to `NoMeasurement`).
+/// - `Err(MedialError)` — structurally invalid SDF (propagated from
+///   `compute_medial_mask`).
+fn medial_min_scalar<F>(
+    sdf: &SampledField,
+    mut per_voxel: F,
+) -> Result<Option<f64>, MedialError>
+where
+    F: FnMut([usize; 3]) -> Option<f64>,
+{
+    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
+    if mask.voxels.is_empty() {
+        return Ok(None);
+    }
+
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    let mut min_val = f64::INFINITY;
+
+    for &[vi, vj, vk] in &mask.voxels {
+        // Bounds-guard: indices from the medial mask must be within the grid.
+        let idx = [vi as usize, vj as usize, vk as usize];
+        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
+            continue;
+        }
+        if let Some(v) = per_voxel(idx) {
+            if v.is_finite() {
+                min_val = min_val.min(v);
+            }
+        }
+    }
+
+    Ok(if min_val.is_finite() { Some(min_val) } else { None })
+}
+
 /// Compute the minimum wall thickness of a thin solid from its narrow-band SDF.
 ///
 /// Runs `compute_medial_mask(sdf, &MedialOptions::default())` to identify
@@ -341,64 +388,37 @@ pub fn min_wall_thickness(
     sdf: &SampledField,
     h: f64,
 ) -> Result<MinWallThickness, MedialError> {
-    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
-    if mask.voxels.is_empty() {
-        return Ok(MinWallThickness::NoMeasurement);
-    }
-
     // Walk parameters via shared walk_params() helper — guaranteed to stay
     // in sync with compute_medial_mask (eliminates the hand-copy drift risk).
     let options = MedialOptions::default();
     let min_spacing = sdf.spacing[0].min(sdf.spacing[1]).min(sdf.spacing[2]);
     let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
 
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
-
-    let mut min_sum = f64::INFINITY;
-
-    for &[vi, vj, vk] in &mask.voxels {
-        // Bounds-guard: medial mask indices must be within the grid.
-        let idx = [vi as usize, vj as usize, vk as usize];
-        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
-            continue;
-        }
-
+    match medial_min_scalar(sdf, |idx| {
         // World coordinate and normalised gradient for this medial voxel.
         let world = world_at_index(sdf, idx);
         let grad_raw = gradient_at_index(sdf, idx);
-        let Some(g) = normalize3(grad_raw) else {
-            continue; // degenerate gradient — skip
-        };
-
+        let g = normalize3(grad_raw)?; // None → skip (degenerate gradient)
         // Bidirectional walk: d⁺ + d⁻ for this voxel.
-        let Some((d_plus, d_minus, _, _)) =
-            bidirectional_distances(sdf, world, g, max_steps, walk_step)
-        else {
-            continue; // walk failed (off-grid) — skip
-        };
-
+        let (d_plus, d_minus, _, _) =
+            bidirectional_distances(sdf, world, g, max_steps, walk_step)?; // None → skip
         let sum = d_plus + d_minus;
-        if sum.is_finite() {
-            min_sum = min_sum.min(sum);
+        sum.is_finite().then_some(sum)
+    })? {
+        None => Ok(MinWallThickness::NoMeasurement),
+        Some(min_sum) => {
+            // G6 honest-floor (PRD §3b / task δ step-4): split on raw vs.
+            // resolution floor. The threshold is `2·h` (two voxel-widths) —
+            // the smallest distance that can be reliably resolved by the
+            // bidirectional walk at voxel size h. The decision is on the RAW
+            // sum (not a floored copy) so the 2h threshold semantics stay exact.
+            let floor = 2.0 * h;
+            if min_sum < floor {
+                Ok(MinWallThickness::BelowResolution { raw: min_sum, floor })
+            } else {
+                Ok(MinWallThickness::Measured(min_sum))
+            }
         }
-    }
-
-    if !min_sum.is_finite() {
-        return Ok(MinWallThickness::NoMeasurement);
-    }
-
-    // G6 honest-floor (PRD §3b / task δ step-4): split on raw vs. resolution
-    // floor. The threshold is `2·h` (two voxel-widths) — the smallest
-    // distance that can be reliably resolved by the bidirectional walk at
-    // voxel size h. The decision is on the RAW sum (not a floored copy)
-    // so the 2h threshold semantics stay exact.
-    let floor = 2.0 * h;
-    if min_sum < floor {
-        Ok(MinWallThickness::BelowResolution { raw: min_sum, floor })
-    } else {
-        Ok(MinWallThickness::Measured(min_sum))
     }
 }
 
@@ -462,44 +482,25 @@ pub fn min_feature_size_measure(
     sdf: &SampledField,
     h: f64,
 ) -> Result<MinFeatureSize, MedialError> {
-    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
-    if mask.voxels.is_empty() {
-        return Ok(MinFeatureSize::NoMeasurement);
-    }
-
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
-
-    let mut min_abs = f64::INFINITY;
-
-    for &[vi, vj, vk] in &mask.voxels {
-        // Bounds-guard: medial mask indices must be within the grid.
-        let idx = [vi as usize, vj as usize, vk as usize];
-        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
-            continue;
-        }
-
+    match medial_min_scalar(sdf, |idx| {
         let phi = sample_at_index(sdf, idx);
-        if phi.is_finite() {
-            min_abs = min_abs.min(phi.abs());
+        phi.is_finite().then_some(phi.abs())
+    })? {
+        None => Ok(MinFeatureSize::NoMeasurement),
+        Some(min_abs) => {
+            // G6 honest-floor (PRD §3b / task ε step-4): split on raw vs.
+            // resolution floor. The threshold is `2·h` (two voxel-widths) —
+            // the smallest feature that can be reliably resolved at voxel
+            // size h. The decision is on the RAW value so the 2h threshold
+            // semantics stay exact.
+            let min_feature = 2.0 * min_abs;
+            let floor = 2.0 * h;
+            if min_feature < floor {
+                Ok(MinFeatureSize::BelowResolution { raw: min_feature, floor })
+            } else {
+                Ok(MinFeatureSize::Measured(min_feature))
+            }
         }
-    }
-
-    if !min_abs.is_finite() {
-        return Ok(MinFeatureSize::NoMeasurement);
-    }
-
-    // G6 honest-floor (PRD §3b / task ε step-4): split on raw vs. resolution
-    // floor. The threshold is `2·h` (two voxel-widths) — the smallest feature
-    // that can be reliably resolved at voxel size h. The decision is on the
-    // RAW value so the 2h threshold semantics stay exact.
-    let min_feature = 2.0 * min_abs;
-    let floor = 2.0 * h;
-    if min_feature < floor {
-        Ok(MinFeatureSize::BelowResolution { raw: min_feature, floor })
-    } else {
-        Ok(MinFeatureSize::Measured(min_feature))
     }
 }
 
