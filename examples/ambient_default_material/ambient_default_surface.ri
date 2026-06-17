@@ -56,10 +56,12 @@ purpose Exploration() {
 
 structure def Bracket : Physical {
     param geometry : Solid = box(50mm, 30mm, 10mm)
-    let mp = body_mass_props(geometry, material.density)
+    let rho = material.density
+    let mp = body_mass_props(geometry, rho)
 }
 
 structure def Plate : Physical {
     param geometry : Solid = box(20mm, 20mm, 20mm)
-    let mp = body_mass_props(geometry, material.density)
+    let rho = material.density
+    let mp = body_mass_props(geometry, rho)
 }

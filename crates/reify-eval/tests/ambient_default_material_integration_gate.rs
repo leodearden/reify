@@ -241,7 +241,7 @@ fn line_removed_errors_naming_mechanism() {
             || err
                 .labels
                 .iter()
-                .any(|l| l.message.as_deref().unwrap_or("").contains("material"));
+                .any(|l| l.message.contains("material"));
         assert!(
             mentions_material,
             "MissingRequiredMember error must name `material` (the mechanism); \
