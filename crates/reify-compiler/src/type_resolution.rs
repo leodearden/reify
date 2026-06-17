@@ -877,6 +877,111 @@ fn resolve_type_arg_for_projection(
     }
 }
 
+/// Validate that `member` is a valid associated-type reference for `base_template`.
+///
+/// Checks:
+/// - If `trait_name` is `None`: `member` must be declared by exactly one conformed
+///   trait (zero → "no such associated type" error; two or more → ambiguous error).
+/// - If `trait_name` is `Some(t)`: `base_template` must conform to `t`, and `t`
+///   must declare `member` (FORK-G paren-qualifier validation).
+///
+/// Returns `true` if validation passed (caller may proceed to resolve `member`).
+/// Returns `false` if validation failed; a diagnostic was already pushed to `diagnostics`.
+///
+/// This is the shared member-validation core used by both the applied-base path
+/// (`Coupling<P>::M`) and the bare-structure-base path (`Beam::M`) in
+/// [`resolve_qualified_assoc_type`] so diagnostic messages stay in sync.
+/// (reviewer_comprehensive code_duplication)
+///
+/// NOTE: directly-named bounds with an OWN declaration of `member` only —
+/// refinement-inherited assoc types are not seen here (see the SCOPE LIMITATION on
+/// `trait_declares_assoc_type`; follow-up esc-3974-201).
+fn validate_member_against_declaring_traits(
+    base_template: &TopologyTemplate,
+    base_name: &str,
+    member: &str,
+    trait_name: Option<&str>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let declaring_traits: Vec<&str> = base_template
+        .trait_bounds
+        .iter()
+        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
+        .map(String::as_str)
+        .collect();
+    match trait_name {
+        // Bare access (`Base::Member`): resolve only when exactly one conformed trait
+        // declares `member`. Zero → no such associated type; two or more → ambiguous.
+        None => match declaring_traits.len() {
+            0 => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` has no associated type `{member}`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` has no associated type `{member}`"),
+                    )),
+                );
+                false
+            }
+            n if n >= 2 => {
+                let candidates = declaring_traits.join("`, `");
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "ambiguous associated type `{base_name}::{member}`: declared by \
+                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
+                         to disambiguate"
+                    ))
+                    .with_code(DiagnosticCode::AmbiguousAssocType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
+                    )),
+                );
+                false
+            }
+            _ => true, // exactly 1 declaring trait — validation passed
+        },
+        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
+        // name a trait `base_name` conforms to AND that declares `member`.
+        Some(t) => {
+            if !base_template.trait_bounds.iter().any(|b| b == t) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{base_name}` does not conform to `{t}`"),
+                    )),
+                );
+                return false;
+            }
+            if !trait_declares_assoc_type(trait_registry, t, member) {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "trait `{t}` does not declare associated type `{member}` in qualified \
+                         associated type `{base_name}::({t}::{member})`"
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("`{t}` has no associated type `{member}`"),
+                    )),
+                );
+                return false;
+            }
+            true // Valid FORK-G qualifier
+        }
+    }
+}
+
 /// Resolve a qualified associated-type type-expr (`Base::Member`, or the FORK-G
 /// paren-disambiguated `Base::(Trait::Member)`) to a concrete [`Type`], reading
 /// iota-β's resolved associated-type table off the base structure's compiled
@@ -953,95 +1058,35 @@ pub(crate) fn resolve_qualified_assoc_type(
             })
             .collect();
 
-        // Validate that `member` is declared by a conformed trait of `base_name`.
-        // Without this check, `normalize_type`'s Applied arm silently returns
-        // `Type::Error` (via `lookup_assoc_type_binding`'s `.unwrap_or(Type::Error)`)
-        // when the member is absent — leaving the user with no diagnostic. This is
-        // strictly weaker than the bare-base path, which validates declaring_traits
-        // before resolving (lines 974-1041 below). We mirror that validation here so
-        // that `Coupling<Prismatic>::Bogus` (Coupling exists, Bogus is not a member)
-        // produces a clear UnresolvedType/AmbiguousAssocType rather than a silent
-        // Type::Error. The anti-cascade rationale for `lookup_assoc_type_binding` only
-        // holds when a root-cause diagnostic was emitted at the producer; for a genuinely
-        // unknown member there is none. (reviewer_comprehensive robustness_missing_diagnostic)
-        //
-        // Only validated for known structures; unknown-base-name silently falls through
-        // to normalize_type which poisons to Type::Error (matched by the bare-base path's
-        // unknown-structure guard at line 962).
-        if let Some(base_template) = template_registry.get(base_name.as_str()) {
-            let declaring_traits: Vec<&str> = base_template
-                .trait_bounds
-                .iter()
-                .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
-                .map(String::as_str)
-                .collect();
-            match trait_name {
-                None => match declaring_traits.len() {
-                    0 => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "structure `{base_name}` has no associated type `{member}`"
-                            ))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!("`{base_name}` has no associated type `{member}`"),
-                            )),
-                        );
-                        return None;
-                    }
-                    n if n >= 2 => {
-                        let candidates = declaring_traits.join("`, `");
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "ambiguous associated type `{base_name}::{member}`: declared \
-                                 by traits `{candidates}`; qualify as \
-                                 `{base_name}::(<Trait>::{member})` to disambiguate"
-                            ))
-                            .with_code(DiagnosticCode::AmbiguousAssocType)
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
-                            )),
-                        );
-                        return None;
-                    }
-                    _ => {} // exactly 1 declaring trait — proceed to reduce
-                },
-                Some(t) => {
-                    // FORK-G qualifier: validate that `base_name` conforms to `t` and
-                    // that `t` declares `member`.
-                    if !base_template.trait_bounds.iter().any(|b| b == t) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "structure `{base_name}` does not conform to trait `{t}` in \
-                                 qualified associated type `{base_name}::({t}::{member})`"
-                            ))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!("`{base_name}` does not conform to `{t}`"),
-                            )),
-                        );
-                        return None;
-                    }
-                    if !trait_declares_assoc_type(trait_registry, t, member) {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "trait `{t}` does not declare an associated type `{member}` \
-                                 (referenced from `{base_name}::({t}::{member})`)"
-                            ))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(
-                                span,
-                                format!("`{t}` does not declare `{member}`"),
-                            )),
-                        );
-                        return None;
-                    }
-                    // Valid FORK-G qualifier; proceed to reduce.
-                }
-            }
+        // Unknown base: emit a user-visible diagnostic (symmetric with the bare-base
+        // path's unknown-structure guard below). Previously this silently fell through
+        // to `normalize_type`, which returned `Type::Error` with no message — a
+        // typo'd generic base name gave the user no indication of the error.
+        // (reviewer_comprehensive robustness_missing_diagnostic)
+        let Some(base_template) = template_registry.get(base_name.as_str()) else {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown structure `{base_name}` in qualified associated type \
+                     `{base_name}::{member}`"
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(span, "unknown structure")),
+            );
+            return None;
+        };
+        // Member/trait validation — delegates to the shared helper so the
+        // zero/ambiguous/FORK-G diagnostic strings are not duplicated.
+        // (reviewer_comprehensive code_duplication)
+        if !validate_member_against_declaring_traits(
+            base_template,
+            base_name,
+            member,
+            trait_name,
+            trait_registry,
+            span,
+            diagnostics,
+        ) {
+            return None;
         }
 
         let projection = Type::Projection {
@@ -1080,128 +1125,39 @@ pub(crate) fn resolve_qualified_assoc_type(
         return None;
     };
 
-    // The conformed traits of `base` that declare an assoc type named `member`.
-    // NOTE: directly-named bounds with an OWN declaration of `member` only —
-    // refinement-inherited assoc types are not seen here (see the SCOPE
-    // LIMITATION on `trait_declares_assoc_type`; follow-up esc-3974-201).
-    let declaring_traits: Vec<&str> = template
-        .trait_bounds
-        .iter()
-        .filter(|t| trait_declares_assoc_type(trait_registry, t, member))
-        .map(String::as_str)
-        .collect();
+    // Member/trait validation — shared with applied-base path via helper to avoid
+    // duplicating the zero/ambiguous/FORK-G diagnostic strings.
+    // (reviewer_comprehensive code_duplication)
+    if !validate_member_against_declaring_traits(
+        template,
+        base_name,
+        member,
+        trait_name,
+        trait_registry,
+        span,
+        diagnostics,
+    ) {
+        return None;
+    }
 
     // The single resolved `Type` bound to `member`. A structure binds each
     // associated-type name exactly once, so this is independent of the qualifier.
     //
-    // Both call sites below invoke this ONLY after establishing that `member` IS
-    // declared by a conformed trait (bare path: exactly one declaring trait;
-    // disambiguated path: the named trait declares it). So a missing `assoc_types`
-    // entry is the declared-but-unbound case — already reported at the producer as
-    // `TraitAssocTypeNotBound`. Poison it to `Type::Error` (the same sentinel
-    // [`resolve_assoc_type_name`] returns for its bare-name equivalent) so the
-    // caller suppresses a downstream type-mismatch cascade: a structure-ref usage
-    // seeing the concrete `Type::dimensionless_scalar()` fallback would spuriously mismatch. No new
-    // diagnostic is emitted here (anti-cascade). See `lookup_assoc_type_binding` (δ).
-
-    match trait_name {
-        // Bare access (`Base::Member`): resolve only when exactly one conformed
-        // trait declares `member`. Two or more is genuinely ambiguous (the
-        // qualifier is required); zero is handled by a later step.
-        None => match declaring_traits.len() {
-            // The binding may itself be a symbolic `Type::Projection` (the build
-            // side stores a `Projection` for ANY QualifiedAssoc RHS, including
-            // non-generic structures whose binding chains through a concrete
-            // structure). Reduce it to a concrete type via `normalize_type` so a
-            // bare reference (`S::X`) does not leak an un-reduced Projection node
-            // downstream — mirrors the applied-base path above. (esc-4604-4)
-            1 => Some(normalize_type(
-                &lookup_assoc_type_binding(template, member),
-                template_registry,
-                diagnostics,
-                span,
-            )),
-            n if n >= 2 => {
-                // A structure binds each associated-type name once, so the
-                // qualifier is disambiguation-only — point the user at the FORK-G
-                // paren form `Base::(Trait::Member)`.
-                let candidates = declaring_traits.join("`, `");
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "ambiguous associated type `{base_name}::{member}`: declared by \
-                         traits `{candidates}`; qualify as `{base_name}::(<Trait>::{member})` \
-                         to disambiguate"
-                    ))
-                    .with_code(DiagnosticCode::AmbiguousAssocType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("ambiguous; use `{base_name}::(<Trait>::{member})`"),
-                    )),
-                );
-                None
-            }
-            // Zero conformed traits declare `member`: the structure genuinely has
-            // no such associated type. (The declared-but-unbound case has
-            // `len >= 1` and resolves to `Some(Type::Error)` via `resolved_member`
-            // above WITHOUT a new diagnostic — anti-cascade, reported at the
-            // producer.)
-            _ => {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "structure `{base_name}` has no associated type `{member}`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{base_name}` has no associated type `{member}`"),
-                    )),
-                );
-                None
-            }
-        },
-        // FORK-G paren disambiguator (`Base::(Trait::Member)`): the qualifier must
-        // name a trait `Base` conforms to AND that declares `member`. When valid,
-        // resolve to the same single binding (no ambiguity check — the qualifier
-        // is disambiguation-only).
-        Some(t) => {
-            if !template.trait_bounds.iter().any(|b| b == t) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "structure `{base_name}` does not conform to trait `{t}` in qualified \
-                         associated type `{base_name}::({t}::{member})`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{base_name}` does not conform to `{t}`"),
-                    )),
-                );
-                return None;
-            }
-            if !trait_declares_assoc_type(trait_registry, t, member) {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "trait `{t}` does not declare associated type `{member}` in qualified \
-                         associated type `{base_name}::({t}::{member})`"
-                    ))
-                    .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        span,
-                        format!("`{t}` has no associated type `{member}`"),
-                    )),
-                );
-                return None;
-            }
-            // Reduce a symbolic Projection binding to a concrete type (see the
-            // bare-path note above) — same anti-leak rationale. (esc-4604-4)
-            Some(normalize_type(
-                &lookup_assoc_type_binding(template, member),
-                template_registry,
-                diagnostics,
-                span,
-            ))
-        }
-    }
+    // Declared-but-unbound: `TraitAssocTypeNotBound` was emitted at the producer;
+    // `lookup_assoc_type_binding` returns `Type::Error` without a second diagnostic
+    // (anti-cascade). See `lookup_assoc_type_binding` (δ).
+    //
+    // The binding may itself be a symbolic `Type::Projection` (the build side stores
+    // a `Projection` for ANY QualifiedAssoc RHS, including non-generic structures
+    // whose binding chains through a concrete structure). `normalize_type` reduces it
+    // so a bare reference (`S::X`) does not leak an un-reduced Projection node
+    // downstream. (esc-4604-4)
+    Some(normalize_type(
+        &lookup_assoc_type_binding(template, member),
+        template_registry,
+        diagnostics,
+        span,
+    ))
 }
 
 /// Resolve a simple name to a `Type::Enum` if it matches a declared enum; `None` otherwise.

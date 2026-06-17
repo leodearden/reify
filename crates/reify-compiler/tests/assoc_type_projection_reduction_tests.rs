@@ -523,6 +523,47 @@ structure def UseIt {
     );
 }
 
+/// An applied-base projection where the **base structure itself** does not exist
+/// must emit an `UnresolvedType` diagnostic — symmetric with the bare-base path's
+/// "unknown structure" error.
+///
+/// `UnknownStructure<Prismatic>::MotionValue` — `UnknownStructure` is not defined.
+///
+/// Before the fix: the applied-base branch silently fell through to
+/// `normalize_type`, whose Applied arm returned `Type::Error` without any
+/// user-visible message — a typo'd generic base name gave no indication of
+/// what went wrong.
+///
+/// After the fix: the applied-base branch checks `template_registry` for the base
+/// name before calling `validate_member_against_declaring_traits` and emits
+/// `UnresolvedType` "unknown structure `UnknownStructure`".
+/// (reviewer_comprehensive robustness_missing_diagnostic)
+#[test]
+fn applied_base_unknown_structure_emits_diagnostic() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def UseIt {
+    param x : UnknownStructure<Prismatic>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_errors = errors_only(&module);
+
+    // An UnresolvedType diagnostic mentioning the unknown base name must be present.
+    assert!(
+        any_diag_has_code_and_msg(
+            &all_errors,
+            DiagnosticCode::UnresolvedType,
+            "UnknownStructure"
+        ),
+        "expected UnresolvedType mentioning 'UnknownStructure'; got: {:?}",
+        all_errors
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Amendment: depth-limit for polymorphic recursion
 //
