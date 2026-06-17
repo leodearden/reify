@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use reify_core::{ContentHash, Type, ValueCellId};
-use reify_expr::{EvalContext, eval_expr};
+use reify_expr::{ContainmentQuery, EvalContext, eval_expr};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, FieldSourceKind, ResolvedFunction, Value, ValueMap,
 };
@@ -236,19 +236,19 @@ fn restrict_constructor_builds_restricted_field() {
 
 // ── step-9 RED: Restricted scaffold returns Undef ──────────────────────────
 
-/// Sample a Restricted field and assert the α-scaffold returns `Value::Undef`.
+/// Sample a Restricted field with **no resolver attached** and assert `Value::Undef`.
 ///
 /// Construct a `FieldSourceKind::Restricted` field whose `lambda` slot is
-/// `Value::List[inner_field, region]`.  The α scaffold returns `Value::Undef`
-/// for all points; task δ will implement OCCT point-in-region containment and
-/// revise this assertion to:
-///   - inside  → `sample_field_at(inner_field, at)` (the inner field value)
-///   - outside → `Value::Undef`
+/// `Value::List[inner_field, region]`.
 ///
-/// **RED today**: `FieldSourceKind::Restricted` does not exist yet (compile-fail).
+/// After task δ implements the `ContainmentQuery` seam, the no-resolver case
+/// (`EvalContext::simple` — no `with_containment` attached) still returns
+/// `Value::Undef` unconditionally: without a live resolver, the dispatch arm
+/// cannot determine containment and falls back to strict-Undef.  This test
+/// pins that invariant in perpetuity.
 ///
-/// **GREEN after step-10**: the variant is added to `value.rs` and the
-/// `(Value::List, Restricted)` arm in `sample_field_at` returns `Value::Undef`.
+/// **GREEN** (task δ step-4 and later): the `ContainmentQuery` hook exists;
+/// the no-resolver arm maps `None` → `Value::Undef`.
 #[test]
 fn sample_restricted_scaffold_returns_undef() {
     // inner: |x| x * 3.0  (any analytical field)
@@ -261,8 +261,7 @@ fn sample_restricted_scaffold_returns_undef() {
         )
     });
 
-    // region: placeholder — task δ will use a real geometric region; here we
-    // use Value::Undef as a sentinel (any value is accepted by the α scaffold).
+    // region: placeholder — no resolver is attached so the actual value is irrelevant.
     let region = Value::Undef;
 
     // restricted = Field{source: Restricted, lambda: List[inner, region]}
@@ -280,11 +279,127 @@ fn sample_restricted_scaffold_returns_undef() {
     let sample_expr = make_sample(restricted, field_type, Value::Real(1.0), Type::dimensionless_scalar());
     let result = eval_expr(&sample_expr, &EvalContext::simple(&ValueMap::new()));
 
-    // α scaffold: always Undef (task δ revises to inside→inner-value / outside→Undef)
+    // no-resolver → Undef (containment unknowable without a resolver).
     assert_eq!(
         result,
         Value::Undef,
-        "sample(restricted, 1.0) should be Undef in α scaffold, got {:?}",
+        "sample(restricted, 1.0) with no resolver should be Undef, got {:?}",
+        result
+    );
+}
+
+// ── step-3 RED (task δ 4222): ContainmentQuery mock resolver ───────────────
+//
+// Test the four dispatch cases for `sample(restricted, pt)`:
+//   (a) resolver → Some(true)  (inside)       → inner field value
+//   (b) resolver → Some(false) (outside)      → Value::Undef
+//   (c) resolver → None        (indeterminate) → Value::Undef
+//   (d) no resolver attached   (EvalContext::simple) → Value::Undef (already
+//       covered by `sample_restricted_scaffold_returns_undef` above)
+//
+// RED today: `ContainmentQuery` trait and `EvalContext::with_containment` do
+// not exist in reify-expr → compile-fail.
+// GREEN after step-4: the trait and builder are added.
+
+/// A minimal test double for `ContainmentQuery` — returns a pre-programmed
+/// `Option<bool>` regardless of the region/point values passed.
+struct MockContainmentQuery {
+    result: Option<bool>,
+}
+
+impl ContainmentQuery for MockContainmentQuery {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        self.result
+    }
+}
+
+/// Build a `Value::Field { source: Restricted, lambda: List[inner, region] }`
+/// suitable for mock-resolver tests.
+///
+/// inner: analytical `|x| 42.0` (constant).
+/// region: `Value::Bool(false)` sentinel — NOT Undef (strict-Undef short-circuit
+/// would fire before the restrict arm runs if args[1] were Undef).
+/// The MockContainmentQuery ignores the actual region/point values.
+fn make_restricted_constant_field() -> (Value, Value, Type) {
+    let inner = make_analytical_field("x", "$lambda_inner_mock.S", |_x_id| {
+        CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar())
+    });
+    let region = Value::Bool(false); // sentinel — MockContainmentQuery ignores it
+    let field_type = Type::Field {
+        domain: Box::new(Type::dimensionless_scalar()),
+        codomain: Box::new(Type::dimensionless_scalar()),
+    };
+    let restricted = Value::Field {
+        domain_type: Type::dimensionless_scalar(),
+        codomain_type: Type::dimensionless_scalar(),
+        source: FieldSourceKind::Restricted,
+        lambda: Arc::new(Value::List(vec![inner, region])),
+    };
+    (restricted, Value::Real(0.0), field_type)
+}
+
+/// resolver → `Some(true)` (inside): `sample` returns the inner field value (42.0).
+///
+/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
+/// **GREEN after step-4**: arm dispatches to `sample_field_at(inner, at, ctx)`.
+#[test]
+fn mock_resolver_some_true_returns_inner_value() {
+    let (restricted, at, field_type) = make_restricted_constant_field();
+    let sample_expr = make_sample(restricted, field_type, at, Type::dimensionless_scalar());
+
+    let resolver = MockContainmentQuery { result: Some(true) };
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_containment(&resolver);
+
+    let result = eval_expr(&sample_expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Real(42.0),
+        "resolver→Some(true) should return inner field value 42.0, got {:?}",
+        result
+    );
+}
+
+/// resolver → `Some(false)` (outside): `sample` returns `Value::Undef`.
+///
+/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
+/// **GREEN after step-4**: arm returns `Value::Undef`.
+#[test]
+fn mock_resolver_some_false_returns_undef() {
+    let (restricted, at, field_type) = make_restricted_constant_field();
+    let sample_expr = make_sample(restricted, field_type, at, Type::dimensionless_scalar());
+
+    let resolver = MockContainmentQuery { result: Some(false) };
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_containment(&resolver);
+
+    let result = eval_expr(&sample_expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Undef,
+        "resolver→Some(false) should return Undef, got {:?}",
+        result
+    );
+}
+
+/// resolver → `None` (indeterminate): `sample` returns `Value::Undef`.
+///
+/// **RED today**: `ContainmentQuery`/`with_containment` absent → compile-fail.
+/// **GREEN after step-4**: `None` arm returns `Value::Undef`.
+#[test]
+fn mock_resolver_none_returns_undef() {
+    let (restricted, at, field_type) = make_restricted_constant_field();
+    let sample_expr = make_sample(restricted, field_type, at, Type::dimensionless_scalar());
+
+    let resolver = MockContainmentQuery { result: None };
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values).with_containment(&resolver);
+
+    let result = eval_expr(&sample_expr, &ctx);
+    assert_eq!(
+        result,
+        Value::Undef,
+        "resolver→None should return Undef, got {:?}",
         result
     );
 }
