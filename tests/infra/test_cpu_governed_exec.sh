@@ -244,12 +244,17 @@ echo "--- D: governed cgroup placement (host-gated) ---"
 if ! host_supports_governance; then
     echo "  SKIP D: host does not support cgroup governance — skipping placement assertions"
 else
-    # Probe command: writes cgroup path, cpu.weight, and cpu.max to a file.
+    # Probe command: writes cgroup path, scope cpu.weight, cpu.max, and the
+    # parent SLICE cpu.weight to a file.  SLICE_WEIGHT reads the parent cgroup
+    # (the role slice), which is the cross-role lever driving proportional
+    # sharing between lanes (C-G2) — distinct from the scope weight (C-G3).
     PROBE='
 rel=$(sed "s/^0:://" /proc/self/cgroup)
+slice_rel="${rel%/*}"
 echo CGROUP="$rel"
 echo WEIGHT=$(cat /sys/fs/cgroup"$rel"/cpu.weight)
 echo MAX=$(cat /sys/fs/cgroup"$rel"/cpu.max)
+echo SLICE_WEIGHT=$(cat /sys/fs/cgroup"$slice_rel"/cpu.weight 2>/dev/null || echo MISSING)
 '
 
     # D1: --role task → scope under reify-governed-agents.slice.
@@ -303,6 +308,23 @@ echo MAX=$(cat /sys/fs/cgroup"$rel"/cpu.max)
             rc=$?
             [ "$rc" -eq 7 ]
         ' _ "$WRAPPER"
+
+    # D7: slice cpu.weight for task role — the C-G2 cross-role lever.
+    # Asserts that cgroup_set_slice_weight correctly pre-weights the SLICE on
+    # cold start (not just the scope, which is what D2 covers).  Cross-role
+    # proportional sharing (3:1 merge/task) is governed by slice weights, so
+    # this is the actual load-balancing lever the PRD acceptance criteria check.
+    assert "D7: task slice (reify-governed-agents.slice) cpu.weight == 100" \
+        bash -c '
+            grep -q "^SLICE_WEIGHT=100$" "$1"
+        ' _ "$WORK/out_task"
+
+    # D8: slice cpu.weight for merge role — verifies cold-start 300 (not systemd
+    # default 100) thanks to the start-then-set-property sequence.
+    assert "D8: merge slice (reify-governed-merge.slice) cpu.weight == 300" \
+        bash -c '
+            grep -q "^SLICE_WEIGHT=300$" "$1"
+        ' _ "$WORK/out_merge"
 fi
 
 test_summary

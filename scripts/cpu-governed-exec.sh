@@ -95,6 +95,9 @@ if ! cgroup_governance_supported; then
     echo "WARNING — cgroup governance unavailable, degrading (fail-open): role=$role cmd=$1" >&2
 
     # Best-effort: chain cpu-admit.sh admit if present and executable.
+    # TODO(#4630): cpu-admit.sh (task α — shared PSI-admission core) is not yet
+    # landed; guarded with [ -x ] so this is a no-op until it exists, then
+    # activates automatically once task #4630 lands.
     if [ -x "$SCRIPT_DIR/cpu-admit.sh" ]; then
         "$SCRIPT_DIR/cpu-admit.sh" admit || true
     fi
@@ -116,6 +119,24 @@ slice="$(cgroup_role_slice "$role")"
 
 # Best-effort: set the slice's cpu.weight so siblings share proportionally.
 cgroup_set_slice_weight "$slice" "$weight" || true
+
+# Verify scope creation works at runtime before execing CMD.  Passing
+# cgroup_governance_supported does not guarantee a scope can actually be
+# created: the DBus session bus may be absent in headless/cron contexts, or a
+# transient unit quota may be exceeded.  A trivial probe scope (true) catches
+# these launch failures and distinguishes them from CMD's own non-zero exit,
+# so we can fall back cleanly (C-G4) without re-running CMD or losing its exit
+# code (which `systemd-run ... || exec "$@"` would do).
+if ! systemd-run --user --scope --quiet \
+    --slice="$slice" -p CPUWeight="$weight" -- true 2>/dev/null; then
+    echo "WARNING — cgroup scope creation failed at runtime, degrading (fail-open): role=$role cmd=$1" >&2
+    nice_level="${REIFY_CPU_GOVERN_NICE:-10}"
+    if command -v nice >/dev/null 2>&1; then
+        exec nice -n "$nice_level" "$@"
+    else
+        exec "$@"
+    fi
+fi
 
 # Place the command in a transient scope under the role slice.
 # NEVER pass CPUQuota — keeps cpu.max=max (work-conserving, C-G1).
