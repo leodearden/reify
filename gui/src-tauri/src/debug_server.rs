@@ -2992,6 +2992,8 @@ mod tests {
             tessellation_diagnostics: vec![],
             compile_diagnostics: vec![],
             tensegrity_wires: vec![],
+            tensegrity_surfaces: vec![],
+            demand_prune_measurement: None,
         };
 
         // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.
