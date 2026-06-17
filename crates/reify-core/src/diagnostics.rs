@@ -2354,6 +2354,23 @@ pub enum DiagnosticCode {
     /// One `DiagnosticCode` spans all three sub-cases per the established
     /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
     TypeNotConformingToStructureRef,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (Vector-param
+    /// arg mismatch — task 4622).
+    ///
+    /// Emitted as a `Severity::Error` when a constructor arg passed to a
+    /// `Type::Vector`-typed param is not vector-shaped (e.g. a bare scalar
+    /// literal `1.0` passed where a `Vec3` / `Vector3<Length>` is required).
+    ///
+    /// Canonical message form:
+    /// `"argument '<a>' has type '<T>' but param '<p>' requires vector type '<V>'"`
+    ///
+    /// Conformance is SHAPE-based (accepts any `Type::Vector { .. }` or
+    /// `Type::Tensor { rank: 1, .. }`; rejects bare scalars, strings, bools,
+    /// and other non-vector kinds), NOT `type_compatible`-based — the quantity
+    /// slot on vectors is intentionally loose (see `ty.rs` Point/Vector
+    /// quantity-slot convention), so a dimensionless `vec3(0,0,1)` arg is
+    /// valid for a `Vector3<Length>` param.
+    TypeNotConformingToVector,
     /// Origin: `crates/reify-eval/src/feature_datum.rs`
     /// (`feature_datum_projection`, geometric-relations ε).
     ///
