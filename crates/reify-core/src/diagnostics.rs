@@ -652,6 +652,33 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
+    /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
+    /// (via `diagnose_topology_correspondence_drops`).
+    ///
+    /// Emitted as `Severity::Warning` when a kernel history record reports a
+    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// local-feature operation. The following counters are covered:
+    ///
+    /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
+    ///   absent from the kernel's result correspondence map.
+    /// - `SweepOpHistoryRecords::silent_drop_count` — same for sweep ops
+    ///   (extrude / revolve / sweep).
+    /// - `SweepOpHistoryRecords::unsynthesized_profile_edge_count` — a profile
+    ///   edge produced no result-face correspondence record.
+    /// - `SweepOpHistoryRecords::duplicate_parent_subshape_index_count` — a
+    ///   generated-face correspondence record was dropped by dedup.
+    /// - `LocalFeatureOpHistoryRecords::silent_drop_count` — same for fillet /
+    ///   chamfer ops.
+    ///
+    /// All five counter kinds share this single code; the specific counter and
+    /// count are named in the diagnostic message. The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// Canonical message form:
+    /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_CORRESPONDENCE_DROPPED`.
+    TopologyCorrespondenceDropped,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
