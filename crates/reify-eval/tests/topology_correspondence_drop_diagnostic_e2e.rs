@@ -214,14 +214,14 @@ fn boolean_union_drop_produces_warning_diagnostic() {
         result.diagnostics
     );
 
-    // The warning message must contain the injected count.
-    let count_str = DROP_COUNT.to_string();
-    let has_count = drop_warnings
-        .iter()
-        .any(|d| d.message.contains(&count_str));
+    // The warning message must contain the counter_name=count token — not
+    // just a bare digit — so the test resists incidental matches where the
+    // context string or op_idx happens to contain the same digit.
+    let token = format!("silent_drop_count={DROP_COUNT}");
+    let has_count = drop_warnings.iter().any(|d| d.message.contains(&token));
     assert!(
         has_count,
-        "warning message should contain count {DROP_COUNT}; warnings: {:#?}",
+        "warning message should contain '{token}'; warnings: {:#?}",
         drop_warnings
     );
 }
@@ -268,13 +268,11 @@ fn extrude_drop_produces_warning_diagnostic() {
         result.diagnostics
     );
 
-    let count_str = DROP_COUNT.to_string();
-    let has_count = drop_warnings
-        .iter()
-        .any(|d| d.message.contains(&count_str));
+    let token = format!("silent_drop_count={DROP_COUNT}");
+    let has_count = drop_warnings.iter().any(|d| d.message.contains(&token));
     assert!(
         has_count,
-        "warning message should contain count {DROP_COUNT}; warnings: {:#?}",
+        "warning message should contain '{token}'; warnings: {:#?}",
         drop_warnings
     );
 }
