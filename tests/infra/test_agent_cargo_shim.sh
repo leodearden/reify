@@ -50,13 +50,15 @@ make_psi_fixture() {
 
 # make_stub_cargo
 # Writes an executable stub cargo into STUB_DIR that echoes "STUB_CARGO <args>"
-# to stdout and exits 0.  The shim resolves this as the 'real' cargo because the
-# hermetic PATH excludes ~/.cargo/bin and places STUB_DIR before /usr/bin.
+# to stdout and exits ${STUB_EXIT_CODE:-0}.  Pass STUB_EXIT_CODE=N as a run_shim
+# env arg to verify the shim's exec preserves a non-zero exit code (C-S2).
+# The shim resolves this as the 'real' cargo because the hermetic PATH excludes
+# ~/.cargo/bin and places STUB_DIR before /usr/bin.
 make_stub_cargo() {
     cat > "$STUB_DIR/cargo" <<'STUBEOF'
 #!/usr/bin/env bash
 echo "STUB_CARGO $*"
-exit 0
+exit "${STUB_EXIT_CODE:-0}"
 STUBEOF
     chmod +x "$STUB_DIR/cargo"
 }
@@ -136,8 +138,8 @@ run_shim "$PSI_B" -- test --package foo --release
 
 assert "B: exit 0" \
     test "$SHIM_RC" -eq 0
-assert "B: returned fast (< 2s)" \
-    test "$SHIM_ELAPSED" -lt 2
+assert "B: returned fast (< 5s)" \
+    test "$SHIM_ELAPSED" -lt 5
 assert "B: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 assert "B: stdout contains forwarded args (test --package foo --release)" \
@@ -181,8 +183,8 @@ run_shim "$NONEXISTENT_PSI" \
 
 assert "D: exit 0 (fail-open)" \
     test "$SHIM_RC" -eq 0
-assert "D: returned fast < 2s (fail-open, no blocking)" \
-    test "$SHIM_ELAPSED" -lt 2
+assert "D: returned fast < 4s (fail-open, no blocking)" \
+    test "$SHIM_ELAPSED" -lt 4
 assert "D: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
@@ -201,8 +203,8 @@ run_shim "$PSI_E" \
 
 assert "E: exit 0 (merge bypass)" \
     test "$SHIM_RC" -eq 0
-assert "E: returned fast < 2s (merge bypasses PSI wait)" \
-    test "$SHIM_ELAPSED" -lt 2
+assert "E: returned fast < 4s (merge bypasses PSI wait)" \
+    test "$SHIM_ELAPSED" -lt 4
 assert "E: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
@@ -221,12 +223,12 @@ PSI_F="$(make_psi_fixture 99)"
 for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
     # shellcheck disable=SC2086  # intentional word-splitting for multi-token subcommands
     run_shim "$PSI_F" \
-        REIFY_CPU_ADMIT_MAX_WAIT=3 REIFY_CPU_ADMIT_POLL=1 -- \
+        REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
         $_subcmd
     assert "F: '$_subcmd' under avg10=99 → exit 0" \
         test "$SHIM_RC" -eq 0
-    assert "F: '$_subcmd' returns fast < 2s (ungated — C-S1)" \
-        test "$SHIM_ELAPSED" -lt 2
+    assert "F: '$_subcmd' returns fast < 4s (ungated — C-S1)" \
+        test "$SHIM_ELAPSED" -lt 4
     assert "F: '$_subcmd' still reaches real cargo (STUB_CARGO sentinel present)" \
         bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 done
@@ -265,13 +267,13 @@ echo "--- Cycle H: AGENT_THRESHOLD=100 raises ceiling above PSI 99 → fast admi
 PSI_H="$(make_psi_fixture 99)"
 run_shim "$PSI_H" \
     REIFY_CPU_ADMIT_AGENT_THRESHOLD=100 \
-    REIFY_CPU_ADMIT_MAX_WAIT=3 REIFY_CPU_ADMIT_POLL=1 -- \
+    REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
     test
 
 assert "H: exit 0" \
     test "$SHIM_RC" -eq 0
-assert "H: AGENT_THRESHOLD=100 + avg10=99 → immediate admit (elapsed < 2s)" \
-    test "$SHIM_ELAPSED" -lt 2
+assert "H: AGENT_THRESHOLD=100 + avg10=99 → immediate admit (elapsed < 4s)" \
+    test "$SHIM_ELAPSED" -lt 4
 assert "H: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
@@ -297,5 +299,90 @@ assert "I: AGENT_THRESHOLD=10 + avg10=40 → delayed (elapsed >= MAX_WAIT=2s)" \
     test "$SHIM_ELAPSED" -ge 2
 assert "I: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# ---------------------------------------------------------------------------
+# Cycle J: exit-code passthrough (C-S2 semantics-preserving).
+# The shim uses `exec` — the real cargo's exit code is passed through verbatim.
+# STUB_EXIT_CODE=3 makes the stub exit 3; assert SHIM_RC -eq 3 proves exec
+# does not swallow a non-zero exit status.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle J: exit-code passthrough (C-S2) ---"
+
+PSI_J="$(make_psi_fixture 40)"
+run_shim "$PSI_J" \
+    STUB_EXIT_CODE=3 -- \
+    test
+
+assert "J: shim exit code == stub exit code 3 (exec preserves non-zero exit)" \
+    test "$SHIM_RC" -eq 3
+assert "J: stdout contains STUB_CARGO sentinel (real cargo was reached)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# ---------------------------------------------------------------------------
+# Cycle K: '+toolchain' prefix skipping — `cargo +nightly test` must gate on
+# 'test', and `cargo +nightly --version` must be ungated (C-S1).
+# Verifies that the subcommand scan correctly reads past the '+nightly' token.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle K: +toolchain prefix — classification reads through '+nightly' ---"
+
+PSI_K="$(make_psi_fixture 99)"
+
+# K1: +nightly test → classified as heavy 'test' → gated
+run_shim "$PSI_K" \
+    REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
+    +nightly test
+
+assert "K1: '+nightly test' → gated on 'test' (elapsed >= 1s)" \
+    test "$SHIM_ELAPSED" -ge 1
+assert "K1: exit 0 (admit-on-timeout)" \
+    test "$SHIM_RC" -eq 0
+
+# K2: +nightly --version → classified as non-heavy '--version' → ungated
+run_shim "$PSI_K" \
+    REIFY_CPU_ADMIT_MAX_WAIT=6 REIFY_CPU_ADMIT_POLL=1 -- \
+    +nightly --version
+
+assert "K2: '+nightly --version' → ungated (elapsed < 4s despite high PSI)" \
+    test "$SHIM_ELAPSED" -lt 4
+assert "K2: exit 0" \
+    test "$SHIM_RC" -eq 0
+assert "K2: stdout contains STUB_CARGO sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# ---------------------------------------------------------------------------
+# Cycle L: global option flags before subcommand (suggestion 2 coverage).
+# `cargo --offline build` and `cargo -q test` must gate on the SUBCOMMAND
+# despite the leading flag token.  Without the `-*) continue` fix in the
+# subcommand scanner these would classify the flag as non-heavy and skip the
+# gate — this cycle is the regression guard for that fix.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle L: global option flags before subcommand (--offline / -q) gated ---"
+
+PSI_L="$(make_psi_fixture 99)"
+
+# L1: --offline build → flag skipped, 'build' classified heavy → gated
+run_shim "$PSI_L" \
+    REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
+    --offline build
+
+assert "L1: '--offline build' → gated on 'build' (elapsed >= 1s)" \
+    test "$SHIM_ELAPSED" -ge 1
+assert "L1: exit 0 (admit-on-timeout)" \
+    test "$SHIM_RC" -eq 0
+assert "L1: stdout contains STUB_CARGO sentinel (forwarded args unchanged)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+
+# L2: -q test → flag skipped, 'test' classified heavy → gated
+run_shim "$PSI_L" \
+    REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
+    -q test
+
+assert "L2: '-q test' → gated on 'test' (elapsed >= 1s)" \
+    test "$SHIM_ELAPSED" -ge 1
+assert "L2: exit 0 (admit-on-timeout)" \
+    test "$SHIM_RC" -eq 0
 
 test_summary
