@@ -43,6 +43,12 @@ const STRUCT: &str = "DimensionlessUnification";
 
 /// Read + compile + eval `examples/dimensionless_unification.ri` with the
 /// stdlib, asserting zero Error diagnostics at both compile and eval layers.
+///
+/// Performance note: this function is called independently by each `#[test]`
+/// function (read + stdlib compile + eval, repeated 5×). The redundant work is
+/// intentional: per-test isolation ensures that a failure in one test does not
+/// mask failures in others. The integration gate is small enough that the
+/// duplicate compile cost is acceptable.
 fn eval_example() -> reify_eval::EvalResult {
     let source = std::fs::read_to_string(EXAMPLE_PATH)
         .expect("examples/dimensionless_unification.ri should exist");
@@ -149,7 +155,10 @@ fn ratio_b_is_real_not_dimensionless_scalar() {
 /// `Value::Scalar { dimension }` where `dimension.is_dimensionless()`.
 ///
 /// Recurses into: Vector, Point, Tensor, List, Set, Map (keys+values),
-/// Option, and Matrix.  All other variants return `false`.
+/// Option, Matrix, and StructureInstance fields.  Variants whose nested
+/// content is plain `f64` scalars (Complex, Orientation, Direction,
+/// AffineMap, UnitVector3, GeometryHandle, etc.) cannot carry a
+/// `Value::Scalar` sub-value and return `false` directly.
 fn has_dimensionless_scalar(v: &Value) -> bool {
     match v {
         Value::Scalar { dimension, .. } => dimension.is_dimensionless(),
@@ -168,6 +177,12 @@ fn has_dimensionless_scalar(v: &Value) -> bool {
         Value::Matrix(rows) => rows
             .iter()
             .any(|row| row.iter().any(has_dimensionless_scalar)),
+        // StructureInstance fields are `PersistentMap<String, Value>` — recurse
+        // so a nested dimensionless scalar inside a material or joint instance is
+        // caught, not silently bypassed.
+        Value::StructureInstance(data) => {
+            data.fields.values().any(has_dimensionless_scalar)
+        }
         _ => false,
     }
 }
