@@ -168,6 +168,337 @@ fn make_buckling_result(
     }))
 }
 
+// ── Step-3: significance_filter eigenvalue tests ──────────────────────────────
+//
+// RED until step-4 adds the buckling branch.
+//
+// Before step-4, `significance_filter("solver::buckling", ...)` falls through
+// to the elastic `Value::Map` path after the tolerance guard.  A
+// `Value::StructureInstance` is not a `Value::Map`, so the Map-shape guard
+// returns `Different` — even when eigenvalues are nearly identical.
+// Every `Equivalent` assertion below is therefore RED until step-4 lands.
+
+/// RED driver (a): eigenvalue within a tiny relative delta → Equivalent.
+///
+/// prev and new have eigenvalue 1000.0 vs 1000.0*(1+1e-9) — a relative delta
+/// of 1e-9, far below any reasonable engineering threshold.  All other fields
+/// are identical (mode_shape bit-equal, converged/iterations identical,
+/// pre_stress identical).  The fixtures are explicitly non-bit-equal so the
+/// bit-equality shortcut is NOT taken, and the eigenvalue comparison must fire.
+#[test]
+fn buckling_equivalent_for_tiny_eigenvalue_delta() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+    let pre = &[0.0, 0.0, 0.0];
+    let tol = 1e-3_f64;
+
+    let ev_a = 1000.0_f64;
+    let ev_b = 1000.0 * (1.0 + 1e-9); // relative delta = 1e-9
+
+    let prev = make_buckling_result(&[ev_a], true, &[disp], pre);
+    let new = make_buckling_result(&[ev_b], true, &[disp], pre);
+
+    assert_ne!(
+        prev, new,
+        "fixture: prev and new must be distinct (not bit-equal)"
+    );
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Equivalent,
+        "eigenvalue relative delta 1e-9 << tolerance must yield Equivalent (RED until step-4)"
+    );
+}
+
+/// Guard (b): bit-identical fixtures with Some(tol) → Equivalent (bit-equality shortcut).
+/// Already GREEN after step-2 (opted-in + bit-equal shortcut fires).
+#[test]
+fn buckling_bit_identical_is_equivalent() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let r = make_buckling_result(&[4000.0], true, &[disp], pre);
+    assert_eq!(
+        significance_filter("solver::buckling", &r, &r.clone(), Some(1e-3)),
+        FilterOutcome::Equivalent,
+        "bit-identical BucklingResult must yield Equivalent via shortcut"
+    );
+}
+
+/// Guard (c): grossly different eigenvalue (relative ~1e-2) → Different.
+/// GREEN after step-4: the eigenvalue comparison fires and detects the delta.
+/// Also passes before step-4 via the Map-shape guard returning Different.
+#[test]
+fn buckling_different_for_large_eigenvalue_delta() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let prev = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let new = make_buckling_result(&[1010.0], true, &[disp], pre); // 1% difference
+
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Different,
+        "eigenvalue relative delta ~1e-2 must yield Different"
+    );
+}
+
+/// Guard (d): None tolerance with a non-bit-equal fixture → Different
+/// (conservative fallback — missing tolerance gate).
+#[test]
+fn buckling_different_for_none_tolerance() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+
+    let prev = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let new = make_buckling_result(&[1000.001], true, &[disp], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, None),
+        FilterOutcome::Different,
+        "None tolerance must produce Different (conservative fallback)"
+    );
+}
+
+/// Guard (e): prev is not a StructureInstance → Different (malformed shape).
+#[test]
+fn buckling_different_for_non_structure_instance_prev() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let new = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let not_si = Value::Real(0.0);
+    assert_eq!(
+        significance_filter("solver::buckling", &not_si, &new, Some(1e-3)),
+        FilterOutcome::Different,
+        "non-StructureInstance prev must yield Different"
+    );
+}
+
+/// Guard (f): wrong type_name ("NotBucklingResult") → Different.
+#[test]
+fn buckling_different_for_wrong_type_name() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let good = make_buckling_result(&[1000.0], true, &[disp], pre);
+
+    // Build a StructureInstance with the wrong type_name.
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let wrong_name = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "NotBucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &wrong_name, Some(1e-3)),
+        FilterOutcome::Different,
+        "wrong type_name must yield Different"
+    );
+}
+
+/// Guard (g): `modes` field missing from new → Different.
+#[test]
+fn buckling_different_for_missing_modes_field() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let good = make_buckling_result(&[1000.0], true, &[disp], pre);
+
+    // Build a StructureInstance without the modes field.
+    let fields: PersistentMap<String, Value> = [
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let no_modes = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &no_modes, Some(1e-3)),
+        FilterOutcome::Different,
+        "missing modes field must yield Different"
+    );
+}
+
+/// Guard (h): `converged` field missing from new → Different.
+#[test]
+fn buckling_different_for_missing_converged_field() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let good = make_buckling_result(&[1000.0], true, &[disp], pre);
+
+    // Build a StructureInstance without the converged field.
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![])),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let no_converged = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &no_converged, Some(1e-3)),
+        FilterOutcome::Different,
+        "missing converged field must yield Different"
+    );
+}
+
+/// Guard (i): a mode entry that is not a StructureInstance → Different.
+#[test]
+fn buckling_different_for_non_structure_instance_mode_entry() {
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let good = make_buckling_result(&[1000.0], true, &[&[0.1, 0.2, 0.3]], pre);
+
+    // Build a modes list where one entry is Value::Real instead of a StructureInstance.
+    let bad_mode = Value::Real(999.0);
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![bad_mode])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let bad_modes = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &bad_modes, Some(tol)),
+        FilterOutcome::Different,
+        "non-StructureInstance mode entry must yield Different"
+    );
+}
+
+/// Guard (j): a mode missing its `eigenvalue` field → Different.
+#[test]
+fn buckling_different_for_mode_missing_eigenvalue() {
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let good = make_buckling_result(&[1000.0], true, &[&[0.1, 0.2, 0.3]], pre);
+
+    // Build a Mode StructureInstance without the eigenvalue field.
+    let mode_fields: PersistentMap<String, Value> = [(
+        "mode_shape".to_string(),
+        Value::Map(BTreeMap::new()),
+    )]
+    .into_iter()
+    .collect();
+    let mode_no_ev = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields: mode_fields,
+    }));
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![mode_no_ev])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let bad = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &bad, Some(tol)),
+        FilterOutcome::Different,
+        "mode missing eigenvalue must yield Different"
+    );
+}
+
+/// Guard (k): eigenvalue NaN → Different.
+#[test]
+fn buckling_different_for_nan_eigenvalue() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let good = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let nan_ev = make_buckling_result(&[f64::NAN], true, &[disp], pre);
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &nan_ev, Some(tol)),
+        FilterOutcome::Different,
+        "NaN eigenvalue must yield Different"
+    );
+}
+
+/// Guard (l): eigenvalue ±Inf → Different.
+#[test]
+fn buckling_different_for_inf_eigenvalue() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let good = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let inf_ev = make_buckling_result(&[f64::INFINITY], true, &[disp], pre);
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &inf_ev, Some(tol)),
+        FilterOutcome::Different,
+        "+Inf eigenvalue must yield Different"
+    );
+
+    let neg_inf_ev = make_buckling_result(&[f64::NEG_INFINITY], true, &[disp], pre);
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &neg_inf_ev, Some(tol)),
+        FilterOutcome::Different,
+        "-Inf eigenvalue must yield Different"
+    );
+}
+
+/// Guard (m): modes length mismatch between prev and new → Different.
+#[test]
+fn buckling_different_for_modes_length_mismatch() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let one_mode = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let two_modes = make_buckling_result(&[1000.0, 2000.0], true, &[disp, disp], pre);
+
+    assert_eq!(
+        significance_filter("solver::buckling", &one_mode, &two_modes, Some(tol)),
+        FilterOutcome::Different,
+        "modes length mismatch must yield Different"
+    );
+}
+
 // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────────
 //
 // RED until step-2 adds "solver::buckling" to the is_opted_in match.
