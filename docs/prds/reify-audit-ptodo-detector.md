@@ -90,23 +90,25 @@ entries name git-deleted paths.
 
 ## 6. Resolved design decisions
 
-### 6.1 Policy: trigger-conditioned perf TODOs — **strict must-cite, no annotation form**
+### 6.1 Policy: trigger-conditioned perf TODOs — **plain non-debt comments, no anchor cite**
 
 Leo's invariant is universal; an annotation form (`TODO(perf, until: <trigger>)`)
 would create a sanctioned untracked class whose trigger conditions are mechanically
 unverifiable — exactly the "prose triggers fire silently" rot mode the audit found
-dominant. Task **4593** (perf-backlog anchor v4) is the standing citable owner: it owns
-being citable, periodically re-checking triggers, and graduating items. Perf TODOs
-write `TODO(#4593): <trigger prose>`; the trigger prose stays human-readable, the
-tracking is machine-checkable. The detector has **zero** perf special-casing.
-(Prior owners — **DO NOT cite**, all terminal: v1 4551 done 2026-06-12 (263502544d);
-v2 4590 done 2026-06-13 (5a725c832805); v3 4592 done. Each anchor was retargeted forward
-as it closed; 4593 is the v4 holding anchor and its brief defers to this PRD for the rule.
-**Lifecycle invariant:** the citable anchor must remain non-terminal for as long as any
-perf marker cites it. 4593 is **deferred + DO-NOT-DISPATCH**, so it never advances to
-done/cancelled — a permanently non-terminal standing owner. This is what ends the v1→v4
-churn, where each prior anchor closed and re-orphaned its surviving cites. Should 4593 ever
-need to close, a v5 anchor must absorb the markers and be retargeted before 4593 goes terminal.)
+dominant. **A TODO must cite a specific, actionable, non-terminal task — a
+permanently-deferred catch-all anchor is not one.**
+
+Speculative perf notes about currently-correct code (conditional on an unfired scale
+trigger, with no consumer today) are documented as **plain non-debt comments** prefixed
+with "Perf note:" or "Scaling note:", not as TODO/FIXME/HACK citations. The §8.1
+detector regex `\b(TODO|FIXME|HACK)\b\s*[(:]` does not match these prefixes, so they
+are invisible to the detector and require no citable task. The detector has **zero**
+perf special-casing.
+
+(Prior anchor history — **DO NOT cite**, all terminal: v1 4551 done 2026-06-12;
+v2 4590 done 2026-06-13; v3 4592 done; v4 4593 cancelled 2026-06-17 — markers retired
+per `docs/prds/reify-audit-ptodo-perf-anchor-retirement.md`. Each anchor closed when
+its markers were reworded to plain comments; the anchor pattern itself is now retired.)
 
 ### 6.2 Policy: softer vocabularies — **core vocabulary now, expansion gated on FP review (task θ)**
 
@@ -282,7 +284,7 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | Other PRD / surface | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
 | `docs/prds/reify-audit-p1-jcodemunch-substrate.md` §10 (task 4115 record) | amends | default-sweep membership policy note | **this PRD** (ε) | queued |
-| Task 4593 (perf-backlog anchor v4) | this PRD defines policy; 4593 aligns | trigger-conditioned-TODO citation rule (§6.1) | **this PRD**; 4593 brief defers to it | prior owners (DO NOT cite, all terminal): 4551 done, 4590 done, 4592 done; 4593 (deferred + DO-NOT-DISPATCH) is the v4 standing anchor |
+| Task 4593 (perf-backlog anchor v4) — **retired/cancelled** | n/a | trigger-conditioned-TODO citation rule (§6.1 amended) | `docs/prds/reify-audit-ptodo-perf-anchor-retirement.md` | 4593 cancelled 2026-06-17; all markers reworded to plain "Perf note:" / "Scaling note:" comments; anchor pattern retired — see §6.1 |
 | Task-1622 ignore-hygiene tool (`reify-test-support`) | consumes/extends | pub extraction fns; format-vs-liveness split (§8.3) | **this PRD** (γ) | queued |
 | `/audit` skill (`.claude/skills/audit/`) | consumed-by | default sweep + severity routing docs | **this PRD** (ε) | queued |
 | dark-factory `skills/review-briefing/SKILL.md` checks 5/6 | parallel (process layer) | invariant prose, cross-project | dark-factory (Leo; branch `docs/review-briefing-todo-invariant`, not yet on df main) | informational — no code seam, no dep |
