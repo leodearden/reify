@@ -134,21 +134,31 @@ cgroup_governance_supported() {
         # the delegated controllers file. The user manager (user@UID.service) has
         # its own cgroup.controllers listing what is delegated to it.
         # Path: /sys/fs/cgroup/<user-manager-cgroup>/cgroup.controllers
-        local _user_cgroup _controllers_candidate
+        local _user_cgroup _walk
         _user_cgroup="$(grep '^0::' /proc/self/cgroup 2>/dev/null | sed 's|^0::||')"
         if [ -z "$_user_cgroup" ]; then
             return 1
         fi
-        # Walk from process cgroup up toward root to find a cgroup.controllers that
-        # exists and contains 'cpu'. The user manager's cgroup is typically something
-        # like /user.slice/user-1000.slice/user@1000.service and that level has the
-        # delegated controllers. We start at the process cgroup and walk up.
-        _controllers_candidate="/sys/fs/cgroup${_user_cgroup}/cgroup.controllers"
-        if [ -f "$_controllers_candidate" ]; then
-            _controllers_path="$_controllers_candidate"
-        else
-            # Fallback: try /sys/fs/cgroup/cgroup.controllers (root unified list)
-            _controllers_path="/sys/fs/cgroup/cgroup.controllers"
+        # Walk from process cgroup up toward root to find a cgroup.controllers
+        # that lists 'cpu'.  Stop before the root /sys/fs/cgroup/cgroup.controllers:
+        # that file reflects globally registered controllers, NOT what is actually
+        # delegated to the user manager — using it would produce a false positive on
+        # hosts where the cpu controller exists globally but is NOT delegated to the
+        # user session (cgroup_governance_supported returns 0 while systemd-run --user
+        # scope creation subsequently fails because CPUWeight is not a delegated knob).
+        _walk="$_user_cgroup"
+        _controllers_path=""
+        while [ -n "$_walk" ] && [ "$_walk" != "/" ]; do
+            local _candidate="/sys/fs/cgroup${_walk}/cgroup.controllers"
+            if [ -f "$_candidate" ]; then
+                _controllers_path="$_candidate"
+                break
+            fi
+            _walk="${_walk%/*}"
+        done
+        if [ -z "$_controllers_path" ]; then
+            # No cgroup.controllers found in process hierarchy (below root).
+            return 1
         fi
     fi
 
@@ -165,13 +175,22 @@ cgroup_governance_supported() {
 
 # ---------------------------------------------------------------------------
 # cgroup_set_slice_weight <slice> <weight>
-#   Best-effort: set the slice's cpu.weight via systemctl --user set-property.
-#   Ignores failure (the slice may not exist yet; it will be auto-vivified by
-#   systemd-run on the first scope placement).
+#   Best-effort: start the slice (vivifying it if needed), then set its
+#   cpu.weight via systemctl --user set-property.  Both operations are
+#   best-effort (failures are silently swallowed); callers use || true.
 # ---------------------------------------------------------------------------
 cgroup_set_slice_weight() {
     local slice="$1"
     local weight="$2"
     _cgroup_validate_weight "$weight" || return $?
+    # Ensure the slice is live before set-property: on a cold start the slice
+    # has not been vivified yet, and `systemctl --user set-property` on a
+    # non-existent transient unit silently no-ops.  Starting the slice first
+    # guarantees the CPUWeight assignment takes effect at the first scope
+    # placement rather than waiting for a second run to self-heal (without this,
+    # a fresh reify-governed-merge.slice is auto-vivified at systemd's default
+    # weight 100 instead of the intended 300, giving no cross-role differential
+    # on cold start).
+    systemctl --user start "$slice" 2>/dev/null || true
     systemctl --user set-property "$slice" CPUWeight="$weight" 2>/dev/null || true
 }
