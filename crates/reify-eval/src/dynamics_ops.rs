@@ -1033,6 +1033,136 @@ mod tests {
         );
     }
 
+    // ── step-1: no-density hard error (E_DynamicsNoDensity) RED tests ───────────
+    //
+    // These tests pin the NEW contract: a `body_mass_props` call with no
+    // resolvable density (no explicit arg, no Material density) must emit a
+    // hard `Severity::Error` with `DiagnosticCode::DynamicsNoDensity` naming
+    // all three fixes, skip the geometry query, and return a `MassProperties`
+    // with `Value::Undef` geometric fields.
+    //
+    // They are RED against the current production code (which still falls
+    // through to the water default and emits `W_DynamicsDefaultDensity`);
+    // step-2 makes them GREEN.
+
+    /// Core-level: `body(None)` + no explicit arg → exactly one Error with
+    /// `DynamicsNoDensity`, message names all three fixes, geom closure is
+    /// never invoked, geometric fields are all `Value::Undef`.
+    #[test]
+    fn eval_body_mass_props_core_no_density_emits_error_and_degrades_to_undef() {
+        let b = body(None); // material present but carries no density field
+        let geom_called = std::cell::Cell::new(false);
+        let geom = |d: f64| {
+            geom_called.set(true);
+            uniform_box_inertia(DIMS, d)
+        };
+        let mut diags = Vec::new();
+        let result = eval_body_mass_props_core(&b, None, geom, &mut diags);
+
+        // Geometry query must NOT be called (no density → skip query).
+        assert!(
+            !geom_called.get(),
+            "geom_query must not be called when no density is resolvable"
+        );
+
+        // The returned value must still be a MassProperties with Undef geom fields.
+        assert_deferred_mass_props(&result);
+
+        // Exactly one diagnostic, Severity::Error, code DynamicsNoDensity.
+        assert_eq!(
+            diags.len(),
+            1,
+            "no-density path must emit exactly one diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "no-density diagnostic must be Severity::Error, got: {:?}",
+            diags[0].severity
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsNoDensity),
+            "no-density diagnostic must carry DynamicsNoDensity code, got: {:?}",
+            diags[0].code
+        );
+        // Message must name all three fixes.
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("density"),
+            "message must mention 'density' (explicit density hint); got: {msg:?}"
+        );
+        assert!(
+            msg.contains("Material"),
+            "message must mention 'Material' (body Material hint); got: {msg:?}"
+        );
+        assert!(
+            msg.contains("default Material"),
+            "message must mention 'default Material' (ambient default hint); got: {msg:?}"
+        );
+    }
+
+    /// Core-level: body with NO material at all (not just no density) — same
+    /// error contract as `body(None)`, verifying the materialless path.
+    #[test]
+    fn eval_body_mass_props_core_no_material_emits_error_and_degrades_to_undef() {
+        // Build a body with no `material` field at all.
+        let no_material_body = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "Block".to_string(),
+            version: 1,
+            fields: PersistentMap::default(),
+        }));
+        let geom_called = std::cell::Cell::new(false);
+        let geom = |d: f64| {
+            geom_called.set(true);
+            uniform_box_inertia(DIMS, d)
+        };
+        let mut diags = Vec::new();
+        let result = eval_body_mass_props_core(&no_material_body, None, geom, &mut diags);
+
+        assert!(
+            !geom_called.get(),
+            "geom_query must not be called when body has no material"
+        );
+        assert_deferred_mass_props(&result);
+        assert_eq!(diags.len(), 1, "no-material body must emit exactly one diagnostic");
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert_eq!(diags[0].code, Some(DiagnosticCode::DynamicsNoDensity));
+    }
+
+    /// Dispatch-level: `try_eval_body_mass_props` on a 1-arg `body_mass_props(body)`
+    /// with a no-density body → `Some(MassProperties)` with Undef geom fields and
+    /// exactly one `DynamicsNoDensity` Error in diags.
+    #[test]
+    fn dispatch_no_density_body_emits_error_and_degrades_to_undef() {
+        let body_cell = ValueCellId::new("Design", "blk");
+        let mut values = ValueMap::new();
+        values.insert(body_cell.clone(), body(None)); // material present, no density
+        let expr = call_expr("body_mass_props", &[body_cell]);
+        let kernel = MockGeometryKernel::new();
+        let mut diags = Vec::new();
+
+        let result = try_eval_body_mass_props(&expr, &values, &kernel, &mut diags)
+            .expect("no-density call must still return Some(MassProperties)");
+        assert_deferred_mass_props(&result);
+        assert_eq!(
+            diags.len(),
+            1,
+            "no-density dispatch must emit exactly one diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Severity::Error,
+            "no-density dispatch must emit Severity::Error"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DynamicsNoDensity),
+            "no-density dispatch must carry DynamicsNoDensity code"
+        );
+    }
+
     // ── explicit density arg (2-arg form) wins, suppresses the warning ────────
 
     #[test]
