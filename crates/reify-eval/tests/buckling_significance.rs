@@ -499,6 +499,190 @@ fn buckling_different_for_modes_length_mismatch() {
     );
 }
 
+// ── Step-5: mode_shape displaced_positions tests ──────────────────────────────
+//
+// RED until step-6 adds mode_shape comparison to `buckling_result_significance`.
+//
+// Before step-6, mode_shapes are ignored: two fixtures with identical eigenvalues
+// but different displaced_positions are indistinguishable → Equivalent.
+// The RED driver exploits this: a shape delta > tol should be Different but
+// currently returns Equivalent.
+
+/// RED driver (a): displaced-position delta over tol → Different.
+///
+/// Both modes have the same eigenvalue (bit-equal). Only mode_shape differs:
+/// `x vs x + 2*tol` — strictly over-tolerance.  Before step-6 the mode_shape
+/// is ignored and the function returns Equivalent (from eigenvalue equality).
+#[test]
+fn buckling_different_for_over_tol_displaced_position() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    // Identical base positions; new has first coordinate shifted by 2*tol.
+    let pos_prev: &[f64] = &[0.1, 0.2, 0.3];
+    let pos_new: &[f64] = &[0.1 + 2.0 * tol, 0.2, 0.3]; // delta = 2*tol > tol
+
+    let prev = make_buckling_result(&[ev], true, &[pos_prev], pre);
+    let new = make_buckling_result(&[ev], true, &[pos_new], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Different,
+        "displaced_positions delta 2*tol > tol must yield Different (RED until step-6)"
+    );
+}
+
+/// Guard (b): sub-tolerance displaced-position delta → Equivalent.
+///
+/// Delta = 0.5*tol < tol, eigenvalues equal → should be Equivalent.
+/// Also GREEN before step-6 (eigenvalue equality already covers this case).
+#[test]
+fn buckling_equivalent_for_sub_tol_displaced_position() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    let pos_prev: &[f64] = &[0.1, 0.2, 0.3];
+    let pos_new: &[f64] = &[0.1 + 0.5 * tol, 0.2, 0.3]; // delta = 0.5*tol < tol
+
+    let prev = make_buckling_result(&[ev], true, &[pos_prev], pre);
+    let new = make_buckling_result(&[ev], true, &[pos_new], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Equivalent,
+        "displaced_positions delta 0.5*tol < tol must yield Equivalent"
+    );
+}
+
+/// Guard (c): displaced_positions length mismatch between modes → Different.
+#[test]
+fn buckling_different_for_displaced_positions_length_mismatch() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    // prev mode: 3 positions; new mode: 6 positions (different node count).
+    let prev = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
+    let new = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]], pre);
+
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Different,
+        "displaced_positions length mismatch must yield Different"
+    );
+}
+
+/// Guard (d): NaN in displaced_positions → Different.
+#[test]
+fn buckling_different_for_nan_in_displaced_position() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    let prev = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
+    let new_nan = make_buckling_result(&[ev], true, &[&[0.1, f64::NAN, 0.3]], pre);
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new_nan, Some(tol)),
+        FilterOutcome::Different,
+        "NaN in displaced_positions must yield Different"
+    );
+}
+
+/// Guard (e): mode_shape is not a Map → Different.
+#[test]
+fn buckling_different_for_mode_shape_not_a_map() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    let good = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
+
+    // Build a Mode with mode_shape = Value::Real instead of Map.
+    let mode_fields: PersistentMap<String, Value> = [
+        ("eigenvalue".to_string(), Value::Real(ev)),
+        ("mode_shape".to_string(), Value::Real(99.0)), // wrong type
+    ]
+    .into_iter()
+    .collect();
+    let bad_mode = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields: mode_fields,
+    }));
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![bad_mode])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let bad = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &bad, Some(tol)),
+        FilterOutcome::Different,
+        "mode_shape = Real (not Map) must yield Different"
+    );
+}
+
+/// Guard (f): mode_shape Map missing displaced_positions key → Different.
+#[test]
+fn buckling_different_for_mode_shape_missing_displaced_positions() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let pre = &[0.0];
+
+    let good = make_buckling_result(&[ev], true, &[&[0.1, 0.2, 0.3]], pre);
+
+    // Build a Mode where mode_shape Map lacks "displaced_positions".
+    let empty_map: BTreeMap<Value, Value> = BTreeMap::new();
+    let mode_fields: PersistentMap<String, Value> = [
+        ("eigenvalue".to_string(), Value::Real(ev)),
+        ("mode_shape".to_string(), Value::Map(empty_map)),
+    ]
+    .into_iter()
+    .collect();
+    let bad_mode = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "Mode".to_string(),
+        version: 1,
+        fields: mode_fields,
+    }));
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![bad_mode])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let bad = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_eq!(
+        significance_filter("solver::buckling", &good, &bad, Some(tol)),
+        FilterOutcome::Different,
+        "mode_shape Map missing displaced_positions key must yield Different"
+    );
+}
+
 // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────────
 //
 // RED until step-2 adds "solver::buckling" to the is_opted_in match.
