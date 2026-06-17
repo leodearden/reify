@@ -1206,6 +1206,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        // OffsetCurve's `reference` (a faces() sub-handle) is a constraint
+        // surface, not a propagating parent — analogous to Draft's `plane`.
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
@@ -1279,6 +1282,7 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => {
@@ -1431,6 +1435,7 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::OffsetCurve { .. } => Operation::ModifyOffsetCurve,
         GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
         GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
@@ -1521,7 +1526,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1617,6 +1622,7 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
             ModifyKind::Thicken => Operation::ModifyThicken,
             ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
+            ModifyKind::OffsetCurve => Operation::ModifyOffsetCurve,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
             TransformKind::Translate => Operation::TransformTranslate,
@@ -8296,6 +8302,7 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyOffsetCurve, ReprKind::BRep),
                 (Operation::ModifyZoneSlab, ReprKind::BRep),
                 (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
@@ -12179,6 +12186,16 @@ mod tests {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetCurve {
+                    target: h(1),
+                    distance: r(0.002),
+                    reference: None,
+                    direction: None,
+                },
+                expected: Operation::ModifyOffsetCurve,
+                label: "OffsetCurve → ModifyOffsetCurve",
             },
             // Transform
             Case {

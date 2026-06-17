@@ -1204,6 +1204,59 @@ pub(crate) fn compile_geometry_op(
                         distance,
                     })
                 }
+                // ι (task 4193): offset_curve(curve, distance[, reference|direction]).
+                // The optional 3rd arg ("third") is dispatched on its Value variant —
+                // the compiler has no per-arg type info for geometry functions, so the
+                // reference-Surface vs direction-Vector3 overloads are resolved here:
+                //   * a bound Value::GeometryHandle (a faces() sub-handle) → reference
+                //     Surface (overload 2), decoded via resolve_parent_geometry_handle_arg
+                //     exactly like split's solid arg (the kernel_handle resolves to an
+                //     OCCT face via get_shape at execute time);
+                //   * otherwise evaluate it and decode a vec3 → direction (overload 3).
+                // Neither shape → a Warning + planar fallback (reference/direction None).
+                reify_compiler::ModifyKind::OffsetCurve => {
+                    // Evaluate distance FIRST, while the `eval_arg` closure (which
+                    // borrows `diagnostics` mutably) is still live; NLL then ends
+                    // that borrow so the dispatch below can push its own diagnostic
+                    // (mirrors the Fillet/Chamfer arms' borrow ordering).
+                    let distance = eval_arg("distance")?;
+                    let third_expr = args.iter().find(|(n, _)| n == "third").map(|(_, e)| e);
+                    let (reference, direction) = match third_expr {
+                        None => (None, None),
+                        Some(expr) => {
+                            // Overload 2: a bound Value::GeometryHandle reference Surface.
+                            if let Some((_, _, kernel_handle)) =
+                                resolve_parent_geometry_handle_arg(expr, values)
+                            {
+                                (Some(kernel_handle), None)
+                            } else {
+                                // Overload 3: evaluate and decode a direction vec3.
+                                let v = reify_expr::eval_expr(
+                                    expr,
+                                    &eval_ctx_with_meta(values, functions, meta_map),
+                                );
+                                match point3_components(&v) {
+                                    Some(dir) => (None, Some(dir)),
+                                    None => {
+                                        diagnostics.push(Diagnostic::warning(
+                                            "offset_curve: 3rd argument is neither a reference \
+                                             Surface (bound geometry handle) nor a direction \
+                                             vec3 — building a planar offset and ignoring it"
+                                                .to_string(),
+                                        ));
+                                        (None, None)
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    Ok(reify_ir::GeometryOp::OffsetCurve {
+                        target: target_id,
+                        distance,
+                        reference,
+                        direction,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {
@@ -10450,6 +10503,171 @@ mod tests {
             "no diagnostics expected when all Modify args are present, got: {:?}",
             diagnostics
         );
+    }
+
+    // ── ι: offset_curve build-arm 3rd-arg dispatch (step-13/14, task 4193) ────────
+
+    /// (a) 2-arg `offset_curve(curve, distance)` — no 3rd arg — builds
+    /// `GeometryOp::OffsetCurve { reference: None, direction: None }` (the planar
+    /// overload). Passes against the step-12 stub; pinned here so the full
+    /// step-14 dispatch keeps the 2-arg path intact.
+    #[test]
+    fn compile_geometry_op_offset_curve_2arg_no_reference_no_direction() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![("distance".into(), literal_length(0.002))],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                target,
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(target, GeometryHandleId(10), "target resolves to step 0");
+                assert_eq!(reference, None, "2-arg form has no reference");
+                assert_eq!(direction, None, "2-arg form has no direction");
+            }
+            other => panic!("expected Ok(OffsetCurve), got {:?}", other),
+        }
+    }
+
+    /// (b) 3-arg `offset_curve(curve, distance, vec3(0,0,1))` — the 3rd arg is a
+    /// `Value::Vector` → `direction: Some([0,0,1])`, `reference: None` (overload 3).
+    ///
+    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
+    /// `direction: None`.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_vector_is_direction() {
+        let step_handles = vec![GeometryHandleId(10)];
+        let values = ValueMap::new();
+
+        // A literal vec3(0,0,1). resolve_parent_geometry_handle_arg returns None
+        // for a Literal (not a ValueRef), so the dispatch falls through to the
+        // direction-decode path; point3_components reads the 3 components.
+        let dir_expr = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+        );
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                ("third".into(), dir_expr),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(reference, None, "a vec3 3rd arg is NOT a reference");
+                assert_eq!(
+                    direction,
+                    Some([0.0, 0.0, 1.0]),
+                    "a vec3 3rd arg becomes the direction"
+                );
+            }
+            other => panic!("expected Ok(OffsetCurve) with direction, got {:?}", other),
+        }
+    }
+
+    /// (c) 3-arg `offset_curve(curve, distance, <faces() sub-handle>)` — the 3rd
+    /// arg is a bound `Value::GeometryHandle` → `reference: Some(kernel_handle)`,
+    /// `direction: None` (overload 2). The handle is resolved via
+    /// `resolve_parent_geometry_handle_arg` exactly like split's solid arg.
+    ///
+    /// RED until step-14: the step-12 stub ignores the 3rd arg and always yields
+    /// `reference: None`.
+    #[test]
+    fn compile_geometry_op_offset_curve_3arg_handle_is_reference() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::{Type, ValueCellId};
+
+        let step_handles = vec![GeometryHandleId(10)];
+
+        // Bind a Value::GeometryHandle (a faces() sub-handle shape) into the
+        // values map, referenced by a ValueRef 3rd arg.
+        let ref_handle = GeometryHandleId(42);
+        let ref_cell = ValueCellId::new("E", "surf");
+        let mut values = ValueMap::new();
+        values.insert(
+            ref_cell.clone(),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new("E", 0),
+                upstream_values_hash: [0x11; 32],
+                kernel_handle: ref_handle,
+            },
+        );
+        let ref_expr = reify_ir::CompiledExpr::value_ref(ref_cell, Type::Geometry);
+
+        let op = CompiledGeometryOp::Modify {
+            kind: reify_compiler::ModifyKind::OffsetCurve,
+            target: reify_compiler::GeomRef::Step(0),
+            args: vec![
+                ("distance".into(), literal_length(0.002)),
+                ("third".into(), ref_expr),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::OffsetCurve {
+                reference,
+                direction,
+                ..
+            }) => {
+                assert_eq!(
+                    reference,
+                    Some(ref_handle),
+                    "a bound GeometryHandle 3rd arg becomes the reference surface"
+                );
+                assert_eq!(direction, None, "a reference 3rd arg has no direction");
+            }
+            other => panic!("expected Ok(OffsetCurve) with reference, got {:?}", other),
+        }
     }
 
     // ── Fillet eval-arm: anti-zero-edges + 2-arg back-compat (task 3205 step-9/10) ──

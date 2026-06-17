@@ -2573,6 +2573,36 @@ impl OcctKernel {
                 ffi::ffi::thicken_shape(shape, off)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            GeometryOp::OffsetCurve {
+                target,
+                distance,
+                reference,
+                direction,
+            } => {
+                let dist = extract_f64(distance)?;
+                // Build the offset wire inside an inner scope so the immutable
+                // `get_shape` borrow(s) drop before `store_with_repr` takes
+                // `&mut self` (mirrors `extract_edges` / `execute_split`'s
+                // `materialized` scope). Dispatch the three overloads on
+                // (reference, direction): a reference surface (overload 2) wins
+                // over a direction (overload 3); neither → planar offset
+                // (overload 1).
+                let result = {
+                    let shape = self.get_shape(*target)?;
+                    match (reference, direction) {
+                        (Some(ref_id), _) => {
+                            let ref_shape = self.get_shape(*ref_id)?;
+                            ffi::ffi::make_offset_curve_on_surface(shape, dist, ref_shape)
+                        }
+                        (None, Some(dir)) => ffi::ffi::make_offset_curve_directional(
+                            shape, dist, dir[0], dir[1], dir[2],
+                        ),
+                        (None, None) => ffi::ffi::make_offset_curve(shape, dist),
+                    }
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                };
+                return Ok(self.store_with_repr(result, BRepKind::Wire));
+            }
             GeometryOp::ZoneSlab { target, width } => {
                 let shape = self.get_shape(*target)?;
                 let w = extract_f64(width)?;
@@ -6430,6 +6460,191 @@ mod tests {
             }
             other => panic!("expected Value::Real, got {:?}", other),
         }
+    }
+
+    // --- Offset curve (offset_curve ι) tests ---
+
+    /// Overload-1 precise signal (FFI level): offsetting a planar circular arc
+    /// of radius 10mm outward by 2mm yields a concentric arc of radius 12mm.
+    ///
+    /// Ground truth: the planar offset of a radius-R circular arc is a
+    /// concentric arc of radius R+d (outward offset); curvature κ = 1/R is
+    /// exact for circles, so the offset arc's curvature at its angle-0 point
+    /// (R+d, 0, 0) is exactly 1/(R+d). We assert radius = 1/κ ≈ 12mm within 2%
+    /// (covers OCCT numerical error). Units are SI metres (10mm = 0.01m),
+    /// matching `tests/curve_curvature_integration.rs`.
+    #[test]
+    fn make_offset_curve_grows_arc_radius_by_distance() {
+        use std::f64::consts::FRAC_PI_4;
+        // Radius-10mm arc in the XY plane, swept symmetric about angle 0.
+        let arc = ffi::ffi::make_arc_wire(
+            0.0, 0.0, 0.0, // center at origin
+            0.01,          // radius = 10mm
+            -FRAC_PI_4, FRAC_PI_4, // symmetric about angle 0
+            0.0, 0.0, 1.0, // axis = +Z (XY plane)
+        )
+        .expect("make_arc_wire should build a radius-10mm arc");
+
+        // Offset outward by 2mm. Positive distance grows the radius (convention).
+        let offset = ffi::ffi::make_offset_curve(&arc, 0.002)
+            .expect("make_offset_curve should succeed on a planar arc");
+        assert!(!offset.is_null(), "offset result should be a non-null shape");
+
+        // Extract the offset arc edge (IsOpenResult → single concentric edge).
+        let edges = ffi::ffi::get_edges(&offset).expect("get_edges on offset wire");
+        let n_edges = ffi::ffi::shape_vec_len(&edges);
+        assert!(n_edges >= 1, "offset wire should contain at least one edge");
+        let edge = ffi::ffi::shape_vec_at(&edges, 0).expect("first offset edge");
+
+        // Measure radius at the offset arc's angle-0 point (12mm, 0, 0).
+        let kappa = ffi::ffi::curve_curvature_at(&edge, 0.012, 0.0, 0.0)
+            .expect("curve_curvature_at on offset arc");
+        let radius = 1.0 / kappa.abs();
+        let expected = 0.012; // 12mm
+        let rel_err = (radius - expected).abs() / expected;
+        assert!(
+            rel_err <= 0.02,
+            "offset arc radius should be 12mm (ratio 1.2) within 2%, \
+             got radius={radius} (κ={kappa}, rel_err={rel_err})"
+        );
+    }
+
+    /// Overloads 2 & 3 cpp/ffi smoke (FFI level): the directional and
+    /// on-surface offset variants each build a non-null wire from a planar arc.
+    ///
+    /// The PRD bar for overloads 2 & 3 is only "non-Undef Curve" — the precise
+    /// radius signal is overload-1's job. Overload 3 supplies a direction
+    /// vector; overload 2 supplies a reference surface (a box face).
+    #[test]
+    fn make_offset_curve_directional_and_on_surface_smoke() {
+        use std::f64::consts::FRAC_PI_4;
+        let arc = ffi::ffi::make_arc_wire(
+            0.0, 0.0, 0.0, 0.01, -FRAC_PI_4, FRAC_PI_4, 0.0, 0.0, 1.0,
+        )
+        .expect("make_arc_wire should build a radius-10mm arc");
+
+        // Overload 3: directional offset (direction = +Z).
+        let directional = ffi::ffi::make_offset_curve_directional(&arc, 0.002, 0.0, 0.0, 1.0)
+            .expect("make_offset_curve_directional should succeed");
+        assert!(!directional.is_null(), "directional offset should be non-null");
+
+        // Overload 2: offset on a reference surface (a face of a box).
+        let boxx = ffi::ffi::make_box(0.02, 0.02, 0.02).expect("make_box");
+        let faces = ffi::ffi::get_faces(&boxx).expect("get_faces on box");
+        assert!(ffi::ffi::shape_vec_len(&faces) >= 1, "box should have faces");
+        let face = ffi::ffi::shape_vec_at(&faces, 0).expect("first box face");
+        let on_surface = ffi::ffi::make_offset_curve_on_surface(&arc, 0.002, &face)
+            .expect("make_offset_curve_on_surface should succeed");
+        assert!(!on_surface.is_null(), "on-surface offset should be non-null");
+    }
+
+    /// Kernel `execute` arm for all three OffsetCurve overloads + the
+    /// invalid-target error path (task 4193 step-7).
+    ///
+    /// (a) overload-1 planar offset of a radius-10mm arc by +2mm → a wire whose
+    ///     extracted edge has curvature-radius ≈ 12mm (ratio 1.2 within 2%);
+    /// (b) overload-3 directional offset (+Z) → Ok wire handle;
+    /// (c) overload-2 offset on a reference surface (a box face) → Ok wire handle;
+    /// (d) an unknown target handle → Err.
+    ///
+    /// RED until step-8 adds the `GeometryOp::OffsetCurve` arm to `execute`
+    /// (the kernel lib is non-exhaustive over GeometryOp until then).
+    #[test]
+    fn kernel_execute_offset_curve_all_three_branches() {
+        use std::f64::consts::FRAC_PI_4;
+        let mut kernel = OcctKernel::new();
+
+        // Radius-10mm arc in the XY plane, symmetric about angle 0.
+        let arc = kernel
+            .execute(&GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: 0.01,
+                start_angle: -FRAC_PI_4,
+                end_angle: FRAC_PI_4,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("arc should build");
+
+        // (a) Overload 1 — planar 2-D offset by +2mm → radius 12mm.
+        let off = kernel
+            .execute(&GeometryOp::OffsetCurve {
+                target: arc.id,
+                distance: Value::Real(0.002),
+                reference: None,
+                direction: None,
+            })
+            .expect("offset_curve overload-1 should succeed");
+        let edges = kernel
+            .extract_edges(off.id)
+            .expect("extract_edges on offset wire");
+        assert!(!edges.is_empty(), "offset wire should have >= 1 edge");
+        let kappa = kernel
+            .curve_curvature_at(edges[0], 0.012, 0.0, 0.0)
+            .expect("curvature on offset edge");
+        let radius = 1.0 / kappa.abs();
+        let rel_err = (radius - 0.012).abs() / 0.012;
+        assert!(
+            rel_err <= 0.02,
+            "offset arc radius should be 12mm (ratio 1.2) within 2%, \
+             got {radius} (κ={kappa}, rel_err={rel_err})"
+        );
+
+        // (b) Overload 3 — directional offset (+Z) → Ok wire handle.
+        let directional = kernel
+            .execute(&GeometryOp::OffsetCurve {
+                target: arc.id,
+                distance: Value::Real(0.002),
+                reference: None,
+                direction: Some([0.0, 0.0, 1.0]),
+            })
+            .expect("offset_curve overload-3 (directional) should succeed");
+        assert!(
+            !kernel
+                .extract_edges(directional.id)
+                .expect("extract_edges on directional offset")
+                .is_empty(),
+            "directional offset should be a real non-empty wire"
+        );
+
+        // (c) Overload 2 — offset on a reference surface (a box face) → Ok wire.
+        let boxx = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(0.02),
+                height: Value::Real(0.02),
+                depth: Value::Real(0.02),
+            })
+            .expect("box should build");
+        let faces = kernel
+            .extract_faces(boxx.id)
+            .expect("extract_faces on box");
+        assert!(!faces.is_empty(), "box should have faces");
+        let on_surface = kernel
+            .execute(&GeometryOp::OffsetCurve {
+                target: arc.id,
+                distance: Value::Real(0.002),
+                reference: Some(faces[0]),
+                direction: None,
+            })
+            .expect("offset_curve overload-2 (on-surface) should succeed");
+        assert!(
+            !kernel
+                .extract_edges(on_surface.id)
+                .expect("extract_edges on on-surface offset")
+                .is_empty(),
+            "on-surface offset should be a real non-empty wire"
+        );
+
+        // (d) Unknown target handle → Err.
+        let bad = kernel.execute(&GeometryOp::OffsetCurve {
+            target: GeometryHandleId(999_999),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: None,
+        });
+        assert!(
+            bad.is_err(),
+            "offset_curve on an unknown target handle must Err, got {bad:?}"
+        );
     }
 
     // --- Query tests ---

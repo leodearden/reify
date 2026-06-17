@@ -237,9 +237,9 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
-        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder"
-        | "zone_annulus" | "zone_profile" => &[0],
+        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "offset_curve"
+        | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab"
+        | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],
@@ -1942,8 +1942,8 @@ pub(crate) fn compile_geometry_call(
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
-        "shell" | "thicken" | "offset_solid" | "draft" | "chamfer" | "chamfer_asymmetric"
-        | "fillet" | "fillet_all" | "zone_slab" => compile_modify_op(
+        "shell" | "thicken" | "offset_solid" | "offset_curve" | "draft" | "chamfer"
+        | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" => compile_modify_op(
             name,
             compiled_args,
             geom_ref(0),
@@ -2089,6 +2089,7 @@ mod tests {
         "shell",
         "thicken",
         "offset_solid",
+        "offset_curve",
         "draft",
         "chamfer",
         "chamfer_asymmetric",
@@ -2151,13 +2152,13 @@ mod tests {
     ///
     /// Breakdown at time of writing:
     /// ```text
-    /// GEOM_ARG_FUNCTIONS    27  (offset_solid, fillet_all, zone_slab, apply_transform,
-    ///                            zone_cylinder, zone_annulus, zone_profile,
-    ///                            chamfer_asymmetric)
+    /// GEOM_ARG_FUNCTIONS    28  (offset_solid, offset_curve, fillet_all, zone_slab,
+    ///                            apply_transform, zone_cylinder, zone_annulus,
+    ///                            zone_profile, chamfer_asymmetric)
     /// NO_GEOM_ARG_FUNCTIONS 21  (rectangle, circle, polygon, ellipse 2-D faces; torus)
     /// boolean ops            5
     /// loft-variadic          2  (loft, loft_guided)
-    /// Total                 55
+    /// Total                 56
     /// ```
     ///
     /// **Maintenance rule:** whenever a new arm is added to `compile_geometry_call`,
@@ -2169,7 +2170,7 @@ mod tests {
     /// The constant is declared separately from the lists so any mutation of the lists
     /// that omits the corresponding increment will trip the assertion, prompting a
     /// conscious audit.
-    const EXPECTED_DISPATCH_COUNT: usize = 55;
+    const EXPECTED_DISPATCH_COUNT: usize = 56;
 
     #[test]
     fn geometry_arg_indices_covers_all_geom_arg_functions() {
@@ -2208,6 +2209,20 @@ mod tests {
                 name
             );
         }
+    }
+
+    /// `offset_curve` (ι, task 4193) takes its curve target at position 0 and its
+    /// scalar distance (+ optional reference/direction) as plain value args, so
+    /// only index 0 is a geometry ref — exactly like the `thicken`/`shell` modify
+    /// family. RED until step-10 adds the `"offset_curve" => &[0]` arm to
+    /// `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_offset_curve_target_only() {
+        assert_eq!(
+            geometry_arg_indices("offset_curve"),
+            &[0],
+            "offset_curve's only geometry-ref arg is the curve target at index 0"
+        );
     }
 
     #[test]

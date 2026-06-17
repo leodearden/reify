@@ -1323,6 +1323,12 @@ pub enum ModifyKind {
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
+    /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
+    /// `distance`. The optional 3rd arg — a reference Surface or a direction
+    /// Vector3 — is disambiguated at eval time on its `Value` variant. Collapses
+    /// to `Operation::ModifyOffsetCurve` (BRep kernel capability).
+    OffsetCurve,
 }
 
 impl ModifyKind {
@@ -1339,7 +1345,7 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Fillet,
         Self::Chamfer,
         Self::ChamferAsymmetric,
@@ -1348,6 +1354,7 @@ impl ModifyKind {
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetCurve,
     ];
 
     /// Count of variants — derived from `ALL.len()`, not hand-maintained.
@@ -1369,6 +1376,7 @@ impl std::fmt::Display for ModifyKind {
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
 }
@@ -1707,6 +1715,7 @@ mod kind_display_tests {
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
 

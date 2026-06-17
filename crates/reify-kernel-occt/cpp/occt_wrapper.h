@@ -760,6 +760,22 @@ std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width);
 std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     const rust::Vec<uint32_t>& face_indices);
 
+// --- Offset curve (offset_curve ι) ---
+
+/// Planar offset of a curve (wire) by `distance`, producing a fresh concentric
+/// wire. Positive `distance` grows the curve outward (overload 1).
+std::unique_ptr<OcctShape> make_offset_curve(const OcctShape& shape, double distance);
+
+/// Offset a curve (wire) by `distance`, then carry the result along the unit
+/// `(dx,dy,dz)` direction (overload 3).
+std::unique_ptr<OcctShape> make_offset_curve_directional(
+    const OcctShape& shape, double distance, double dx, double dy, double dz);
+
+/// Offset a curve (wire) by `distance` along a reference face's surface normal
+/// (overload 2).
+std::unique_ptr<OcctShape> make_offset_curve_on_surface(
+    const OcctShape& shape, double distance, const OcctShape& reference);
+
 // --- Draft ---
 
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
