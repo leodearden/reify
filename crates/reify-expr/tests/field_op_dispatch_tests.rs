@@ -184,9 +184,11 @@ fn restrict_constructor_builds_restricted_field() {
         CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar())
     });
 
-    // region: a placeholder `Value::Undef` — any Value is accepted by the gate
-    // (`args[1]` is not type-checked at construction, only at sample time).
-    let region = Value::Undef;
+    // region: a placeholder `Value::Bool(false)` — must NOT be Undef, because the
+    // strict-Undef short-circuit fires on any Undef arg before the restrict arm.
+    // In practice the region is a Value::GeometryHandle; here any non-Undef value
+    // satisfies the gate (`args[1]` is not type-checked at construction time).
+    let region = Value::Bool(false);
 
     // result_type = Field<Point3<Length>, Real> — mirrors what field_op_result_type
     // stamps for `restrict(Field<Point3<Length>,Real>, Geometry)`.

@@ -304,6 +304,26 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                     &expr.result_type,
                     ctx,
                 ),
+                // restrict(field, region): construct a Restricted field.
+                //
+                // This is the δ-phase intercepting builtin (task 4222,
+                // PRD docs/prds/v0_6/std-fields-api.md §5.3 / B5). It builds a
+                // `Value::Field { source: Restricted, lambda: Arc(Value::List[field, region]) }`
+                // from an evaluated inner field and a region value.
+                //
+                // Gate: exactly 2 args, first arg is Value::Field. Mis-shaped
+                // args fall through to eval_builtin → Undef (graceful degradation).
+                // The strict-Undef short-circuit above already handles any
+                // Undef arg before we get here.
+                //
+                // Extracted into `eval_restrict` (`#[inline(never)]`) for the
+                // same stack-frame-shrinking rationale as `eval_fn_field`.
+                "restrict"
+                    if evaluated_args.len() == 2
+                        && matches!(&evaluated_args[0], Value::Field { .. }) =>
+                {
+                    eval_restrict(&evaluated_args[0], &evaluated_args[1], &expr.result_type)
+                }
                 // Analysis field wrappers: intercept when arg is a Field,
                 // otherwise fall through to eval_builtin for concrete tensors.
                 "von_mises"
@@ -2243,6 +2263,45 @@ fn eval_fn_field(lambda: &Value, result_type: &Type) -> Value {
         codomain_type,
         source: FieldSourceKind::Analytical,
         lambda: Arc::new(lambda.clone()),
+    }
+}
+
+/// Construct a `Restricted` field from an inner field and a region value.
+///
+/// Implements the `restrict` intercepting builtin (task 4222 δ,
+/// PRD docs/prds/v0_6/std-fields-api.md §5.3 / B5). Builds a
+/// `Value::Field { source: Restricted, lambda: Arc(Value::List[field, region]) }`
+/// where `items[0] = inner_field` and `items[1] = region` (storage-layout contract
+/// per `value.rs:885`). Domain / codomain are read from `result_type`, which
+/// `field_op_result_type("restrict", ...)` stamps as `Field<D,C>` from the
+/// inner field's declared type.
+///
+/// Marked `#[inline(never)]` for the same stack-frame-shrinking rationale as
+/// `eval_fn_field` (task 4220 β): the two `Type` locals on this frame would
+/// otherwise sit on every recursive `eval_expr` frame and risk overflowing
+/// the 2 MiB test-thread stack at `MAX_RECURSION_DEPTH` (256) levels of
+/// user-fn recursion.
+#[inline(never)]
+fn eval_restrict(inner_field: &Value, region: &Value, result_type: &Type) -> Value {
+    debug_assert!(
+        matches!(result_type, Type::Field { .. }),
+        "restrict result_type should be Field<D,C>, stamped by \
+         field_op_result_type (task 4222 δ); got {:?}",
+        result_type
+    );
+    let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
+        ((**domain).clone(), (**codomain).clone())
+    } else {
+        (Type::dimensionless_scalar(), Type::dimensionless_scalar())
+    };
+    Value::Field {
+        domain_type,
+        codomain_type,
+        source: FieldSourceKind::Restricted,
+        // Storage layout: items[0] = inner_field, items[1] = region.
+        // Mirrors the value.rs:885 doc and the sample_field_at Restricted arm
+        // (lib.rs:2737) which unpacks via `items[0]` / `items[1]`.
+        lambda: Arc::new(Value::List(vec![inner_field.clone(), region.clone()])),
     }
 }
 
