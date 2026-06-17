@@ -1696,6 +1696,24 @@ mod tests {
         );
     }
 
+    /// `parked-on-anchor` liveness finding: kind up to first ':' → `parked-on-anchor`;
+    /// `line N:` prefix stripped; rest kept verbatim modulo whitespace folding.
+    /// Pins the fingerprint so the empty-baseline ratchet can depend on it.
+    #[test]
+    fn fingerprint_parked_on_anchor() {
+        let finding = Finding {
+            pattern: Pattern::PTodo,
+            severity: Severity::Medium,
+            task_id: "crates/foo/bar.rs".to_string(),
+            summary: "parked-on-anchor: line 7: #42 status=deferred (do_not_complete): // TODO(#42): perf".to_string(),
+            evidence: vec![],
+        };
+        assert_eq!(
+            fingerprint(&finding),
+            "crates/foo/bar.rs :: parked-on-anchor :: #42 status=deferred (do_not_complete): // TODO(#42): perf",
+        );
+    }
+
     // -------------------------------------------------------------------
     // metadata_do_not_complete() — pure helper parser
     // -------------------------------------------------------------------
