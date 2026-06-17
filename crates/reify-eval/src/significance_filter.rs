@@ -358,16 +358,16 @@ pub fn significance_filter(
 /// Called from [`significance_filter`] after the shared prologue (opt-in guard,
 /// bit-equality shortcut, valid-tolerance gate).
 ///
-/// # Field comparison policy (task θ #3457)
+/// # Field comparison policy
 ///
-/// | Field | Policy | Step |
-/// |-------|--------|------|
-/// | `converged` | Exact `Bool` equality | step-4 |
-/// | `iterations` | Exact `Int` equality | step-4 |
-/// | `modes` count | Equal length required | step-4 |
-/// | per-mode `eigenvalue` | Relative tolerance [`EIGENVALUE_REL_TOL`] | step-4 |
-/// | per-mode `mode_shape displaced_positions` | Absolute `tol_si` element-wise | step-6 |
-/// | `pre_stress` | Structural presence/type check only | step-8 |
+/// | Field | Policy |
+/// |-------|--------|
+/// | `converged` | Exact `Bool` equality |
+/// | `iterations` | Exact `Int` equality |
+/// | `modes` count | Equal length required |
+/// | per-mode `eigenvalue` | Relative tolerance [`EIGENVALUE_REL_TOL`] |
+/// | per-mode `mode_shape displaced_positions` | Absolute `tol_si` element-wise |
+/// | `pre_stress` | Structural presence/type check only |
 ///
 /// # Conservative-Different contract
 ///
@@ -484,6 +484,28 @@ fn buckling_result_significance(
                 return FilterOutcome::Different;
             }
         }
+    }
+
+    // pre_stress: structural presence/type check only.
+    //
+    // Both results must carry a `pre_stress` field that is a
+    // `Value::StructureInstance`.  Deeper significance is NOT compared
+    // recursively in v1 — λ is a functional of pre_stress via K_g, so any
+    // material change to the linear-static solve necessarily moves the eigenvalue
+    // spectrum.  The eigenvalue comparison above subsumes pre_stress significance
+    // transitively; a structural presence/type guard avoids duplicating the
+    // elastic Map-based logic for a StructureInstance-shaped field.
+    //
+    // Exercises: step-7 (buckling_significance.rs pre_stress tests)
+    match (
+        prev_d.fields.get("pre_stress"),
+        new_d.fields.get("pre_stress"),
+    ) {
+        (
+            Some(reify_ir::Value::StructureInstance(_)),
+            Some(reify_ir::Value::StructureInstance(_)),
+        ) => {}
+        _ => return FilterOutcome::Different,
     }
 
     FilterOutcome::Equivalent
