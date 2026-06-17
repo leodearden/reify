@@ -330,14 +330,98 @@ EOF_PROBE
 fi
 
 # ============================================================================
-# Cycle ROW2_3 — §8 Rows 2+3: heavy mix + bounded slowdown.
-# (Tests added in step-7, implementation in step-8.)
+# Cycle ROW2_3 — §8 Rows 2+3: heavy mix → PSI band + bounded slowdown.
+# HOST-GATED. QUIET-BOX guard on Row 2 PSI-band assertion.
+#
+# Design:
+#   1. Pre-measure uncontended governed probe wall T_base (1 worker × PROBE_S).
+#   2. Launch mix: ceil(MIXFACTOR·nproc) governed task-role sources + 1 merge-role
+#      source, EACH through composed wrappers (cpu-governed-exec → agent cargo shim
+#      → cpu-admit admit → stub real-cargo that runs cpu_load_fixture.sh).
+#   3. Concurrently run the timed governed probe → T_mix.
+#   4. Warm-up window, then sample avg10.
+#
+# §8 Row 2 assertions: avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all sources completed.
+# §8 Row 3 assertion:  slowdown = T_mix/T_base within [fair_share_floor, K·floor] AND < 10.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW2_3: §8 Rows 2+3 (heavy mix + bounded slowdown) ---"
 
+_MIXFACTOR="${REIFY_CPU_GOV_TEST_MIXFACTOR:-1.5}"
+_SLOWDOWN_K="${REIFY_CPU_GOV_TEST_SLOWDOWN_K:-4}"
+_ROW23_WARMUP_S="${REIFY_CPU_GOV_TEST_WARMUP_S:-8}"
+_ROW23_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
+_ROW23_PROBE_S=2           # fixed work quantum for T_base/T_mix probe
+_ADMIT_THRESHOLD="${REIFY_CPU_ADMIT_AGENT_THRESHOLD:-50}"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW2_3: host does not support cgroup governance"
+elif [ "$_PSI_AVAILABLE" -eq 0 ] || [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW2_3: PSI or python3 unavailable"
+else
+    # Compute mix width: ceil(MIXFACTOR × nproc).
+    _NPROC="$(nproc)"
+    _MIX_N="$(awk -v f="$_MIXFACTOR" -v n="$_NPROC" \
+        'BEGIN{v=f*n; i=int(v); if(v>i) i=i+1; if(i<1) i=1; print i}')"
+    # active_sources for fair_share_floor: _MIX_N task + 1 merge.
+    _ACTIVE_SOURCES=$(( _MIX_N + 1 ))
+
+    # ROW2_3 measurement variables — wired in step-8.
+    # Initialized to failing defaults so step-7 assertions are RED.
+    _T_BASE=1               # uncontended probe wall (seconds, int or float)
+    _T_MIX=0               # probe wall under mix (seconds)
+    _ROW23_AVG10=99        # avg10 sampled after warm-up
+    _ROW23_ALL_PROGRESSED=0  # 1 when all sources emitted done-markers
+    # ── ROW2_3 ORCHESTRATION SEAM ─────────────────────────────────────────
+    # (step-8 adds: T_base pre-measurement, stub-cargo dir, mix launcher,
+    # warm-up sleep, avg10 sample, concurrent timed probe for T_mix,
+    # progress accounting, mix cleanup)
+    # ──────────────────────────────────────────────────────────────────────
+
+    # ── Row 2 assertions ──
+    # Quiet-start precondition guard for PSI-band assert:
+    # sample avg10 BEFORE the mix (not after warm-up, since orchestration
+    # is not yet wired and the post-warmup sample won't exist).
+    _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
+    _row23_psi_guard=1
+    if [ "$_row23_pre_avg10" != "unavailable" ]; then
+        if awk -v a="$_row23_pre_avg10" -v t="$_ADMIT_THRESHOLD" \
+            'BEGIN{exit !(a >= t)}'; then
+            echo "  SKIP ROW2-PSI: pre-mix avg10=${_row23_pre_avg10} already >= threshold=${_ADMIT_THRESHOLD}"
+            _row23_psi_guard=0
+        fi
+    fi
+    if [ "$_row23_psi_guard" -eq 1 ]; then
+        # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
+        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
+            python3 -c "
+import sys
+v = float('${_ROW23_AVG10}')
+t = float('${_ADMIT_THRESHOLD}')
+sys.exit(0 if v < t else 1)
+"
+    fi
+    # ROW2-2: all sources completed (none starved).
+    assert "ROW2-2: all ${_ACTIVE_SOURCES} sources completed — none starved (progressed=${_ROW23_ALL_PROGRESSED})" \
+        test "${_ROW23_ALL_PROGRESSED}" -eq 1
+
+    # ── Row 3 assertions ──
+    # Compute slowdown = T_mix / T_base (float division via awk).
+    _ROW3_SLOWDOWN="$(awk -v m="${_T_MIX}" -v b="${_T_BASE}" \
+        'BEGIN{if(b+0<=0){print "0"}else{print m/b}}')"
+    # fair_share_floor = active_sources / nproc.
+    _ROW3_FLOOR="$(python3 "$INSTRUMENT" fair-share "$_ACTIVE_SOURCES" "$_NPROC" \
+        2>/dev/null || echo "0")"
+    # ROW3-1: slowdown within [floor, K·floor] AND < 10 (4415 cannot recur).
+    assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K})" \
+        python3 -c "
+import sys
+s = float('${_ROW3_SLOWDOWN}')
+fl = float('${_ROW3_FLOOR}')
+k = float('${_SLOWDOWN_K}')
+ok = (fl <= s <= k * fl) and s < 10.0
+sys.exit(0 if ok else 1)
+"
 fi
 
 # ============================================================================
