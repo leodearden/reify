@@ -504,6 +504,128 @@ fn buckling_different_for_modes_length_mismatch() {
     );
 }
 
+// ── Amendment: converged / iterations exact-equality and eigenvalue floor guards ─
+
+/// Guard: `converged` true vs false → Different.
+///
+/// Exercises the exact Bool equality branch directly (matching `Some(Bool(p))` +
+/// `Some(Bool(n))` with guard `p == n`).  A regression that matched
+/// `Some(Bool(_))` instead of `p == n` would allow mismatched converged flags
+/// through as Equivalent.
+#[test]
+fn buckling_different_for_converged_mismatch() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let converged_true = make_buckling_result(&[1000.0], true, &[disp], pre);
+    let converged_false = make_buckling_result(&[1000.0], false, &[disp], pre);
+
+    assert_ne!(
+        converged_true, converged_false,
+        "fixture: must be non-bit-equal (converged differs)"
+    );
+    assert_eq!(
+        significance_filter("solver::buckling", &converged_true, &converged_false, Some(tol)),
+        FilterOutcome::Different,
+        "converged true vs false must yield Different"
+    );
+}
+
+/// Guard: `iterations` Int(0) vs Int(1) → Different.
+///
+/// Exercises the exact Int equality branch.  The trampoline currently always
+/// emits Int(0); this guard ensures the equality check is not effectively dead
+/// weight — a regression that matched `Some(Int(_))` instead of `p == n` would
+/// silently allow any iteration count through as Equivalent.
+#[test]
+fn buckling_different_for_iterations_mismatch() {
+    let ev = 1000.0_f64;
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let prev = make_buckling_result(&[ev], true, &[disp], pre);
+
+    // Hand-build a BucklingResult with iterations = Int(1).
+    // make_buckling_result always sets iterations to Int(0), so we build manually.
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![make_mode(ev, disp)])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(1)), // differs from prev's Int(0)
+        ("pre_stress".to_string(), make_pre_stress(pre)),
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let new_iter_1 = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_ne!(prev, new_iter_1, "fixture: must be non-bit-equal (iterations differs)");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new_iter_1, Some(tol)),
+        FilterOutcome::Different,
+        "iterations Int(0) vs Int(1) must yield Different"
+    );
+}
+
+/// Guard (a): near-zero eigenvalue delta → Different.
+///
+/// Both eigenvalues are well below EIGENVALUE_MIN_DENOM (1e-12), but differ by
+/// a factor of 2×.  The floor activates (denom = 1e-12); the absolute diff
+/// (1e-13) is far above EIGENVALUE_REL_TOL * 1e-12 = 1e-18, so Different.
+///
+/// Verifies that near-zero eigenvalues do not receive a false Equivalent due to
+/// the denominator floor compressing the effective threshold.
+#[test]
+fn buckling_different_for_near_zero_eigenvalue_delta() {
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0];
+    let tol = 1e-3_f64;
+
+    let prev = make_buckling_result(&[1e-13], true, &[disp], pre);
+    let new = make_buckling_result(&[2e-13], true, &[disp], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Different,
+        "near-zero eigenvalue 1e-13 vs 2e-13 must yield Different"
+    );
+}
+
+/// Guard (b): zero eigenvalues → Equivalent (EIGENVALUE_MIN_DENOM floor active).
+///
+/// With λ = 0.0 for both prev and new, max(|p|, |n|) = 0.0.  Without the
+/// EIGENVALUE_MIN_DENOM floor the effective threshold would collapse to
+/// EIGENVALUE_REL_TOL * 0.0 = 0.0, turning ANY non-zero delta into Different.
+/// With the floor (denom = 1e-12) the threshold is 1e-18, and diff = 0.0 is
+/// well within tolerance → Equivalent.
+///
+/// The displaced_positions differ by 0.5*tol to make fixtures non-bit-equal so
+/// the bit-equality shortcut is not taken and the eigenvalue path is exercised.
+#[test]
+fn buckling_equivalent_for_zero_eigenvalues() {
+    let tol = 1e-3_f64;
+    let disp_prev: &[f64] = &[0.1, 0.2, 0.3];
+    let disp_new: &[f64] = &[0.1 + 0.5 * tol, 0.2, 0.3]; // sub-tol mode_shape delta
+    let pre = &[0.0];
+
+    let prev = make_buckling_result(&[0.0], true, &[disp_prev], pre);
+    let new = make_buckling_result(&[0.0], true, &[disp_new], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Equivalent,
+        "zero eigenvalues + sub-tol mode_shape delta must yield Equivalent (floor active)"
+    );
+}
+
 // ── Step-5: mode_shape displaced_positions tests ──────────────────────────────
 //
 // RED until step-6 adds mode_shape comparison to `buckling_result_significance`.
