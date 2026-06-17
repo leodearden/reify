@@ -316,6 +316,49 @@ fn bound_violation_emits_type_arg_bound() {
     );
 }
 
+/// Nested-container bound violation: `List<Coupling<NotMotion>>` wraps the bound-
+/// violating applied type inside a `List`.  The `walk_type_for_applied` helper
+/// must recurse into `Type::List(inner)` and surface the inner `Coupling<NotMotion>`
+/// node, so `check_applied_type_arg_bounds` still fires `TypeArgBound`.
+///
+/// This test covers the `Type::List` recursive arm of `walk_type_for_applied`
+/// (type_resolution.rs); a regression in that arm would silently drop the
+/// diagnostic without triggering any top-level Applied test.
+#[test]
+fn nested_bound_violation_inside_list_emits_type_arg_bound() {
+    let source = format!(
+        "{}\nstructure def BadList {{ param c : List<Coupling<NotMotion>> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    // Arity is correct (1 arg, 1 param) — no arity error expected.
+    let arity_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgArity))
+        .collect();
+    assert!(
+        arity_errors.is_empty(),
+        "List<Coupling<NotMotion>> (correct arity) must emit NO TypeArgArity; got: {:?}",
+        arity_errors
+    );
+
+    // The walk must recurse into List and find the bound-violating Coupling<NotMotion>.
+    let bound_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgBound))
+        .collect();
+    assert_eq!(
+        bound_errors.len(),
+        1,
+        "List<Coupling<NotMotion>> must surface a TypeArgBound via walk recursion \
+         into the List arm; got: {:?}",
+        bound_errors
+    );
+}
+
 /// Bound-satisfied: `Coupling<Prismatic>` conforms to `P: HasMotion` — must
 /// emit NO `TypeArgBound` diagnostic.
 ///

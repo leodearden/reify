@@ -316,7 +316,7 @@ structure def UseArity {
 /// non-generic (0 type_params) but received 2 args.  The resolution itself is still
 /// correct (`Applied` rather than the pre-γ `StructureRef`).
 #[test]
-fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
+fn vector3_two_type_args_resolves_applied_and_emits_arity_when_user_structure_exists() {
     use reify_core::diagnostics::DiagnosticCode;
     let module = compile_with_stdlib_helper(ARITY_MISMATCH_USER_STRUCTURE_SOURCE);
 
@@ -356,13 +356,13 @@ fn vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exis
     );
 }
 
-/// Parallel to `vector3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists`
+/// Parallel to `vector3_two_type_args_resolves_applied_and_emits_arity_when_user_structure_exists`
 /// for `Point3`: with `structure def Point3 {}` in scope, `Point3<Force, Length>` is
 /// caught by the γ structure-with-args arm and resolves to
 /// `Type::Applied { name: "Point3", args: [Scalar<Force>, Scalar<Length>] }`, and
 /// the arity check fires `TypeArgArity` (2 args vs 0 params).
 #[test]
-fn point3_two_type_args_falls_through_to_structure_ref_when_user_structure_exists() {
+fn point3_two_type_args_resolves_applied_and_emits_arity_when_user_structure_exists() {
     use reify_core::diagnostics::DiagnosticCode;
     let module = compile_with_stdlib_helper(ARITY_MISMATCH_USER_STRUCTURE_SOURCE);
 
