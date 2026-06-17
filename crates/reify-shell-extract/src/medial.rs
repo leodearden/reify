@@ -274,6 +274,152 @@ impl std::fmt::Display for MedialError {
 
 impl std::error::Error for MedialError {}
 
+/// Measured minimum wall thickness with honest-floor semantics.
+///
+/// PRD §3b / task δ (4424). The min-wall measurement is the MIN of d⁺+d⁻ over
+/// all medial voxels — a conservative-lower-bound bias. `BelowResolution`
+/// self-describes when the raw min-wall is below the `2·h` floor (G6
+/// honest-floor: never silently promoted to `Measured`). The consumer ζ=4426
+/// maps `BelowResolution` and `NoMeasurement` to `Indeterminate` rather than
+/// using a sub-resolution number.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MinWallThickness {
+    /// Measured minimum wall thickness (same units as the SDF grid spacing).
+    /// Guaranteed ≥ `2·h` (the resolution floor); conservative-lower-bound
+    /// via the min-reduction over all medial voxels.
+    Measured(f64),
+    /// The raw measured min-wall (`raw`) is below the `2·h` resolution floor
+    /// (`floor = 2·h`).  The raw value is still carried so the caller can
+    /// decide how to report it; it must NOT be silently treated as a reliable
+    /// physical thickness.
+    BelowResolution {
+        /// Raw min-wall sum d⁺+d⁻ from the walk, < `floor`.
+        raw: f64,
+        /// Resolution floor = 2 × voxel spacing `h`.
+        floor: f64,
+    },
+    /// No measurable medial voxels — either the mask is empty, or every
+    /// medial voxel failed the gradient/walk guards (degenerate gradient,
+    /// out-of-bounds walk, or non-finite d⁺+d⁻ sum).  The input SDF does
+    /// not yield a reliable wall-thickness estimate at the given resolution.
+    NoMeasurement,
+}
+
+/// Compute the minimum wall thickness of a thin solid from its narrow-band SDF.
+///
+/// Runs `compute_medial_mask(sdf, &MedialOptions::default())` to identify
+/// medial voxels, re-walks each via `bidirectional_distances`, and returns the
+/// MIN of `d⁺+d⁻` — the conservative-lower-bound min-wall scalar (bias-low:
+/// the min-reduction can only underestimate, never overestimate).
+///
+/// The explicit `h` parameter (voxel spacing, typically `min(sdf.spacing)`) is
+/// the resolution floor used for the `BelowResolution` branch.  The eval
+/// binding (`Engine::measure_min_wall`, task δ) derives `h` from the realized
+/// grid's own spacing, decoupling this function from any external voxelisation
+/// default.
+///
+/// # Returns
+///
+/// - `Ok(Measured(t))` — `t ≥ 2·h`; conservative lower bound.
+/// - `Ok(BelowResolution { raw, floor })` — `raw < 2·h = floor`.
+/// - `Ok(NoMeasurement)` — empty mask or every medial voxel failed its
+///   gradient/walk guard; see `MinWallThickness::NoMeasurement`.
+/// - `Err(MedialError)` — structurally invalid SDF (same conditions as
+///   `compute_medial_mask`).
+///
+/// # Performance
+///
+/// `min_wall_thickness` re-walks the medial voxels via `bidirectional_distances`
+/// rather than caching per-voxel distances from `compute_medial_mask` (which
+/// computes them internally but discards them).  The mask is O(100 voxels) for
+/// PRD-typical 3–10-voxel walls, so the extra pass is negligible for
+/// single-part evaluations.  This layering avoids restructuring
+/// `compute_medial_mask`'s parallel chunk-merge return type — a heavily-tested
+/// function that should stay untouched.  A cached variant can be introduced in
+/// a follow-up if profiling shows hotness.
+pub fn min_wall_thickness(
+    sdf: &SampledField,
+    h: f64,
+) -> Result<MinWallThickness, MedialError> {
+    let mask = compute_medial_mask(sdf, &MedialOptions::default())?;
+    if mask.voxels.is_empty() {
+        return Ok(MinWallThickness::NoMeasurement);
+    }
+
+    // Walk parameters via shared walk_params() helper — guaranteed to stay
+    // in sync with compute_medial_mask (eliminates the hand-copy drift risk).
+    let options = MedialOptions::default();
+    let min_spacing = sdf.spacing[0].min(sdf.spacing[1]).min(sdf.spacing[2]);
+    let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
+
+    let nx = sdf.axis_grids[0].len();
+    let ny = sdf.axis_grids[1].len();
+    let nz = sdf.axis_grids[2].len();
+
+    let mut min_sum = f64::INFINITY;
+
+    for &[vi, vj, vk] in &mask.voxels {
+        // Bounds-guard: medial mask indices must be within the grid.
+        let idx = [vi as usize, vj as usize, vk as usize];
+        if idx[0] >= nx || idx[1] >= ny || idx[2] >= nz {
+            continue;
+        }
+
+        // World coordinate and normalised gradient for this medial voxel.
+        let world = world_at_index(sdf, idx);
+        let grad_raw = gradient_at_index(sdf, idx);
+        let Some(g) = normalize3(grad_raw) else {
+            continue; // degenerate gradient — skip
+        };
+
+        // Bidirectional walk: d⁺ + d⁻ for this voxel.
+        let Some((d_plus, d_minus, _, _)) =
+            bidirectional_distances(sdf, world, g, max_steps, walk_step)
+        else {
+            continue; // walk failed (off-grid) — skip
+        };
+
+        let sum = d_plus + d_minus;
+        if sum.is_finite() {
+            min_sum = min_sum.min(sum);
+        }
+    }
+
+    if !min_sum.is_finite() {
+        return Ok(MinWallThickness::NoMeasurement);
+    }
+
+    // G6 honest-floor (PRD §3b / task δ step-4): split on raw vs. resolution
+    // floor. The threshold is `2·h` (two voxel-widths) — the smallest
+    // distance that can be reliably resolved by the bidirectional walk at
+    // voxel size h. The decision is on the RAW sum (not a floored copy)
+    // so the 2h threshold semantics stay exact.
+    let floor = 2.0 * h;
+    if min_sum < floor {
+        Ok(MinWallThickness::BelowResolution { raw: min_sum, floor })
+    } else {
+        Ok(MinWallThickness::Measured(min_sum))
+    }
+}
+
+/// Compute the bidirectional walk parameters from the minimum grid spacing.
+///
+/// Shared by `min_wall_thickness` and `compute_medial_mask` so that the two
+/// sites cannot silently diverge if the step factor (currently 0.25) or the
+/// minimum-steps floor (currently 2) ever changes.
+///
+/// Returns `(max_steps, walk_step, max_walk_dist)`.
+fn walk_params(min_spacing: f64, options: &MedialOptions) -> (usize, f64, f64) {
+    // Absolute truncation distance for the bidirectional walk.
+    let max_walk_dist = options.max_thickness_voxels * min_spacing;
+    // Step size: 1/4 of the smallest voxel spacing keeps sub-voxel
+    // zero-crossing refinement accurate while bounding per-voxel work to
+    // ≈ 4 × max_thickness_voxels samples.
+    let walk_step = 0.25 * min_spacing;
+    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+    (max_steps, walk_step, max_walk_dist)
+}
+
 /// Compute the per-voxel medial mask for a Regular3D narrow-band SDF.
 ///
 /// # Algorithm overview
@@ -345,14 +491,9 @@ pub fn compute_medial_mask(
     let min_spacing = spacing[0].min(spacing[1]).min(spacing[2]);
     let band_width = options.narrow_band_half_width_voxels * min_spacing;
 
-    // Truncation distance for the bidirectional walk in absolute
-    // (world) units.
-    let max_walk_dist = options.max_thickness_voxels * min_spacing;
-    // Step size for the walk: 1/4 of the smallest voxel spacing keeps
-    // the sub-voxel zero-crossing refinement accurate while bounding
-    // the per-voxel work to ≈ 4 × max_thickness_voxels samples.
-    let walk_step = 0.25 * min_spacing;
-    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+    // Walk truncation-distance + step size via shared walk_params() so that
+    // min_wall_thickness's re-walk always uses the same formula.
+    let (max_steps, walk_step, max_walk_dist) = walk_params(min_spacing, options);
 
     // Pre-compute the per-voxel gradient once before the main loop.
     // Avoids repeating the 6-sample central-difference stencil inside
@@ -2259,5 +2400,221 @@ mod tests {
             msg.contains("5000000"),
             "AxisExtentsOverflow Display must include nz=5000000: {msg}"
         );
+    }
+
+    // ── δ=4424 step-1: min_wall_thickness RED tests ──────────────────────────
+    //
+    // Both tests below reference `min_wall_thickness` and `MinWallThickness`
+    // which do NOT yet exist in medial.rs — they compile-fail (RED) until
+    // step-2 adds the implementation.
+
+    /// Build an analytic slab Regular3D `SampledField` representing
+    /// `φ(x, y, z) = |z| − thickness_mm/2` over an `n³` grid centered on
+    /// the origin with physical spacing `h` (mm). Thin in z, spanning x/y —
+    /// the "2mm box" analytic fixture for δ (task 4424) min-wall tests.
+    /// Mirrors the structure of `slab_sdf_3d` but parameterised in physical
+    /// units (mm) rather than unit-spacing voxels.
+    fn analytic_slab_box(thickness_mm: f64, h: f64, n: usize) -> SampledField {
+        assert!(n >= 2, "slab grid needs ≥ 2 voxels per axis");
+        let half_thickness = thickness_mm / 2.0;
+        let half_extent = (n as f64 - 1.0) / 2.0 * h;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> =
+            (0..n).map(|i| bounds_min + (i as f64) * h).collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &_x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(z.abs() - half_thickness);
+                }
+            }
+        }
+        SampledField {
+            name: format!("slab-box-{thickness_mm}mm-h{h}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![h, h, h],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Build an L-bracket Regular3D `SampledField` as the union (minimum) of
+    /// two perpendicular analytic slabs:
+    ///   `φ(x, y, z) = min(|z| − web_mm/2, |x| − web_mm/2)`
+    /// over an `n³` grid centered on the origin with physical spacing `h` (mm).
+    /// D4 fixture for the min_wall_thickness conservative-bound gate (§9 Q4).
+    fn analytic_l_bracket(web_mm: f64, h: f64, n: usize) -> SampledField {
+        assert!(n >= 2, "L-bracket grid needs ≥ 2 voxels per axis");
+        let half_web = web_mm / 2.0;
+        let half_extent = (n as f64 - 1.0) / 2.0 * h;
+        let bounds_min = -half_extent;
+        let bounds_max = half_extent;
+
+        let axis_grid: Vec<f64> =
+            (0..n).map(|i| bounds_min + (i as f64) * h).collect();
+        let mut data = Vec::with_capacity(n * n * n);
+        for &x in &axis_grid {
+            for &_y in &axis_grid {
+                for &z in &axis_grid {
+                    let phi_z = z.abs() - half_web; // horizontal slab
+                    let phi_x = x.abs() - half_web; // vertical slab
+                    data.push(phi_z.min(phi_x)); // union = minimum SDF
+                }
+            }
+        }
+        SampledField {
+            name: format!("l-bracket-{web_mm}mm-h{h}-n{n}"),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![bounds_min, bounds_min, bounds_min],
+            bounds_max: vec![bounds_max, bounds_max, bounds_max],
+            spacing: vec![h, h, h],
+            axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// PRD §3b / δ=4424 step-1a:
+    /// `min_wall_thickness` for a 2.0mm analytic slab SDF at spacing h=0.5mm
+    /// must:
+    ///   (a) return `Ok(Measured(t))` — slab is above the 2h floor.
+    ///   (b) `|t − 2.0| ≤ h` — within one voxel of the analytic thickness.
+    ///   (c) `t ≤ 2.0 + h` — conservative-lower-bound: min-reduction cannot
+    ///       OVERestimate.
+    ///
+    /// G6 honest-floor: inequalities only, NO exact float, NO machine-epsilon.
+    /// φ = |z|−1.0 is piecewise-linear ⇒ walk_to_zero exact ⇒ d⁺=d⁻=1.0 ⇒
+    /// d⁺+d⁻=2.0mm at every medial voxel ⇒ both bounds hold by construction.
+    #[test]
+    fn min_wall_thickness_box_2mm_is_conservative_lower_bound() {
+        let h = 0.5_f64;
+        let sdf = analytic_slab_box(2.0, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid analytic slab must not error");
+        match result {
+            MinWallThickness::Measured(t) => {
+                assert!(
+                    (t - 2.0).abs() <= h,
+                    "2mm slab: |t−2.0|={} must be ≤ h={}; got t={t}",
+                    (t - 2.0).abs(),
+                    h
+                );
+                assert!(
+                    t <= 2.0 + h,
+                    "2mm slab: t={t} must be ≤ 2.0+h={} (conservative lower bound)",
+                    2.0 + h
+                );
+            }
+            other => panic!(
+                "expected MinWallThickness::Measured(_) for 2mm slab at h={h}, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// PRD §3b D4 gate / δ=4424 step-1b — §9 Q4:
+    /// For an L-bracket SDF (union/min of two perpendicular slabs, web thickness
+    /// w=2.0mm), if `min_wall_thickness` returns `Measured(t)`, then `t ≤ w+h`.
+    ///
+    /// walk_to_zero returns the FIRST zero-crossing (nearest surface) so a
+    /// per-voxel d⁺+d⁻ cannot OVERestimate; the min-reduction can only
+    /// UNDERestimate.  The clean leg centres are locally slabs that register
+    /// medial voxels (proven by the slab test above).
+    ///
+    /// `NoMeasurement` is accepted as a valid fall-through if the union mask
+    /// does not register (D4 §9-Q4 scope decision: restrict to convex-ish in
+    /// that case and file non-convex correctness as a follow-up).
+    #[test]
+    fn min_wall_thickness_l_bracket_conservative_bound_holds() {
+        let w = 2.0_f64;
+        let h = 0.5_f64;
+        let sdf = analytic_l_bracket(w, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid L-bracket field must not error");
+        // w=2.0mm ≥ 2h=1.0mm, so BelowResolution would be a regression.
+        match result {
+            MinWallThickness::Measured(t) => {
+                assert!(
+                    t <= w + h,
+                    "L-bracket Measured({t}) must be ≤ w+h={} \
+                     (conservative lower bound on re-entrant geometry)",
+                    w + h
+                );
+            }
+            MinWallThickness::NoMeasurement => {
+                // Accepted: D4 §9-Q4 fall-through — union mask may not register
+                // medial voxels on non-convex geometry; restrict to convex-ish.
+            }
+            MinWallThickness::BelowResolution { raw, floor } => {
+                panic!(
+                    "L-bracket with w={w}mm web (≥ 2h={:.1}mm) must NOT return \
+                     BelowResolution — the web is comfortably above the 2h floor; \
+                     got BelowResolution {{ raw: {raw}, floor: {floor} }}",
+                    2.0 * h,
+                );
+            }
+        }
+    }
+
+    // ── δ=4424 step-3: BelowResolution RED test ──────────────────────────────
+    //
+    // Under step-2's impl, min_wall_thickness always returns Measured(_) for
+    // any finite min-sum. Step-3 adds a test that requires BelowResolution
+    // for a sub-2h slab (0.8mm at h=0.5 → 2h=1.0mm). The test is RED until
+    // step-4 adds the honest-floor branch.
+
+    /// PRD §3b G6 honest-floor / δ=4424 step-3:
+    /// `min_wall_thickness` for a 0.8mm analytic slab at h=0.5mm (2h=1.0mm)
+    /// must return `Ok(BelowResolution { raw, floor })` with `floor == 2·h`
+    /// and `raw < floor`.
+    ///
+    /// The feature must be REPORTED self-describingly — NEVER silently returned
+    /// as `Measured` (which would imply the measurement is reliable at this
+    /// resolution). This structurally avoids the esc-3453 (guessed %) and
+    /// esc-3770 (impossible 1e-12) failure modes.
+    ///
+    /// Voxel-budget proof: with h=0.5 the grid voxels near the slab centre are
+    /// at z=±0.25 (inside the 0.8mm slab, half_thickness=0.4mm). For each such
+    /// voxel d⁺+d⁻ = 0.80mm (piecewise-linear SDF ⇒ exact), which is < 2h=1.0.
+    /// Under step-2 the function returns Measured(0.80) instead → RED.
+    #[test]
+    fn min_wall_thickness_below_resolution_feature_is_reported_not_rounded() {
+        let h = 0.5_f64;
+        // 0.8mm slab: 2h = 1.0mm, true wall 0.8mm < 2h → below resolution.
+        let sdf = analytic_slab_box(0.8, h, 12);
+        let result =
+            min_wall_thickness(&sdf, h).expect("valid sub-2h slab must not error");
+        // Must NOT be Measured — below-resolution features must not be silently
+        // promoted to a seemingly-reliable thickness value.
+        assert!(
+            !matches!(result, MinWallThickness::Measured(_)),
+            "0.8mm slab at h=0.5 must NOT be Measured (raw is below 2h=1.0mm); \
+             got {result:?}"
+        );
+        // Must be BelowResolution with floor == 2·h and raw < floor.
+        match result {
+            MinWallThickness::BelowResolution { raw, floor } => {
+                assert_eq!(
+                    floor,
+                    2.0 * h,
+                    "BelowResolution floor must be exactly 2·h={}, got {floor}",
+                    2.0 * h
+                );
+                assert!(
+                    raw < floor,
+                    "BelowResolution raw={raw} must be < floor={floor}"
+                );
+            }
+            other => panic!(
+                "expected BelowResolution for 0.8mm slab at h=0.5, got {other:?}"
+            ),
+        }
     }
 }
