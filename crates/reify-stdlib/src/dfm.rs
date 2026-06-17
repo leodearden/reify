@@ -1264,4 +1264,102 @@ mod tests {
             "Undef result (Indeterminate) emits nothing"
         );
     }
+
+    // ─── step-3 RED: diagnose — min_feature_size_measure arm ─────────────────
+    // These tests fail until step-4 adds the arm to `diagnose`.
+
+    #[test]
+    fn diagnose_min_feature_violation_warning_severity() {
+        // Bool(true) = feature thinner than min_feature_size; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one min_feature violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_MIN_FEATURE"),
+            "Warning min_feature message carries W_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_error_severity() {
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_FEATURE"),
+            "Error min_feature message carries E_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_info_severity() {
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_MIN_FEATURE"),
+            "Info min_feature message carries I_DFM_MIN_FEATURE prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_FEATURE"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_feature_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_feature_size_measure", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_min_feature_conforms_emits_no_diagnostic() {
+        // Bool(false) = feature meets the process minimum → no violation diagnostic.
+        let diags = diagnose(
+            "min_feature_size_measure",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming min_feature result surfaces no diagnostic");
+    }
+
+    #[test]
+    fn diagnose_min_feature_undef_emits_nothing() {
+        // Value::Undef (Indeterminate — BelowResolution/NoMeasurement/None) → empty.
+        // C1/D5: never a false Violated on a non-Measured result.
+        assert!(
+            diagnose("min_feature_size_measure", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "Undef result (Indeterminate) emits nothing"
+        );
+    }
 }
