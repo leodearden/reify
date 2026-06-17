@@ -218,6 +218,28 @@ fn overhang_violation(severity: Severity) -> Diagnostic {
     }
 }
 
+/// Build the code-less min-wall-thickness VIOLATION diagnostic at `severity`.
+///
+/// Mirrors [`overhang_violation`]: code-less message-prefix convention;
+/// `{I,W,E}_DFM_MIN_WALL` names the PRD's diagnostic code. Emitted when
+/// `min_wall_thickness` returns `Bool(true)` (measured wall thinner than the
+/// process minimum feature size). The verdict is pre-computed upstream by ζ;
+/// this helper does NOT re-examine numeric thresholds.
+fn min_wall_violation(severity: Severity) -> Diagnostic {
+    let msg = |prefix: char| {
+        format!(
+            "{prefix}_DFM_MIN_WALL: wall thinner than the process minimum feature size — \
+             the part has a wall section whose thickness falls below the process limit; \
+             increase the wall thickness or select a process with a smaller minimum feature size"
+        )
+    };
+    match severity {
+        Severity::Info => Diagnostic::info(msg('I')),
+        Severity::Warning => Diagnostic::warning(msg('W')),
+        Severity::Error => Diagnostic::error(msg('E')),
+    }
+}
+
 /// Build the code-less draft-angle VIOLATION diagnostic at `severity`.
 ///
 /// Mirrors [`overhang_violation`]: code-less message-prefix convention;
@@ -321,6 +343,14 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 ///   a non-List result (e.g. `Undef`) emits nothing (defensive) rather than a spurious
 ///   error.
 ///
+/// - `"min_wall_thickness"` — minimum wall thickness check (problem-flag polarity:
+///   `Bool(true)` = violation, `Bool(false)` = conforms). ζ pre-computes the Bool
+///   verdict by comparing `Engine::measure_min_wall` output against the process
+///   `min_feature_size`; a `BelowResolution`/`NoMeasurement`/`None` result maps to
+///   `Value::Undef` (Indeterminate — C1/D5). `Bool(true)` → one `{I,W,E}_DFM_MIN_WALL`
+///   at the rule's declared [`rule_severity`] (default Warning); `Bool(false)` → nothing.
+///   `Undef`/non-Bool → nothing (defensive, Indeterminate — never a false Violated).
+///
 /// - Any other name → empty (non-DFM builtin, ignored).
 ///
 /// NOTE — problem-flag polarity for the new arms (`Bool(true)` = violation) deliberately
@@ -358,6 +388,17 @@ pub fn diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagnostic> {
                 if let Some(Value::Bool(true)) = items.get(1) {
                     diags.push(undercut_violation());
                 }
+            }
+            diags
+        }
+        "min_wall_thickness" => {
+            let mut diags = Vec::new();
+            // Bool(true) = wall thinner than min_feature_size (violation).
+            // Bool(false) = conforms; Undef = Indeterminate (BelowResolution/NoMeasurement/None).
+            // C1/D5: never emit on non-Bool — a sub-resolution or unmeasurable result
+            // must never produce a false Violated verdict.
+            if let Value::Bool(true) = result {
+                diags.push(min_wall_violation(rule_severity(args)));
             }
             diags
         }
