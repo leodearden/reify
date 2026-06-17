@@ -4323,6 +4323,42 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::BareScalarType).unwrap();
         assert_eq!(s, "\"BareScalarType\"");
     }
+
+    // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
+    // Pairs with diagnose_topology_correspondence_drops in
+    // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
+    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// serializes as `"TopologyCorrespondenceDropped"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyCorrespondenceDropped).unwrap();
+        assert_eq!(s, "\"TopologyCorrespondenceDropped\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
