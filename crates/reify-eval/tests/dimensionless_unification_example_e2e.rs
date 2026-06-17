@@ -21,7 +21,7 @@
 //! + ValueCellId extraction pattern).
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DimensionVector, Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::Value;
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
@@ -141,4 +141,121 @@ fn ratio_b_is_real_not_dimensionless_scalar() {
             other
         ),
     }
+}
+
+// ── Slice 2: Vector3 type-identity + Invariant-V leak-guard (steps 3→4) ─────
+
+/// Recursive helper: returns `true` if `v` is (or contains) a
+/// `Value::Scalar { dimension }` where `dimension.is_dimensionless()`.
+///
+/// Recurses into: Vector, Point, Tensor, List, Set, Map (keys+values),
+/// Option, and Matrix.  All other variants return `false`.
+fn has_dimensionless_scalar(v: &Value) -> bool {
+    match v {
+        Value::Scalar { dimension, .. } => dimension.is_dimensionless(),
+        Value::Vector(comps)
+        | Value::Point(comps)
+        | Value::Tensor(comps)
+        | Value::List(comps) => comps.iter().any(has_dimensionless_scalar),
+        Value::Set(set) => set.iter().any(has_dimensionless_scalar),
+        Value::Map(map) => map
+            .iter()
+            .any(|(k, v)| has_dimensionless_scalar(k) || has_dimensionless_scalar(v)),
+        Value::Option(opt) => opt
+            .as_ref()
+            .map(|inner| has_dimensionless_scalar(inner))
+            .unwrap_or(false),
+        Value::Matrix(rows) => rows
+            .iter()
+            .any(|row| row.iter().any(has_dimensionless_scalar)),
+        _ => false,
+    }
+}
+
+/// Signal 2 (type layer):
+/// `dir_sum = dir_real + dir_dimensionless` where `dir_real: Vector3<Real>` and
+/// `dir_dimensionless: Vector3<Dimensionless>`.  This vector-add type-checks ONLY
+/// because Vector3<Real> and Vector3<Dimensionless> resolve to the identical
+/// Type::Vector{3, Scalar{DIMENSIONLESS}} (γ/4375).  The compile-clean gate in
+/// eval_example() is the proof that they are ONE type; this test confirms the
+/// evaluated result is `Value::Vector([Real(2), Real(0), Real(0)])` and that all
+/// components are Value::Real (Invariant V: normalize(dir_real) produces
+/// Value::Real components, so dir_sum should too).
+///
+/// RED: `dir_sum` binding is absent from the step-2 example → `get(&r, "dir_sum")` panics.
+#[test]
+fn vector3_real_dimensionless_interop_is_one_type() {
+    let r = eval_example();
+    match get(&r, "dir_sum") {
+        Value::Vector(comps) => {
+            assert_eq!(
+                comps.len(),
+                3,
+                "dir_sum must be a 3-component vector, got {} components",
+                comps.len()
+            );
+            let expected = [2.0_f64, 0.0_f64, 0.0_f64];
+            for (i, (c, e)) in comps.iter().zip(expected.iter()).enumerate() {
+                match c {
+                    Value::Real(v) => assert!(
+                        (v - e).abs() < TOL,
+                        "dir_sum[{i}] expected {e}, got {v} (delta = {})",
+                        (v - e).abs()
+                    ),
+                    other => panic!(
+                        "dir_sum[{i}] must be Value::Real (Invariant V), got {:?}",
+                        other
+                    ),
+                }
+            }
+        }
+        other => panic!(
+            "dir_sum must be Value::Vector([Real(2.0), Real(0.0), Real(0.0)]), got {:?}",
+            other
+        ),
+    }
+}
+
+/// Invariant V (full pipeline, end-to-end leak-guard):
+/// No value in the eval result — including all container elements — is
+/// `Value::Scalar { dimension }` where `dimension.is_dimensionless()`.
+///
+/// Complements β/4374's unit-level leak-guard
+/// (point_vector_eval_tests::scalar_div_scalar_dimensionless_returns_real) with an
+/// end-to-end scan over all cells produced by a committed example.
+#[test]
+fn no_value_is_dimensionless_scalar_leak_guard() {
+    let r = eval_example();
+    for (id, v) in r.values.iter() {
+        assert!(
+            !has_dimensionless_scalar(v),
+            "Invariant V leak: cell {:?} holds a Value::Scalar{{dimensionless}}: {:?}",
+            id,
+            v
+        );
+    }
+}
+
+/// Invariant T (canonical-form anchor):
+/// `Type::dimensionless_scalar()` must equal `Type::Scalar { dimension: DIMENSIONLESS }`.
+///
+/// Module-doc note: Invariant T (Type::Real not constructible) is enforced
+/// STRUCTURALLY by rustc — α/4373 deleted the `Type::Real` variant, so this test
+/// file cannot even name it.  The faithful non-meta expression of Invariant T is:
+///   (1) only `Type::dimensionless_scalar()` / `Type::Scalar{DIMENSIONLESS}` appear
+///       as the canonical dimensionless type in this file;
+///   (2) the Real/Dimensionless interop (turns_per_unit:Real mixed with ratio_b;
+///       Vector3<Real> ≡ Vector3<Dimensionless>) compiles + evaluates clean;
+///   (3) this explicit value-equality anchor below.
+/// NO source-grep / introspection meta-test.
+#[test]
+fn invariant_t_canonical_dimensionless_type_is_scalar_not_real() {
+    assert_eq!(
+        Type::dimensionless_scalar(),
+        Type::Scalar {
+            dimension: DimensionVector::DIMENSIONLESS
+        },
+        "Invariant T: Type::dimensionless_scalar() must equal \
+         Type::Scalar{{dimension: DIMENSIONLESS}}"
+    );
 }
