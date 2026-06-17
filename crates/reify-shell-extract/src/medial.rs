@@ -298,8 +298,10 @@ pub enum MinWallThickness {
         /// Resolution floor = 2 × voxel spacing `h`.
         floor: f64,
     },
-    /// No medial voxels were found (empty mask) — the input SDF does not
-    /// represent detectable thin-solid geometry at the given resolution.
+    /// No measurable medial voxels — either the mask is empty, or every
+    /// medial voxel failed the gradient/walk guards (degenerate gradient,
+    /// out-of-bounds walk, or non-finite d⁺+d⁻ sum).  The input SDF does
+    /// not yield a reliable wall-thickness estimate at the given resolution.
     NoMeasurement,
 }
 
@@ -320,9 +322,21 @@ pub enum MinWallThickness {
 ///
 /// - `Ok(Measured(t))` — `t ≥ 2·h`; conservative lower bound.
 /// - `Ok(BelowResolution { raw, floor })` — `raw < 2·h = floor`.
-/// - `Ok(NoMeasurement)` — no medial voxels found (empty mask).
+/// - `Ok(NoMeasurement)` — empty mask or every medial voxel failed its
+///   gradient/walk guard; see `MinWallThickness::NoMeasurement`.
 /// - `Err(MedialError)` — structurally invalid SDF (same conditions as
 ///   `compute_medial_mask`).
+///
+/// # Performance
+///
+/// `min_wall_thickness` re-walks the medial voxels via `bidirectional_distances`
+/// rather than caching per-voxel distances from `compute_medial_mask` (which
+/// computes them internally but discards them).  The mask is O(100 voxels) for
+/// PRD-typical 3–10-voxel walls, so the extra pass is negligible for
+/// single-part evaluations.  This layering avoids restructuring
+/// `compute_medial_mask`'s parallel chunk-merge return type — a heavily-tested
+/// function that should stay untouched.  A cached variant can be introduced in
+/// a follow-up if profiling shows hotness.
 pub fn min_wall_thickness(
     sdf: &SampledField,
     h: f64,
@@ -332,12 +346,11 @@ pub fn min_wall_thickness(
         return Ok(MinWallThickness::NoMeasurement);
     }
 
-    // Re-derive walk parameters exactly as compute_medial_mask does.
+    // Walk parameters via shared walk_params() helper — guaranteed to stay
+    // in sync with compute_medial_mask (eliminates the hand-copy drift risk).
     let options = MedialOptions::default();
     let min_spacing = sdf.spacing[0].min(sdf.spacing[1]).min(sdf.spacing[2]);
-    let max_walk_dist = options.max_thickness_voxels * min_spacing;
-    let walk_step = 0.25 * min_spacing;
-    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+    let (max_steps, walk_step, _max_walk_dist) = walk_params(min_spacing, &options);
 
     let nx = sdf.axis_grids[0].len();
     let ny = sdf.axis_grids[1].len();
@@ -387,6 +400,24 @@ pub fn min_wall_thickness(
     } else {
         Ok(MinWallThickness::Measured(min_sum))
     }
+}
+
+/// Compute the bidirectional walk parameters from the minimum grid spacing.
+///
+/// Shared by `min_wall_thickness` and `compute_medial_mask` so that the two
+/// sites cannot silently diverge if the step factor (currently 0.25) or the
+/// minimum-steps floor (currently 2) ever changes.
+///
+/// Returns `(max_steps, walk_step, max_walk_dist)`.
+fn walk_params(min_spacing: f64, options: &MedialOptions) -> (usize, f64, f64) {
+    // Absolute truncation distance for the bidirectional walk.
+    let max_walk_dist = options.max_thickness_voxels * min_spacing;
+    // Step size: 1/4 of the smallest voxel spacing keeps sub-voxel
+    // zero-crossing refinement accurate while bounding per-voxel work to
+    // ≈ 4 × max_thickness_voxels samples.
+    let walk_step = 0.25 * min_spacing;
+    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+    (max_steps, walk_step, max_walk_dist)
 }
 
 /// Compute the per-voxel medial mask for a Regular3D narrow-band SDF.
@@ -460,14 +491,9 @@ pub fn compute_medial_mask(
     let min_spacing = spacing[0].min(spacing[1]).min(spacing[2]);
     let band_width = options.narrow_band_half_width_voxels * min_spacing;
 
-    // Truncation distance for the bidirectional walk in absolute
-    // (world) units.
-    let max_walk_dist = options.max_thickness_voxels * min_spacing;
-    // Step size for the walk: 1/4 of the smallest voxel spacing keeps
-    // the sub-voxel zero-crossing refinement accurate while bounding
-    // the per-voxel work to ≈ 4 × max_thickness_voxels samples.
-    let walk_step = 0.25 * min_spacing;
-    let max_steps = ((max_walk_dist / walk_step).ceil() as usize).max(2);
+    // Walk truncation-distance + step size via shared walk_params() so that
+    // min_wall_thickness's re-walk always uses the same formula.
+    let (max_steps, walk_step, max_walk_dist) = walk_params(min_spacing, options);
 
     // Pre-compute the per-voxel gradient once before the main loop.
     // Avoids repeating the 6-sample central-difference stencil inside
@@ -2512,15 +2538,29 @@ mod tests {
         let sdf = analytic_l_bracket(w, h, 12);
         let result =
             min_wall_thickness(&sdf, h).expect("valid L-bracket field must not error");
-        if let MinWallThickness::Measured(t) = result {
-            assert!(
-                t <= w + h,
-                "L-bracket Measured({t}) must be ≤ w+h={} \
-                 (conservative lower bound on re-entrant geometry)",
-                w + h
-            );
+        // w=2.0mm ≥ 2h=1.0mm, so BelowResolution would be a regression.
+        match result {
+            MinWallThickness::Measured(t) => {
+                assert!(
+                    t <= w + h,
+                    "L-bracket Measured({t}) must be ≤ w+h={} \
+                     (conservative lower bound on re-entrant geometry)",
+                    w + h
+                );
+            }
+            MinWallThickness::NoMeasurement => {
+                // Accepted: D4 §9-Q4 fall-through — union mask may not register
+                // medial voxels on non-convex geometry; restrict to convex-ish.
+            }
+            MinWallThickness::BelowResolution { raw, floor } => {
+                panic!(
+                    "L-bracket with w={w}mm web (≥ 2h={:.1}mm) must NOT return \
+                     BelowResolution — the web is comfortably above the 2h floor; \
+                     got BelowResolution {{ raw: {raw}, floor: {floor} }}",
+                    2.0 * h,
+                );
+            }
         }
-        // NoMeasurement is also accepted (D4 §9-Q4 fall-through).
     }
 
     // ── δ=4424 step-3: BelowResolution RED test ──────────────────────────────
