@@ -637,7 +637,6 @@ fn pub_constraint_def_parsed() {
 /// level. Remove the `#[ignore]` attribute once param-level type checking (task 875)
 /// is implemented — the test will then pass without modification.
 #[test]
-#[ignore = "type-check gap: Bool passed where Length expected — type mismatch not rejected by the compiler"]
 fn type_mismatch_bool_for_length() {
     let source = r#"
 constraint def MinWall {
