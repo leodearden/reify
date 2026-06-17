@@ -190,6 +190,35 @@ structure S {
     );
 }
 
+/// Negative numeric literals (`-5.0`, `-1`) must NOT produce `ParamDefaultTypeMismatch`
+/// for dimensioned Scalar params.
+///
+/// The compiler lowers `-5.0` to `UnOp { Neg, Literal(5.0) }` rather than a bare
+/// `Literal`, so the literal-only guard must also cover negated literals.  Without
+/// this, `param z : Length = -5.0` would false-positive as a type mismatch.
+#[test]
+fn param_negative_literal_on_dimensioned_scalar_does_not_error() {
+    let source = r#"
+structure S {
+    param neg_real : Length = -5.0
+    param neg_int  : Length = -1
+}
+"#;
+    let module = compile_source(source);
+    let errors = errors_only(&module);
+
+    let false_pos = errors
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+    assert!(
+        false_pos.is_none(),
+        "unexpected ParamDefaultTypeMismatch for negated literal on Length param; \
+         negative numeric literals (-5.0, -1) must be accepted for any dimensioned Scalar; \
+         got: {:?}",
+        false_pos
+    );
+}
+
 /// A param whose declared type is a dimensioned Scalar but whose initializer
 /// evaluates to a *different* dimensioned Scalar (e.g. `Length = 5kg`) MUST
 /// produce `ParamDefaultTypeMismatch` — this is the primary intended catch of
