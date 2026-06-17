@@ -9,7 +9,7 @@
 //!   - `engine.contains(&solid_handle, &outside_point)` → `Some(false)`
 //!   - `engine.contains(&Value::Real(0.0), &inside_point)` → `None` (non-geometry)
 //!   - `engine.contains(&solid_handle, &Value::Real(0.0))` → `None` (non-point)
-//!   Skips the OCCT-dependent assertions cleanly when OCCT is not available.
+//!     Skips the OCCT-dependent assertions cleanly when OCCT is not available.
 //!
 //! **step-7 RED→GREEN** — B5 integration test loading `examples/fields/restrict.ri`.
 //!   Asserts `v_in == Value::Real(42.0)` (inside) and `v_out == Value::Undef`
