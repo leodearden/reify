@@ -1870,13 +1870,18 @@ pub(crate) fn substitute_type_params(ty: &Type, subst: &HashMap<String, Type>) -
 /// **Cycle guard** (task 4604 δ, review remediation): self-referential or
 /// mutually-recursive bindings (e.g. `A::M = A::M` or `A::M = B::N, B::N = A::M`)
 /// would otherwise cause infinite recursion → stack overflow on user DSL input.
-/// A stack-scoped visited set keyed on `(structure_name, member)` detects
+/// A stack-scoped visited set keyed on `(structure_name, type_args, member)` detects
 /// re-entry: on the second visit the function emits exactly one
 /// `DiagnosticCode::UnresolvedType` "recursive associated type …" diagnostic
 /// and returns `Type::Error` (anti-cascade poison). Insert-before-recurse /
 /// remove-after-unwind prevents false positives on legitimate diamond
 /// convergence at sibling positions — mirrors `conformance/mod.rs:973-1035`
 /// (`InFlightGuard`'s pop).
+///
+/// The `type_args` component of the key distinguishes legitimately-nested
+/// instantiations of the same generic structure (e.g. `Wrap<Wrap<Prismatic>>`
+/// vs. `Wrap<Prismatic>`) so they are NOT conflated into a false cycle.
+/// For bare `StructureRef` reductions, `type_args` is empty (`Vec::new()`).
 ///
 /// The sole production caller is `resolve_qualified_assoc_type`, which already
 /// holds `diagnostics` and `span` — no blast-radius change.
@@ -1886,21 +1891,25 @@ pub(crate) fn normalize_type(
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
 ) -> Type {
-    let mut visited: HashSet<(String, String)> = HashSet::new();
+    let mut visited: HashSet<(String, Vec<Type>, String)> = HashSet::new();
     normalize_type_guarded(ty, template_registry, &mut visited, diagnostics, span)
 }
 
 /// Inner recursive worker for [`normalize_type`].
 ///
-/// `visited` is a stack-scoped set of `(structure_name, member)` pairs that are
+/// `visited` is a stack-scoped set of `(structure_name, type_args, member)` triples
 /// currently on the reduction call stack. Re-entry (cycle) is detected when the
-/// pair is already present; it emits one diagnostic and returns `Type::Error`.
-/// The pair is removed on unwind so sibling reductions of the same pair are
+/// identical triple is already present; it emits one diagnostic and returns
+/// `Type::Error`.  Including `type_args` in the key prevents false positives for
+/// legitimately-nested instantiations of the same generic structure at different
+/// depths (e.g. `Wrap<Wrap<Prismatic>>::M` outer vs. `Wrap<Prismatic>::M` inner have
+/// different `args` so they get distinct keys and do NOT trip the guard).
+/// The triple is removed on unwind so sibling reductions of the same triple are
 /// not falsely flagged.
 fn normalize_type_guarded(
     ty: &Type,
     template_registry: &HashMap<String, &TopologyTemplate>,
-    visited: &mut HashSet<(String, String)>,
+    visited: &mut HashSet<(String, Vec<Type>, String)>,
     diagnostics: &mut Vec<Diagnostic>,
     span: SourceSpan,
 ) -> Type {
@@ -1912,10 +1921,14 @@ fn normalize_type_guarded(
                 normalize_type_guarded(base, template_registry, visited, diagnostics, span);
             match &reduced_base {
                 Type::StructureRef(name) => {
-                    // Cycle guard: if (name, member) is already on the call stack,
-                    // we have a self-referential or mutually-recursive binding.
+                    // Cycle guard: if (name, Vec::new(), member) is already on the call
+                    // stack, we have a self-referential or mutually-recursive binding.
+                    // StructureRef carries no instantiation args, so the empty-args key
+                    // preserves detection of self-reference (step-9 TEST A) and
+                    // mutual-recursion (step-9 TEST B) without conflating with any
+                    // Applied arm whose key includes concrete args.
                     // Emit ONE diagnostic and return the poison sentinel.
-                    let key = (name.clone(), member.clone());
+                    let key = (name.clone(), Vec::new(), member.clone());
                     if visited.contains(&key) {
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -1952,11 +1965,14 @@ fn normalize_type_guarded(
                     }
                 }
                 Type::Applied { name, args } => {
-                    // Cycle guard: keyed on (applied_name, member) so that
-                    // `Coupling<Prismatic>::X` and `Coupling<Revolute>::X` share the
-                    // same key — if the binding itself re-enters the same generic
-                    // structure+member, that IS a cycle regardless of the concrete args.
-                    let key = (name.clone(), member.clone());
+                    // Cycle guard: keyed on (applied_name, concrete_args, member) so
+                    // that legitimately-nested instantiations at different depths are
+                    // NOT conflated.  E.g. `Wrap<Wrap<Prismatic>>::MotionValue` (outer,
+                    // args=[Wrap<Prismatic>]) and `Wrap<Prismatic>::MotionValue` (inner,
+                    // args=[Prismatic]) get DISTINCT keys and do not false-trip the
+                    // guard.  A genuine self-cycle re-enters with the IDENTICAL
+                    // (name, args, member) triple and IS caught.
+                    let key = (name.clone(), args.clone(), member.clone());
                     if visited.contains(&key) {
                         diagnostics.push(
                             Diagnostic::error(format!(
