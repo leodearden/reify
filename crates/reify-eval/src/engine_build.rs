@@ -2303,6 +2303,11 @@ impl Engine {
                     &self.swept_kind_table,
                     &mut diagnostics,
                 );
+                // task 4222 δ: re-evaluate Undef Let cells with containment hook.
+                // Mirrors the identical call in `build()` — see that site for the
+                // rationale (post_process_derived_lets updates `restricted` but
+                // evaluates v_in without containment → Undef; this pass fixes it).
+                self.post_process_containment_samples(template, &mut values);
                 // Task 3441: snapshot this template's `named_steps` so a
                 // later template that subs from it can seed compound-key
                 // entries.  Placed AFTER the post-process queries so the
@@ -2914,6 +2919,15 @@ impl Engine {
                     &self.swept_kind_table,
                     &mut diagnostics,
                 );
+                // task 4222 δ: re-evaluate Undef Let cells with the live
+                // containment hook so `sample(restrict(field, region), point)`
+                // yields the inner value (or Undef for outside) after geometry
+                // hydration. `post_process_derived_lets` (inside run_post_processes
+                // above) already promoted `restricted` from Undef to
+                // `Value::Field{lambda:[inner,GeometryHandle]}`, but evaluated
+                // sample(restricted,...) without containment → Undef. This pass
+                // re-evaluates remaining Undef Let cells with `.with_containment(self)`.
+                self.post_process_containment_samples(template, &mut values);
                 // Task 3441: snapshot this template's `named_steps` so a
                 // later template that subs from it can seed compound-key
                 // entries.  Placed AFTER the post-process queries so the
@@ -6863,6 +6877,68 @@ impl Engine {
         for (cell_id, expr) in candidates {
             let new_val = {
                 let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+                reify_expr::eval_expr(&expr, &ctx)
+            };
+            if !new_val.is_undef() {
+                values.insert(cell_id, new_val);
+            }
+        }
+    }
+
+    /// Re-evaluate remaining Undef Let cells with the live containment hook wired
+    /// in (task 4222 δ, PRD §5.3 option (b)).
+    ///
+    /// `run_post_processes` calls `post_process_derived_lets` which re-evaluates
+    /// Undef Let cells using a basic `eval_ctx_with_meta` (no containment). Cells
+    /// that sample a `restrict(field, region)` field — e.g. `v_in = sample(restricted, pt)` —
+    /// stay Undef there because the Restricted sample arm requires `ctx.containment`
+    /// to resolve geometry point-in-solid membership.
+    ///
+    /// This pass runs immediately after `run_post_processes` with the same Undef
+    /// filter but an EvalContext that includes `.with_containment(self)`, so the
+    /// kernel-backed containment hook fires and the correct inside/Undef result is
+    /// stored.
+    ///
+    /// Ordering invariant: must be called AFTER `run_post_processes` so that:
+    ///   (a) `post_process_geometry_handle_cells` has already stamped the region
+    ///       cell with a `Value::GeometryHandle`, AND
+    ///   (b) `post_process_derived_lets` has already re-evaluated `restricted`
+    ///       (Undef → `Value::Field { lambda: List[inner, GeometryHandle] }`),
+    ///       making the hydrated handle visible via the values map when this pass
+    ///       looks up `restricted` to evaluate `v_in`.
+    ///
+    /// Short-circuits to a no-op when no default kernel is registered: without a
+    /// kernel `ContainmentQuery::contains` on `Engine` always returns `None`, so
+    /// re-evaluating with containment wired in would still yield `Value::Undef`.
+    ///
+    /// Mirrors the two-phase (collect-then-write) discipline of
+    /// `post_process_derived_lets` to avoid split-borrow conflicts.
+    fn post_process_containment_samples(
+        &self,
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+    ) {
+        if self.default_query_kernel().is_none() {
+            return;
+        }
+
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            let new_val = {
+                let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                    .with_containment(self);
                 reify_expr::eval_expr(&expr, &ctx)
             };
             if !new_val.is_undef() {
