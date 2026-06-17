@@ -1677,4 +1677,25 @@ mod tests {
             "doc-comment with 'stub mode' must not trigger the detector",
         );
     }
+
+    // -------------------------------------------------------------------
+    // metadata_do_not_complete() — pure helper parser
+    // -------------------------------------------------------------------
+
+    /// Step-1 (RED): the helper does not exist yet → this test must fail to compile.
+    #[test]
+    fn metadata_do_not_complete_parsing() {
+        // None → false (no metadata)
+        assert!(!metadata_do_not_complete(None));
+        // Malformed JSON → false (graceful)
+        assert!(!metadata_do_not_complete(Some("{not json")));
+        // Valid JSON, key missing → false
+        assert!(!metadata_do_not_complete(Some(r#"{"files":[]}"#)));
+        // do_not_complete: true → true (the signal)
+        assert!(metadata_do_not_complete(Some(r#"{"do_not_complete":true}"#)));
+        // do_not_complete: false → false
+        assert!(!metadata_do_not_complete(Some(r#"{"do_not_complete":false}"#)));
+        // do_not_dispatch only (no do_not_complete) → false (FP guard)
+        assert!(!metadata_do_not_complete(Some(r#"{"do_not_dispatch":true}"#)));
+    }
 }
