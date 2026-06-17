@@ -1125,4 +1125,102 @@ mod tests {
             "non-List result emits nothing (defensive, no Undef usage-error path)"
         );
     }
+
+    // ─── step-1 RED: diagnose — min_wall_thickness arm ────────────────────────
+    // These tests fail until step-2 adds the arm to `diagnose`.
+
+    #[test]
+    fn diagnose_min_wall_violation_warning_severity() {
+        // Bool(true) = wall thinner than min_feature_size; DFMSeverity.Warning → one Warning diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Warning")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1, "one min_wall violation diagnostic");
+        assert_eq!(diags[0].severity, Severity::Warning);
+        assert!(
+            diags[0].message.contains("W_DFM_MIN_WALL"),
+            "Warning min_wall message carries W_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_error_severity() {
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_WALL"),
+            "Error min_wall message carries E_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_info_severity() {
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Info")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+        assert!(
+            diags[0].message.contains("I_DFM_MIN_WALL"),
+            "Info min_wall message carries I_DFM_MIN_WALL prefix: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_rule_form_reads_severity_field() {
+        // DFMRule structure-instance form: severity read from `severity` field → Error diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_rule("Error")],
+            &Value::Bool(true),
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
+        assert!(
+            diags[0].message.contains("E_DFM_MIN_WALL"),
+            "msg: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn diagnose_min_wall_violation_defaults_to_warning_when_tag_absent() {
+        // No tag in args → default Warning.
+        let diags = diagnose("min_wall_thickness", &[], &Value::Bool(true));
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn diagnose_min_wall_conforms_emits_no_diagnostic() {
+        // Bool(false) = wall meets the process minimum → no violation diagnostic.
+        let diags = diagnose(
+            "min_wall_thickness",
+            &[dfm_sev("Warning")],
+            &Value::Bool(false),
+        );
+        assert!(diags.is_empty(), "a conforming min_wall result surfaces no diagnostic");
+    }
+
+    #[test]
+    fn diagnose_min_wall_undef_emits_nothing() {
+        // Value::Undef (Indeterminate — BelowResolution/NoMeasurement/None) → empty.
+        // C1/D5: never a false Violated on a non-Measured result.
+        assert!(
+            diagnose("min_wall_thickness", &[dfm_sev("Warning")], &Value::Undef).is_empty(),
+            "Undef result (Indeterminate) emits nothing"
+        );
+    }
 }
