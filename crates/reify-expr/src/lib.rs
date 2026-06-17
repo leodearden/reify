@@ -645,37 +645,13 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
                 return option_recovery::eval_combinator(function_name, &evaluated_args);
             }
             // map_or: ctx-aware arrow-type combinator (task 4595 — unblocks
-            // higher-order stdlib combinators incl. map_or).
-            //
-            // Unlike the seven pure combinators above (is_combinator /
-            // eval_combinator, INV-1), map_or must APPLY its function argument
-            // `f` to the unwrapped Some value, which requires the EvalContext
-            // (apply_lambda — recursion depth, scope, captures).  It therefore
-            // lives here as a dedicated ctx-aware branch rather than in the pure
-            // option_recovery path (preserving INV-1 and the is_combinator
-            // purity/sync-drift test for the original seven).
-            //
-            // map_or(o, dflt, f):
-            //   subject=some(x) -> apply_lambda(f, [x])  (f applied to the inner)
-            //   subject=none    -> dflt
-            //   subject=undef   -> Undef                 (Kleene INV-2 passthrough)
-            //   other (non-Option) -> Undef              (graceful type-error)
-            //
-            // The .ri body is a typecheck-only placeholder `{ dflt }`; correct
-            // runtime behaviour lives entirely here (same convention as the
-            // seven sibling combinators in option_recovery.rs).
+            // higher-order stdlib combinators incl. map_or).  Delegated to the
+            // free fn `eval_map_or` (NOT inlined here) so its locals are not
+            // reserved in every recursive `eval_expr` frame — same convention as
+            // the `solve_load_cases` / `option_recovery::eval_combinator`
+            // intercepts above.  See `eval_map_or` for the full semantics.
             if function_name == "map_or" && args.len() == 3 {
-                let subject = eval_expr(&args[0], ctx);
-                let dflt = eval_expr(&args[1], ctx);
-                let f = eval_expr(&args[2], ctx);
-                return match subject {
-                    Value::Option(Some(inner)) => apply_lambda(&f, &[*inner], ctx),
-                    Value::Option(None) => dflt,
-                    // undef subject (Kleene INV-2) — propagate Undef.
-                    Value::Undef => Value::Undef,
-                    // non-Option subject (type error) — degrade gracefully.
-                    _ => Value::Undef,
-                };
+                return eval_map_or(args, ctx);
             }
             eval_user_function_call(function_name, args, ctx)
         }
@@ -2506,6 +2482,45 @@ fn push_op_contract_failure(ctx: &EvalContext, code: DiagnosticCode) {
             // the side-map.
             span: SourceSpan::empty(0),
         });
+    }
+}
+
+/// Evaluate the `map_or(o, dflt, f)` arrow-type combinator (task 4595).
+///
+/// Kept in its own function — deliberately NOT inlined into `eval_expr`'s
+/// `UserFunctionCall` arm — so its `subject`/`dflt`/`f` locals are not reserved
+/// in every recursive `eval_expr` stack frame.  Inlining them cost ~3 `Value`
+/// slots per `eval_expr` frame and overflowed the debug-build stack in the
+/// deep-recursion guard test (`eval_user_fn_recursion_depth_exceeded`).  This
+/// mirrors the `eval_solve_load_cases` / `option_recovery::eval_combinator`
+/// intercept convention (the arm delegates; the logic lives in a helper).
+///
+/// Unlike the seven pure `option_recovery` combinators (INV-1), map_or must
+/// APPLY its function argument `f` to the unwrapped Some value, which needs the
+/// `EvalContext` (`apply_lambda` — recursion depth, scope, captures); hence it
+/// lives here rather than in the pure path.
+///
+///   subject=some(x)    -> apply_lambda(f, [x])  (f applied to the inner value)
+///   subject=none       -> dflt
+///   subject=undef      -> Undef                 (Kleene INV-2 passthrough)
+///   other (non-Option) -> Undef                 (graceful type-error)
+///
+/// The `.ri` body is a typecheck-only placeholder `{ dflt }`; correct runtime
+/// behaviour lives entirely here (same convention as the seven sibling
+/// combinators in `option_recovery.rs`).
+///
+/// Precondition: `args.len() == 3` (guaranteed by the caller's arity gate).
+fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let subject = eval_expr(&args[0], ctx);
+    let dflt = eval_expr(&args[1], ctx);
+    let f = eval_expr(&args[2], ctx);
+    match subject {
+        Value::Option(Some(inner)) => apply_lambda(&f, &[*inner], ctx),
+        Value::Option(None) => dflt,
+        // undef subject (Kleene INV-2) — propagate Undef.
+        Value::Undef => Value::Undef,
+        // non-Option subject (type error) — degrade gracefully.
+        _ => Value::Undef,
     }
 }
 
