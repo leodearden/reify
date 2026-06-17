@@ -426,3 +426,41 @@ fn local_feature_chamfer_drop_produces_warning_diagnostic() {
         drop_warnings
     );
 }
+
+/// A fillet op with `silent_drop_count == 0` (the default) must NOT produce
+/// any `DiagnosticCode::TopologyCorrespondenceDropped` warning.
+///
+/// Covers the `if count > 0` suppression guard in
+/// `diagnose_topology_correspondence_drops` (engine_build.rs) at the e2e level.
+/// GREEN immediately — no paired impl step because the guard already ships
+/// from task 4545.
+#[test]
+fn clean_local_feature_produces_no_drop_warning() {
+    let module = local_feature_drop_module(ModifyKind::Fillet);
+    // Default local_feature_history has silent_drop_count == 0.
+    let kernel = DropInjectingKernel::new(
+        BooleanOpHistoryRecords::default(),
+        SweepOpHistoryRecords::default(),
+    );
+    let mut engine = reify_eval::Engine::new(
+        Box::new(MockConstraintChecker::new()),
+        Some(Box::new(kernel)),
+    );
+    let result = engine.build(&module, ExportFormat::Step);
+
+    let drop_warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning
+                && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        })
+        .collect();
+
+    assert!(
+        drop_warnings.is_empty(),
+        "expected zero TopologyCorrespondenceDropped warnings for clean fillet (drop_count=0); \
+         got: {:#?}",
+        drop_warnings
+    );
+}
