@@ -11,7 +11,7 @@
 //!   - Int-literal guard (`param x : Length = 1` must NOT error)
 //!   - Real-literal guard (`param x : Length = 0.5` must NOT error — extended in amendment)
 //!   - Cross-dimension scalar mismatch (`param x : Length = 5kg` MUST error)
-//!   - Known inference gap for reciprocal-dimension expressions (documented as #[ignore])
+//!   - Reciprocal-dimension non-literal expression (literal-only guard → active error)
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{compile_source, errors_only};
@@ -305,31 +305,32 @@ structure S {
     );
 }
 
-/// Known inference limitation: `1.0 / 1m` is inferred as `Type::Real`
-/// (dimensionless) rather than `Type::Scalar[1/m]` (reciprocal-length).
+/// A non-literal initializer (`1.0 / 1m` is a BinOp Div, not a
+/// `CompiledExprKind::Literal`) for a dimensioned Scalar param (`Length`) MUST
+/// produce `ParamDefaultTypeMismatch`.
 ///
-/// The Real-literal guard in `check_param_default_type` (extended in this
-/// amendment pass) silently accepts this as "dimensionless literal on dimensioned
-/// param", preventing a false-positive error.  However, the *correct* behavior
-/// once inference is fixed would be to *emit* `ParamDefaultTypeMismatch` because
-/// `Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m])`.
+/// **Why this works (the literal-guard mechanism):** the Scalar guard in
+/// `check_param_default_type` is restricted to `CompiledExprKind::Literal` nodes.
+/// `1.0 / 1m` is a binary division expression — not a literal — so the guard does
+/// NOT fire regardless of the expression's inferred result_type.  The check falls
+/// through to `type_compatible(Scalar[m], <inferred>)`, which returns `false`
+/// whether `1.0/1m` is inferred as dimensionless (`Scalar[]`) or as the more
+/// precise `Scalar[1/m]` — the mismatch is flagged either way.
 ///
-/// This `#[ignore]` test asserts the future-correct behavior: that a
-/// `param x : Length = 1.0 / 1m` declaration IS an error.  It currently FAILS
-/// (no error is produced, because the Real-literal guard skips the check).
-/// When the compiler correctly infers `1.0 / 1m` as `Scalar[1/m]`, the
-/// Real-literal guard no longer applies and `type_compatible(Scalar[m], Scalar[1/m])`
-/// returns `false` → error → this test passes.
+/// Note: a future inference improvement that tracks `1.0/1m` as `Scalar[1/m]`
+/// rather than dimensionless would only refine the printed dimension string in the
+/// error message; it would NOT affect whether an error fires.  The inference gap
+/// is therefore genuinely out of scope and is NOT a prerequisite for this test.
 ///
-/// To verify the fix: remove the `Type::Real` arm from the Scalar guard in
-/// `check_param_default_type` and confirm this test passes with `--include-ignored`.
+/// This test is the active regression proof for the literal-only guard (S1): it
+/// would regress to a false-negative if the guard were ever relaxed back to keying
+/// on result_type alone (which would silently accept any dimensionless expression).
 #[test]
-#[ignore = "inference gap: 1.0/1m infers Real not Scalar[1/m]; unignore when inference fixed — blocked on #4640"]
-fn param_reciprocal_dim_mismatch_detected_after_inference_fix() {
+fn param_reciprocal_dim_mismatch_errors() {
     let source = r#"
 structure S {
-    // Length (Scalar[m]) ≠ reciprocal-length (Scalar[1/m]).
-    // When inference tracks 1.0/1m as Scalar[1/m], this MUST be a mismatch error.
+    // Length (Scalar[m]) ≠ reciprocal-dimension expression (non-literal BinOp).
+    // The literal-only guard does NOT fire; falls through to type_compatible → error.
     param bad_dim : Length = 1.0 / 1m
 }
 "#;
@@ -341,8 +342,9 @@ structure S {
         .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
     assert!(
         mismatch.is_some(),
-        "expected ParamDefaultTypeMismatch for 'Length = 1.0/1m' once inference is fixed; \
-         currently passes via the Real-literal guard (1.0/1m infers Real, not Scalar[1/m])"
+        "expected ParamDefaultTypeMismatch for 'param bad_dim : Length = 1.0/1m' \
+         (non-literal initializer bypasses the literal guard and falls through to \
+         type_compatible(Scalar[m], _) which is false)"
     );
 }
 
