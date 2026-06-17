@@ -23,6 +23,7 @@ reify-constraints.workspace = true
 reify-geometry.workspace = true
 reify-kernel-occt.workspace = true
 reify-kernel-manifold.workspace = true
+reify-kernel-openvdb.workspace = true
 reify-stdlib.workspace = true
 reify-lsp.workspace = true
 reify-mcp.workspace = true
@@ -38,4 +39,3 @@ tempfile.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 reify-test-support.workspace = true
-reify-kernel-openvdb.workspace = true
