@@ -49,10 +49,11 @@
 //      are not yet surface types (Range<T>, bare Point3, Joint, Body, JointParent,
 //      LoopClosureRecord, BodySnapshot, ConvergenceReport) are represented with
 //      Real / alias (Vec3, JointValue) / Map<String,_> placeholders + TODO comments.
-//      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`).
+//      Same convention as dynamics.ri (`mechanism : Real // TODO(mechanism-type)`). // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //      Field tightening is deferred to the future joints→SIR-α migration.
-//   4. `Vec3` (= Real alias) resolves because kinematic.ri is registered after
-//      std.trajectory. `JointValue` (= Real alias) likewise.
+//   4. `Vec3` (= `Vector3<Length>`, tightened by task #4575) resolves because
+//      kinematic.ri is registered after std.trajectory. `JointValue` (= Real alias)
+//      likewise.
 
 // ── Joint root marker trait ───────────────────────────────────────────────────
 
@@ -87,7 +88,7 @@ trait DrivingJoint : Joint { }
 
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
-// Vec3 = Real alias (trajectory.ri:96) — placeholder for a proper 3-vector type.
+// Vec3 = Vector3<Length> (tightened by task #4575, trajectory.ri).
 //
 // Compliant-joint fields (task 3849 / Phase-1, §8.2):
 //   spring_rate : N/m    — linear spring coefficient; None = rigid (no spring).
@@ -96,7 +97,7 @@ trait DrivingJoint : Joint { }
 //                          range midpoint). Cannot be a literal default because the
 //                          KCC-ζ Prismatic has no `range` field.
 structure def Prismatic : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // axis : Vec3 (= Vector3<Length>), the joint translation direction in parent body frame
     param spring_rate : Option<TranslationalStiffness> = none // N/m; None = rigid
     param damping     : Option<TranslationalDamping>   = none // N·s/m; None = rigid
     param neutral     : Option<Length>                 = none // m; None → task ι default
@@ -110,7 +111,7 @@ structure def Prismatic : DrivingJoint {
 //   damping     : N·m·s/rad  — rotational damping coefficient; None = rigid (no damper).
 //   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
 structure def Revolute : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // axis : Vec3 (= Vector3<Length>), the joint rotation axis in parent body frame
     param spring_rate : Option<RotationalStiffness> = none // N·m/rad; None = rigid
     param damping     : Option<RotationalDamping>   = none // N·m·s/rad; None = rigid
     param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
@@ -119,15 +120,15 @@ structure def Revolute : DrivingJoint {
 // Cylindrical — combined sliding + rotation joint (2 DOF: 1 translational + 1 rotational).
 // Both DOF share the same `axis` direction in the parent body frame.
 structure def Cylindrical : DrivingJoint {
-    param axis : Vec3 // TODO(vec3-type): proper 3-vector; Vec3 = Real alias for now
+    param axis : Vec3 // axis : Vec3 (= Vector3<Length>), shared translation+rotation direction in parent body frame
 }
 
 // Planar — joint constrained to a plane (3 DOF: 2 translational + 1 rotational).
 // `axis_x` and `axis_y` span the plane in the parent body frame; the normal is
 // their cross-product.
 structure def Planar : DrivingJoint {
-    param axis_x : Vec3 // TODO(vec3-type): first spanning axis of the constraint plane
-    param axis_y : Vec3 // TODO(vec3-type): second spanning axis of the constraint plane
+    param axis_x : Vec3 // axis_x : Vec3 (= Vector3<Length>), first spanning axis of the constraint plane
+    param axis_y : Vec3 // axis_y : Vec3 (= Vector3<Length>), second spanning axis of the constraint plane
 }
 
 // Spherical — ball-and-socket joint (3 rotational DOF).
@@ -179,20 +180,59 @@ structure def Twist { }
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
 // BodyId — opaque identifier for a body within a Mechanism.
-// TODO(body-id-type): will become a proper nominal type once bodies are
+// TODO(body-id-type): will become a proper nominal type once bodies are // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 // promoted to SIR-α entities. Declared now so KCC-θ/KCC-ι consumers can
 // reference the type name without introducing a stub in their own modules.
 structure def BodyId { }
 
+// JointParent — spanning-tree parent edge; value side of
+// Map<BodyId,JointParent> in Mechanism.joint_parents.
+//
+//   parent : BodyId  — the parent body in the spanning tree
+//   joint  : Joint   — the joint connecting child→parent
+//
+// Plain record (no trait bound, no defaults, no constraints). Referenced only
+// intra-module by Mechanism. Non-pub (matches BodyId/Mechanism convention).
+// Introduced by task 4579 (family M).
+structure def JointParent {
+    param parent : BodyId
+    param joint  : Joint
+}
+
+// LoopClosure — a closed-chain edge excluded from the spanning tree; element
+// of List<LoopClosure> in Mechanism.loop_closures.
+//
+//   parent      : BodyId  — one endpoint body
+//   child       : BodyId  — the other endpoint body (the one re-parented)
+//   joint       : Joint   — the closing joint at this edge
+//   residual_dim : Int    — effective loop-residual dimension (PRD
+//                           kinematic-constraints-completion §3)
+//
+// Plain record (no trait bound, no defaults, no constraints). Non-pub.
+// Introduced by task 4579 (family M). Named `LoopClosure` (task description
+// is authoritative; PRD prose uses `LoopClosureRecord`).
+structure def LoopClosure {
+    param parent       : BodyId
+    param child        : BodyId
+    param joint        : Joint
+    param residual_dim : Int
+}
+
 // Mechanism — body/joint-parent graph for a kinematic assembly (PRD §7.1).
 //
-//   bodies        : List<Real>            — TODO(body-type): List<BodyId> placeholder
-//   joint_parents : Map<String, Real>     — TODO: Map<BodyId, JointParent> placeholder
-//   loop_closures : List<Real>            — TODO(loop-closure-record-type) placeholder
+//   bodies        : List<Real>             — TODO(body-type): List<BodyId> placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                                           (DO NOT TOUCH — owned by kinematic-
+//                                            completion/BodyId promotion line)
+//   joint_parents : Map<BodyId, JointParent> — spanning-tree parent edges, keyed
+//                                           by child BodyId; tightened from
+//                                           Map<String,Real> by task 4579 (M)
+//   loop_closures : List<LoopClosure>      — closed-chain edges excluded from the
+//                                           spanning tree; tightened from
+//                                           List<Real> by task 4579 (M)
 structure def Mechanism {
-    param bodies : List<Real>          // TODO(body-type): List<BodyId> placeholder
-    param joint_parents : Map<String, Real>  // TODO: Map<BodyId,JointParent> placeholder
-    param loop_closures : List<Real>   // TODO(loop-closure-record-type) placeholder
+    param bodies        : List<Real>               // TODO(body-type): List<BodyId> placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+    param joint_parents : Map<BodyId, JointParent> // tightened by task 4579 (M)
+    param loop_closures : List<LoopClosure>         // tightened by task 4579 (M)
 }
 
 // Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).
@@ -207,12 +247,13 @@ structure def Snapshot {
 
 // SweepDim — one dimension of a kinematic sweep study (PRD §7.1).
 //
-//   joint  : Real    — TODO(joint-type): the swept joint (DrivingJoint placeholder)
-//   range  : Real    — TODO(range-type): Range<T> not yet a surface type in
-//                      type_resolution.rs — Real placeholder for now
-//   steps  : Int     — number of discrete steps across the range
+//   joint  : Real          — TODO(joint-type): the swept joint (DrivingJoint placeholder) // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//   range  : Range<JointValue> — swept joint-coordinate interval (task 4576).
+//                              JointValue = Real = dimensionless; the runtime per-joint
+//                              LENGTH/ANGLE dimension check stays in sweep.rs::validate_range_with_dimension.
+//   steps  : Int           — number of discrete steps across the range
 structure def SweepDim {
-    param joint : Real   // TODO(joint-type): DrivingJoint placeholder
-    param range : Real   // TODO(range-type): Range<T> not yet a surface type
+    param joint : Real             // TODO(joint-type): DrivingJoint placeholder // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+    param range : Range<JointValue> // tightened from Real (task 4576)
     param steps : Int
 }

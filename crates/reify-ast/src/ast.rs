@@ -42,7 +42,15 @@ pub enum ExprKind {
     /// Unary operation: `-a`, `!b`
     UnOp { op: String, operand: Box<Expr> },
     /// Function call: `sin(x)`
-    FunctionCall { name: String, args: Vec<Expr> },
+    ///
+    /// `arg_names` is length-matched to `args`; `None` entries encode positional
+    /// (unlabelled) arguments, `Some(label)` encodes a named argument like `foo(a: 1.0)`.
+    FunctionCall {
+        name: String,
+        args: Vec<Expr>,
+        /// Parallel to `args`; `None` = positional, `Some(label)` = named.
+        arg_names: Vec<Option<String>>,
+    },
     /// Member access: `self.width`
     MemberAccess { object: Box<Expr>, member: String },
     /// Enum variant access: `Direction.In`
@@ -68,7 +76,16 @@ pub enum ExprKind {
     },
     /// Auto keyword: solver-determined parameter value.
     /// `free: false` = bare `auto` (strict), `free: true` = `auto(free)`.
-    Auto { free: bool },
+    ///
+    /// `params` carries the ordered `name = value` arguments of a parameterized
+    /// `auto(seed = …)` / component-fix `auto(x = …, orientation = …)` form
+    /// (geometric-relations δ, task 4384). Empty for bare `auto` and
+    /// `auto(free)`. δ only PRESERVES these faithfully in the AST; consuming
+    /// them (root selection, partial-fix) is ζ's relate-solve.
+    Auto {
+        free: bool,
+        params: Vec<(String, Expr)>,
+    },
     /// Undef literal: explicit undefined value (task γ, spec §5.12).
     /// Lowers to `Value::Undef`; absorbs type cascade via `Type::Error`.
     Undef,
@@ -296,6 +313,16 @@ pub enum TypeExprKind {
         trait_name: Option<String>,
         member: String,
     },
+    /// A function / arrow type: `(T) -> U`, `(A, B) -> C`, `() -> U`
+    /// (task 4595). `params` are the positional parameter types (0+);
+    /// `return_type` is the result type. Resolves to `Type::Function`
+    /// (reify-core) via `resolve_type_expr_with_aliases_kinded`, which lets
+    /// higher-order stdlib combinators (e.g. `map_or`) accept a lambda
+    /// argument and type-check it through the existing unify/substitute path.
+    Function {
+        params: Vec<TypeExpr>,
+        return_type: Box<TypeExpr>,
+    },
 }
 
 /// A type expression in the AST (e.g., `Scalar`, `Bool`, `Box<T>`, `Force / Area`).
@@ -334,6 +361,16 @@ impl fmt::Display for TypeExpr {
                     None => write!(f, "{}::{}", base, member),
                     Some(t) => write!(f, "{}::({}::{})", base, t, member),
                 }
+            }
+            TypeExprKind::Function { params, return_type } => {
+                write!(f, "(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", return_type)
             }
         }
     }

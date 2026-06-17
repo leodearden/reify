@@ -1,16 +1,18 @@
 import { onMount, onCleanup, createEffect, createMemo, createSignal, untrack, Show } from 'solid-js';
-import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData } from '../types';
+import type { MeshData, EvaluationStatus, VisibilityState, TensegrityWireData, TensegritySurfaceData } from '../types';
 import { Box3 } from 'three';
 import { createScene } from './scene';
 import { createControls } from './controls';
 import { createMeshManager } from './meshManager';
 import { createWireManager } from './wireManager';
+import { createSurfaceManager } from './surfaceManager';
 import { createSelection } from './selection';
 import { FeaModeToolbar } from './FeaModeToolbar';
 import { bakeColours } from './colormap';
 import { computeScalarRange } from './scalarRange';
 import { pickDefaultScalarChannel } from './defaultScalarChannel';
 import type { ViewportStore, CameraState, FeaModeStore } from '../stores';
+import { subscribeFeaCaseToStore, setActiveFeaCase } from '../bridge';
 
 export interface ViewportProps {
   /**
@@ -60,6 +62,11 @@ export interface ViewportProps {
    * struts and cables as fat-line objects with distinct colour and linewidth.
    */
   tensegrityWires?: TensegrityWireData[];
+  /**
+   * Optional tensegrity surface data. When provided, the surface manager renders
+   * membrane facets as filled translucent Mesh objects with distinct colour.
+   */
+  tensegritySurfaces?: TensegritySurfaceData[];
 }
 
 export function Viewport(props: ViewportProps) {
@@ -89,6 +96,7 @@ export function Viewport(props: ViewportProps) {
     const meshManager = createMeshManager(scene);
     const wireManager = createWireManager(scene);
     wireManager.setResolution(width, height);
+    const surfaceManager = createSurfaceManager(scene);
 
     // Create selection system
     const selection = createSelection({
@@ -177,12 +185,20 @@ export function Viewport(props: ViewportProps) {
     // 'end' fires once per interaction (pointerup/touchend) — correct granularity for persistence
     controls.controls.addEventListener('end', persistCamera);
 
+    // Subscribe inbound fea-case-changed events into the FEA store (task 3026 step-10).
+    // Stored here so the unlisten can be called in onCleanup.
+    let feaCaseUnlistenP: Promise<() => void> | undefined;
+
     // Bridge FEA-mode store → meshManager colorize pipeline.
     // Captured once at mount; the store reference must not change for the component lifetime.
     // Track-then-act pattern: reads all reactive dependencies (enabled/channel/palette/range)
     // at the top of the effect so any change to any of them rebuilds the bake closure.
     if (props.feaModeStore) {
       const feaStore = props.feaModeStore;
+
+      // Wire inbound fea-case-changed events → store.applyFeaCaseChanged.
+      // Populates availableCases / activeCaseId so the case-picker dropdown appears.
+      feaCaseUnlistenP = subscribeFeaCaseToStore(feaStore);
       // Performance note: channel/palette/range are read INSIDE the if(enabled) branch so
       // they are only tracked as reactive dependencies while FEA mode is active. When
       // enabled===false, only `enabled` is tracked, so changes to channel/palette/range do
@@ -245,6 +261,18 @@ export function Viewport(props: ViewportProps) {
         if (cur.min === r.min && cur.max === r.max) return;
         feaStore.setRange({ mode: 'auto', min: r.min, max: r.max });
       });
+
+      // Outbound case-selection effect (task 3026 step-14): watches activeCaseId
+      // and calls setActiveFeaCase when it transitions to a non-null value.
+      // Mirrors the showDeformed/warpFactor pattern — null means "no multi-case
+      // result observed yet" so we guard on null to avoid a spurious command on
+      // initial mount.
+      createEffect(() => {
+        const activeCaseId = feaStore.state.activeCaseId;
+        if (activeCaseId !== null) {
+          setActiveFeaCase(activeCaseId);
+        }
+      });
     }
 
     // Sync grid/axes/axisLabels visibility
@@ -286,6 +314,12 @@ export function Viewport(props: ViewportProps) {
     // Sync tensegrity wires reactively
     createEffect(() => {
       wireManager.sync(props.tensegrityWires ?? []);
+      requestRender();
+    });
+
+    // Sync tensegrity surface facets reactively
+    createEffect(() => {
+      surfaceManager.sync(props.tensegritySurfaces ?? []);
       requestRender();
     });
 
@@ -391,6 +425,7 @@ export function Viewport(props: ViewportProps) {
     onCleanup(() => {
       disposed = true;
       cancelAnimationFrame(animationFrameId);
+      feaCaseUnlistenP?.then((u) => u()).catch(() => {});
       controls.controls.removeEventListener('change', requestRender);
       controls.controls.removeEventListener('end', persistCamera);
       resizeObserver.disconnect();
@@ -398,6 +433,7 @@ export function Viewport(props: ViewportProps) {
       controls.dispose();
       meshManager.dispose();
       wireManager.dispose();
+      surfaceManager.dispose();
       disposeAxisLabels();
       renderer.dispose();
       if (window.__REIFY_DEBUG__) {

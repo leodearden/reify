@@ -35,7 +35,7 @@ fn combined_source() -> String {
     // avoids boundary-overshoot at the constraint, so the solver returns Solved cleanly.
     let explicit = r#"
 structure ExplicitMinimize {
-    param y: Scalar = auto
+    param y: Length = auto
 
     constraint y >= 1mm
 

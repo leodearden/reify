@@ -74,7 +74,7 @@ structure S {
     }
     assert_eq!(
         v_expr.result_type,
-        reify_core::Type::Real,
+        reify_core::Type::dimensionless_scalar(),
         "f() -> Real"
     );
 }
@@ -319,11 +319,11 @@ structure S {
 /// Test L (cascade-suppression regression for task 3718): when a function param's declared
 /// type fails to resolve (e.g. `Bogus`), the root-cause "unresolved type" diagnostic must
 /// be emitted, but the fn_param default type-check must NOT also fire a spurious
-/// `FnParamDefaultTypeMismatch` against the `Type::Real` fallback type.
+/// `FnParamDefaultTypeMismatch` against the `Type::dimensionless_scalar()` fallback type.
 ///
 /// Guards the `if !type_ok { continue; }` gate in `compile_function`
 /// (crates/reify-compiler/src/functions.rs:80-82). Without the gate, the String default
-/// expression's `result_type` would mismatch the `Type::Real` fallback param type and
+/// expression's `result_type` would mismatch the `Type::dimensionless_scalar()` fallback param type and
 /// produce a cascading diagnostic on top of the unresolved-type root cause.
 #[test]
 fn fn_param_default_unresolved_param_type_no_cascade() {

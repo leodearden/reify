@@ -1,0 +1,26 @@
+import std.process
+
+/// An FDM printing process with a zero-degree overhang tolerance.
+/// `max_overhang_angle = 0deg` means any downward-pointing face triggers the
+/// overhang rule — so the box subject (whose bottom face has normal -Z and dips
+/// 90° past the build plane) will always violate.
+structure def FDM : Adding {
+    param duration           : Time   = 60min
+    param cost               : Money  = 5USD
+    param layer_thickness    : Length = 0.2mm
+    param min_feature_size   : Length = 0.4mm
+    param build_volume       : Solid  = box(200mm, 200mm, 200mm)
+    param max_overhang_angle : Angle  = 0deg
+}
+
+/// DFM overhang rule (Error severity).  The box bottom face (normal = -Z)
+/// dips 90° past the build plane; `max_overhang_angle = 0deg` means ANY
+/// downward-pointing face is a violation → exactly one E_DFM_OVERHANG under
+/// OCCT.  No `constraint` declarations, but `DFMSeverity.Error` causes
+/// `cmd_check` to exit non-zero.
+structure def OverhangRuleError : DFMRule {
+    param rule_name  : String      = "overhang-check-error"
+    param severity   : DFMSeverity = DFMSeverity.Error
+    param applies_to : Process     = FDM()
+    param subject    : Solid       = box(50mm, 30mm, 20mm)
+}

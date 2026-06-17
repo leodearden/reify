@@ -37,7 +37,7 @@ fn one_cell_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .let_binding(e, "b", Type::Real, literal(Value::Real(1.0)))
+                .let_binding(e, "b", Type::dimensionless_scalar(), literal(Value::Real(1.0)))
                 .build(),
         )
         .build()
@@ -219,24 +219,24 @@ fn three_cell_chain_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .let_binding(e, "a", Type::Real, literal(Value::Real(5.0)))
+                .let_binding(e, "a", Type::dimensionless_scalar(), literal(Value::Real(5.0)))
                 .let_binding(
                     e,
                     "b",
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     binop(
                         BinOp::Mul,
-                        value_ref_typed(e, "a", Type::Real),
+                        value_ref_typed(e, "a", Type::dimensionless_scalar()),
                         literal(Value::Real(2.0)),
                     ),
                 )
                 .let_binding(
                     e,
                     "c",
-                    Type::Real,
+                    Type::dimensionless_scalar(),
                     binop(
                         BinOp::Add,
-                        value_ref_typed(e, "b", Type::Real),
+                        value_ref_typed(e, "b", Type::dimensionless_scalar()),
                         literal(Value::Real(1.0)),
                     ),
                 )
@@ -434,13 +434,13 @@ fn always_false_constraint_module() -> reify_compiler::CompiledModule {
     CompiledModuleBuilder::new(ModulePath::single("test"))
         .template(
             TopologyTemplateBuilder::new(e)
-                .param(e, "x", Type::Real, Some(literal(Value::Real(5.0))))
+                .param(e, "x", Type::dimensionless_scalar(), Some(literal(Value::Real(5.0))))
                 .constraint(
                     e,
                     0,
                     Some("x_gt_100"),
                     gt(
-                        value_ref_typed(e, "x", Type::Real),
+                        value_ref_typed(e, "x", Type::dimensionless_scalar()),
                         literal(Value::Real(100.0)),
                     ),
                 )

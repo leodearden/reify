@@ -20,7 +20,9 @@
 //
 // Type-coercion notes (same pattern as fea_cantilever_smoke.ri):
 //   - FEAMaterialInput wrapper for material (ElasticMaterial type coercion)
-//   - LoadCase bundle for loads/supports (List<Real> placeholder type coercion)
+//   - LoadCase bundle for loads/supports (List<Load>/List<Support> — task ζ/4444;
+//     LoadCase fields + solve_buckling params both tightened by ζ/4444 — distinct
+//     from task 4093, which tightened solve_elastic_static in the FEA examples)
 //   - BucklingOptions() passed explicitly (phase-order default limitation)
 //
 // See fea_cantilever_smoke.ri for the full rationale on each coercion.
@@ -40,7 +42,7 @@ structure BucklingColumnSmoke {
     // Support: pin-pin — fixed supports at both ends (lateral restraint).
     let base_support = FixedSupport(target: "base")
 
-    // Bundle loads + supports via LoadCase (List<Real> type coercion).
+    // Bundle loads + supports via LoadCase (List<Load>/List<Support>).
     let lc = LoadCase(
         name: "buckling_smoke",
         loads: [tip_load],
@@ -52,7 +54,7 @@ structure BucklingColumnSmoke {
 
     // Buckling solve: @optimized dispatcher routes to solver::buckling trampoline.
     // BucklingOptions() passed explicitly (phase-order limitation; see solver_buckling.ri
-    // TODO(phase-order) comment).
+    // TODO(phase-order) comment). // ptodo:allow phase-order is a permanent compiler limitation note
     let result = solve_buckling(
         mi.material, length, width, height, lc.loads, lc.supports, BucklingOptions()
     )

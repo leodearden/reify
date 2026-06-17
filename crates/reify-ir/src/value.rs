@@ -360,6 +360,17 @@ pub enum FieldSourceKind {
     /// `Value::List` containing `[original_field, yield_val]`; see
     /// `Value::Field.lambda` for the storage-layout contract.
     SafetyFactor,
+    /// A field produced by the language-level `restrict()` operator, confining
+    /// sampling to a geometric region.  The stored `lambda` in the associated
+    /// `Value::Field` is a `Value::List` containing `[inner_field, region]`
+    /// where `inner_field` is sampled for points inside `region` and
+    /// `Value::Undef` is returned for points outside.
+    ///
+    /// **α scaffold (task 4219)**: the `sample` dispatch returns `Value::Undef`
+    /// unconditionally pending the OCCT point-in-region containment hook.
+    /// Task δ implements `contains(region, point)` and changes the behaviour to
+    /// `inside → sample_field_at(inner_field, at)` / `outside → Value::Undef`.
+    Restricted,
 }
 
 // ── Topology-Selector substrate (task 4116 / α) ────────────────────────────
@@ -864,11 +875,14 @@ pub enum Value {
         ///
         /// | `source` variant(s)                                                         | stored value         |
         /// |-----------------------------------------------------------------------------|----------------------|
-        /// | `Analytical`, `Composed`                                                    | `Value::Lambda`      |
+        /// | `Analytical`                                                                | `Value::Lambda`      |
+        /// | `Composed` (inline-compose form)                                            | `Value::Lambda`      |
+        /// | `Composed` (callable-compose list form, task 4219 §5.2)                    | `Value::List[f, g]` where `f` is the outer field and `g` the inner field; `sample(composed, p) == f(g(p))` |
         /// | `Sampled`                                                                   | `Value::SampledField` (v0.2) |
         /// | `Imported`                                                                  | `Value::Undef`       |
         /// | `Gradient`, `Divergence`, `Curl`, `Laplacian`, `VonMises`, `PrincipalStresses`, `MaxShear` | `Value::Field` (the original source field) |
         /// | `SafetyFactor`                                                              | `Value::List` containing `[original_field, yield_val]` |
+        /// | `Restricted` (task 4219 §5.3, scaffold)                                    | `Value::List[inner_field, region]`; task δ adds OCCT containment |
         lambda: Arc<Value>,
     },
     /// Lambda closure: captures environment values and body expression.
@@ -916,6 +930,12 @@ pub enum Value {
         origin: Box<Value>,
         direction: Box<Value>,
     },
+    /// Dimensionless 3D unit vector; distinct from Vector3<Length> and Orientation.
+    ///
+    /// Stores three inline dimensionless components (assumed unit-normalized),
+    /// mirroring [`Value::Orientation`]'s inline-float layout. Produced by datum
+    /// projections (`axis.dir`, `plane.normal`, `frame.x/.y/.z`).
+    Direction { x: f64, y: f64, z: f64 },
     /// 3D axis-aligned bounding box: min and max corner Point3 values.
     BoundingBox {
         min: Box<Value>,
@@ -1148,6 +1168,8 @@ impl Value {
                 .map(|v| v.dimension())
                 .unwrap_or(DimensionVector::DIMENSIONLESS),
             Value::Frame { .. } => DimensionVector::DIMENSIONLESS,
+            // Direction is a dimensionless unit vector.
+            Value::Direction { .. } => DimensionVector::DIMENSIONLESS,
             _ => DimensionVector::DIMENSIONLESS,
         }
     }
@@ -1389,6 +1411,24 @@ impl Value {
                     .combine(origin.content_hash())
                     .combine(direction.content_hash())
             }
+            Value::Direction { x, y, z } => {
+                // tag=30; NaN canonicalization for all 3 components (mirrors
+                // Orientation) → collapses NaN payload differences (see method doc
+                // invariant exception).
+                let canon = |v: &f64| -> u64 {
+                    if v.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        v.to_bits()
+                    }
+                };
+                let mut buf = [0u8; 25];
+                buf[0] = 30;
+                buf[1..9].copy_from_slice(&canon(x).to_le_bytes());
+                buf[9..17].copy_from_slice(&canon(y).to_le_bytes());
+                buf[17..25].copy_from_slice(&canon(z).to_le_bytes());
+                ContentHash::of(&buf)
+            }
             Value::BoundingBox { min, max } => {
                 // tag=24; combine min and max content hashes
                 ContentHash::of(&[24])
@@ -1554,7 +1594,7 @@ impl Value {
                     // G-allow: documented `infer_type()` with-defaults contract (function
                     // docstring above); `try_infer_type()` returns None for ambiguity
                     // (task 3639 review).
-                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::Real);
+                    let elem_ty = items.first().map(|v| v.infer_type()).unwrap_or(Type::dimensionless_scalar());
                     Type::List(Box::new(elem_ty))
                 }
                 Value::Set(items) => {
@@ -1565,7 +1605,7 @@ impl Value {
                         // G-allow: documented `infer_type()` with-defaults contract (function
                         // docstring above); `try_infer_type()` returns None for ambiguity
                         // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .unwrap_or(Type::dimensionless_scalar());
                     Type::Set(Box::new(elem_ty))
                 }
                 Value::Map(m) => {
@@ -1573,7 +1613,7 @@ impl Value {
                         .iter()
                         .next()
                         .map(|(k, v)| (k.infer_type(), v.infer_type()))
-                        .unwrap_or((Type::String, Type::Real));
+                        .unwrap_or((Type::String, Type::dimensionless_scalar()));
                     Type::Map(Box::new(k_ty), Box::new(v_ty))
                 }
                 Value::Option(Some(inner)) => Type::Option(Box::new(inner.infer_type())),
@@ -1616,7 +1656,7 @@ impl Value {
                         // G-allow: documented `infer_type()` with-defaults contract (function
                         // docstring above); `try_infer_type()` returns None for ambiguity
                         // (task 3639 review).
-                        .unwrap_or(Type::Real);
+                        .unwrap_or(Type::dimensionless_scalar());
                     Type::Range(Box::new(elem_ty))
                 }
                 Value::Tensor(_) => panic!(
@@ -1665,7 +1705,7 @@ impl Value {
         match self {
             Value::Bool(_) => Some(Type::Bool),
             Value::Int(_) => Some(Type::Int),
-            Value::Real(_) => Some(Type::Real),
+            Value::Real(_) => Some(Type::dimensionless_scalar()),
             Value::String(_) => Some(Type::String),
             Value::Scalar { dimension, .. } => Some(Type::Scalar {
                 dimension: *dimension,
@@ -1693,7 +1733,7 @@ impl Value {
             }
             Value::Option(None) => None,
             Value::Lambda { params, body, .. } => {
-                let param_types = params.iter().map(|_| Type::Real).collect();
+                let param_types = params.iter().map(|_| Type::dimensionless_scalar()).collect();
                 Some(Type::Function {
                     params: param_types,
                     return_type: Box::new(body.result_type.clone()),
@@ -1731,6 +1771,7 @@ impl Value {
             Value::Transform { .. } => None,
             Value::Plane { .. } => Some(Type::Plane),
             Value::Axis { .. } => Some(Type::Axis),
+            Value::Direction { .. } => Some(Type::Direction),
             Value::BoundingBox { .. } => Some(Type::BoundingBox),
             Value::Range { lower, upper, .. } => {
                 let bound = lower.as_ref().or(upper.as_ref())?;
@@ -1879,6 +1920,9 @@ impl Value {
                     origin.format_hover(),
                     direction.format_hover()
                 )
+            }
+            Value::Direction { x, y, z } => {
+                format!("Direction(x={x}, y={y}, z={z})")
             }
             Value::BoundingBox { min, max } => {
                 format!(
@@ -2044,6 +2088,9 @@ impl Value {
                     origin.format_display(),
                     direction.format_display()
                 )
+            }
+            Value::Direction { x, y, z } => {
+                format!("direction({}, {}, {})", x, y, z)
             }
             Value::BoundingBox { min, max } => {
                 format!("bbox({}, {})", min.format_display(), max.format_display())
@@ -2449,6 +2496,26 @@ impl PartialEq for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash() == b.content_hash() // task 4116 / α
             }
+            (
+                Value::Direction {
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Direction {
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
+            ) => {
+                // Bit-identity equality (mirrors Orientation): +0.0 != -0.0,
+                // NaN == NaN for identical bit patterns. Agrees with the cmp arm's
+                // total_cmp ordering. MANDATORY: without this arm equal Directions
+                // fall to `_ => false` below and compare UNEQUAL.
+                ax.to_bits() == bx.to_bits()
+                    && ay.to_bits() == by.to_bits()
+                    && az.to_bits() == bz.to_bits()
+            }
             (Value::Undef, Value::Undef) => true,
             _ => false,
         }
@@ -2511,6 +2578,7 @@ impl Ord for Value {
                 Value::GeometryHandle { .. } => 27,
                 Value::AffineMap { .. } => 28,
                 Value::Selector(_) => 29, // task 4116 / α
+                Value::Direction { .. } => 30, // β / task 4382
             }
         }
 
@@ -2772,6 +2840,25 @@ impl Ord for Value {
             (Value::Selector(a), Value::Selector(b)) => {
                 a.content_hash().0.cmp(&b.content_hash().0) // task 4116 / α
             }
+            (
+                Value::Direction {
+                    x: ax,
+                    y: ay,
+                    z: az,
+                },
+                Value::Direction {
+                    x: bx,
+                    y: by,
+                    z: bz,
+                },
+            ) => {
+                // Lexicographic: x → y → z (IEEE 754 total_cmp per component).
+                // Agrees with bit-identity PartialEq. MANDATORY: without this arm
+                // two distinct Directions fall to `_ => unreachable!` below and PANIC.
+                ax.total_cmp(bx)
+                    .then_with(|| ay.total_cmp(by))
+                    .then_with(|| az.total_cmp(bz))
+            }
             _ => unreachable!("same type tag but different variants"),
         }
     }
@@ -2931,6 +3018,17 @@ impl std::fmt::Display for Value {
             }
             Value::Axis { origin, direction } => {
                 write!(f, "axis({}, {})", origin, direction)
+            }
+            Value::Direction { x, y, z } => {
+                // Same whole-number convention as Real/Orientation (no trailing ".0").
+                let fmt_f64 = |v: f64| -> String {
+                    if v == v.trunc() && v.is_finite() {
+                        format!("{:.0}", v)
+                    } else {
+                        format!("{}", v)
+                    }
+                };
+                write!(f, "direction({}, {}, {})", fmt_f64(*x), fmt_f64(*y), fmt_f64(*z))
             }
             Value::BoundingBox { min, max } => {
                 write!(f, "bbox({}, {})", min, max)
@@ -5803,8 +5901,8 @@ mod tests {
     fn value_field_variant() {
         use reify_core::ty::Type;
         let field_val = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -5817,8 +5915,8 @@ mod tests {
         );
         // Content hash determinism
         let field_val2 = Value::Field {
-            domain_type: Type::Real,
-            codomain_type: Type::Real,
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(Value::Undef),
         };
@@ -8281,6 +8379,118 @@ mod tests {
         assert_eq!(axis.dimension(), DimensionVector::DIMENSIONLESS);
     }
 
+    // ── Value::Direction tests (step-3) ───────────────────────────────────────
+    //
+    // Value::Direction { x, y, z } is a dimensionless 3D unit vector (inline
+    // floats, mirroring Value::Orientation's layout). These tests pin the
+    // construction/round-trip, type inference, dimensionlessness, Display, and —
+    // critically — the same-type `eq` and `cmp` arms. The `eq` impl ends in
+    // `_ => false` and the same-type `cmp` match ends in
+    // `_ => unreachable!("same type tag but different variants")`, so a missing
+    // Direction arm would silently break equality / PANIC on ordering. (e)/(f)
+    // therefore fail at runtime until step-4 adds those explicit arms (and the
+    // whole block fails to compile until the variant exists).
+
+    fn make_direction(x: f64, y: f64, z: f64) -> Value {
+        Value::Direction { x, y, z }
+    }
+
+    #[test]
+    fn value_direction_construction() {
+        // (a) construction + field round-trip
+        let d = make_direction(1.0, 0.0, 0.0);
+        match d {
+            Value::Direction { x, y, z } => {
+                assert_eq!(x, 1.0);
+                assert_eq!(y, 0.0);
+                assert_eq!(z, 0.0);
+            }
+            other => panic!("expected Value::Direction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn value_direction_infer_type() {
+        // (b) try_infer_type() returns Some(Type::Direction)
+        let d = make_direction(0.0, 0.0, 1.0);
+        assert_eq!(d.try_infer_type(), Some(reify_core::ty::Type::Direction));
+    }
+
+    #[test]
+    fn value_direction_dimension_dimensionless() {
+        // (c) a Direction is dimensionless (dimensionless unit vector)
+        let d = make_direction(0.0, 1.0, 0.0);
+        assert_eq!(d.dimension(), DimensionVector::DIMENSIONLESS);
+    }
+
+    #[test]
+    fn value_direction_display() {
+        // (d) Display is stable and contains the components
+        let d = make_direction(1.0, 0.0, 0.0);
+        let s = format!("{}", d);
+        assert!(
+            s.starts_with("direction("),
+            "display should start with 'direction(', got: {}",
+            s
+        );
+        assert!(
+            s.contains('1'),
+            "display should contain the x component, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn value_direction_partial_eq_same() {
+        // (e) equal-for-equal — pins the `eq` arm (the impl ends in `_ => false`,
+        // so a missing Direction arm makes equal Directions compare UNEQUAL).
+        assert_eq!(make_direction(1.0, 0.0, 0.0), make_direction(1.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn value_direction_partial_eq_different() {
+        // (e) two distinct Directions compare unequal
+        assert_ne!(make_direction(1.0, 0.0, 0.0), make_direction(0.0, 1.0, 0.0));
+    }
+
+    #[test]
+    fn value_direction_partial_eq_not_axis() {
+        // (e) Direction is a distinct variant from Axis (cross-variant => not equal)
+        let dir = make_direction(0.0, 0.0, 1.0);
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        assert_ne!(dir, axis);
+    }
+
+    #[test]
+    fn value_direction_ord_within_type() {
+        // (f) comparing/sorting two DISTINCT Directions is consistent and does NOT
+        // panic. PINS the same-type `cmp` arm: the same-type match ends in
+        // `_ => unreachable!("same type tag but different variants")`, so a missing
+        // Direction arm would PANIC on any two distinct Directions. Lexicographic
+        // x→y→z: (0,0,0) < (1,0,0) because x differs first.
+        let a = make_direction(0.0, 0.0, 0.0);
+        let b = make_direction(1.0, 0.0, 0.0);
+        assert!(a < b);
+        // Sorting must not panic and must be deterministic.
+        let mut v = vec![b.clone(), a.clone()];
+        v.sort();
+        assert_eq!(v, vec![a, b]);
+    }
+
+    #[test]
+    fn value_direction_ord_cross_type() {
+        // (g) cross-type discriminant — a Direction orders distinctly (tag-based,
+        // no overlap) from Plane/Axis/Orientation. Direction's tag is the current
+        // max, so it sorts after all three.
+        let dir = make_direction(1.0, 0.0, 0.0);
+        let plane = make_plane(make_point3_origin(), make_normal_z());
+        let axis = make_axis(make_point3_origin(), make_direction_z());
+        let orientation = orient(1.0, 0.0, 0.0, 0.0);
+        assert!(dir > plane);
+        assert!(dir > axis);
+        assert!(dir > orientation);
+    }
+
     // ── Value::BoundingBox tests (pre-4) ──────────────────────────────────────
 
     fn make_bbox(min: Value, max: Value) -> Value {
@@ -8640,8 +8850,8 @@ mod tests {
             (
                 "Field",
                 Value::Field {
-                    domain_type: reify_core::ty::Type::Real,
-                    codomain_type: reify_core::ty::Type::Real,
+                    domain_type: reify_core::ty::Type::dimensionless_scalar(),
+                    codomain_type: reify_core::ty::Type::dimensionless_scalar(),
                     source: FieldSourceKind::Analytical,
                     lambda: Arc::new(Value::Undef),
                 },
@@ -8652,7 +8862,7 @@ mod tests {
                     params: vec![],
                     body: Box::new(CompiledExpr {
                         kind: crate::expr::CompiledExprKind::Literal(Value::Int(0)),
-                        result_type: reify_core::ty::Type::Real,
+                        result_type: reify_core::ty::Type::dimensionless_scalar(),
                         content_hash: ContentHash::of(&[0]),
                     }),
                     captures: ValueMap::new(),
@@ -8852,7 +9062,7 @@ mod tests {
         assert_eq!(Value::Int(0).try_infer_type(), Some(reify_core::ty::Type::Int));
         assert_eq!(
             Value::Real(0.0).try_infer_type(),
-            Some(reify_core::ty::Type::Real)
+            Some(reify_core::ty::Type::dimensionless_scalar())
         );
         assert_eq!(
             Value::String("".into()).try_infer_type(),
@@ -8868,7 +9078,7 @@ mod tests {
         let v = Value::List(vec![]);
         assert_eq!(
             v.infer_type(),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
             "empty List should default element type to Real (matching compiler)"
         );
     }
@@ -8879,7 +9089,7 @@ mod tests {
         let v = Value::Set(BTreeSet::new());
         assert_eq!(
             v.infer_type(),
-            Type::Set(Box::new(Type::Real)),
+            Type::Set(Box::new(Type::dimensionless_scalar())),
             "empty Set should default element type to Real (matching compiler)"
         );
     }
@@ -8890,7 +9100,7 @@ mod tests {
         let v = Value::Map(BTreeMap::new());
         assert_eq!(
             v.infer_type(),
-            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
             "empty Map should default value type to Real (key stays String, matching compiler)"
         );
     }
@@ -8916,7 +9126,7 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::List(vec![]))));
         assert_eq!(
             v.infer_type(),
-            Type::Option(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
             "Option(Some(empty List)) should produce Option(List(Real)) via inner infer_type()"
         );
     }
@@ -8944,7 +9154,7 @@ mod tests {
         let v = Value::Option(Some(Box::new(Value::Set(BTreeSet::new()))));
         assert_eq!(
             v.infer_type(),
-            Type::Option(Box::new(Type::Set(Box::new(Type::Real)))),
+            Type::Option(Box::new(Type::Set(Box::new(Type::dimensionless_scalar())))),
             "Option(Some(empty Set)) should produce Option(Set(Real)) via inner infer_type()"
         );
     }
@@ -8958,7 +9168,7 @@ mod tests {
         let v = Value::List(vec![Value::List(vec![])]);
         assert_eq!(
             v.infer_type(),
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
             "List([List([])]) should produce List(List(Real)), not List(Real)"
         );
     }
@@ -8969,7 +9179,7 @@ mod tests {
         let v = Value::Set([Value::Set(BTreeSet::new())].into_iter().collect());
         assert_eq!(
             v.infer_type(),
-            Type::Set(Box::new(Type::Set(Box::new(Type::Real)))),
+            Type::Set(Box::new(Type::Set(Box::new(Type::dimensionless_scalar())))),
             "Set({{Set({{}})}}) should produce Set(Set(Real)), not Set(Real)"
         );
     }
@@ -8985,7 +9195,7 @@ mod tests {
             v.infer_type(),
             Type::Map(
                 Box::new(Type::String),
-                Box::new(Type::List(Box::new(Type::Real)))
+                Box::new(Type::List(Box::new(Type::dimensionless_scalar())))
             ),
             "Map with empty-list value should produce Map(String, List(Real))"
         );
@@ -9042,7 +9252,7 @@ mod tests {
             v.infer_type(),
             Type::Point {
                 n: 2,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
             "non-empty Point(Real, Real) should infer as Type::Point {{ n: 2, quantity: Real }}"
         );
@@ -9057,7 +9267,7 @@ mod tests {
             v.infer_type(),
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
             "non-empty Vector(Real×3) should infer as Type::Vector {{ n: 3, quantity: Real }}"
         );

@@ -1,5 +1,7 @@
 use crate::*;
 
+use crate::ambient_defaults::AmbientDefaults;
+
 /// Tag used when cross-checking requirements against available defaults.
 /// A `param` requirement can only be satisfied by a `param` default, and a `let`
 /// requirement only by a `let` default. A kind mismatch is treated the same as "no
@@ -116,7 +118,7 @@ pub(super) fn check_phase_resolve_structure_members(
     //      names). On `None`, fall back to enum-name lookup, then emit a root-cause
     //      "unresolved type in conformance check" diagnostic.
     //
-    // All error paths return `Type::Error` (poison sentinel), NOT `Type::Real`.
+    // All error paths return `Type::Error` (poison sentinel), NOT `Type::dimensionless_scalar()`.
     // Rationale: `structure_members` (populated by this closure's output) is consumed
     // by the `RequirementKind::{Param,Let}` arm of the requirement-checking loop below,
     // where `actual_type` is passed as the `from`/producer side of
@@ -124,7 +126,7 @@ pub(super) fn check_phase_resolve_structure_members(
     // wildcard in `type_compat.rs:3–26` short-circuits `implicitly_converts_to(Error, _)`
     // to `true`, suppressing the cascade "type mismatch for trait member" diagnostic
     // that would otherwise appear on top of the root-cause error already emitted here.
-    // Returning `Type::Real` instead would poison the downstream requirement check
+    // Returning `Type::dimensionless_scalar()` instead would poison the downstream requirement check
     // whenever the trait requires a non-Real type (e.g. Length), generating a misleading
     // second diagnostic and obscuring the actual problem for the user.
     //
@@ -243,7 +245,7 @@ pub(super) fn check_phase_resolve_structure_members(
                             ))
                             .with_label(DiagnosticLabel::new(p.span, "missing type annotation")),
                         );
-                        Type::Real
+                        Type::dimensionless_scalar()
                     }
                 };
                 structure_param_members.insert(p.name.clone(), ty);
@@ -342,7 +344,6 @@ pub(super) fn check_phase_collect_trait_bounds(
 /// key is kept for structural symmetry with `available_defaults` (which uses the same
 /// `(String, AvailableDefaultKind)` shape) and to reserve per-kind slots without a cache
 /// redesign if a future pass adds `Param`-inference.
-/// TODO(future-kinds): revert to `HashMap<String, CompiledExpr>` if no second kind is added.
 ///
 /// # PASS 2 COMPILE-ERROR SUPPRESSION (`pass2_compile_errors`, task 1914 / task 2158)
 ///
@@ -563,7 +564,7 @@ pub(super) fn check_phase_pre_register_default_types(
     // slot is vacant, the expression is cached in `inferred_let_exprs` for
     // reuse by the injection loop (avoids double compilation) and by
     // `available_defaults` (so requirement-matching uses the inferred type
-    // instead of the old `Type::Real` fallback).
+    // instead of the old `Type::dimensionless_scalar()` fallback).
     //
     // Error suppression (task 1914 suggestion #1, hardened by task 2158):
     // snapshot the diagnostic-vector length before each compile_expr call, then
@@ -659,6 +660,28 @@ pub(super) fn check_phase_pre_register_default_types(
         }
     }
 
+    // Pass 2 post-pass: register unannotated Let defaults that were skipped by Pass 2's
+    // `!structure_members.contains_key(name)` guard (conformer already declares the name).
+    // These names are absent from `inferred_let_exprs` and `pass2_compile_errors` because
+    // compilation was never attempted, and absent from `pass2_skipped` because
+    // `register_if_absent` was never called. Without this registration,
+    // `check_phase_build_available_defaults_map`'s debug_assert! at :802 fires:
+    //
+    //   cell_type.is_some() || inferred_let_exprs.contains_key(&key)
+    //
+    // Adding the name to `pass2_skipped` satisfies the guard at :777-778
+    // (`cell_type.is_none() && pass2_skipped.contains(name) → return None`),
+    // correctly excluding the default from the available_defaults advertisement map —
+    // there is nothing to advertise because the conformer member overrides it.
+    for default in &ctx.defaults {
+        if let Some(name) = &default.name
+            && structure_members.contains_key(name.as_str())
+            && let DefaultKind::Let { cell_type: None, .. } = &default.kind
+        {
+            pass2_skipped.insert(name.to_string());
+        }
+    }
+
     PreRegisterOutput {
         inferred_let_exprs,
         pass1_skipped,
@@ -736,7 +759,7 @@ pub(super) fn check_phase_pre_register_default_types(
 ///
 /// For `DefaultKind::Let { cell_type: None, .. }` entries that passed both guards, the
 /// advertised type is the inferred result type from `inferred_let_exprs` (populated by phase
-/// 3's Pass 2). Falls back to `Type::Real` if the name is absent from the cache — after task
+/// 3's Pass 2). Falls back to `Type::dimensionless_scalar()` if the name is absent from the cache — after task
 /// 1914 this is a defensive-default that should not be reached in practice: compile-error
 /// names are excluded by `pass2_compile_errors` and skipped names by `pass2_skipped`.
 /// A `debug_assert!` guards the fallback to catch any drift.
@@ -803,7 +826,7 @@ pub(super) fn check_phase_build_available_defaults_map(
                         cell_type.is_some() || inferred_let_exprs.contains_key(&key),
                         "unannotated Let '{name}' absent from inferred_let_exprs (composite key \
                          (name, Let)) and not in pass2_skipped or pass2_compile_errors — Pass 2 \
-                         contract broken; Type::Real fallback would re-introduce the \
+                         contract broken; Type::dimensionless_scalar() fallback would re-introduce the \
                          phantom-type-mismatch bug fixed by task 1951 Option B"
                     );
                     let resolved =
@@ -832,7 +855,7 @@ pub(super) fn check_phase_build_available_defaults_map(
 /// `resolve_type_expr_with_aliases` — the SAME resolver the trait side funnels
 /// through — so the structure-derived sig is directly `PartialEq`-comparable
 /// with the trait-derived requirement sig. A missing return type defaults to
-/// `Type::Real`, matching `compile_function` / `assoc_fn_sig`.
+/// `Type::dimensionless_scalar()`, matching `compile_function` / `assoc_fn_sig`.
 ///
 /// Resolution here is deliberately side-effect-free: a failure resolves to
 /// `Type::Error` and emits NO diagnostic (a throwaway sink absorbs any the
@@ -928,7 +951,7 @@ pub(super) fn collect_structure_assoc_type_bindings(
 /// through `resolve_type_expr_with_aliases` — the same resolver `assoc_fn_sig`
 /// (traits.rs) uses on the trait side — so equal annotations on a trait default
 /// and a structure override compare equal under the derived `PartialEq`. A
-/// missing return type defaults to `Type::Real`, matching `compile_function` /
+/// missing return type defaults to `Type::dimensionless_scalar()`, matching `compile_function` /
 /// `assoc_fn_sig`.
 ///
 /// Resolution is deliberately side-effect-free: a failure resolves to
@@ -974,7 +997,7 @@ fn derive_assoc_fn_sig_silent(
             trait_names,
         )
         .unwrap_or(Type::Error),
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     };
     CompiledAssocFnSig {
         name: fn_def.name.clone(),
@@ -1556,6 +1579,83 @@ pub(super) fn check_phase_check_members_against_requirements(
             }
         }
     }
+    // Conformance collision rule (PRD v0_6 type-hygiene §7.4, task η): a conformer member
+    // colliding with a DEFAULTED trait member (which never enters ctx.requirements) must
+    // implicitly_converts_to the trait's declared type — closing the silent-accept gap
+    // (probe-7: scalar override vs tensor-defaulted trait param). Compatible collision stays
+    // legal (override idiom); mirrors the kind-agnostic inject-skip in check_phase_inject_defaults.
+    //
+    // Guard: skip defaults whose name is already covered by a requirement in ctx.requirements.
+    // A sub-trait can override a parent's `param x : Option<T> = none` default with a REQUIRED
+    // `param x : T` (no default), putting BOTH the requirement and the old default into the
+    // merged ctx. The requirements loop above already validates the conformer's `x` against the
+    // required type T; re-checking it against Option<T> from the default would fire a false
+    // positive. Example: RotaryPort `param max_torque : Torque` (required) shadows MotivePort
+    // `param max_torque : Option<Torque> = none` (default).
+    let required_names: std::collections::HashSet<&str> =
+        ctx.requirements.iter().map(|r| r.name.as_str()).collect();
+    // Dedup guard for the defaults loop below.
+    //
+    // Upstream dedup guarantees in collect_all_requirements (trait_requirements.rs):
+    //   • Param defaults: deduped by (name, DefaultKindTag::Param) via seen_defaults — at most
+    //     one Param default per name in ctx.defaults; duplicate is impossible.
+    //   • Annotated Let defaults WITHOUT structure override: deduped by seen_let_hashes (content-
+    //     hash comparison); at most one Let default per name reaches ctx.defaults.
+    //   • Annotated Let defaults WITH structure override: NOT deduped. When the structure already
+    //     declares a member `x`, hash-recording is suppressed (`if !structure_members.contains_key`)
+    //     so each trait's `let x` default is pushed unconditionally — multiple entries for the same
+    //     name can appear. The injection loop skips them all (re-checks structure_members), but the
+    //     collision rule runs first. Without this guard, a conformer override that is incompatible
+    //     with multiple same-named Let defaults (diamond / multi-trait) would emit one identical
+    //     "type mismatch" diagnostic per redundant entry rather than one per name.
+    //
+    // This HashSet is therefore a no-op for Params and unoverridden Lets (at most one entry each)
+    // but is the correct defensive guard for the overridden-Let edge case documented above.
+    let mut checked_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for default in &ctx.defaults {
+        let Some(name) = default.name.as_deref() else {
+            continue;
+        };
+        // Name is already handled by the requirements loop — skip to avoid false positives.
+        if required_names.contains(name) {
+            continue;
+        }
+        // Emit at most one verdict per name: the overridden-Let multi-push scenario
+        // (see comment on checked_names above) can produce multiple ctx.defaults entries
+        // for the same name when the structure overrides it. Skip subsequent entries so
+        // only one diagnostic fires per name regardless of how many redundant entries exist.
+        if !checked_names.insert(name) {
+            continue;
+        }
+        let trait_declared_type = match &default.kind {
+            DefaultKind::Param { cell_type, .. } => cell_type,
+            DefaultKind::Let { cell_type: Some(ty), .. } => ty,
+            // Unannotated let: declared type is the inferred expr type, NOT computed for names
+            // colliding with a structure member (pre-register Pass 2 skips structure_members
+            // names, checker.rs:596) — mirrors structure_let_members holding only annotated
+            // conformer lets (:257). Closing this gap would require compiling the trait-let
+            // expression against the conformer scope — deferred.
+            DefaultKind::Let { cell_type: None, .. }
+            | DefaultKind::Constraint(_)
+            | DefaultKind::Fn(_)
+            | DefaultKind::AssocType(_) => continue,
+        };
+        let Some(conformer_type) =
+            structure_param_members.get(name).or_else(|| structure_let_members.get(name))
+        else {
+            continue;
+        };
+        if !implicitly_converts_to(conformer_type, trait_declared_type) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "type mismatch for trait member '{}': expected {}, got {}",
+                    name, trait_declared_type, conformer_type
+                ))
+                .with_code(DiagnosticCode::TypeMismatchForTraitMember)
+                .with_label(DiagnosticLabel::new(structure.span, "type mismatch")),
+            );
+        }
+    }
 }
 
 /// Phase 6 of trait conformance checking: inject trait defaults for non-overridden members.
@@ -1826,7 +1926,7 @@ pub(super) fn check_phase_inject_defaults(
                     // Annotation is authoritative on the injected cell type when present
                     // (matches the scope pre-registration in check_phase_pre_register_default_types
                     // (Pass 1) which also prefers the annotation over the inferred expression type).
-                    // Falls back to the inferred expression type, then to Type::Real (defensive).
+                    // Falls back to the inferred expression type, then to Type::dimensionless_scalar() (defensive).
                     // Uses the shared resolve_let_advertised_type helper for site 2 of 2.
                     let injected_cell_type =
                         resolve_let_advertised_type(cell_type, Some(&compiled_expr));
@@ -1868,6 +1968,7 @@ pub(super) fn check_phase_inject_defaults(
                         span: default.span,
                         domain: None,
                         optimized_target: None,
+                        arg_bindings: Vec::new(),
                     });
                 }
             }
@@ -1880,5 +1981,324 @@ pub(super) fn check_phase_inject_defaults(
             // assoc-type phase (step-10).
             DefaultKind::AssocType(_) => {}
         }
+    }
+}
+
+/// Ambient-default injection phase (task 4497, ambient-default-material B).
+///
+/// Runs immediately AFTER [`check_phase_collect_trait_bounds`] and BEFORE the
+/// pre-register / available-defaults / inject phases consume `ctx.defaults`.
+/// For every unfilled `Param` requirement whose type is a `StructureRef(T)`,
+/// it resolves the ambient default for `T` (at the given scope) and — on a hit
+/// — synthesizes a `TraitDefault { kind: DefaultKind::Param { .. } }` carrying
+/// the ambient value expr into `ctx.defaults`. The existing
+/// [`check_phase_inject_defaults`] then performs the real `ValueCellDecl`
+/// injection, so an ambient default rides the verified trait-default rails
+/// exactly like a trait-declared param default (DD2) — no new injection code.
+///
+/// ## Resolution ladder (DD3): explicit member > trait-declared default > ambient
+///
+/// A requirement is synthesized ONLY when it is neither an explicit structure
+/// member (`structure_members.contains_key`) nor already covered by an entry in
+/// `ctx.defaults` (a trait-declared default). Skipping both cases before
+/// synthesis enforces the ladder at the cheapest point — the ambient entry is
+/// simply never created when a higher-priority source exists.
+///
+/// ## Type-keying (DD1)
+///
+/// The ambient table is keyed by the referenced structure's type *name*, so any
+/// `Param(StructureRef(name))` requirement is a candidate; there is no trait- or
+/// member-path coupling. The v1 grammar only exercises `Material`, but the
+/// machinery is type-generic.
+///
+/// ## Scope (DD6)
+///
+/// `purpose` selects the innermost scope for resolution. Top-level structures
+/// (the only structures that exist) resolve at file scope (`purpose = None`);
+/// purpose-scoped defaults are never injected into a structure.
+pub(super) fn check_phase_inject_ambient_defaults(
+    ctx: &mut MergeContext,
+    ambient: &AmbientDefaults,
+    structure_members: &HashMap<String, Type>,
+    purpose: Option<&str>,
+) {
+    // Names already covered by a trait-declared default — these win over an
+    // ambient default (DD3). Collected as owned Strings so this set does not
+    // borrow `ctx.defaults` while we extend it below.
+    let existing_default_names: HashSet<String> =
+        ctx.defaults.iter().filter_map(|d| d.name.clone()).collect();
+
+    // Synthesize into a local buffer first (the loop reads `ctx.requirements`;
+    // the extend mutates `ctx.defaults`).
+    let mut synthesized: Vec<TraitDefault> = Vec::new();
+    for req in &ctx.requirements {
+        // Only `Param` requirements referencing a structure type can be filled
+        // by an ambient default (DD1: keyed by the referenced type name).
+        let RequirementKind::Param(Type::StructureRef(type_name)) = &req.kind else {
+            continue;
+        };
+        // DD3 ladder: explicit member wins, then trait-declared default wins.
+        if structure_members.contains_key(&req.name) {
+            continue;
+        }
+        if existing_default_names.contains(&req.name) {
+            continue;
+        }
+        // Resolve the ambient default for the referenced type at this scope.
+        let Some(entry) = ambient.resolve(type_name, purpose) else {
+            continue;
+        };
+        // Synthesize a Param default carrying the ambient value expr as its
+        // `default`, so `check_phase_inject_defaults` compiles + injects it via
+        // `compile_expr` exactly like a real trait param default. Mirrors the
+        // synthetic-ParamDecl construction at conformance/mod.rs:2131.
+        synthesized.push(TraitDefault {
+            name: Some(req.name.clone()),
+            kind: DefaultKind::Param {
+                cell_type: entry.declared_type.clone(),
+                default_decl: reify_ast::ParamDecl {
+                    name: req.name.clone(),
+                    doc: None,
+                    is_priv: false,
+                    type_expr: None,
+                    default: Some(entry.value.clone()),
+                    where_clause: None,
+                    annotations: vec![],
+                    span: entry.span,
+                    content_hash: ContentHash(0),
+                },
+            },
+            span: entry.span,
+        });
+    }
+    ctx.defaults.extend(synthesized);
+}
+
+#[cfg(test)]
+mod ambient_inject_tests {
+    use super::*;
+    use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
+
+    /// File-level ambient table with a single `Material` entry whose value expr
+    /// is a recognizable `Ident(marker)`, so a synthesized default's carried
+    /// value can be checked by identity (see [`synth_marker`]).
+    fn material_ambient_table(marker: &str) -> AmbientDefaults {
+        let mut table = AmbientDefaults::default();
+        table.insert_file_level(
+            "Material".to_string(),
+            ResolvedAmbientDefault {
+                value: reify_ast::Expr {
+                    kind: reify_ast::ExprKind::Ident(marker.to_string()),
+                    span: SourceSpan::empty(0),
+                },
+                declared_type: Type::StructureRef("Material".to_string()),
+                span: SourceSpan::empty(0),
+            },
+        );
+        table
+    }
+
+    /// A `param <name> : Material` requirement, i.e.
+    /// `RequirementKind::Param(StructureRef("Material"))`.
+    fn material_param_req(name: &str) -> TraitRequirement {
+        TraitRequirement {
+            name: name.to_string(),
+            kind: RequirementKind::Param(Type::StructureRef("Material".to_string())),
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// A synthetic trait-declared `Param` default named `name`, carrying an
+    /// `Ident(marker)` value so it can be distinguished from an ambient synth.
+    fn trait_param_default(name: &str, marker: &str) -> TraitDefault {
+        TraitDefault {
+            name: Some(name.to_string()),
+            kind: DefaultKind::Param {
+                cell_type: Type::StructureRef("Material".to_string()),
+                default_decl: reify_ast::ParamDecl {
+                    name: name.to_string(),
+                    doc: None,
+                    is_priv: false,
+                    type_expr: None,
+                    default: Some(reify_ast::Expr {
+                        kind: reify_ast::ExprKind::Ident(marker.to_string()),
+                        span: SourceSpan::empty(0),
+                    }),
+                    where_clause: None,
+                    annotations: vec![],
+                    span: SourceSpan::empty(0),
+                    content_hash: ContentHash(0),
+                },
+            },
+            span: SourceSpan::empty(0),
+        }
+    }
+
+    /// Pull the `Ident` marker carried by the synthesized `Param` default named
+    /// `name` (its `default_decl.default` expr). `None` if no such default
+    /// exists or it carries no `Ident` value.
+    fn synth_marker<'a>(ctx: &'a MergeContext, name: &str) -> Option<&'a str> {
+        ctx.defaults.iter().find_map(|d| {
+            if d.name.as_deref() != Some(name) {
+                return None;
+            }
+            if let DefaultKind::Param { default_decl, .. } = &d.kind
+                && let Some(expr) = &default_decl.default
+                && let reify_ast::ExprKind::Ident(marker) = &expr.kind
+            {
+                Some(marker.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// (a) An unfilled `Material`-typed Param requirement with a file-level
+    /// ambient entry in scope synthesizes a `TraitDefault { name: Some(..),
+    /// kind: DefaultKind::Param { .. } }` whose `default_decl` carries the
+    /// ambient value expr, and whose `cell_type` is the resolved Material type.
+    ///
+    /// RED (step-7): fails — `check_phase_inject_ambient_defaults` does not exist.
+    #[test]
+    fn injects_ambient_default_for_unfilled_material_param() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("ambient_steel"),
+            "expected a synthesized Param default for 'material' carrying the ambient \
+             value expr; got {:?}",
+            ctx.defaults
+        );
+        let cell_type_ok = ctx.defaults.iter().any(|d| {
+            d.name.as_deref() == Some("material")
+                && matches!(
+                    &d.kind,
+                    DefaultKind::Param { cell_type, .. }
+                        if cell_type == &Type::StructureRef("Material".to_string())
+                )
+        });
+        assert!(
+            cell_type_ok,
+            "synthesized Param cell_type should be StructureRef(\"Material\"); got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (b) DD3: an explicit structure member suppresses ambient synthesis — the
+    /// structure provides `material` itself, so no ambient default is created.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn skips_synth_when_param_is_explicit_structure_member() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        let table = material_ambient_table("ambient_steel");
+        let mut structure_members: HashMap<String, Type> = HashMap::new();
+        structure_members.insert(
+            "material".to_string(),
+            Type::StructureRef("Material".to_string()),
+        );
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert!(
+            ctx.defaults.is_empty(),
+            "an explicit structure member must suppress ambient synth (DD3); got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (c) DD3: a trait-declared default already present in `ctx.defaults`
+    /// suppresses ambient synthesis — the ladder is explicit > trait-default >
+    /// ambient, so the pre-existing trait default survives unchanged and no
+    /// duplicate ambient entry is added.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn skips_synth_when_trait_default_already_present() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        ctx.defaults
+            .push(trait_param_default("material", "trait_default"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        let material_defaults = ctx
+            .defaults
+            .iter()
+            .filter(|d| d.name.as_deref() == Some("material"))
+            .count();
+        assert_eq!(
+            material_defaults, 1,
+            "a trait-declared default must suppress ambient synth (DD3); got {:?}",
+            ctx.defaults
+        );
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("trait_default"),
+            "the surviving 'material' default must be the pre-existing trait one"
+        );
+    }
+
+    /// (d) Two distinct `Material`-typed Param requirements, both unfilled, are
+    /// BOTH synthesized from the single file-level Material ambient entry.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn injects_for_every_unfilled_material_param() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(material_param_req("material"));
+        ctx.requirements
+            .push(material_param_req("secondary_material"));
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert_eq!(
+            synth_marker(&ctx, "material"),
+            Some("ambient_steel"),
+            "first Material param should be synthesized; got {:?}",
+            ctx.defaults
+        );
+        assert_eq!(
+            synth_marker(&ctx, "secondary_material"),
+            Some("ambient_steel"),
+            "second Material param should be synthesized; got {:?}",
+            ctx.defaults
+        );
+    }
+
+    /// (e) A Param requirement whose type has no ambient entry (here
+    /// `StructureRef("Widget")` while only `Material` is in the table) is left
+    /// untouched — no default is synthesized.
+    ///
+    /// RED (step-7): fails — function does not exist.
+    #[test]
+    fn leaves_param_with_no_ambient_entry_untouched() {
+        let mut ctx = MergeContext::new();
+        ctx.requirements.push(TraitRequirement {
+            name: "widget".to_string(),
+            kind: RequirementKind::Param(Type::StructureRef("Widget".to_string())),
+            span: SourceSpan::empty(0),
+        });
+        let table = material_ambient_table("ambient_steel");
+        let structure_members: HashMap<String, Type> = HashMap::new();
+
+        check_phase_inject_ambient_defaults(&mut ctx, &table, &structure_members, None);
+
+        assert!(
+            ctx.defaults.is_empty(),
+            "a Param requirement with no ambient entry must not be synthesized; got {:?}",
+            ctx.defaults
+        );
     }
 }

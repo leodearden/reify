@@ -215,9 +215,16 @@ describe('SHORTCUTS bind fields', () => {
         // CodeMirror's foldKeymap inside the editor; useKeyboardShortcuts skips
         // them because the CM contentDOM is contentEditable (bails before matching).
         if (s.id === 'fold' || s.id === 'unfold' || s.id === 'foldAll' || s.id === 'unfoldAll') continue;
-        // gotoDefinition/navBack/navForward/rename are display-only: dispatch is handled
-        // by the CM keymap in Editor.tsx; same rationale as fold entries above.
-        if (s.id === 'gotoDefinition' || s.id === 'navBack' || s.id === 'navForward' || s.id === 'rename') continue;
+        // gotoDefinition/navBack/navForward/rename/findUses are display-only: dispatch is
+        // handled by the CM keymap in Editor.tsx; same rationale as fold entries above.
+        if (
+          s.id === 'gotoDefinition' ||
+          s.id === 'navBack' ||
+          s.id === 'navForward' ||
+          s.id === 'rename' ||
+          s.id === 'findUses'
+        )
+          continue;
         expect(s.bind, `shortcut "${s.id}" has a display key but no bind field`).toBeDefined();
       }
     }
@@ -538,6 +545,30 @@ describe('shortcuts — commandPalette and symbolJump entries', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Find-uses shortcut entry (task-4202 β)
+// ---------------------------------------------------------------------------
+
+describe('shortcuts — findUses entry', () => {
+  it('SHORTCUTS contains a findUses entry with key "Shift+F12", category "Editor", truthy description, and not disabled', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'findUses');
+    expect(entry, 'findUses missing from SHORTCUTS').toBeDefined();
+    expect(entry?.key).toBe('Shift+F12');
+    expect((entry as ShortcutDef & { category?: string })?.category).toBe('Editor');
+    expect(entry?.description).toBeTruthy();
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('getShortcut("findUses") is defined (id flows into ShortcutId union)', () => {
+    expect(getShortcut('findUses')).toBeDefined();
+  });
+
+  it('findUses has no bind field (display-only, dispatched by the CM keymap in Editor.tsx)', () => {
+    const entry = SHORTCUTS.find((s) => s.id === 'findUses');
+    expect(entry?.bind, 'findUses must not have a bind field').toBeUndefined();
+  });
+});
+
 describe('shortcuts.ts source documentation', () => {
   it('does not contain brittle KeyboardHelp.tsx: file:line reference', () => {
     expect(SRC).not.toContain('KeyboardHelp.tsx:');
@@ -568,5 +599,42 @@ describe('shortcuts.ts source documentation', () => {
       }
     }
     expect(commentCount, 'comment block before _SHORTCUTS_DEF exceeds 5 lines').toBeLessThanOrEqual(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toggleDiagnostics shortcut (task-4401)
+// ---------------------------------------------------------------------------
+
+describe('toggleDiagnostics shortcut entry', () => {
+  it('SHORTCUTS contains a toggleDiagnostics entry', () => {
+    const ids = SHORTCUTS.map((s) => s.id);
+    expect(ids).toContain('toggleDiagnostics');
+  });
+
+  it('toggleDiagnostics has key "Ctrl+Shift+M" and category "View"', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry).toBeDefined();
+    expect(entry?.key).toBe('Ctrl+Shift+M');
+    expect(entry?.category).toBe('View');
+  });
+
+  it('toggleDiagnostics is not disabled', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.disabled).not.toBe(true);
+  });
+
+  it('toggleDiagnostics bind matches a Ctrl+Shift+M keydown', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.bind).toBeDefined();
+    const evt = new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: true });
+    expect(matchesEvent(entry!.bind!, evt)).toBe(true);
+  });
+
+  it('toggleDiagnostics bind does NOT match Ctrl+M without shift', () => {
+    const entry = getShortcut('toggleDiagnostics');
+    expect(entry?.bind).toBeDefined();
+    const evt = new KeyboardEvent('keydown', { key: 'm', ctrlKey: true, shiftKey: false });
+    expect(matchesEvent(entry!.bind!, evt)).toBe(false);
   });
 });

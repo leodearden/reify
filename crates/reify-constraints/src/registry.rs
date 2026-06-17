@@ -44,6 +44,28 @@ impl SolverRegistry {
         }
     }
 
+    /// Production solver set: Dimensional + geometric SolveSpace.
+    ///
+    /// This is the **single source of truth** for the constraint solver set
+    /// installed by the CLI and GUI engines.  Both binaries call this factory
+    /// rather than constructing their own registry, which prevents CLI/GUI
+    /// solver-set drift.
+    ///
+    /// Slot assignments:
+    /// - Dimensional: `DimensionalSolver` (Nelder-Mead; handles length/angle/scalar)
+    /// - Geometric: `SolveSpaceSolver` (SolveSpace; handles `std::distance`,
+    ///   `std::angle_between`, `std::parallel`, `std::tangent`, `std::geo::*`)
+    /// - Logical: `None` — falls back to `DimensionalSolver`
+    /// - CrossDomain fallback: `None` — falls back to `DimensionalSolver`
+    pub fn production() -> Self {
+        Self::with_solvers(
+            Box::new(crate::DimensionalSolver),
+            Some(Box::new(crate::SolveSpaceSolver)),
+            None,
+            None,
+        )
+    }
+
     /// Create a new solver registry with explicit solvers for each domain.
     pub fn with_solvers(
         dimensional: Box<dyn ConstraintSolver>,
@@ -374,11 +396,11 @@ fn signed_term_expr(term: &ObjectiveTerm) -> CompiledExpr {
         ObjectiveSense::Minimize if is_unit => e,
         ObjectiveSense::Maximize if is_unit => CompiledExpr::unop(UnOp::Neg, e, e_type),
         ObjectiveSense::Minimize => {
-            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::Real);
+            let w_lit = CompiledExpr::literal(Value::Real(term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
         ObjectiveSense::Maximize => {
-            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::Real);
+            let w_lit = CompiledExpr::literal(Value::Real(-term.weight), Type::dimensionless_scalar());
             CompiledExpr::binop(BinOp::Mul, w_lit, e, e_type)
         }
     }
@@ -419,8 +441,8 @@ fn build_band_constraints(
     let delta = f64::max(LEX_EPSILON_BAND_REL * obj_star.abs(), LEX_EPSILON_BAND_ABS);
     let cost = signed_cost_expr(rank_terms);
 
-    let upper = CompiledExpr::literal(Value::Real(obj_star + delta), Type::Real);
-    let lower = CompiledExpr::literal(Value::Real(obj_star - delta), Type::Real);
+    let upper = CompiledExpr::literal(Value::Real(obj_star + delta), Type::dimensionless_scalar());
+    let lower = CompiledExpr::literal(Value::Real(obj_star - delta), Type::dimensionless_scalar());
 
     let le_expr = CompiledExpr::binop(BinOp::Le, cost.clone(), upper, Type::Bool);
     let ge_expr = CompiledExpr::binop(BinOp::Ge, cost, lower, Type::Bool);

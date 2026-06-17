@@ -1,0 +1,34 @@
+// from_samples worked example — exercises the `from_samples` built-in that
+// constructs a gridded (Regular1D) SampledField from explicit sample points
+// (task γ, PRD docs/prds/v0_6/std-fields-api.md §D3/D5).
+//
+// Boundary tests covered:
+//   B2  — sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
+//          == 5.0 (IEEE-754 exact: lerp between node0(0) and node1(10) at fraction 0.5)
+//
+// B3/B4 error cases are intentionally shown as doc comments only — they
+// produce eval-time Error diagnostics and would break the clean-artifact
+// contract of this example.  They are exercised as inline source strings
+// inside crates/reify-eval/tests/from_samples_example_smoke.rs.
+//
+// B3 (non-uniform spacing → E_FIELD_SAMPLES_NOT_GRID):
+//   let bad_grid = sample(from_samples([0.0, 1.0, 5.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
+//   -- spacing [1.0, 4.0] is non-uniform → FieldSamplesNotGrid error + Undef
+//
+// B4 (unsupported method → E_INTERP_METHOD_UNSUPPORTED):
+//   let rbf_field = sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.RBF), 0.5)
+//   -- RBF is not supported by from_samples → InterpMethodUnsupported error + Undef
+//
+// Design: the intermediate Field is consumed inline by `sample` (never bound
+// to a `let` cell), so the let-cells hold Real and field-as-let-cell
+// representability is not required.
+
+structure def FromSamplesDemo {
+    // sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
+    // = lerp(0.0, 10.0, 0.5) = 5.0   (B2 worked example)
+    let v = sample(from_samples([0.0, 1.0, 2.0], [0.0, 10.0, 20.0], InterpolationMethod.Linear), 0.5)
+
+    // Constraints — both Satisfied once the from_samples eval arm lands (B2 == 5.0)
+    constraint v > 4.999
+    constraint v < 5.001
+}

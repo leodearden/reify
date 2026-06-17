@@ -205,7 +205,7 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
         ),
         ("walls", Type::Int),
         ("top_bottom_layers", Type::Int),
-        ("infill_density", Type::Real),
+        ("infill_density", Type::dimensionless_scalar()),
         ("infill_pattern", Type::Enum("InfillPattern".to_string())),
         (
             "material",
@@ -568,7 +568,7 @@ fn assert_real_default(template: &TopologyTemplate, member: &str, expected: f64)
 
     assert_eq!(
         expr.result_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "FDMProcess.{} default result_type should be Real, got: {:?}",
         member,
         expr.result_type

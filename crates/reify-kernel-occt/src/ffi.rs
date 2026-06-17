@@ -27,6 +27,17 @@ pub mod ffi {
         normals: Vec<f32>,
     }
 
+    /// STEP export result returned across FFI.
+    ///
+    /// `content` is the STEP file text. `ap242_fell_back` is `true` iff the
+    /// caller requested the `AP242` schema but the linked OCCT build rejected
+    /// it, so the writer degraded to AP214 (honest degradation). For the
+    /// AP203 and AP214 schemas it is always `false`.
+    struct ExportStepResult {
+        content: String,
+        ap242_fell_back: bool,
+    }
+
     /// Full 3×3 inertia tensor returned from `query_inertia_tensor`.
     ///
     /// Fields are named m{row}{col} in row-major order (m11 = row 1, col 1).
@@ -110,6 +121,39 @@ pub mod ffi {
         dir_max: Point3,
     }
 
+    /// Analytic datum projected from a face's underlying analytic surface.
+    ///
+    /// Returned by `face_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` surface produced the datum so the Rust
+    /// dispatch can compose the correct projected `Value` (Axis for
+    /// Cylinder/Cone, Plane for Plane, Point for the Sphere centre). `origin`
+    /// and `direction` carry the datum's location + axis direction;
+    /// `scalar1`/`scalar2` carry the analytic parameters (radius / semi-angle;
+    /// apex-distance / —) retained in the bundle's trait record but not
+    /// consumed by the `.axis`/`.plane`/`.point` projections in this task.
+    struct AnalyticSurfaceDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
+    /// Analytic datum projected from an edge's underlying analytic curve.
+    ///
+    /// Returned by `edge_analytic_datum` (geometric-relations ε). The `kind`
+    /// byte encodes which `GeomAbs_*` curve produced the datum. `origin` and
+    /// `direction` carry the line position + direction or the circle/ellipse
+    /// centre + axis direction; `scalar1`/`scalar2` carry radius / major-radius
+    /// and minor-radius.
+    struct AnalyticCurveDatum {
+        origin: Point3,
+        direction: Point3,
+        scalar1: f64,
+        scalar2: f64,
+        kind: u8,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -172,6 +216,7 @@ pub mod ffi {
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_wedge(width: f64, depth: f64, height: f64, top_width: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_torus(major_r: f64, minor_r: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Boolean operations ---
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -393,12 +438,60 @@ pub mod ffi {
             radius: f64,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
+        /// Run `BRepFilletAPI_MakeFillet` on `shape` with the given `radius`
+        /// applied to ONLY the selected edges. `edge_indices` are 0-based
+        /// positions into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)`
+        /// enumeration — the same order `extract_edges` mints edge handles in —
+        /// so a `GeometryHandleId` resolved via the `extracted_edges` cache maps
+        /// to the matching index. Eagerly captures the per-parent face/edge
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Requires a non-empty `edge_indices`; the
+        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        fn make_fillet_edges_with_history(
+            shape: &OcctShape,
+            radius: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
         /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
         /// applied to every edge, eagerly capturing the per-parent face/edge
         /// Modified/Generated/Deleted records alongside the modified result shape.
         fn make_chamfer_with_history(
             shape: &OcctShape,
             distance: f64,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
+        /// applied to ONLY the selected edges. `edge_indices` are 0-based
+        /// positions into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)`
+        /// enumeration — the same order `extract_edges` mints edge handles in —
+        /// so a `GeometryHandleId` resolved via the `extracted_edges` cache maps
+        /// to the matching index. Eagerly captures the per-parent face/edge
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Requires a non-empty `edge_indices`; the
+        /// all-edges / empty-selection path keeps using `chamfer_all_edges`.
+        fn make_chamfer_edges_with_history(
+            shape: &OcctShape,
+            distance: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` applying ASYMMETRIC
+        /// setbacks (`d1` on the reference face F, `d2` on the other adjacent
+        /// face) to ONLY the selected edges via `MakeChamfer::Add(d1, d2, E, F)`,
+        /// where F is the first adjacent face from the edge→face ancestor map.
+        /// `edge_indices` are 0-based positions into the canonical
+        /// `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration — the same order
+        /// `extract_edges` mints edge handles in. Eagerly captures the per-parent
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Both `d1` and `d2` must be finite positive;
+        /// requires a non-empty `edge_indices` (the Rust wrapper enumerates all
+        /// parent edges for the empty=all-edges path).
+        fn make_chamfer_asymmetric_edges_with_history(
+            shape: &OcctShape,
+            d1: f64,
+            d2: f64,
+            edge_indices: &Vec<u32>,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
         /// Move the result shape out of the local-feature-history wrapper for
@@ -582,20 +675,64 @@ pub mod ffi {
             plane_shape: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
-        // --- Thicken / Shell ---
+        /// Apply `BRepOffsetAPI_DraftAngle` to the curated face subset
+        /// identified by 0-based canonical-order face indices. Requires
+        /// non-empty `face_indices`; the all-faces path uses `draft_shape`.
+        fn draft_faces_shape(
+            shape: &OcctShape,
+            angle_rad: f64,
+            plane_shape: &OcctShape,
+            face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Thicken / Shell / Offset Solid ---
+        fn offset_solid_shape(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
         fn thicken_shape(shape: &OcctShape, offset: f64) -> Result<UniquePtr<OcctShape>>;
+        fn zone_slab_shape(face: &OcctShape, width: f64) -> Result<UniquePtr<OcctShape>>;
         fn shell_shape(
             shape: &OcctShape,
             thickness: f64,
             face_indices: &Vec<u32>,
         ) -> Result<UniquePtr<OcctShape>>;
 
+        // --- Offset curve (offset_curve ι) ---
+        /// Planar offset of a curve (wire) by `distance` → fresh concentric
+        /// wire. Positive `distance` grows the curve outward (overload 1).
+        fn make_offset_curve(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a curve (wire) by `distance`, then carry the result along the
+        /// unit `(dx,dy,dz)` direction (overload 3).
+        fn make_offset_curve_directional(
+            shape: &OcctShape,
+            distance: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a curve (wire) by `distance` along a reference face's surface
+        /// normal (overload 2).
+        fn make_offset_curve_on_surface(
+            shape: &OcctShape,
+            distance: f64,
+            reference: &OcctShape,
+        ) -> Result<UniquePtr<OcctShape>>;
+
         // --- Wire helpers / Loft ---
         fn make_circle_wire(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_circle_face(radius: f64, z_height: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_cylindrical_face(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_rectangle_face(
             width: f64,
             height: f64,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_polygon_face(
+            coords: &[f64],
+            n_points: usize,
+            z_height: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        fn make_ellipse_face(
+            semi_major: f64,
+            semi_minor: f64,
             z_height: f64,
         ) -> Result<UniquePtr<OcctShape>>;
         fn make_line_wire(
@@ -939,6 +1076,29 @@ pub mod ffi {
         /// Errors if `shape` is not a `TopAbs_EDGE`.
         fn edge_curve_kind(shape: &OcctShape) -> Result<String>;
 
+        /// Project a face's underlying analytic surface to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Surface::GetType()` switch:
+        /// Cylinder/Cone → axis datum (`Axis().Location()`/`.Direction()` +
+        /// radius / semi-angle), Plane → plane datum, Sphere → centre-point
+        /// datum. The `kind` byte in the returned `AnalyticSurfaceDatum`
+        /// records the GeomAbs classification for Rust-side `Value` composition.
+        /// Errors if `shape` is not a `TopAbs_FACE` or the surface is
+        /// non-analytic (e.g. `GeomAbs_SurfaceOfRevolution`, B-spline).
+        fn face_analytic_datum(shape: &OcctShape) -> Result<AnalyticSurfaceDatum>;
+
+        /// Project an edge's underlying analytic curve to a datum
+        /// (geometric-relations ε). `BRepAdaptor_Curve::GetType()` switch:
+        /// Line → axis datum (`Position()`/`.Direction()`), Circle/Ellipse →
+        /// centre + axis datum (`Axis()` + `.Location()` + radius). Errors if
+        /// `shape` is not a `TopAbs_EDGE` or the curve is non-analytic.
+        fn edge_analytic_datum(shape: &OcctShape) -> Result<AnalyticCurveDatum>;
+
+        /// Local modelling tolerance of a sub-shape via `BRep_Tool::Tolerance`
+        /// (geometric-relations ε). Returns the face/edge/vertex tolerance in
+        /// kernel-native units (metres) — feeds the feature-datum dedup
+        /// tolerance formula `max(confusion_floor, localTol(A), localTol(B))`.
+        fn shape_local_tolerance(shape: &OcctShape) -> Result<f64>;
+
         /// Materialize the unique edges of `shape` into an OcctShapeVec
         /// (canonical TopExp::MapShapes order, deduplicated by IsSame).
         /// Assemble a non-empty `OcctShapeVec` into a `TopoDS_Compound`.
@@ -1040,7 +1200,12 @@ pub mod ffi {
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Export ---
-        fn export_step(shape: &OcctShape) -> Result<String>;
+        /// Export `shape` to STEP using the given kernel-neutral `schema`
+        /// (`"AP203"` / `"AP214"` / `"AP242"`, from `StepSchema::as_str()`).
+        /// The C++ side maps it to the OCCT `write.step.schema` token and,
+        /// for AP242, falls back to AP214 if the build rejects it (signalled
+        /// via `ExportStepResult::ap242_fell_back`).
+        fn export_step(shape: &OcctShape, schema: &str) -> Result<ExportStepResult>;
 
         // --- BRep serialization ---
         fn serialize_brep(shape: &OcctShape) -> Result<String>;

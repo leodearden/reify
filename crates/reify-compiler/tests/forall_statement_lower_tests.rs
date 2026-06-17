@@ -898,7 +898,7 @@ fn forall_constraint_inst_body_over_undef_count_collection_sub_skips_capture_wit
 
     let source = r#"
 constraint def MinThreshold {
-    param value : Scalar
+    param value : Mass
     value > 0
 }
 structure Vent {
@@ -1639,7 +1639,7 @@ structure S {
 fn forall_constraint_inst_body_emits_per_element_inst_predicates() {
     let source = r#"
 constraint def MinThreshold {
-    param value : Scalar
+    param value : Length
     value > 0
 }
 structure S {
@@ -2040,7 +2040,7 @@ structure S {
 /// stops execution before the outer loop is entered, so the chain guard never
 /// fires.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, update
+/// TODO(future): once SchemaNode-style re-elaboration is in place, update // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// this test to assert that connections are emitted when the count becomes known.
 #[test]
 fn forall_connect_chain_body_over_undef_count_collection_sub_emits_no_connections_no_error() {
@@ -2226,7 +2226,7 @@ structure S {
 /// Connect form. At compile time we cannot resolve the count of `vents`, so
 /// elaboration is deferred silently.
 ///
-/// TODO(future): once SchemaNode-style re-elaboration is in place, this
+/// TODO(future): once SchemaNode-style re-elaboration is in place, this // ptodo:allow doc reference to a placeholder marker - not tracked debt
 /// test should be updated to assert that the connections are emitted once
 /// the count becomes known at graph-build time.
 #[test]
@@ -2273,7 +2273,7 @@ structure def S {
 fn forall_constraint_inst_body_over_empty_list_literal_emits_no_decls_no_error() {
     let source = r#"
 constraint def MinThreshold {
-    param value : Scalar
+    param value : Length
     value > 0
 }
 structure S {

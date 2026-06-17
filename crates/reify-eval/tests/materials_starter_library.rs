@@ -21,7 +21,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 ///
 /// Note: an identical helper exists in `structure_instance_e2e.rs` — this is
 /// the second copy. A third consumer would justify moving it into
-/// `reify_test_support`; tracked as a follow-up to the task-3542 review.
+/// `reify_test_support`; a third consumer would justify moving it (see task-3542 review).
 fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> {
     m.get(&k.to_string())
 }

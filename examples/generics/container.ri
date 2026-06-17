@@ -1,0 +1,11 @@
+// B2 generic-user-fns integration example (task 4233 δ).
+//
+// Exercises `Type::TypeParam` inside `List<T>` at eval — the :1335 fix.
+// `single<T>(x: T) -> List<T>` wraps any value in a single-element list.
+// `single(5mm)` must evaluate to `[0.005 m]` (a List containing the 5mm scalar).
+
+fn single<T>(x: T) -> List<T> { [x] }
+
+structure def GenericsContainer {
+    let b = single(5mm)
+}

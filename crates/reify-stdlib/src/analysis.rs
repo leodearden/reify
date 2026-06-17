@@ -1,6 +1,21 @@
-//! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor.
+//! Stress analysis builtins: von_mises, principal_stresses, max_shear, safety_factor,
+//! stress_invariants.
 
-use reify_ir::Value;
+use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+/// Sentinel `StructureTypeId` for engine-assembled (registry-free) instances.
+///
+/// The `eval_builtin` path has no `StructureRegistry`, so result instances
+/// are minted with the nominal `type_name` as the authoritative source of
+/// truth for downstream consumers.  This mirrors the identical constant in
+/// `crates/reify-eval/src/dynamics_ops.rs:41` and
+/// `crates/reify-stdlib/src/dynamics/eval.rs:51`.
+///
+/// **Single-source-of-truth note**: all four occurrences of this sentinel
+/// across the codebase use `StructureTypeId(u32::MAX)` directly.  A full
+/// cross-crate dedup (hoisting to `reify-ir` or a shared `reify-stdlib` helper)
+/// is deferred beyond task 2884's scope.
+const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 use crate::helpers::{binary, sanitize_value, unary};
 use crate::matrix::matrix_components_f64;
@@ -15,6 +30,7 @@ pub(crate) fn eval_analysis(name: &str, args: &[Value]) -> Option<Value> {
         "principal_stresses" => principal_stresses(args),
         "max_shear" => max_shear(args),
         "safety_factor" => safety_factor(args),
+        "stress_invariants" => stress_invariants(args),
         _ => return None,
     })
 }
@@ -91,6 +107,28 @@ fn von_mises(args: &[Value]) -> Value {
     })
 }
 
+/// Compute the maximum shear stress from a 3×3 row-major stress window.
+///
+/// Formula: τ_max = (σ₁ − σ₃) / 2, where σ₁ and σ₃ are the maximum and
+/// minimum principal stresses (ascending eigenvalues of the symmetric stress
+/// tensor: `eigs[2]` and `eigs[0]`).
+///
+/// Returns `f64::NAN` if eigenvalue decomposition fails (e.g. all-NaN window).
+///
+/// `pub` so the formula has a single home — the `max_shear` builtin (below),
+/// AND the cross-crate MaxShear field reduction in
+/// `crates/reify-expr/src/field_reductions.rs`. Mirrors the `pub` promotion
+/// of `compute_von_mises_3x3`. Re-exported via
+/// `pub use analysis::compute_max_shear_3x3` in `lib.rs`.
+///
+/// Window must be at least 9 floats long; only `d[0..9]` is read.
+pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
+    match compute_eigenvalues_3x3(d) {
+        Some(eigs) => (eigs[2] - eigs[0]) / 2.0,
+        None => f64::NAN,
+    }
+}
+
 /// Compute eigenvalues of a symmetric 3×3 matrix.
 ///
 /// Uses the closed-form formula optimized for symmetric matrices: two eigenvalues
@@ -99,11 +137,14 @@ fn von_mises(args: &[Value]) -> Value {
 ///
 /// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
 ///
-/// `pub(crate)` for cross-module reuse from
-/// `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — the
-/// per-grid-point projection inlines this call on each 9-float row-major
-/// stress window and selects `eigs[2]` (the largest principal stress).
-pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
+/// `pub` for cross-crate reuse from:
+/// - `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — per-grid-point
+///   projection inlines this call on each 9-float row-major stress window and
+///   selects `eigs[2]` (the largest principal stress).
+/// - `crates/reify-expr/src/field_reductions.rs::project_principal_stresses_sampled`
+///   — selects `eigs[2]` (max) or `eigs[0]` (min) per window during a
+///   `max|min|argmax|argmin(principal_stresses_field)` reduction (task 4562).
+pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     debug_assert!(
         d.len() >= 9,
         "compute_eigenvalues_3x3 requires at least 9 elements, got {}",
@@ -115,7 +156,14 @@ pub(crate) fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     // ignored. For non-symmetric inputs the result will be silently wrong.
     debug_assert!(
         {
-            let tol = |a: f64, b: f64| (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()));
+            // NaN inputs (out-of-solid sentinel windows from the FEA elaborator)
+            // are trivially "symmetric" — the assertion is only meaningful for
+            // non-NaN programmer-error catches.  Matches the NaN short-circuit
+            // already present in `compute_von_mises_3x3`.
+            let tol = |a: f64, b: f64| {
+                (a.is_nan() && b.is_nan())
+                    || (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()))
+            };
             tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
         },
         "compute_eigenvalues_3x3 assumes a symmetric matrix but got non-symmetric entries: \
@@ -199,6 +247,10 @@ fn principal_stresses(args: &[Value]) -> Value {
 /// Compute maximum shear stress from a 3×3 stress tensor.
 ///
 /// max_shear = (σ₁ − σ₃) / 2 where σ₁ and σ₃ are the max and min principal stresses.
+///
+/// Delegates to [`compute_max_shear_3x3`] so the formula has a single home
+/// shared with the cross-crate MaxShear field reduction in
+/// `crates/reify-expr/src/field_reductions.rs`.
 fn max_shear(args: &[Value]) -> Value {
     unary(args, |tensor| {
         let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
@@ -207,13 +259,7 @@ fn max_shear(args: &[Value]) -> Value {
         };
         let _ = (nrows, ncols);
 
-        let eigs = match compute_eigenvalues_3x3(&d) {
-            Some(e) => e,
-            None => return Value::Undef,
-        };
-
-        // eigs is sorted ascending: [σ₃, σ₂, σ₁]
-        let tau_max = (eigs[2] - eigs[0]) / 2.0;
+        let tau_max = compute_max_shear_3x3(&d);
         sanitize_value(Value::from_real_scalar(tau_max, dim))
     })
 }
@@ -237,6 +283,109 @@ fn safety_factor(args: &[Value]) -> Value {
         };
 
         sanitize_value(Value::Real(yield_f64 / vm_f64))
+    })
+}
+
+/// Compute the three stress invariants of a 3×3 row-major symmetric stress tensor.
+///
+/// Returns `[I1, I2, I3]` where:
+///   I1 = trace = σ_xx + σ_yy + σ_zz
+///   I2 = (σ_xx·σ_yy + σ_yy·σ_zz + σ_zz·σ_xx) − (σ_xy² + σ_yz² + σ_xz²)
+///   I3 = determinant of the stress tensor
+///
+/// Row-major flat layout: d[0]=σ_xx, d[1]=σ_xy, d[2]=σ_xz,
+///                         d[3]=σ_yx, d[4]=σ_yy, d[5]=σ_yz,
+///                         d[6]=σ_zx, d[7]=σ_zy, d[8]=σ_zz
+///
+/// ## Symmetry convention
+///
+/// Only upper-triangle entries (`d[1]`, `d[2]`, `d[5]`) are read; the
+/// lower-triangle (`d[3]`, `d[6]`, `d[7]`) is ignored.  In debug/test builds,
+/// a `debug_assert!` checks near-symmetry (same tolerance as the sibling
+/// kernels `compute_von_mises_3x3` and `compute_eigenvalues_3x3`) so
+/// programmer errors and asymmetric inputs are caught early.
+///
+/// A user passing a genuinely asymmetric 3×3 `.ri` matrix will panic in debug
+/// builds (same as the sibling kernels) rather than producing silently wrong
+/// results.  This matches the established convention for all 3×3 stress kernels
+/// in this module.
+pub(crate) fn compute_stress_invariants_3x3(d: &[f64]) -> [f64; 3] {
+    debug_assert!(
+        d.len() >= 9,
+        "compute_stress_invariants_3x3 requires at least 9 elements, got {}",
+        d.len()
+    );
+    debug_assert!(
+        {
+            let tol = |a: f64, b: f64| {
+                (a.is_nan() && b.is_nan())
+                    || (a - b).abs() <= 1e-10 * (1.0 + a.abs().max(b.abs()))
+            };
+            tol(d[1], d[3]) && tol(d[2], d[6]) && tol(d[5], d[7])
+        },
+        "compute_stress_invariants_3x3: input matrix is not symmetric"
+    );
+
+    let sxx = d[0];
+    let syy = d[4];
+    let szz = d[8];
+    let sxy = d[1]; // upper-triangle; lower triangle ignored for symmetric inputs
+    let syz = d[5];
+    let sxz = d[2];
+
+    let i1 = sxx + syy + szz;
+    let i2 = sxx * syy + syy * szz + szz * sxx - (sxy * sxy + syz * syz + sxz * sxz);
+    // I3 = determinant (using upper-triangle symmetry: syx=sxy, szx=sxz, szy=syz)
+    let i3 = sxx * (syy * szz - syz * syz) - sxy * (sxy * szz - syz * sxz)
+        + sxz * (sxy * syz - syy * sxz);
+
+    [i1, i2, i3]
+}
+
+/// Compute the three stress invariants of a 3×3 stress tensor `Value::Tensor`.
+///
+/// Returns a `Value::StructureInstance` with `type_name = "StressInvariants"` and
+/// fields `i1` (PRESSURE), `i2` (PRESSURE²), `i3` (PRESSURE³) — or `Value::Real`
+/// for dimensionless inputs.
+fn stress_invariants(args: &[Value]) -> Value {
+    unary(args, |tensor| {
+        let (nrows, ncols, d, dim) = match matrix_components_f64(tensor) {
+            Some(v) if v.0 == 3 && v.1 == 3 => v,
+            _ => return Value::Undef,
+        };
+        let _ = (nrows, ncols);
+
+        let [i1, i2, i3] = compute_stress_invariants_3x3(&d);
+
+        // Build correctly-dimensioned scalars: I1 ∝ dim, I2 ∝ dim², I3 ∝ dim³.
+        // Value::from_real_scalar(v, DIMENSIONLESS) → Value::Real(v), so the
+        // dimensionless case produces Real fields automatically.
+        let dim2 = dim.mul(&dim);
+        let dim3 = dim2.mul(&dim);
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "i1".to_string(),
+                sanitize_value(Value::from_real_scalar(i1, dim)),
+            ),
+            (
+                "i2".to_string(),
+                sanitize_value(Value::from_real_scalar(i2, dim2)),
+            ),
+            (
+                "i3".to_string(),
+                sanitize_value(Value::from_real_scalar(i3, dim3)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: REGISTRY_FREE_TYPE_ID,
+            type_name: "StressInvariants".to_string(),
+            version: 1,
+            fields,
+        }))
     })
 }
 
@@ -500,6 +649,63 @@ mod tests {
         );
     }
 
+    // ── compute_max_shear_3x3 kernel tests ──────────────────────────────────
+
+    /// `compute_max_shear_3x3` on a uniaxial window [σ,0,...,0] returns σ/2
+    /// (eigenvalues = [0,0,σ] → (σ−0)/2 = σ/2).
+    ///
+    /// Also verifies a hydrostatic window [p,0,0, 0,p,0, 0,0,p] → 0.0
+    /// (all eigenvalues equal → (p−p)/2 = 0).
+    ///
+    /// RED before step-2: `compute_max_shear_3x3` does not exist (compile error).
+    #[test]
+    fn compute_max_shear_3x3_uniaxial_and_hydrostatic() {
+        // Uniaxial [σ,0,0,0,0,0,0,0,0] → τ_max = σ/2
+        let sigma = 200e6_f64;
+        let uniaxial = [sigma, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let tau = compute_max_shear_3x3(&uniaxial);
+        assert!(
+            (tau - sigma / 2.0).abs() < 1e-6,
+            "uniaxial: expected τ_max={}, got {}",
+            sigma / 2.0,
+            tau
+        );
+
+        // Hydrostatic [p,0,0, 0,p,0, 0,0,p] → τ_max = 0
+        let p = 100e6_f64;
+        let hydrostatic = [p, 0.0, 0.0, 0.0, p, 0.0, 0.0, 0.0, p];
+        let tau_h = compute_max_shear_3x3(&hydrostatic);
+        assert!(
+            tau_h.abs() < 1e-6,
+            "hydrostatic: expected τ_max=0.0, got {}",
+            tau_h
+        );
+    }
+
+    /// All-NaN window routed through the `max_shear` builtin must NOT panic
+    /// on the symmetry `debug_assert` in `compute_eigenvalues_3x3`, and must
+    /// return `Value::Undef` (NaN projected to NaN → `sanitize_value` → Undef).
+    ///
+    /// RED before step-2: the NaN short-circuit in `compute_eigenvalues_3x3`
+    /// is missing, so `(NaN-NaN).abs() <= ...` = false and the assert fires.
+    #[test]
+    fn max_shear_builtin_all_nan_window_returns_undef_without_panic() {
+        let nan_tensor = make_dimensioned_matrix(
+            &[
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+            ],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("max_shear", &[nan_tensor]).unwrap();
+        assert!(
+            result.is_undef(),
+            "max_shear(all-NaN window) must return Undef without panicking, got {:?}",
+            result
+        );
+    }
+
     // ── safety_factor tests ─────────────────────────────────────────────────
 
     #[test]
@@ -566,5 +772,134 @@ mod tests {
         assert!(eval_analysis("safety_factor", &[]).unwrap().is_undef());
         let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 0.0, 0.0], &[0.0, 0.0, 0.0]]);
         assert!(eval_analysis("safety_factor", &[t]).unwrap().is_undef());
+    }
+
+    // ── stress_invariants tests ─────────────────────────────────────────────
+
+    /// Helper: get a field value from a StructureInstance by name.
+    fn si_field(v: &Value, field_name: &str) -> Value {
+        match v {
+            Value::StructureInstance(data) => data
+                .fields
+                .get(&field_name.to_string())
+                .cloned()
+                .unwrap_or_else(|| panic!("field '{}' missing from StructureInstance", field_name)),
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+    }
+
+    /// `stress_invariants` is a recognised name: `eval_analysis` must return `Some`
+    /// (even with no args — the function is known, dispatch returns `Some(Undef)`).
+    #[test]
+    fn stress_invariants_name_is_recognised() {
+        assert!(
+            eval_analysis("stress_invariants", &[]).is_some(),
+            "stress_invariants must be a recognised analysis name (returns Some)"
+        );
+        assert!(
+            eval_analysis("stress_invariants", &[]).unwrap().is_undef(),
+            "stress_invariants([]) must return Some(Undef) (wrong arity)"
+        );
+    }
+
+    /// Diagonal dimensionless tensor [[100,0,0],[0,50,0],[0,0,25]]:
+    ///   I1 = trace = 175
+    ///   I2 = 100·50 + 50·25 + 25·100 − 0 = 8750
+    ///   I3 = det  = 100·50·25 = 125000
+    /// All invariants should be `Value::Real` (dimensionless tensor).
+    #[test]
+    fn stress_invariants_diagonal_dimensionless() {
+        let tensor =
+            make_matrix(&[&[100.0, 0.0, 0.0], &[0.0, 50.0, 0.0], &[0.0, 0.0, 25.0]]);
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(
+                    data.type_name, "StressInvariants",
+                    "type_name must be 'StressInvariants', got {:?}",
+                    data.type_name
+                );
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        assert_real_approx!(si_field(&result, "i1"), 175.0);
+        assert_real_approx!(si_field(&result, "i2"), 8750.0);
+        assert_real_approx!(si_field(&result, "i3"), 125000.0);
+    }
+
+    /// Hydrostatic dimensioned tensor [[p,0,0],[0,p,0],[0,0,p]] (PRESSURE):
+    ///   I1 = 3p  (PRESSURE)
+    ///   I2 = 3p² (PRESSURE²)
+    ///   I3 = p³  (PRESSURE³)
+    #[test]
+    fn stress_invariants_hydrostatic_pressure() {
+        let p = 100e6_f64; // 100 MPa
+        let tensor = make_dimensioned_matrix(
+            &[&[p, 0.0, 0.0], &[0.0, p, 0.0], &[0.0, 0.0, p]],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "StressInvariants");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        let dim2 = DimensionVector::PRESSURE.mul(&DimensionVector::PRESSURE);
+        let dim3 = dim2.mul(&DimensionVector::PRESSURE);
+        // I1 = 3p (PRESSURE)
+        assert_scalar_approx!(si_field(&result, "i1"), 3.0 * p, DimensionVector::PRESSURE);
+        // I2 = 3p² (PRESSURE²)
+        assert_scalar_approx!(si_field(&result, "i2"), 3.0 * p * p, dim2);
+        // I3 = p³ (PRESSURE³)
+        assert_scalar_approx!(si_field(&result, "i3"), p * p * p, dim3);
+    }
+
+    /// General symmetric tensor [[2,1,0],[1,3,1],[0,1,2]] (dimensionless):
+    ///   I1 = 2+3+2 = 7
+    ///   I2 = (2·3+3·2+2·2) − (1²+1²+0²) = 16 − 2 = 14
+    ///   I3 = det = 2·(3·2−1·1) − 1·(1·2−1·0) + 0 = 2·5−2 = 8
+    #[test]
+    fn stress_invariants_general_symmetric_dimensionless() {
+        let tensor =
+            make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_analysis("stress_invariants", &[tensor]).unwrap();
+        match &result {
+            Value::StructureInstance(data) => {
+                assert_eq!(data.type_name, "StressInvariants");
+            }
+            other => panic!("expected StructureInstance, got {:?}", other),
+        }
+        assert_real_approx!(si_field(&result, "i1"), 7.0);
+        assert_real_approx!(si_field(&result, "i2"), 14.0);
+        assert_real_approx!(si_field(&result, "i3"), 8.0);
+    }
+
+    /// Wrong arity / non-matrix / non-3×3 → `Some(Value::Undef)`.
+    #[test]
+    fn stress_invariants_bad_args_return_undef() {
+        // Too many args
+        let t = make_matrix(&[&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]]);
+        assert!(
+            eval_analysis("stress_invariants", &[t.clone(), t.clone()])
+                .unwrap()
+                .is_undef(),
+            "two args must return Undef"
+        );
+        // Non-matrix arg
+        assert!(
+            eval_analysis("stress_invariants", &[Value::Real(42.0)])
+                .unwrap()
+                .is_undef(),
+            "scalar arg must return Undef"
+        );
+        // 2×2 matrix
+        let m2x2 = make_matrix(&[&[1.0, 0.0], &[0.0, 1.0]]);
+        assert!(
+            eval_analysis("stress_invariants", &[m2x2])
+                .unwrap()
+                .is_undef(),
+            "2×2 matrix must return Undef"
+        );
     }
 }

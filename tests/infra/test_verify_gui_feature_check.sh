@@ -40,10 +40,42 @@ make_fixture() {
     dir="$(mktemp -d)"
     _TMPDIRS+=("$dir")
     mkdir -p "$dir/scripts"
-    cp "$REPO_ROOT/scripts/verify.sh"                "$dir/scripts/verify.sh"
-    cp "$REPO_ROOT/scripts/occt-scope-lib.sh"        "$dir/scripts/occt-scope-lib.sh"
-    cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
+    cp "$REPO_ROOT/scripts/verify.sh"                   "$dir/scripts/verify.sh"
+    cp "$REPO_ROOT/scripts/affected-crates-lib.sh"     "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/occt-scope-lib.sh"           "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/occt-touching-crates.txt"    "$dir/scripts/occt-touching-crates.txt"
+    cp "$REPO_ROOT/scripts/release-scope-lib.sh"        "$dir/scripts/release-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
+    cp "$REPO_ROOT/scripts/affected-crates-lib.sh"       "$dir/scripts/affected-crates-lib.sh"
+    cp "$REPO_ROOT/scripts/lib_test_semaphore.sh"        "$dir/scripts/lib_test_semaphore.sh"
+    cp "$REPO_ROOT/scripts/cpu-admit.sh"                 "$dir/scripts/cpu-admit.sh"
+    cp "$REPO_ROOT/scripts/gen-nextest-config.sh"        "$dir/scripts/gen-nextest-config.sh"
+    mkdir -p "$dir/.config"
+    cp "$REPO_ROOT/.config/nextest.toml"                 "$dir/.config/nextest.toml"
     chmod +x "$dir/scripts/verify.sh"
+    # Preflight: fail loudly if verify.sh sources a lib that was not copied to the
+    # fixture.  Without this check a new 'source "$SCRIPT_DIR/foo.sh"' line in
+    # verify.sh would surface only as an opaque "scripts/foo.sh not found" startup
+    # error on every plan invocation (the pre-existing affected-crates-lib.sh gap).
+    while IFS= read -r _lib; do
+        [ -f "$dir/scripts/$_lib" ] || {
+            echo "ERROR: make_fixture: '$_lib' is source'd by verify.sh" \
+                 "but was not copied to the fixture." >&2
+            echo "       Fix: add cp \"\$REPO_ROOT/scripts/$_lib\" \"\$dir/scripts/$_lib\"" \
+                 "in make_fixture." >&2
+            exit 1
+        }
+    # Anchor to start-of-line (optionally indented) so the grep matches real
+    # `source "$SCRIPT_DIR/lib.sh"` STATEMENTS only — not comment lines that
+    # merely mention the token (e.g. verify.sh's task-4523 selective-infra note
+    # "`source "$SCRIPT_DIR/' never appears here."). Defense in depth: the
+    # `sed -n …p` then prints ONLY lines whose capture actually matched, so a
+    # token-mentioning line that ever slips past the anchor still can't be
+    # emitted as a bogus lib path — the old plain `sed` left such a line
+    # untouched, and the whole comment was then treated as a missing lib path
+    # (a false preflight failure).
+    done < <(grep -E '^[[:space:]]*source "\$SCRIPT_DIR/' "$dir/scripts/verify.sh" \
+                 | sed -n 's|.*source "\$SCRIPT_DIR/\([^"]*\)".*|\1|p' || true)
     git -C "$dir" init -q
     git -C "$dir" config user.email "test@test.com"
     git -C "$dir" config user.name "Test"

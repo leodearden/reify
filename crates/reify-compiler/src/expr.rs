@@ -45,6 +45,11 @@
 
 use super::*;
 
+use crate::datum_projection::{
+    datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
+    DATUM_PROJECTION_MEMBERS,
+};
+
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
 /// use at any producer site that emits a `Severity::Error` diagnostic.
 ///
@@ -119,6 +124,355 @@ fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -
 /// Type::Error)`) makes producer vs. consumer sites grep-distinct.
 fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
+}
+
+/// The Option/Map recovery combinators whose `dflt` argument type must unify
+/// with the subject's element type (contract C-3,
+/// PRD docs/prds/v0_6/result-and-fallback.md).
+///
+/// `is_fallback_combinator` uses this slice as its single source of truth;
+/// the `DiagnosticCode::FallbackType` doc comment in `reify-core/src/diagnostics.rs`
+/// references this list rather than re-enumerating members, so adding or
+/// removing a combinator name requires only editing this constant.
+///
+/// `or_else`, `is_some`, and `is_none` are **not** in this set — they carry
+/// no default-vs-element contract.
+const FALLBACK_COMBINATORS: &[&str] = &["unwrap_or", "or_default", "fallback", "get_or"];
+
+/// Returns `true` for the Option/Map recovery combinators whose default
+/// argument type must unify with the subject's element type (contract C-3,
+/// PRD docs/prds/v0_6/result-and-fallback.md).
+///
+/// These names emit `DiagnosticCode::FallbackType` (E_FALLBACK_TYPE) instead
+/// of `FnTypeArgConflict` when a type-arg conflict is detected in the generic
+/// call resolver.  `or_else` / `is_some` / `is_none` are excluded: they have
+/// no default-vs-element contract.
+///
+/// **Name-shadowing note:** the dispatch is on the raw call-site name string.
+/// A user-defined generic function that happens to share one of these names
+/// (e.g. `pub fn unwrap_or<T>(…)`) would also receive `E_FALLBACK_TYPE` on a
+/// type-arg conflict, even though it has no stdlib default-vs-element contract.
+/// This is accepted: these are stdlib-reserved prelude names (see language
+/// spec §8.12 reserved builtins), so shadowing is unlikely in practice.
+fn is_fallback_combinator(name: &str) -> bool {
+    FALLBACK_COMBINATORS.contains(&name)
+}
+
+/// §7.2 syntactic-zero coercion for binary operator operands (task-4485/β).
+///
+/// If exactly one operand is a **syntactic literal zero** (see
+/// [`type_compat::is_syntactic_zero_literal`]) whose compiled type is
+/// dimensionless (`Type::Int` or `Type::Scalar{DIMENSIONLESS}`) AND the other
+/// operand's compiled type is `Type::Scalar{D}` with non-dimensionless D,
+/// return `(left, right)` with the zero operand replaced by
+/// `CompiledExpr::literal(Value::Scalar{0.0, D}, Type::Scalar{D})`.
+///
+/// If the condition is not met (both zeros, both dimensionless, non-scalar
+/// sibling, etc.) the inputs are returned unchanged — this is a pure no-op for
+/// all HARD BOUND cases listed in §7.2.
+///
+/// Placed here (not `type_compat`) because it constructs `CompiledExpr` /
+/// `Value::Scalar` objects — it is not a pure type predicate.  Called from
+/// `compile_binop` BEFORE `infer_binop_type` so that the result type and the
+/// downstream Add/Sub dimension guard see the rewritten operands.
+fn coerce_zero_operand(
+    left_ast: &reify_ast::Expr,
+    left: CompiledExpr,
+    right_ast: &reify_ast::Expr,
+    right: CompiledExpr,
+) -> (CompiledExpr, CompiledExpr) {
+    /// Returns `true` if `ty` is dimensionless: `Type::Int` or
+    /// `Type::Scalar` with `DIMENSIONLESS` dimension.
+    fn is_dimensionless(ty: &Type) -> bool {
+        match ty {
+            Type::Int => true,
+            Type::Scalar { dimension } => dimension.is_dimensionless(),
+            _ => false,
+        }
+    }
+
+    // Left operand is zero (syntactic OR a dimensionless constant expression that
+    // folds to exactly 0, e.g. `1 - 1`), right is Scalar<D non-dimensionless>.
+    if (type_compat::is_syntactic_zero_literal(left_ast) || const_folds_to_zero(&left))
+        && is_dimensionless(&left.result_type)
+        && let Type::Scalar { dimension } = right.result_type
+        && !dimension.is_dimensionless()
+    {
+        return (
+            CompiledExpr::literal(
+                Value::Scalar { si_value: 0.0, dimension },
+                Type::Scalar { dimension },
+            ),
+            right,
+        );
+    }
+
+    // Right operand is zero (syntactic OR a dimensionless constant expression that
+    // folds to exactly 0, e.g. `1 - 1`), left is Scalar<D non-dimensionless>.
+    if (type_compat::is_syntactic_zero_literal(right_ast) || const_folds_to_zero(&right))
+        && is_dimensionless(&right.result_type)
+        && let Type::Scalar { dimension } = left.result_type
+        && !dimension.is_dimensionless()
+    {
+        return (
+            left,
+            CompiledExpr::literal(
+                Value::Scalar { si_value: 0.0, dimension },
+                Type::Scalar { dimension },
+            ),
+        );
+    }
+
+    (left, right)
+}
+
+/// Best-effort compile-time fold of a numeric operand to its SI magnitude.
+///
+/// Returns the folded value when `expr` is a constant arithmetic expression over
+/// numeric literals (`Int` / `Real` / dimensioned `Scalar`), `None` otherwise.
+/// Used by [`coerce_zero_operand`] to recognize operands that EVALUATE to exactly
+/// zero even when not written as a syntactic `0` (e.g. `1 - 1`, or
+/// `2m^2 * (5m - 5m) / 0.5m^3`).
+///
+/// Only the numeric MAGNITUDE is folded here; the operand's dimension is read
+/// separately from its `result_type`.  This is what makes the dimensioned vs
+/// dimensionless distinction work: `1m - 1m` folds to `0` but its `result_type`
+/// is `Scalar[m]` (non-dimensionless), so [`coerce_zero_operand`]'s
+/// `is_dimensionless` guard leaves it alone and a genuine dimension mismatch
+/// (e.g. `mass > 1m - 1m`) still errors — whereas `1 - 1` (dimensionless `0`)
+/// is coerced and `mass > 1 - 1` compiles clean.
+///
+/// Deliberately conservative: only numeric `Literal`s and `Add`/`Sub`/`Mul`/`Div`
+/// / unary `Neg` over them fold.  Any value-cell reference, function call, or
+/// other node yields `None` (not a compile-time constant).
+fn const_numeric_value(expr: &CompiledExpr) -> Option<f64> {
+    use reify_ir::{BinOp, CompiledExprKind, UnOp};
+    match &expr.kind {
+        CompiledExprKind::Literal(value) => match value {
+            Value::Int(i) => Some(*i as f64),
+            Value::Real(r) => Some(*r),
+            Value::Scalar { si_value, .. } => Some(*si_value),
+            _ => None,
+        },
+        CompiledExprKind::BinOp { op, left, right } => {
+            let l = const_numeric_value(left)?;
+            let r = const_numeric_value(right)?;
+            match op {
+                BinOp::Add => Some(l + r),
+                BinOp::Sub => Some(l - r),
+                BinOp::Mul => Some(l * r),
+                // Guard against div-by-zero producing inf/NaN; a non-constant or
+                // degenerate denominator simply makes this "not a constant zero".
+                BinOp::Div if r != 0.0 => Some(l / r),
+                _ => None,
+            }
+        }
+        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
+            const_numeric_value(operand).map(|v| -v)
+        }
+        _ => None,
+    }
+}
+
+/// Returns `true` when `expr` is a compile-time constant that folds to numeric
+/// zero (see [`const_numeric_value`]).  Subsumes a bare syntactic `0`.
+fn const_folds_to_zero(expr: &CompiledExpr) -> bool {
+    const_numeric_value(expr) == Some(0.0)
+}
+
+/// Emit compile-time operand-kind diagnostics for comparison operators
+/// (task-4490 / PRD §7.1 / `E_CmpOperandKind` / `E_CmpDimensionMismatch`).
+///
+/// # When to call
+///
+/// Call from the `compile_binop` site AFTER `infer_binop_type`, guarded by
+/// `matches!(bin_op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)`.
+/// Also called per-pair in the chained-comparison path (step-8).
+///
+/// # What it checks
+///
+/// 1. **Gradualism**: if either operand is `Type::Error` (poison) or
+///    `Type::TypeParam(_)` (unresolved auto/generic), return immediately.
+///    Emitting a secondary diagnostic on a poisoned or not-yet-resolved operand
+///    would produce cascade noise — the underlying error is the root cause.
+///
+/// 2. **Per-operand kind check**: for each operand that is not already the
+///    correct kind for this operator family, push a `DiagnosticCode::CmpOperandKind`
+///    error:
+///    - ORDER ops (`<`, `<=`, `>`, `>=`): acceptable = `is_orderable_scalar`
+///      (Int | Scalar).
+///    - EQUALITY ops (`==`, `!=`): acceptable = `is_equatable_kind`
+///      (Bool | Int | String | Scalar | Enum).
+///      For Tensor/Matrix operands, append a fixit ("reduce to a scalar first, e.g.
+///      `eigenvalues(x)[0]` or `trace(x)`") to the message AND populate
+///      `with_candidates(["eigenvalues(x)[0]", "trace(x)"])` for machine-readable
+///      IDE quick-fix support.
+///
+/// 3. **Dimension check** (step-6): added in a follow-up; not yet implemented here.
+///
+/// # Result type
+///
+/// Result type is NOT poisoned — comparison ops return `Type::Bool` even when
+/// operands are wrong.  Mirrors the And/Or/Implies guard (`LogicalOperandNotBool`).
+fn emit_comparison_operand_diagnostics(
+    bin_op: reify_ir::BinOp,
+    op_str: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use reify_ir::BinOp;
+    use type_compat::{format_dimension_mismatch_diagnostic, is_equatable_kind, is_orderable_scalar};
+
+    // Gradualism: Error (poison) or TypeParam (unresolved) → no secondary diagnostic.
+    // Emitting a secondary kind error on a poisoned or not-yet-resolved operand would
+    // produce cascade noise — the underlying error is the root cause.
+    //
+    // NOTE: the dimension-parametric scalar `Scalar<Q>` (Type::ScalarParam, from
+    // dimension-kinded generic fns like std.fields::threshold) is deliberately NOT
+    // skipped here — it is a genuine, well-formed comparable scalar, so
+    // is_orderable_scalar/is_equatable_kind accept it directly. Accepting in the
+    // predicate (rather than early-returning) still lets a bad *sibling* operand —
+    // e.g. `Tensor > Scalar<Q>` — be flagged.
+    if matches!(left_ty, Type::Error | Type::TypeParam(_))
+        || matches!(right_ty, Type::Error | Type::TypeParam(_))
+    {
+        return;
+    }
+
+    // Deferral (NOT poison): `Field<D,C>` and `StructureRef` operands pass through
+    // without adjudication. This task's contract targets aggregate-NUMERIC operands
+    // (Tensor/Matrix/Vector/Point/List) and scalars; comparisons whose operand is a
+    // whole field or a structure/solver-result are a separate hygiene concern that
+    // depends on reduction typing landing first. Two real stdlib examples rely on
+    // this today: `differential_field_ops.ri` does `max(field) < 1.0` and
+    // `multi_load_bracket.ri` does `max(envelope_von_mises(results)) < yield` — in
+    // both, the author expects `max(field) -> Scalar`, but `max` is kind-preserving
+    // at compile time (it reduces only at EVAL via field_reductions), so the operand
+    // stays a `Field`/`MultiCaseResult`. Until that compile-time reduction-typing gap
+    // is fixed (and `envelope_von_mises` gains a return-type signature), flagging
+    // these would be a false positive. See the field-reduction-typing follow-up task.
+    if matches!(left_ty, Type::Field { .. } | Type::StructureRef(_))
+        || matches!(right_ty, Type::Field { .. } | Type::StructureRef(_))
+    {
+        return;
+    }
+
+    let is_order_op = matches!(bin_op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
+
+    // Check left operand kind.
+    let left_acceptable = if is_order_op {
+        is_orderable_scalar(left_ty)
+    } else {
+        is_equatable_kind(left_ty)
+    };
+    if !left_acceptable {
+        diagnostics.push(make_cmp_kind_diagnostic(op_str, "left", left_ty, span));
+    }
+
+    // Check right operand kind.
+    let right_acceptable = if is_order_op {
+        is_orderable_scalar(right_ty)
+    } else {
+        is_equatable_kind(right_ty)
+    };
+    if !right_acceptable {
+        diagnostics.push(make_cmp_kind_diagnostic(op_str, "right", right_ty, span));
+    }
+
+    // Dimension-mismatch arm — only runs when NEITHER operand produced a kind error.
+    // Mirrors the Add/Sub guard at expr.rs ~1324-1364 (PRD §11 Q1: reuse DimensionMismatch).
+    if left_acceptable && right_acceptable {
+        match (left_ty, right_ty) {
+            // Both scalar-kind, both dimensioned, but with different dimensions
+            // (e.g. `Length < Mass`).
+            //
+            // The `!ld.is_dimensionless() && !rd.is_dimensionless()` guard is
+            // intentional: purpose bodies compiled with a generic `Structure`
+            // parameter return `Real` (dimensionless) for field accesses because
+            // the concrete field type is unknown at generic-compilation time (the
+            // `StructureRef` fallback in `resolve_type_expr_with_aliases` yields
+            // `Type::dimensionless_scalar()`).  Without the dimensionless-skip,
+            // `constraint subject.width > 0mm` would produce a spurious
+            // "Real vs Scalar[m]" dimension mismatch in the generic body even
+            // though the comparison is valid for every concrete `Structure` binding.
+            //
+            // Suppressing `Real vs Scalar[D]` misses the narrow case where a user
+            // genuinely compares a dimensionless ratio against a dimensioned
+            // threshold (e.g. `efficiency > 5mm`); that class of bug is deferred
+            // to a future non-generic-aware pass.
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd })
+                if ld != rd && !ld.is_dimensionless() && !rd.is_dimensionless() =>
+            {
+                diagnostics.push(format_dimension_mismatch_diagnostic(
+                    "comparison",
+                    left_ty,
+                    right_ty,
+                    span,
+                ));
+            }
+            // Dimensioned Scalar vs non-dimensionless Int (e.g. mass > 5).
+            // The β zero-coercion (coerce_zero_operand) already rewrites literal `0` to
+            // match the sibling's dimension, so `mass > 0` never reaches this arm.
+            (Type::Scalar { dimension }, Type::Int)
+            | (Type::Int, Type::Scalar { dimension })
+                if !dimension.is_dimensionless() =>
+            {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "incompatible types in comparison: {} vs {}",
+                        left_ty, right_ty,
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "dimensioned vs dimensionless")),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build a `DiagnosticCode::CmpOperandKind` diagnostic for one offending operand.
+///
+/// For Tensor/Matrix operands the message includes the eigenvalues/trace fixit
+/// and the candidates list is populated for machine-readable IDE quick-fix support.
+fn make_cmp_kind_diagnostic(
+    op_str: &str,
+    side: &str,
+    ty: &Type,
+    span: reify_core::SourceSpan,
+) -> Diagnostic {
+    let is_reducible = matches!(ty, Type::Tensor { .. } | Type::Matrix { .. });
+    let (msg, candidates): (String, Vec<&str>) = if is_reducible {
+        (
+            format!(
+                "comparison `{op_str}` {side} operand is not a comparable kind, got `{ty}`; \
+                 reduce to a scalar first, e.g. `eigenvalues(x)[0]` or `trace(x)`"
+            ),
+            vec!["eigenvalues(x)[0]", "trace(x)"],
+        )
+    } else {
+        let hint = if matches!(ty, Type::Int | Type::Scalar { .. }) {
+            // orderable-scalar is not the issue — should not reach here
+            String::new()
+        } else {
+            String::new()
+        };
+        (
+            format!(
+                "comparison `{op_str}` {side} operand must be a comparable kind, got `{ty}`{hint}"
+            ),
+            vec![],
+        )
+    };
+
+    let mut d = Diagnostic::error(msg)
+        .with_code(DiagnosticCode::CmpOperandKind)
+        .with_label(DiagnosticLabel::new(span, "not a comparable kind"));
+    if !candidates.is_empty() {
+        d = d.with_candidates(candidates.iter().map(|s| s.to_string()));
+    }
+    d
 }
 
 /// Scan raw AST `args` for the first `ExprKind::Auto` and emit an
@@ -342,19 +696,25 @@ fn try_resolve_cross_sub_geometry_value_ref(
     } else {
         // Forward-declared child (is_forward_declared, !has_realization):
         // emit ValueCellRef so constraint expressions can be evaluated by the
-        // solver without panicking.  Type::Geometry is a placeholder — the
-        // compiler does not cascade-error on this type in comparison contexts,
-        // and eval looks up values from the snapshot by ID, not by type.
+        // solver without panicking.  The static type is `Type::Error` — the child
+        // is not yet compiled, so the member's true type is genuinely unknown here.
         //
-        // The placeholder type is provably harmless: the DimensionalSolver
-        // evaluates constraint operands numerically via
-        // `reify_expr::eval_expr(...).as_f64()` and never inspects an
-        // operand's static `Type`, so it produces identical residuals
-        // regardless of declaration order.  Regression guard:
+        // `Type::Error` (rather than the former `Type::Geometry` placeholder) is
+        // load-bearing for the type-hygiene comparison guard (task 4490): it
+        // propagates through arithmetic via `infer_binop_type`'s anti-cascade
+        // (`2 * Error → Error`) and is skipped by the guard's gradualism.  The old
+        // `Type::Geometry` placeholder instead yielded `Int` under `*`, so a
+        // forward-declared dimensional constraint like `2 * self.b.bore == 20mm`
+        // typed as `Int == Scalar[m]` and the guard false-positived.
+        //
+        // Eval is unaffected: the DimensionalSolver evaluates constraint operands
+        // numerically via `reify_expr::eval_expr(...).as_f64()` and never inspects
+        // an operand's static `Type`, so it produces identical residuals regardless
+        // of declaration order.  Regression guard:
         // `reify_eval/tests/auto_sub_override_resolution.rs`
         //   `sub_override_auto_forward_declared_dimensional_constraint_type_agnostic`
-        // (task 4123, step-1).
-        Some(CompiledExpr::value_ref(scoped_id, Type::Geometry))
+        // (task 4123 step-1; placeholder type changed Geometry→Error for task 4490).
+        Some(CompiledExpr::value_ref(scoped_id, Type::Error))
     }
 }
 
@@ -502,14 +862,14 @@ const COLLECTION_AGGREGATION_MEMBERS: &[&str] = &["count", "sum", "keys", "value
 ///
 /// When a purpose body accesses `subject.<name>` where `subject` has type
 /// `StructureRef(_)` and `<name>` is in this list, the compiler emits an empty
-/// `ListLiteral` with `result_type = Type::List(Box::new(Type::Real))`.
+/// `ListLiteral` with `result_type = Type::List(Box::new(Type::dimensionless_scalar()))`.
 ///
 /// Semantics:
 /// - Compile-time only: runtime expansion of the list elements against the bound
 ///   entity's actual params is deferred to a follow-up task.
 /// - The empty list means `forall p in subject.params: ...` evaluates vacuously
 ///   true at eval time, which is safe and anti-cascade-consistent.
-/// - `Type::Real` element type is future-proof; a later task can refine to
+/// - `Type::dimensionless_scalar()` element type is future-proof; a later task can refine to
 ///   `List<ParamRef>` without changing call-site patterns.
 ///
 /// Deferred names (documented in `crates/reify-mcp/src/tools/chunks/purposes.md`
@@ -555,7 +915,7 @@ const WILDCARD_STRUCTURE_KIND: &str = "Structure";
 /// Returns `Some(free)` if the expression is `Auto { free }`, `None` for any other kind.
 /// Used to detect auto-solved parameters and build `ValueCellKind::Auto` declarations.
 pub(crate) fn extract_auto_free(expr: &reify_ast::Expr) -> Option<bool> {
-    if let reify_ast::ExprKind::Auto { free } = &expr.kind {
+    if let reify_ast::ExprKind::Auto { free, .. } = &expr.kind {
         Some(*free)
     } else {
         None
@@ -649,6 +1009,26 @@ fn resolve_collection_sub_to_list(scope: &CompilationScope, sub_name: &str) -> C
     CompiledExpr::value_ref(list_id, list_type)
 }
 
+/// Resolve a single-instance (non-collection) sub reference to a `StructureRef` value.
+///
+/// This is the **shared sub-resolution helper** for single-instance subs, called from
+/// BOTH the bare-`ExprKind::Ident` fallback and the `self.<sub>` `MemberAccess` arm of
+/// `compile_expr_guarded`, guaranteeing that `self.bolt` and bare `bolt` compile to
+/// identical `CompiledExpr`s by construction — the same guarantee that
+/// `resolve_collection_sub_to_list` provides for collection subs (`self.bolts` ≡ `bolts`).
+///
+/// Precondition: `sub_name` is present in `scope.sub_component_types` and absent from
+/// `scope.collection_sub_names` (both conditions are checked at every call site).
+fn resolve_non_collection_sub_to_structure_ref(
+    scope: &CompilationScope,
+    sub_name: &str,
+) -> CompiledExpr {
+    let structure_name = scope.sub_component_types[sub_name].clone();
+    let scoped_entity = format!("{}.{}", scope.entity_name, sub_name);
+    let sub_id = ValueCellId::new(&scoped_entity, "__self");
+    CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name))
+}
+
 /// Build the canonical namespaced symbol for a trait-static function.
 ///
 /// This is the **sole source of truth** for the `"Trait::method"` mangling used
@@ -716,12 +1096,12 @@ pub(crate) fn compile_expr_guarded(
                     CompiledExpr::literal(Value::Int(i), Type::Int)
                 }
                 reify_ast::NumberClass::Real(f) => {
-                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                    CompiledExpr::literal(Value::Real(f), Type::dimensionless_scalar())
                 }
                 // Mirror site: lower_annotations in annotations.rs handles LossyReal the same way.
                 reify_ast::NumberClass::LossyReal(f) => {
                     diagnostics.push(crate::diagnostics::lossy_real_warning(expr.span));
-                    CompiledExpr::literal(Value::Real(f), Type::Real)
+                    CompiledExpr::literal(Value::Real(f), Type::dimensionless_scalar())
                 }
             }
         }
@@ -860,7 +1240,7 @@ pub(crate) fn compile_expr_guarded(
             // Intercept `none` before scope lookup — it's a language-level keyword.
             // Default inner type is Real; contextual override happens at param/let sites.
             if name == "none" {
-                return CompiledExpr::option_none(Type::Option(Box::new(Type::Real)));
+                return CompiledExpr::option_none(Type::Option(Box::new(Type::dimensionless_scalar())));
             }
             match scope.resolve(name) {
                 Some((id, ty)) => CompiledExpr::value_ref(id.clone(), ty.clone()),
@@ -872,6 +1252,26 @@ pub(crate) fn compile_expr_guarded(
                     // prioritises user definitions).
                     if scope.collection_sub_names.contains(name.as_str()) {
                         return resolve_collection_sub_to_list(scope, name.as_str());
+                    }
+                    // Check if this is a single-instance (non-collection) sub — delegate to
+                    // the shared helper that also handles `self.<sub>` in the MemberAccess arm.
+                    // This makes bare `bolt` ≡ `self.bolt` for single-instance subs, mirroring
+                    // how `resolve_collection_sub_to_list` already makes `bolts` ≡ `self.bolts`.
+                    // Placed AFTER the collection-sub check (collection subs already
+                    // early-returned above) and BEFORE builtins (subs shadow builtins, consistent
+                    // with the collection-sub precedence established above).
+                    // The `&& !scope.collection_sub_names.contains(...)` conjunct here is
+                    // redundant-by-construction: collection subs already early-returned at
+                    // the `if scope.collection_sub_names.contains(...)` check above, so
+                    // `name` can never be a collection sub at this point.  Contrast with
+                    // the identical conjunction in the MemberAccess arm (~L2417), where it
+                    // IS load-bearing because there is no preceding early-return for
+                    // collection subs in that arm.  Kept here to mirror the MemberAccess
+                    // guard and document the helper's precondition at every call site.
+                    if scope.sub_component_types.contains_key(name.as_str())
+                        && !scope.collection_sub_names.contains(name.as_str())
+                    {
+                        return resolve_non_collection_sub_to_structure_ref(scope, name.as_str());
                     }
                     // Check built-in constants (pi, tau, …) after scope and collection
                     // sub-name resolution so that user definitions always shadow builtins.
@@ -924,6 +1324,18 @@ pub(crate) fn compile_expr_guarded(
                         Some(bin_op) => {
                             let lhs = compiled_operands[i].clone();
                             let rhs = compiled_operands[i + 1].clone();
+                            // Operand-kind + dimension guard for each chained pair
+                            // (task-4490/step-8 — same helper as the single-comparison path).
+                            // The synthetic BinOp::And fold nodes built below bypass the
+                            // logical guard, so no false LogicalOperandNotBool fires.
+                            emit_comparison_operand_diagnostics(
+                                bin_op,
+                                op_str,
+                                &lhs.result_type,
+                                &rhs.result_type,
+                                expr.span,
+                                diagnostics,
+                            );
                             let result_type =
                                 infer_binop_type(bin_op, &lhs.result_type, &rhs.result_type);
                             pairs.push(CompiledExpr::binop(bin_op, lhs, rhs, result_type));
@@ -949,7 +1361,7 @@ pub(crate) fn compile_expr_guarded(
                 return acc;
             }
 
-            let compiled_left = compile_expr_guarded(
+            let mut compiled_left = compile_expr_guarded(
                 left,
                 scope,
                 enum_defs,
@@ -958,7 +1370,7 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
-            let compiled_right = compile_expr_guarded(
+            let mut compiled_right = compile_expr_guarded(
                 right,
                 scope,
                 enum_defs,
@@ -969,6 +1381,26 @@ pub(crate) fn compile_expr_guarded(
             );
             match resolve_binop(op) {
                 Some(bin_op) => {
+                    // §7.2 zero-coercion: promote a syntactic literal `0`/`0.0`
+                    // (dimensionless) to `Scalar<D>(0.0)` when the sibling is
+                    // `Scalar<D>` with non-dimensionless D.  Applied BEFORE
+                    // `infer_binop_type` so result_type and the Add/Sub dimension
+                    // guard below both see the rewritten operands.
+                    if matches!(
+                        bin_op,
+                        BinOp::Eq
+                            | BinOp::Ne
+                            | BinOp::Lt
+                            | BinOp::Le
+                            | BinOp::Gt
+                            | BinOp::Ge
+                            | BinOp::Add
+                            | BinOp::Sub
+                    ) {
+                        (compiled_left, compiled_right) =
+                            coerce_zero_operand(left, compiled_left, right, compiled_right);
+                    }
+
                     let mut result_type = infer_binop_type(
                         bin_op,
                         &compiled_left.result_type,
@@ -994,6 +1426,7 @@ pub(crate) fn compile_expr_guarded(
                     // in step-7 via `DiagnosticCode::NonIntegerExponentOnDimensioned`.
                     if bin_op == BinOp::Pow
                         && let Type::Scalar { dimension } = compiled_left.result_type
+                        && !dimension.is_dimensionless()
                     {
                             // Extract a signed integer literal from the right AST node.
                             let int_exp: Option<i32> = match &right.kind {
@@ -1028,7 +1461,7 @@ pub(crate) fn compile_expr_guarded(
                                             // `5mm ^ 0` or any Scalar<Q^0> collapses to Real,
                                             // matching the existing BinOp::Div dimensionless→Real
                                             // convention.
-                                            Type::Real
+                                            Type::dimensionless_scalar()
                                         } else {
                                             Type::Scalar { dimension: scaled }
                                         };
@@ -1126,9 +1559,10 @@ pub(crate) fn compile_expr_guarded(
                                     expr.span,
                                 ));
                             }
-                            // Scalar + Int/Real or Int/Real + Scalar (dimensioned + dimensionless)
-                            (Type::Scalar { .. }, Type::Int | Type::Real)
-                            | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                            // Dimensioned Scalar + Int or Int + Dimensioned Scalar
+                            (Type::Scalar { dimension }, Type::Int)
+                            | (Type::Int, Type::Scalar { dimension })
+                            if !dimension.is_dimensionless() => {
                                 diagnostics.push(
                                     Diagnostic::error(format!(
                                         "incompatible types in {}: {} vs {}",
@@ -1148,28 +1582,57 @@ pub(crate) fn compile_expr_guarded(
                         }
                     }
 
-                    // Bool-operand guard for `implies` (task-3921 / PRD §3.4).
+                    // Operand-kind (and later dimension) guard for comparison ops
+                    // (task-4490 / PRD §7.1 / `E_CmpOperandKind`).
                     //
-                    // `infer_binop_type` returns `Type::Bool` unconditionally for Implies, so
-                    // without this guard `5 implies 3` would silently type-check.  We reject
-                    // non-Bool, non-Error operands here (Type::Error is the poison sentinel;
-                    // suppressing the secondary diagnostic prevents cascade noise).
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for all six
+                    // comparison ops, so `tensor > 0` would silently type-check without
+                    // this guard.  `emit_comparison_operand_diagnostics` handles:
+                    //   - gradualism early-return on Error/TypeParam operands
+                    //   - per-operand kind check (order vs equality acceptance sets)
+                    //   - Tensor/Matrix fixit + candidates
+                    // Result type stays Bool (no poison — mirrors Implies/And/Or guards).
+                    if matches!(
+                        bin_op,
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                    ) {
+                        emit_comparison_operand_diagnostics(
+                            bin_op,
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
+                            diagnostics,
+                        );
+                    }
+
+                    // Bool-operand guard for `and`, `or`, and `implies` (task-4490 / PRD §3.4).
                     //
-                    // And/Or are intentionally left unchanged (they evaluate non-Bool operands
-                    // to Undef at runtime; see design_decisions in plan.json).
-                    if matches!(bin_op, BinOp::Implies) {
+                    // `infer_binop_type` returns `Type::Bool` unconditionally for all three ops,
+                    // so without this guard `5 and flag` would silently type-check.  We reject
+                    // non-Bool operands for And/Or/Implies and emit `LogicalOperandNotBool`.
+                    //
+                    // Gradualism: `Type::Error` (poison sentinel) and `Type::TypeParam(_)`
+                    // (unresolved auto/generic) pass through silently — emitting a secondary
+                    // diagnostic on a poisoned or not-yet-resolved operand would be cascade noise.
+                    //
+                    // Kleene three-valued RUNTIME eval (`eval_and`, `eval_or`, `eval_implies` in
+                    // reify-expr) is NOT changed — only the compile-time guard is added here.
+                    // (Prior to task-4490 the Implies guard was uncoded; And/Or had no guard.)
+                    if matches!(bin_op, BinOp::And | BinOp::Or | BinOp::Implies) {
                         let lty = &compiled_left.result_type;
                         let rty = &compiled_right.result_type;
                         let left_bad =
-                            !matches!(lty, Type::Bool | Type::Error);
+                            !matches!(lty, Type::Bool | Type::Error | Type::TypeParam(_));
                         let right_bad =
-                            !matches!(rty, Type::Bool | Type::Error);
+                            !matches!(rty, Type::Bool | Type::Error | Type::TypeParam(_));
                         if left_bad {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "implies left operand must be Bool, got `{}`",
+                                    "{op} left operand must be Bool, got `{}`",
                                     lty,
                                 ))
+                                .with_code(DiagnosticCode::LogicalOperandNotBool)
                                 .with_label(DiagnosticLabel::new(
                                     left.span,
                                     "expected Bool here",
@@ -1179,9 +1642,10 @@ pub(crate) fn compile_expr_guarded(
                         if right_bad {
                             diagnostics.push(
                                 Diagnostic::error(format!(
-                                    "implies right operand must be Bool, got `{}`",
+                                    "{op} right operand must be Bool, got `{}`",
                                     rty,
                                 ))
+                                .with_code(DiagnosticCode::LogicalOperandNotBool)
                                 .with_label(DiagnosticLabel::new(
                                     right.span,
                                     "expected Bool here",
@@ -1271,8 +1735,9 @@ pub(crate) fn compile_expr_guarded(
                             expr.span,
                         ));
                     }
-                    (Type::Scalar { .. }, Type::Int | Type::Real)
-                    | (Type::Int | Type::Real, Type::Scalar { .. }) => {
+                    (Type::Scalar { dimension }, Type::Int)
+                    | (Type::Int, Type::Scalar { dimension })
+                    if !dimension.is_dimensionless() => {
                         diagnostics.push(
                             Diagnostic::error(format!(
                                 "incompatible types in range: {} vs {}",
@@ -1316,7 +1781,7 @@ pub(crate) fn compile_expr_guarded(
                 result_type,
             )
         }
-        reify_ast::ExprKind::FunctionCall { name, args } => {
+        reify_ast::ExprKind::FunctionCall { name, args, arg_names } => {
             // ── task 3808 (δ): semantic gate — reject `auto` in function-call args ──
             // Named-arg `auto` (both strict `ExprKind::Auto { free: false }` and free
             // `ExprKind::Auto { free: true }`) is valid only at a BINDING SITE (sub
@@ -1436,20 +1901,113 @@ pub(crate) fn compile_expr_guarded(
                     .filter(|vc| matches!(vc.kind, ValueCellKind::Param))
                     .map(|vc| (vc.id.member.as_str(), vc.default_expr.as_ref()))
                     .collect();
+                // --- By-name binder (task-4522) ---
+                // Named arg `p` binds to the template param named `p`;
+                // positional (None) args fill the next declaration-order
+                // param not already bound by a named arg.  ordered_args is
+                // emitted in template param-declaration order; uncovered
+                // params with a default_expr contribute to `defaults`.
+                //
+                // All-positional behaviour (all arg_names == None) is
+                // identical to the previous positional-only code, so
+                // existing zero-arg and all-positional SIR ctor tests are
+                // unaffected.
+                //
+                // Unknown named-arg (no matching param): appended as
+                // __arg{i} in ordered_args (lenient; preserves existing IR
+                // handling and avoids a new panic for out-of-scope case).
+                let nparams = params.len();
+                // param_arg[pidx] = Some(call_arg_index) when param pidx
+                // is bound by a call arg; None when uncovered.
+                let mut param_arg: Vec<Option<usize>> = vec![None; nparams];
+
+                // Pass 1: assign named args to their target param slot.
+                // Unknown named args (no matching param) are handled below (lenient __arg{i}).
+                // Duplicate named args (same param named twice) emit a diagnostic; last-write-wins
+                // as a graceful fallback so compilation can continue.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name
+                        && let Some(pidx) =
+                            params.iter().position(|(n, _)| *n == pname.as_str())
+                    {
+                        if param_arg[pidx].is_some() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "duplicate named argument '{}' in call to '{}'; \
+                                     parameter supplied more than once",
+                                    pname, name
+                                ))
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "argument supplied more than once",
+                                )),
+                            );
+                        }
+                        param_arg[pidx] = Some(call_idx);
+                    }
+                }
+
+                // Pass 2: assign positional (None) args to the next
+                // uncovered declaration-order param slot.  Over-arity positional
+                // args (beyond the param count) are collected into
+                // `extra_positional_idxs` and appended to ordered_args below as
+                // `__arg{call_idx}` — matching the lenient fallback for unknown
+                // named args and preserving the pre-task-4522 IR representation.
+                let mut next_slot = 0usize;
+                let mut extra_positional_idxs: Vec<usize> = Vec::new();
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if arg_name.is_none() {
+                        // Advance past any named-bound slots.
+                        while next_slot < nparams && param_arg[next_slot].is_some() {
+                            next_slot += 1;
+                        }
+                        if next_slot < nparams {
+                            param_arg[next_slot] = Some(call_idx);
+                            next_slot += 1;
+                        } else {
+                            // Over-arity positional arg: no param slot remaining.
+                            // Preserve pre-task-4522 IR representation (__arg{i}).
+                            extra_positional_idxs.push(call_idx);
+                        }
+                    }
+                }
+
+                // Build ordered_args in template param-declaration order.
                 let mut ordered_args: Vec<(String, CompiledExpr)> =
                     Vec::with_capacity(compiled_args.len());
-                for (i, arg) in compiled_args.iter().enumerate() {
-                    let pname = params
-                        .get(i)
-                        .map(|(n, _)| (*n).to_string())
-                        .unwrap_or_else(|| format!("__arg{}", i));
-                    ordered_args.push((pname, arg.clone()));
+                for (pidx, (pname, _)) in params.iter().enumerate() {
+                    if let Some(call_idx) = param_arg[pidx] {
+                        ordered_args
+                            .push(((*pname).to_string(), compiled_args[call_idx].clone()));
+                    }
                 }
-                let covered = ordered_args.len();
+                // Lenient fallback: unknown named args (no matching param)
+                // are appended as __arg{i} to preserve existing IR handling.
+                for (call_idx, arg_name) in arg_names.iter().enumerate() {
+                    if let Some(pname) = arg_name
+                        && !params.iter().any(|(n, _)| *n == pname.as_str())
+                    {
+                        ordered_args.push((
+                            format!("__arg{}", call_idx),
+                            compiled_args[call_idx].clone(),
+                        ));
+                    }
+                }
+                // Lenient fallback: over-arity positional args appended as
+                // __arg{call_idx}, matching the unknown-named-arg fallback above.
+                for call_idx in extra_positional_idxs {
+                    ordered_args.push((
+                        format!("__arg{}", call_idx),
+                        compiled_args[call_idx].clone(),
+                    ));
+                }
+
+                // Compute defaults: uncovered params with a default_expr.
                 let defaults: Vec<(String, CompiledExpr)> = params
                     .iter()
-                    .skip(covered)
-                    .filter_map(|(n, d)| d.map(|e| ((*n).to_string(), e.clone())))
+                    .enumerate()
+                    .filter(|(pidx, _)| param_arg[*pidx].is_none())
+                    .filter_map(|(_, (n, d))| d.map(|e| ((*n).to_string(), e.clone())))
                     .collect();
                 // Collect the template's Let cells in declaration order (task-4342):
                 // each Let's compiled expr is stored in `default_expr`; the ctor
@@ -1518,25 +2076,38 @@ pub(crate) fn compile_expr_guarded(
                         {
                             // A type-param double-binding to two different types is
                             // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // Emit E_FN_TYPE_ARG_CONFLICT and poison the call to
-                            // prevent a follow-on cascade (mirror the Ambiguous arm).
+                            // For recovery combinators (unwrap_or / or_default /
+                            // fallback / get_or — the default-must-match-element
+                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
+                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
+                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
+                            // bit-for-bit unchanged.  Both paths poison the call via
+                            // make_poison_literal (D3: result_type = Type::Error
+                            // inference sentinel, not a payload).
                             if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
                             {
+                                let (code, prefix) = if is_fallback_combinator(name) {
+                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
+                                } else {
+                                    (DiagnosticCode::FnTypeArgConflict, "")
+                                };
+                                let message = format!(
+                                    "{}conflicting type arguments for type parameter \
+                                     '{}' in call to '{}': {} vs {}",
+                                    prefix,
+                                    conflict.param,
+                                    name,
+                                    conflict.existing,
+                                    conflict.incoming
+                                );
                                 return make_poison_literal(
                                     diagnostics,
-                                    Diagnostic::error(format!(
-                                        "conflicting type arguments for type parameter '{}' \
-                                         in call to '{}': {} vs {}",
-                                        conflict.param,
-                                        name,
-                                        conflict.existing,
-                                        conflict.incoming
-                                    ))
-                                    .with_code(DiagnosticCode::FnTypeArgConflict)
-                                    .with_label(DiagnosticLabel::new(
-                                        expr.span,
-                                        "conflicting type argument",
-                                    )),
+                                    Diagnostic::error(message)
+                                        .with_code(code)
+                                        .with_label(DiagnosticLabel::new(
+                                            expr.span,
+                                            "conflicting type argument",
+                                        )),
                                 );
                             }
                         }
@@ -1544,13 +2115,15 @@ pub(crate) fn compile_expr_guarded(
                             &matched_fn.return_type,
                             &subst,
                         );
-                        // A BARE top-level unbound type-param means nothing pinned
-                        // the result type (e.g. `make<T>() -> T` called as `make()`):
-                        // the call yields a wholly-undetermined type → error + poison.
+                        // A BARE top-level unbound type-param or dimension-param
+                        // means nothing pinned the result type (e.g. `make<T>() -> T`
+                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
+                        // called as `mk(3.0)` — Q undetermined): the call yields a
+                        // wholly-undetermined type → error + poison (task ζ / D8).
                         // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
                         // is TOLERATED — it is pinned by an enclosing call (B5,
                         // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_)) {
+                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
                             return make_poison_literal(
                                 diagnostics,
                                 Diagnostic::error(format!(
@@ -1612,6 +2185,30 @@ pub(crate) fn compile_expr_guarded(
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
+                    }
+                    // NoMatch-arm secondary resolution (task 4118 γ, coercion
+                    // site #1: param-binding). A `Selector(k)` argument coerces
+                    // one-directionally to a `List<Geometry>` param (task 4117 β
+                    // `type_compatible`), but `resolve_function_overload` matches
+                    // by exact equality and rejected it. Retry with the β
+                    // coercion (mirroring `try_default_padding` above) and, on a
+                    // unique non-generic match, wrap each Selector arg in
+                    // `ResolveSelector`. See esc-4118-61.
+                    if let Some(matched_fn) =
+                        coerce::try_selector_coerced_overload(&named_candidates, &arg_types)
+                    {
+                        if let Some(msg) = deprecation_message(&matched_fn.annotations) {
+                            emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
+                        }
+                        let result_type = matched_fn.return_type.clone();
+                        let coerced_args: Vec<CompiledExpr> = compiled_args
+                            .into_iter()
+                            .zip(matched_fn.params.iter())
+                            .map(|(arg, (_, param_ty))| {
+                                coerce::coerce_selector_arg(arg, param_ty)
+                            })
+                            .collect();
+                        return build_user_function_call_expr(name, coerced_args, result_type);
                     }
                     // User functions with this name exist, but none match — error with candidates
                     let candidate_sigs: Vec<String> = named_candidates
@@ -1710,13 +2307,66 @@ pub(crate) fn compile_expr_guarded(
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →
                     // `is_geometry_kinematic_query` → `is_geometry_topology_selector` →
-                    // `is_geometry_query` → `is_geometry_function` →
+                    // `is_geometry_query` → `selector_composition_result_type` (task 4119 δ)
+                    // → `is_geometry_function` →
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
+                    // `is_dynamics_constructor` → `is_affine_map_constructor` →
+                    // `is_math_typed_fn` → `is_joint_typed_fn` →
+                    // `is_analysis_typed_fn` → `is_field_op` →
                     // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829) are pinned disjoint
-                    // in `units.rs::tests::{geometry,dynamics}_query_names_are_disjoint_from_other_families`,
+                    // RBD-β `is_dynamics_query` family (task 3829), the task-4278
+                    // `is_dynamics_constructor` family, and the std.fields α
+                    // `is_field_op` family (task 4219) are pinned disjoint in
+                    // `units.rs::tests::*_are_disjoint_from_other_families`,
                     // so within this arm the ordering is unobservable — no name can
-                    // satisfy two predicates.
+                    // satisfy two predicates. `selector_composition_result_type` is
+                    // arg-aware (returns None for CSG non-selector operands) so CSG
+                    // `union`/`difference` still reach `is_geometry_function`.
+                    // task 4118 γ — list-helper selector coercion (insertion
+                    // site #2). When `single(selector)` is called, wrap the
+                    // `Selector(k)` argument in `ResolveSelector` so the helper
+                    // sees `List<Geometry>` and `infer_list_helper_return_type`
+                    // (below) collapses `single(List<Geometry>)` → `Geometry`
+                    // instead of the first-arg fallback leaving the cell typed
+                    // `Selector(k)`. A no-op for every other name / non-selector
+                    // arg. Shadows `compiled_args` so BOTH the result-type
+                    // inference below and the emitted `FunctionCall` carry the
+                    // wrapped argument. Gated on the same β `type_compatible`
+                    // rule as sites #1/#3 (centralized in `coerce.rs`).
+                    let compiled_args = coerce::coerce_list_helper_args(name, compiled_args);
+
+                    // ζ (task 4493): compile-time per-arg type check for
+                    // geometry topology-selector builtins.  Pure side-effect
+                    // on `diagnostics`; result-type inference is unchanged
+                    // (anti-cascade).  Emits ArgTypeMismatch for DEFINITE
+                    // static dimension mismatches only — Type::Error (poison)
+                    // and Type::TypeParam (unresolved) are silently skipped
+                    // (PRD decision 6 gradualism).  Wired here — after
+                    // coerce_list_helper_args so the coerced types are checked,
+                    // before the result-type ladder so it remains a pure
+                    // diagnostic side-effect.
+                    builtin_signatures::check_builtin_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
+                    // γ (task 4383): compile-time per-arg type check for the
+                    // geometric-relation vocabulary — the three §3.2 policing
+                    // layers (unit / kind-projection / curation). A parallel
+                    // pure diagnostic side-effect to `check_builtin_arg_types`
+                    // above: result-type inference is unchanged (anti-cascade),
+                    // Type::Error / Type::TypeParam slots are skipped (gradualism),
+                    // and the shared verbs `angle`/`distance` are policed only in
+                    // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
+                    relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
                     let resolved = ResolvedFunction {
                         name: name.clone(),
                         qualified_name: format!("std::{}", name),
@@ -1754,6 +2404,29 @@ pub(crate) fn compile_expr_guarded(
                         // the helper's actual return type.
                         topology_selector_result_type(name)
                             .expect("is_geometry_topology_selector implies result type")
+                    } else if let Some(t) =
+                        relation_signatures::relation_fn_result_type(name, &compiled_args)
+                    {
+                        // γ (task 4383): the geometric-relation vocabulary —
+                        // coincident / on / parallel / antiparallel /
+                        // perpendicular / concentric / flush / offset / tangent,
+                        // plus the arity-3 DRIVE forms of `angle` / `distance`.
+                        //
+                        // A relation is a DOF-removal directive: it types to
+                        // `Type::Relation` (distinct from Bool, no truth value)
+                        // and evaluates to `Value::Undef` until ζ supplies the
+                        // relate-solve (the geometry-query Phase-1 precedent — the
+                        // emitted node stays a `FunctionCall`).
+                        //
+                        // **Placed BEFORE `is_geometry_query`** (which is name-only
+                        // and would otherwise claim `angle`/`distance` at any
+                        // arity): this arg-aware arm returns `Some(Relation)` for
+                        // the pure names and for arity-3 `angle`/`distance`, and
+                        // `None` for the arity-2 `angle`/`distance` DERIVE forms so
+                        // they fall through to the geometry-query arm below
+                        // (Angle / Scalar<Length>). Mirrors the arg-aware
+                        // `selector_composition_result_type` fall-through idiom.
+                        t
                     } else if is_geometry_query(name) {
                         // volume / area / length / perimeter / centroid /
                         // bounding_box / distance / contains / intersects /
@@ -1784,6 +2457,35 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .or_else(|| geometry_query_result_type(name))
                         .expect("is_geometry_query implies result type")
+                    } else if let Some(t) = selector_composition_result_type(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    ) {
+                        // task 4119 δ — selector-composition algebra
+                        // (union/intersect/difference over Type::Selector operands).
+                        // Enforces K1 kind-closure: emits E_SELECTOR_KIND_MISMATCH and
+                        // returns Type::Selector(first_kind) on mismatch; otherwise
+                        // returns Type::Selector(common_kind) for same-kind composition.
+                        // Returns None for non-selector operands so CSG
+                        // union/difference fall through to `is_geometry_function`.
+                        t
+                    } else if is_tolerancing_marker(name) {
+                        // η/4480 (C3): `nominal()` — a zero-arg inert Geometry
+                        // marker (eval in `reify_stdlib::tolerancing`). Typed
+                        // `Geometry` so `param actual : Geometry = nominal()`
+                        // type-checks; without this arm the zero-arg fallback
+                        // below would type it `Real` (first-arg → none → default)
+                        // and emit the "cannot infer return type of zero-arg
+                        // function" warning. The marker flows nowhere — the η
+                        // `measure_gdt_conformance` pass keys on an explicit
+                        // `actual` binding, never this default — so the
+                        // INVALID-handle sentinel is inert. Pinned disjoint from
+                        // the sibling families by the units.rs marker tests, so
+                        // this arm's position in the ladder is unobservable.
+                        tolerancing_marker_result_type(name)
+                            .expect("is_tolerancing_marker implies result type")
                     } else if is_geometry_function(name) {
                         Type::dimensionless_scalar()
                     } else if let Some(t) = infer_list_helper_return_type(name, &compiled_args) {
@@ -1800,6 +2502,19 @@ pub(crate) fn compile_expr_guarded(
                         // default would mismatch — the first arg is the body (a
                         // `Solid` / structure), not a `MassProperties`. Mirrors
                         // the `is_geometry_query_helper => Type::Bool` arm.
+                        Type::StructureRef("MassProperties".to_string())
+                    } else if is_dynamics_constructor(name) {
+                        // point_mass(mass) / mass_properties(mass, com, inertia):
+                        // task-4278 dynamics-constructor builtins, dispatched at
+                        // eval time by `reify_stdlib::dynamics::eval_dynamics`.
+                        // The result type is `MassProperties` — set up-front so
+                        // the cell typechecks. Without this arm the first-arg
+                        // fallback would infer `Scalar<Mass>` for
+                        // `point_mass(2.5kg)`, tripping `value_type_kind_matches`
+                        // at eval time. Uniform `StructureRef("MassProperties")`
+                        // result (mirrors the `is_dynamics_query` arm above).
+                        // Pinned disjoint from all sibling families by
+                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -1823,7 +2538,7 @@ pub(crate) fn compile_expr_guarded(
                         // PRD §4.3 (task γ) algebra free-functions.
                         t
                     } else if is_math_typed_fn(name) {
-                        // The math-linalg family, routed via two sibling
+                        // The math-linalg family, routed via three sibling
                         // single-source-of-truth slices in `math_signatures`:
                         //   • CONSTRUCTION (task 4179, MATH_CONSTRUCTION_NAMES):
                         //     vec / matrix / diag / identity.
@@ -1834,6 +2549,12 @@ pub(crate) fn compile_expr_guarded(
                         //     eigenvalues/complex_eigenvalues, and the complex
                         //     fns complex/real/imag/conjugate/complex_magnitude/
                         //     phase/arg.
+                        //   • TRIG / TRANSCENDENTAL (task 4352,
+                        //     MATH_TRANSCENDENTAL_NAMES): the §1.2 names —
+                        //     sin/cos/tan → dimensionless; asin/acos/atan/atan2
+                        //     → Angle; exp/log → dimensionless. Results are
+                        //     arg-independent (fixed arms in math_fn_result_type,
+                        //     matching eval).
                         // `math_fn_result_type` computes the per-call result type
                         // for BOTH: for constructors it recovers the return
                         // *shape* (`n`) from the COMPILED ARGUMENT STRUCTURE —
@@ -1885,6 +2606,53 @@ pub(crate) fn compile_expr_guarded(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_analysis_typed_fn(name) {
+                        // FEA stress-analysis reduction family (FEA-5, task
+                        // 2884): von_mises / principal_stresses / max_shear /
+                        // safety_factor / stress_invariants. These are pure
+                        // eval-builtins dispatched by name in
+                        // `reify_stdlib::eval_builtin` (analysis.rs). Setting
+                        // their result types here PREVENTS the first-arg Tensor
+                        // drift in the fallback below — e.g.
+                        // `von_mises(stress)` would otherwise mis-type as
+                        // `Tensor<Pressure>` instead of `Scalar<Pressure>`.
+                        //
+                        // The call STAYS a `FunctionCall` (eval untouched, name-
+                        // dispatched to existing Rust kernels).  The family is
+                        // pinned disjoint from all sibling families by the
+                        // `analysis_fn_names_are_disjoint_from_other_families`
+                        // test in `units.rs`, so this arm's position in the
+                        // ladder is unobservable.
+                        analysis_fn_result_type(name, &compiled_args)
+                    } else if is_field_op(name) && let Some(t) = field_op_result_type(
+                        name,
+                        &compiled_args
+                            .iter()
+                            .map(|a| a.result_type.clone())
+                            .collect::<Vec<_>>(),
+                    ) {
+                        // std.fields α (task 4219, PRD §5.1) — field-op name family:
+                        //   fn_field(Function{[D]→C})        → Field<D, C>
+                        //   from_samples(List<D>,List<C>,_)  → Field<D, C>
+                        //   restrict(Field<D,C>, region)     → Field<D, C>
+                        //   compose(Field<B,C>, Field<A,B>)  → Field<A, C>
+                        //   sample(Field<D,C>, _)            → C   (THE §5.1 FIX)
+                        //   gradient / divergence / curl / laplacian
+                        //                                    → Field<D, result>
+                        //                                      (correct codomain)
+                        //
+                        // `field_op_result_type` returns `None` when arg[0] is not
+                        // the expected shape (e.g. not a Field for `sample`), so
+                        // mis-shaped calls fall through to the first-arg fallback
+                        // unchanged — zero regression guarantee.
+                        //
+                        // Eval-time dispatch for sample/gradient/divergence/curl/
+                        // laplacian lives in `reify-expr`; fn_field/from_samples/
+                        // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
+                        // family is pinned disjoint from all sibling families
+                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // so this arm's position in the ladder is unobservable.
+                        t
                     } else {
                         compiled_args
                             .first()
@@ -1900,7 +2668,7 @@ pub(crate) fn compile_expr_guarded(
                                         "zero-arg function: return type inferred as Real",
                                     )),
                                 );
-                                Type::Real
+                                Type::dimensionless_scalar()
                             })
                     };
 
@@ -1956,13 +2724,12 @@ pub(crate) fn compile_expr_guarded(
                     // self.sub — for single-instance subs, return a StructureRef so outer
                     // chaining works. Collection subs are excluded here and handled below
                     // via resolve_collection_sub_to_list (self.bolts ≡ bare bolts).
+                    // Delegates to resolve_non_collection_sub_to_structure_ref (the shared
+                    // helper also called from the bare-Ident fallback) so self.bolt ≡ bolt.
                     if scope.sub_component_types.contains_key(member.as_str())
                         && !scope.collection_sub_names.contains(member.as_str())
                     {
-                        let structure_name = scope.sub_component_types[member.as_str()].clone();
-                        let scoped_entity = format!("{}.{}", scope.entity_name, member);
-                        let sub_id = ValueCellId::new(&scoped_entity, "__self");
-                        return CompiledExpr::value_ref(sub_id, Type::StructureRef(structure_name));
+                        return resolve_non_collection_sub_to_structure_ref(scope, member.as_str());
                     }
                     // Collection sub accessed through self: delegate to the same helper used
                     // by the bare-ident collection-sub resolution in the Identifier arm of
@@ -2135,7 +2902,7 @@ pub(crate) fn compile_expr_guarded(
                         // concrete types the same way the general method-call path does.
                         //
                         // For any *unknown* member, the diagnostic above already captures the
-                        // root cause.  We must NOT fall back to Type::Real here: doing so lets
+                        // root cause.  We must NOT fall back to Type::dimensionless_scalar() here: doing so lets
                         // downstream BinOp consumers see `Real + Real = Real` and swallow the
                         // error, defeating the Type::Error anti-cascade policy described in
                         // the `make_poison_literal` doc-block in this module and the
@@ -2153,7 +2920,7 @@ pub(crate) fn compile_expr_guarded(
                             // any downstream check against that concrete type is not cascade
                             // (plan design decision #2, task 3639 review).
                             "count" => Type::Int,
-                            "sum" | "keys" | "values" => Type::Real,
+                            "sum" | "keys" | "values" => Type::dimensionless_scalar(),
                             _ => scope
                                 .sub_member_types
                                 .get(sub_name.as_str())
@@ -2562,7 +3329,7 @@ pub(crate) fn compile_expr_guarded(
                     return CompiledExpr::purpose_reflective_aggregation(
                         id.member.clone(),
                         member.clone(),
-                        Type::List(Box::new(Type::Real)),
+                        Type::List(Box::new(Type::dimensionless_scalar())),
                     );
                 } else {
                     // Regular member access (e.g., `subject.mass`):
@@ -2593,7 +3360,7 @@ pub(crate) fn compile_expr_guarded(
                     //     against a hypothetical future stdlib "Structure" template;
                     //     the registry-miss guard covers other unregistered wildcard
                     //     kinds (e.g., "Occurrence").
-                    //   - Type::Real is a compile-time fallback; member-type
+                    //   - Type::dimensionless_scalar() is a compile-time fallback; member-type
                     //     resolution (e.g., Length vs. Mass) is a separate
                     //     follow-up task and is NOT addressed here.
                     let struct_name = match &compiled_obj.result_type {
@@ -2632,7 +3399,7 @@ pub(crate) fn compile_expr_guarded(
                     // conjunct — no second lookup or `.expect()` needed.
                     let stamp_entity = format!("{}::{}", id.entity, param_root);
                     let member_id = ValueCellId::new(&stamp_entity, member);
-                    return CompiledExpr::value_ref(member_id, Type::Real);
+                    return CompiledExpr::value_ref(member_id, Type::dimensionless_scalar());
                 }
             }
             // ── End purpose-subject member access ──────────────────────────────
@@ -2655,7 +3422,7 @@ pub(crate) fn compile_expr_guarded(
             // resolve the declared field type from the structure-def template
             // in `scope.template_registry` (esc-3540-177-threaded). For a
             // `TraitObject` the concrete runtime type is not statically known
-            // (traits are not in `template_registry`); fall back to `Type::Real`
+            // (traits are not in `template_registry`); fall back to `Type::dimensionless_scalar()`
             // — a permissive, non-poison type so the chain neither cascades nor
             // is rejected. The runtime `Value` is whatever the field actually
             // holds (e.g. a `Value::Scalar`), independent of this static type.
@@ -2675,9 +3442,225 @@ pub(crate) fn compile_expr_guarded(
                             .find(|vc| vc.id.member == *member)
                             .map(|vc| vc.cell_type.clone())
                     })
-                    .unwrap_or(Type::Real);
+                    .unwrap_or(Type::dimensionless_scalar());
                 let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
                 return CompiledExpr::index_access(compiled_obj, key, member_type);
+            }
+
+            // ── Type::TypeParam member access (task 4596) ───────────────────────
+            //
+            // `<param>.<member>` where the receiver is a still-unresolved
+            // `Type::TypeParam(param_name)` (the un-monomorphized L2 path).
+            //
+            // α's monomorphization rewrite handles the post-resolve StructureRef
+            // path via the branch above; this branch handles the pre-resolve path
+            // inside the auto-type-param search loop.
+            //
+            // NODE SHAPE (critical — deviates from a naïve index_access):
+            // `eval_index_access` (reify-expr/src/lib.rs) only projects a field
+            // when the object evaluates to `Value::StructureInstance`.  Inside the
+            // search loop the `seal` cell has no StructureInstance (still TypeParam)
+            // and β seeds the FLAT key `ValueCellId::new(param_member, field)` —
+            // NOT a StructureInstance at `ValueCellId(entity, param)`.
+            // So `index_access(value_ref(seal), "thickness")` would evaluate to
+            // `Undef` and the constraint would stay `Indeterminate`, failing to
+            // unblock ζ.  The correct node is a FLAT
+            // `value_ref(ValueCellId::new(receiver_member, member), trait_member_type)`
+            // which `eval_expr ValueRef` resolves via direct `get_or_undef`, matching
+            // β's per-candidate seed key exactly
+            // (param_member == receiver's ValueCellId.member, per `param_type_member`
+            // in auto_type_param.rs).
+            //
+            // SOUNDNESS CONTRACT: this branch NEVER returns a node whose
+            // `result_type` is `Type::TypeParam(_)` and NEVER synthesizes a
+            // permissive placeholder type.  When no bound trait declares `member`,
+            // the impl-step-4 negative path below emits `TypeParamMemberNotInBound`
+            // and returns a poison literal.
+            if !compiled_obj.result_type.is_error()
+                && let Type::TypeParam(param_name) = &compiled_obj.result_type
+            {
+                // Resolve the receiver's param-member name from the compiled_obj.
+                // The receiver must be a ValueRef (e.g. `ValueCellId(entity,"seal")`);
+                // its `.member` is the flat-key entity component β seeds under.
+                if let CompiledExprKind::ValueRef(ref receiver_id) = compiled_obj.kind {
+                    let receiver_member = receiver_id.member.clone();
+                    let bound_traits = scope
+                        .type_param_bounds
+                        .get(param_name.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    // Walk bound traits to find the first one declaring `member`.
+                    let found_type: Option<Type> = bound_traits.iter().find_map(|trait_name| {
+                        scope
+                            .trait_member_types
+                            .get(trait_name.as_str())
+                            .and_then(|members| members.get(member.as_str()))
+                            .cloned()
+                    });
+
+                    if let Some(member_type) = found_type {
+                        // Positive path: emit the flat ValueRef that β's per-candidate
+                        // ValueMap can resolve.
+                        return CompiledExpr::value_ref(
+                            ValueCellId::new(receiver_member, member.clone()),
+                            member_type,
+                        );
+                    } else {
+                        // Negative path (step-4): no bound trait declares `member`.
+                        // Emit a targeted diagnostic and return a poison literal.
+                        // Anti-cascade: one Error + one poison (never a TypeParam
+                        // result_type, never a permissive placeholder).
+                        let bound_names = if bound_traits.is_empty() {
+                            format!("(no bounds on type parameter '{param_name}')")
+                        } else {
+                            bound_traits.join(", ")
+                        };
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "type parameter '{param_name}' (bound: {bound_names}) \
+                                 has no member '{member}': the bound trait does not declare '{member}'"
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                format!("'{member}' not declared by bound trait"),
+                            ))
+                            .with_code(DiagnosticCode::TypeParamMemberNotInBound),
+                        );
+                    }
+                }
+                // If the receiver is not a ValueRef (e.g. a nested expr), fall
+                // through to the generic poison below — we cannot construct the
+                // flat key without the receiver's member name.
+            }
+
+            // ── Datum-projection member access (geometric-relations β) ─────────
+            //
+            // `<datum>.<member>` where the receiver is a datum type
+            // (Axis/Plane/Frame/Direction) — or a `Point`, which has no datum
+            // projections — and `<member>` is a recognized datum-projection
+            // member name (`DATUM_PROJECTION_MEMBERS`). Consults the projection
+            // table (`datum_projection.rs`, the single source of truth) to
+            // type-check and lower the projection per the "implicit projection
+            // iff unique" rule.
+            //
+            // Placement: AFTER the StructureRef/TraitObject field-projection
+            // branch above (a datum is neither) and BEFORE the collection-
+            // aggregation / generic "member access not yet supported" fallthrough
+            // below, so datum projections are resolved rather than rejected as
+            // unsupported.  The receiver-type guard excludes `Type::Error`, so an
+            // already-poisoned object falls through to the poison short-circuits
+            // in the branches below (no double diagnostic).
+            //
+            // Lowering mirrors the collection-aggregation arm: a valid projection
+            // becomes a `MethodCall` (method = projection name, no args); eval
+            // dispatches the datum-projection method names on datum Values
+            // (the projection member names are disjoint from count/sum/keys/values).
+            //
+            // ── geometric-relations ε: feature→datum projections ───────────
+            //
+            // The same projection block also handles *feature* receivers —
+            // `Type::Geometry` (a realized solid) and `Type::Selector(_)` /
+            // `Type::AnySelector` (a topology selection) — projecting them to the
+            // datum their trait bundle carries (`feature.axis : Axis`,
+            // `.plane : Plane`, `.point : Point3<Length>`, `.dir : Direction`;
+            // design §2.2). Whereas a β *datum* receiver only enters here for a
+            // recognized projection member (`DATUM_PROJECTION_MEMBERS`), a feature
+            // receiver enters for *any* non-aggregation member: a geometry/selector
+            // has no other member-access semantics, so every such `.member` is a
+            // feature→datum projection attempt and an unrecognized one
+            // (`feature.foo`) is a typed rejection (`Unavailable` →
+            // `DatumProjectionUnavailable`), not a generic "unsupported" fallthrough.
+            // Collection-aggregation members (`count`/`sum`/`keys`/`values`) are
+            // excluded so a selector's aggregation still routes to the arm below.
+            //
+            // Lowering is a `MethodCall` (method = projection name, no args), the
+            // same NODE shape β uses — but the *eval* is kernel-backed: a feature
+            // receiver evaluates to a `Value::GeometryHandle`/`Value::Selector`, for
+            // which the pure `eval_datum_projection` returns `None` (→ `Undef`), and
+            // the `reify-eval` geometry_ops post-process patches the cell with the
+            // resolved feature-datum bundle projection. This is distinct from β's
+            // pure datum→datum `eval_datum_projection` (which fires only for an
+            // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
+            let receiver_is_datum = matches!(
+                &compiled_obj.result_type,
+                Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
+            );
+            let receiver_is_feature = matches!(
+                &compiled_obj.result_type,
+                Type::Geometry | Type::Selector(_) | Type::AnySelector
+            );
+            if (receiver_is_datum && DATUM_PROJECTION_MEMBERS.contains(&member.as_str()))
+                || (receiver_is_feature
+                    && !COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()))
+            {
+                match datum_projection_result_type(&compiled_obj.result_type, member) {
+                    DatumProjectionResolution::Resolved(result_type) => {
+                        return CompiledExpr::method_call(
+                            compiled_obj,
+                            member.clone(),
+                            vec![],
+                            result_type,
+                        );
+                    }
+                    DatumProjectionResolution::Unavailable => {
+                        // Typed rejection of a nonsense projection (e.g. `point.dir`,
+                        // `plane.dir`). make_poison_literal enforces the anti-cascade
+                        // contract (one Severity::Error diagnostic + poison literal).
+                        // Where an obvious redirect exists (plane.dir → .normal),
+                        // append it as a "; use .normal" hint so the message matches
+                        // the documented canonical form.
+                        let mut message = format!(
+                            "{} has no projection '.{}'",
+                            compiled_obj.result_type, member
+                        );
+                        if let Some(hint) = datum_projection_unavailable_hint(
+                            &compiled_obj.result_type,
+                            member,
+                        ) {
+                            message.push_str(&format!("; use {hint}"));
+                        }
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(message)
+                                .with_label(DiagnosticLabel::new(
+                                    expr.span,
+                                    "no such datum projection",
+                                ))
+                                .with_code(DiagnosticCode::DatumProjectionUnavailable),
+                        );
+                    }
+                    DatumProjectionResolution::Ambiguous { suggestions } => {
+                        // A bare directional projection that could mean several
+                        // members (e.g. `frame.dir`): suggest the disambiguating
+                        // members to write instead ("write frame.z").
+                        let suggested = suggestions
+                            .iter()
+                            .map(|s| format!(".{s}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return make_poison_literal(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "ambiguous datum projection '.{}' on {}: it could be any of \
+                                 {} — write one of those instead (e.g. write {})",
+                                member,
+                                compiled_obj.result_type,
+                                suggested,
+                                suggestions
+                                    .last()
+                                    .map(|s| format!(".{s}"))
+                                    .unwrap_or_default(),
+                            ))
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "ambiguous datum projection",
+                            ))
+                            .with_code(DiagnosticCode::DatumProjectionAmbiguous),
+                        );
+                    }
+                }
             }
 
             if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
@@ -2696,15 +3679,15 @@ pub(crate) fn compile_expr_guarded(
                     "count" => Type::Int,
                     "sum" => match &compiled_obj.result_type {
                         Type::List(inner) => (**inner).clone(),
-                        _ => Type::Real,
+                        _ => Type::dimensionless_scalar(),
                     },
                     "keys" => match &compiled_obj.result_type {
                         Type::Map(k, _) => Type::List(k.clone()),
-                        _ => Type::List(Box::new(Type::Real)),
+                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
                     },
                     "values" => match &compiled_obj.result_type {
                         Type::Map(_, v) => Type::List(v.clone()),
-                        _ => Type::List(Box::new(Type::Real)),
+                        _ => Type::List(Box::new(Type::dimensionless_scalar())),
                     },
                     // task-2066 amend: this arm is structurally unreachable today — the outer
                     // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
@@ -2778,7 +3761,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "empty list")),
                     );
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::List(Box::new(elem_type));
             CompiledExpr::list_literal(compiled_elems, result_type)
@@ -2808,7 +3791,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                         .with_label(DiagnosticLabel::new(expr.span, "empty set")),
                     );
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::Set(Box::new(elem_type));
             CompiledExpr::set_literal(compiled_elems, result_type)
@@ -2856,7 +3839,7 @@ pub(crate) fn compile_expr_guarded(
                 .unwrap_or_else(|| {
                     // Warning already emitted for empty map at key_type step above;
                     // no second warning needed for the value type.
-                    Type::Real
+                    Type::dimensionless_scalar()
                 });
             let result_type = Type::Map(Box::new(key_type), Box::new(val_type));
             CompiledExpr::map_literal(compiled_entries, result_type)
@@ -2880,17 +3863,31 @@ pub(crate) fn compile_expr_guarded(
                 current_guard,
                 lambda_counter,
             );
+            // task 4118 γ — IndexAccess-object selector coercion (insertion
+            // site #3). After step-4 `faces(b)` / `faces_by_normal(...)` are
+            // `Selector(k)`, not `List`. Wrap the object in `ResolveSelector`
+            // (→ `List<Geometry>`) so the element type resolves to `Geometry`
+            // below, instead of hitting the non-collection hard error. A no-op
+            // for any non-`Selector` object — real `List`/`Map` and genuinely
+            // non-indexable values pass through unchanged, preserving their
+            // existing element-type / hard-error handling. Gated on the same β
+            // `type_compatible` rule as sites #1/#2 (centralized in `coerce.rs`).
+            let compiled_obj = coerce::coerce_selector_arg(
+                compiled_obj,
+                &Type::List(Box::new(Type::Geometry)),
+            );
+
             // Infer result type from collection's element type.
             // Anti-cascade guard (task-448): if the object is already
             // poisoned, propagate Type::Error rather than falling back to
-            // Type::Real.
+            // Type::dimensionless_scalar().
             let result_type = if compiled_obj.result_type.is_error() {
                 Type::Error
             } else {
                 match &compiled_obj.result_type {
                     Type::List(inner) => (**inner).clone(),
                     Type::Map(_, val) => (**val).clone(),
-                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::dimensionless_scalar().
                     // Anti-cascade policy: Type::Error propagates downstream via existing
                     // is_error() guards so no cascade of type-mismatch errors follows.
                     _ => {
@@ -3056,7 +4053,7 @@ pub(crate) fn compile_expr_guarded(
             // Auto expressions should not appear inside compile_expr — they are
             // handled at the param compilation level. If we reach here, emit an
             // Undef literal as a safe fallback.
-            CompiledExpr::literal(Value::Undef, Type::Real)
+            CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
         }
         reify_ast::ExprKind::Conditional {
             condition,
@@ -3129,6 +4126,11 @@ pub(crate) fn compile_expr_guarded(
                         // Qualified assoc-type refs cannot be used as lambda param types here;
                         // resolution deferred to task ιₑ.
                         reify_ast::TypeExprKind::QualifiedAssoc { .. } => None,
+                        // A function / arrow type `(T) -> U` (task 4595) has no single
+                        // type *name* to feed resolve_type_name; an explicitly
+                        // arrow-typed lambda param is not resolved on this path
+                        // (untyped lambda params — the map_or case — infer separately).
+                        reify_ast::TypeExprKind::Function { .. } => None,
                     };
                     if let Some(name) = name_opt {
                         match resolve_type_name(name) {
@@ -3158,7 +4160,7 @@ pub(crate) fn compile_expr_guarded(
                         )
                     }
                 } else {
-                    Type::Real // default untyped params to Real
+                    Type::dimensionless_scalar() // default untyped params to Real
                 };
 
                 let param_id = ValueCellId::new(&lambda_entity, &param.name);
@@ -3233,13 +4235,13 @@ pub(crate) fn compile_expr_guarded(
             // Infer element type from the collection's result type.
             // Anti-cascade guard (task-448): if the collection is already
             // poisoned, propagate Type::Error into elem_type rather than
-            // falling back to Type::Real.
+            // falling back to Type::dimensionless_scalar().
             let elem_type = if compiled_collection.result_type.is_error() {
                 Type::Error
             } else {
                 match &compiled_collection.result_type {
                     Type::List(elem) | Type::Set(elem) => *elem.clone(),
-                    // task-2066: emit a diagnostic instead of silently defaulting to Type::Real.
+                    // task-2066: emit a diagnostic instead of silently defaulting to Type::dimensionless_scalar().
                     // Type::Error propagates into quant_scope so the bound variable also
                     // carries Type::Error; existing is_error() guards in the predicate suppress
                     // cascade (anti-cascade policy).
@@ -3520,7 +4522,7 @@ pub(crate) fn compile_expr_guarded(
                         ))
                         .with_label(DiagnosticLabel::new(expr.span, "member not found in scope")),
                     );
-                    CompiledExpr::literal(Value::Undef, Type::Real)
+                    CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())
                 }
             }
         }
@@ -4188,7 +5190,7 @@ pub structure Rack {
         vec![
             (
                 "HexHead".to_string(),
-                [("head_thickness".to_string(), Type::Real)]
+                [("head_thickness".to_string(), Type::dimensionless_scalar())]
                     .into_iter()
                     .collect(),
             ),
@@ -4486,7 +5488,7 @@ pub structure Rack {
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
                 is_aux: false,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: default.clone(),
                 solver_hints: vec![],
                 span: SourceSpan::prelude(),
@@ -4521,10 +5523,12 @@ pub structure Rack {
     }
 
     fn call_expr(name: &str, args: Vec<reify_ast::Expr>) -> reify_ast::Expr {
+        let n = args.len();
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: name.to_string(),
                 args,
+                arg_names: vec![None; n],
             },
             span: SourceSpan::prelude(),
         }
@@ -4596,7 +5600,7 @@ pub structure Rack {
         let tmpl = sct_template(
             "PointLoad",
             &[
-                ("target", Some(CompiledExpr::literal(Value::Undef, Type::Real))),
+                ("target", Some(CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar()))),
                 (
                     "magnitude",
                     Some(CompiledExpr::literal(Value::Int(0), Type::Int)),
@@ -4691,7 +5695,7 @@ pub structure Rack {
     /// is only reached when same-named user fns exist). This is the load-bearing
     /// reason the builtin approach — rather than a `pub fn` with an optional
     /// `density` default — keeps the "no explicit density" rung (and thus the
-    /// `W_DynamicsDefaultDensity` observable) reachable.
+    /// `E_DynamicsNoDensity` error path) reachable.
     #[test]
     fn body_mass_props_resolves_to_function_call_returning_mass_properties() {
         // Empty template registry → `body_mass_props` is not a structure-def →
@@ -4970,7 +5974,7 @@ pub structure Rack {
                 kind: crate::types::ValueCellKind::Param,
                 visibility: crate::types::Visibility::Public,
                 is_aux: false,
-                cell_type: Type::Real,
+                cell_type: Type::dimensionless_scalar(),
                 default_expr: default.clone(),
                 solver_hints: vec![],
                 span: SourceSpan::prelude(),
@@ -5027,11 +6031,11 @@ pub structure Rack {
         //   param nominal, param upper_deviation
         //   let upper_limit = ValueRef(nominal) + ValueRef(upper_deviation)
         let ref_nominal =
-            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::Real);
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "nominal"), Type::dimensionless_scalar());
         let ref_upper_dev =
-            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::Real);
+            CompiledExpr::value_ref(ValueCellId::new("DimTol", "upper_deviation"), Type::dimensionless_scalar());
         let upper_limit_expr =
-            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::Real);
+            CompiledExpr::binop(BinOp::Add, ref_nominal.clone(), ref_upper_dev.clone(), Type::dimensionless_scalar());
 
         let tmpl = sct_template_with_lets(
             "DimTol",

@@ -1,0 +1,27 @@
+// Fixture for task 4323 (PRD undef-self-describing γ): op/builtin contract-failure
+// reason sink.
+//
+// OpContractDemo exercises the two post-eval OpContractFailed capture paths on a
+// single module eval:
+//
+//   - a   : Unbound       (param with no default — α records Unbound on cell `a`)
+//   - neg : determined    (param neg: Real = -1.0 — always a negative Real)
+//   - x   : OpContractFailed + propagated-Unbound
+//             (let x = a + sqrt(neg); `a` is undef input → propagated Unbound from
+//              α's dep-walk; sqrt(neg) is a domain failure with determined input → γ
+//              records OpContractFailed on cell `x` itself so the tracer collects
+//              BOTH causes: x's own OpContractFailed and a's Unbound via dep edge)
+//   - y   : purely propagated (let y = sqrt(a); sqrt receives Undef arg → short-circuit
+//             fires before builtin runs → NO false OpContractFailed; tracer returns
+//             only a's Unbound via dep edge — BT6)
+//   - ok  : determined control (let ok = sqrt(neg + 5.0); = sqrt(4.0) = 2.0)
+//
+// Compiles clean under compile_source_with_stdlib (no Error diagnostics).
+// Cell ids are ValueCellId::new("OpContractDemo", "<field>").
+structure OpContractDemo {
+    param a: Real
+    param neg: Real = -1.0
+    let x: Real = a + sqrt(neg)
+    let y: Real = sqrt(a)
+    let ok: Real = sqrt(neg + 5.0)
+}

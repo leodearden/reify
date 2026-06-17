@@ -132,19 +132,10 @@ impl InputShapeCacheKey {
 }
 
 // ── Value→core marshalling ──────────────────────────────────────────────────
-//
-// The deferred β `Value`→`MultiJointSpline` marshalling (and, in later steps,
-// the modal / mechanism / track marshalling). These helpers are `pub(crate)`
-// internal — `reify-eval` reaches the trajectory core only through the
-// `simulate_trajectory_value` / `input_shape_value` composers (steps 14 / 16),
-// which call these. Tagged `#[allow(dead_code)]` until those composers consume
-// them, mirroring `spline.rs`'s own dead-code suppression (the spline math is
-// fully tested but its Value wiring lands incrementally across π's TDD steps).
 
 /// Read a numeric stdlib field as `f64` — a dimensioned `Scalar` (SI magnitude),
 /// a `Real`, or an `Int`. Any other variant yields `None`. Mirrors
 /// `input_shape::read_scalar_si` / `modal_ops::read_scalar_si`.
-#[allow(dead_code)]
 fn read_scalar_si(val: &Value) -> Option<f64> {
     match val {
         Value::Scalar { si_value, .. } => Some(*si_value),
@@ -157,7 +148,6 @@ fn read_scalar_si(val: &Value) -> Option<f64> {
 /// Read a `Value::List<numeric>` into `Vec<f64>` (each element via
 /// [`read_scalar_si`]). `None` if `val` is not a `List` or any element is
 /// non-numeric.
-#[allow(dead_code)]
 fn read_real_list(val: &Value) -> Option<Vec<f64>> {
     let Value::List(items) = val else {
         return None;
@@ -170,7 +160,6 @@ fn read_real_list(val: &Value) -> Option<Vec<f64>> {
 /// field, or a non-numeric list → `None`. The `None` return is the "no
 /// per-knot derivative data" case the cubic path tolerates and the quintic
 /// path rejects.
-#[allow(dead_code)]
 fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
     match val {
         Some(Value::Option(Some(inner))) => read_real_list(inner),
@@ -203,7 +192,6 @@ fn read_opt_real_list(val: Option<&Value>) -> Option<Vec<f64>> {
 /// an unrecognised `boundary` tag (cubic path) or `spline_kind` variant, a
 /// degenerate knot set (`CubicSpline::fit` / `QuinticSpline::fit` returning
 /// `None`), or a quintic profile missing per-waypoint `vels` / `accels`.
-#[allow(dead_code)]
 pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSpline> {
     let Value::StructureInstance(data) = profile else {
         return None;
@@ -304,6 +292,68 @@ pub(crate) fn value_to_multijoint_spline(profile: &Value) -> Option<MultiJointSp
             MultiJointSpline::new_quintic(joints)
         }
         _ => None, // unrecognised spline_kind variant
+    }
+}
+
+// ── evaluate_profile* / profile_duration composers (task 4539) ─────────────
+//
+// Thin `Value`→`Value` adapters that call `value_to_multijoint_spline` + the
+// `MultiJointSpline` evaluators. Routed from `eval_trajectory` for both the
+// public name and the `*_at` undeclared-delegate name (same two-name pattern
+// as `gcode_import`/`gcode_import_lower`). Return `Value::Undef` on any
+// unmarshalable / degenerate input — the loud not-computed signal rather than
+// a numeric placeholder.
+//
+// TODO(perf): each call re-fits the spline from scratch (O(n_knots) via // ptodo:allow permanent perf note, no live owner task
+// value_to_multijoint_spline). Dense sampling loops pay that cost N times.
+// A future fitted-spline cache keyed on the profile Value (mirroring
+// InputShapeCacheKey) would amortize the fit to once per profile.
+
+/// Sample a profile at time `t` (SI seconds), returning a `Value::List` of
+/// `Value::Real` per joint — or `Value::Undef` on unmarshalable input.
+pub(crate) fn evaluate_profile_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(spline.eval(t_si).into_iter().map(Value::Real).collect())
+}
+
+/// First-derivative companion: returns `[q̇(t)]` per joint, or `Value::Undef`.
+pub(crate) fn evaluate_profile_dot_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(spline.eval_dot(t_si).into_iter().map(Value::Real).collect())
+}
+
+/// Second-derivative companion: returns `[q̈(t)]` per joint, or `Value::Undef`.
+pub(crate) fn evaluate_profile_ddot_value(profile: &Value, t: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    let Some(t_si) = read_scalar_si(t) else {
+        return Value::Undef;
+    };
+    Value::List(
+        spline.eval_ddot(t_si).into_iter().map(Value::Real).collect(),
+    )
+}
+
+/// Duration accessor: returns `Value::Scalar{TIME, si_value: spline.duration()}`
+/// — the `[t_first, t_last]` knot span — or `Value::Undef` on unmarshalable input.
+pub(crate) fn profile_duration_value(profile: &Value) -> Value {
+    let Some(spline) = value_to_multijoint_spline(profile) else {
+        return Value::Undef;
+    };
+    Value::Scalar {
+        si_value: spline.duration(),
+        dimension: DimensionVector::TIME,
     }
 }
 
@@ -2432,6 +2482,230 @@ mod tests {
         assert!(
             as_real(&eval_builtin("peak_deviation_at", &[bad, loc])).abs() < SPLINE_TOL,
             "malformed peak_deviation_at → 0"
+        );
+    }
+
+    // ── step-1 (task 4539): evaluate_profile position eval-boundary ─────────────
+
+    use super::super::test_polynomials::{cubic_p, cubic_dp, cubic_ddp};
+
+    /// Build a clamped-cubic `PiecewisePolynomialProfile` `Value` at 4 knots
+    /// ts = [0.0, 1.0, 2.5, 4.0] with values = cubic_p(t) and endpoint slopes
+    /// equal to the exact cubic derivative (cubic_dp(0) / cubic_dp(4)). A
+    /// clamped cubic whose boundary slopes equal the exact cubic derivatives
+    /// reproduces p, p', p'' exactly (spline.rs:1187 tolerance 1e-12).
+    fn clamped_cubic_profile() -> Value {
+        let ts = [0.0_f64, 1.0, 2.5, 4.0];
+        let wps: Vec<Value> = ts
+            .iter()
+            .map(|&t| waypoint(t, &[cubic_p(t)], None, None))
+            .collect();
+        let boundary = instance(
+            "ClampedSpline",
+            vec![
+                ("start_velocity".to_string(), reals(&[cubic_dp(0.0)])),
+                ("end_velocity".to_string(), reals(&[cubic_dp(4.0)])),
+            ],
+        );
+        pp_profile(wps, boundary, spline_kind("CubicSpline"))
+    }
+
+    /// `evaluate_profile(profile, t)` returns `Value::List([Value::Real(q)])` with
+    /// `q` within `SPLINE_TOL` of `cubic_p(t)` for all sampled `t` in `[0, 4]`.
+    /// The result must NOT be `[0.0]` (the stub value that the unwired
+    /// `.ri` body returned before task 4539).
+    #[test]
+    fn evaluate_profile_position_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile", &[profile.clone(), time(t)]);
+            let Value::List(items) = &result else {
+                panic!(
+                    "evaluate_profile(t={t}) should return Value::List, got {result:?}"
+                );
+            };
+            assert_eq!(
+                items.len(),
+                1,
+                "evaluate_profile(t={t}): expected 1-element list (one joint), got {}",
+                items.len()
+            );
+            let Value::Real(q) = items[0] else {
+                panic!(
+                    "evaluate_profile(t={t}): list element should be Value::Real, got {:?}",
+                    items[0]
+                );
+            };
+            let expected = cubic_p(t);
+            assert!(
+                (q - expected).abs() < SPLINE_TOL,
+                "evaluate_profile(t={t}): got {q}, want {expected} (diff {})",
+                (q - expected).abs()
+            );
+            assert!(
+                q.abs() > SPLINE_TOL || expected.abs() < SPLINE_TOL,
+                "evaluate_profile(t={t}): result is [0.0] — the stub body is still live"
+            );
+        }
+    }
+
+    // ── step-3 (task 4539): evaluate_profile_dot / _ddot eval-boundary ──────────
+
+    /// Helper: extract the single real from a `Value::List([Value::Real(r)])`.
+    fn single_real(v: &Value, ctx: &str) -> f64 {
+        let Value::List(items) = v else {
+            panic!("{ctx}: expected Value::List, got {v:?}");
+        };
+        assert_eq!(items.len(), 1, "{ctx}: expected 1-element list, got {}", items.len());
+        let Value::Real(r) = items[0] else {
+            panic!("{ctx}: list element should be Value::Real, got {:?}", items[0]);
+        };
+        r
+    }
+
+    /// `evaluate_profile_dot(profile, t)` returns `[cubic_dp(t)]` within
+    /// `SPLINE_TOL`. A clamped cubic whose endpoint slopes equal the exact
+    /// cubic first-derivative reproduces p' exactly (spline.rs:1187).
+    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
+    /// `"evaluate_profile_dot"`.
+    #[test]
+    fn evaluate_profile_dot_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile_dot", &[profile.clone(), time(t)]);
+            let got = single_real(&result, &format!("evaluate_profile_dot(t={t})"));
+            let expected = cubic_dp(t);
+            assert!(
+                (got - expected).abs() < SPLINE_TOL,
+                "evaluate_profile_dot(t={t}): got {got}, want {expected} (diff {})",
+                (got - expected).abs()
+            );
+        }
+    }
+
+    /// `evaluate_profile_ddot(profile, t)` returns `[cubic_ddp(t)]` within
+    /// `SPLINE_TOL`. A clamped cubic reproduces p'' exactly.
+    #[test]
+    fn evaluate_profile_ddot_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let sample_ts = [0.0_f64, 0.5, 1.0, 2.5, 3.7, 4.0];
+
+        for t in sample_ts {
+            let result = eval_builtin("evaluate_profile_ddot", &[profile.clone(), time(t)]);
+            let got = single_real(&result, &format!("evaluate_profile_ddot(t={t})"));
+            let expected = cubic_ddp(t);
+            assert!(
+                (got - expected).abs() < SPLINE_TOL,
+                "evaluate_profile_ddot(t={t}): got {got}, want {expected} (diff {})",
+                (got - expected).abs()
+            );
+        }
+    }
+
+    // ── step-5 (task 4539): profile_duration + loud-failure on bad input ─────────
+
+    /// `profile_duration(profile)` returns a `Value::Scalar{TIME}` whose
+    /// `si_value` equals the knot span of `clamped_cubic_profile()` (0..4 = 4s).
+    /// RED because `eval_trajectory` still returns `Some(Value::Undef)` for
+    /// `"profile_duration"`.
+    #[test]
+    fn profile_duration_eval_boundary() {
+        let profile = clamped_cubic_profile();
+        let result = eval_builtin("profile_duration", &[profile]);
+        let Value::Scalar { si_value, dimension } = result else {
+            panic!("profile_duration should return Value::Scalar, got {result:?}");
+        };
+        assert_eq!(
+            dimension,
+            reify_core::DimensionVector::TIME,
+            "profile_duration should carry TIME dimension"
+        );
+        assert!(
+            (si_value - 4.0).abs() < SPLINE_TOL,
+            "profile_duration: got {si_value}s, want 4.0s"
+        );
+    }
+
+    /// Bad inputs yield `Value::Undef` for all four public names — the loud
+    /// not-computed signal, not a numeric placeholder. Tested vectors:
+    /// - wrong arity (0 args for duration; 1 / 3 args for the position family)
+    /// - a non-`StructureInstance` first arg (`Value::Real(1.0)`)
+    /// - a degenerate `<2`-waypoint profile
+    #[test]
+    fn evaluate_profile_family_bad_args_return_undef() {
+        let good_t = time(0.5);
+        let bad_profile = Value::Real(1.0);
+        let degenerate_profile = pp_profile(
+            vec![waypoint(0.0, &[0.0], None, None)],
+            instance("NaturalSpline", vec![]),
+            spline_kind("CubicSpline"),
+        );
+
+        // profile_duration — wrong arity
+        assert!(eval_builtin("profile_duration", &[]).is_undef(), "duration: 0 args");
+        assert!(
+            eval_builtin("profile_duration", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "duration: 2 args (wrong arity)"
+        );
+        // profile_duration — bad / degenerate profile
+        assert!(
+            eval_builtin("profile_duration", std::slice::from_ref(&bad_profile)).is_undef(),
+            "duration: non-StructureInstance profile"
+        );
+        assert!(
+            eval_builtin("profile_duration", std::slice::from_ref(&degenerate_profile))
+                .is_undef(),
+            "duration: <2-waypoint profile"
+        );
+
+        // evaluate_profile — wrong arity
+        assert!(eval_builtin("evaluate_profile", &[]).is_undef(), "eval_profile: 0 args");
+        assert!(
+            eval_builtin("evaluate_profile", std::slice::from_ref(&bad_profile)).is_undef(),
+            "eval_profile: 1 arg"
+        );
+        // evaluate_profile — bad profile
+        assert!(
+            eval_builtin("evaluate_profile", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "eval_profile: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin("evaluate_profile", &[degenerate_profile.clone(), good_t.clone()])
+                .is_undef(),
+            "eval_profile: <2-waypoint"
+        );
+
+        // evaluate_profile_dot — bad profile
+        assert!(
+            eval_builtin("evaluate_profile_dot", &[bad_profile.clone(), good_t.clone()]).is_undef(),
+            "eval_dot: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin(
+                "evaluate_profile_dot",
+                &[degenerate_profile.clone(), good_t.clone()]
+            )
+            .is_undef(),
+            "eval_dot: <2-waypoint"
+        );
+
+        // evaluate_profile_ddot — bad profile
+        assert!(
+            eval_builtin("evaluate_profile_ddot", &[bad_profile.clone(), good_t.clone()])
+                .is_undef(),
+            "eval_ddot: non-StructureInstance"
+        );
+        assert!(
+            eval_builtin(
+                "evaluate_profile_ddot",
+                &[degenerate_profile.clone(), good_t.clone()]
+            )
+            .is_undef(),
+            "eval_ddot: <2-waypoint"
         );
     }
 }

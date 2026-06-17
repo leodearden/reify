@@ -14,10 +14,10 @@
 #[test]
 fn aux_sub_lowers_pose_and_is_aux() {
     let source = r#"structure Child {
-    param h: Scalar = 10mm
+    param h: Length = 10mm
 }
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
 }"#;
     let compiled = reify_test_support::compile_source_with_stdlib(source);
@@ -57,10 +57,10 @@ structure Parent {
 #[test]
 fn plain_sub_has_no_pose_not_aux() {
     let source = r#"structure Child {
-    param h: Scalar = 10mm
+    param h: Length = 10mm
 }
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     sub plate : Child
 }"#;
     let compiled = reify_test_support::compile_source_with_stdlib(source);
@@ -208,7 +208,7 @@ fn aux_and_pub_are_independent() {
 #[test]
 fn at_on_collection_sub_is_rejected() {
     let source = r#"structure Child {
-    param h: Scalar = 10mm
+    param h: Length = 10mm
 }
 structure Parent {
     param n: Int = 3
@@ -262,10 +262,10 @@ structure Parent {
 #[test]
 fn valid_at_and_aux_compile_clean() {
     let source = r#"structure Child {
-    param h: Scalar = 10mm
+    param h: Length = 10mm
 }
 structure Parent {
-    param w: Scalar = 80mm
+    param w: Length = 80mm
     aux let offset = 30mm
     sub plate : Child at transform3(orient_identity(), vec3(10mm, 0mm, 0mm))
     aux sub jig : Child at transform3(orient_identity(), vec3(30mm, 0mm, 0mm))
@@ -354,6 +354,7 @@ fn match_arm_sub_pose_is_lowered() {
             keyed_members: vec![],
             is_aux: false,
             pose_expr: Some(ident_expr("kind")),
+            relate_relations: vec![],
             span: zero_span(),
             content_hash: ContentHash(0),
         })

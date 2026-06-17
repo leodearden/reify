@@ -402,7 +402,7 @@ structure S {
 fn scalar_range_constraint() {
     let source = r#"
 structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     constraint 2mm < thickness < 10mm
 }
 "#;

@@ -50,7 +50,7 @@ const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 /// Status strings follow Taskmaster's canonical form (`in-progress`,
 /// hyphenated); the T-4 CLI normalizes at the boundary. Per
 /// `f-infra-design.md` §5 P1.
-// TODO(perf): this rescans every task for each done producer that has a
+// TODO(#4593): this rescans every task for each done producer that has a
 //   `prd`, so the producer↔consumer correlation is O(tasks²). Harmless at
 //   solo-OSS task volumes (the audit window is ~14 days of done-flips), but
 //   if `task_metadata` ever grows, precompute a `HashSet<&str>` of the

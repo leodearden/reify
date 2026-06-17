@@ -53,13 +53,18 @@ fn extract_value_ref_id<'a>(expr: &'a CompiledExpr, label: &str) -> &'a ValueCel
 // ── Step 7: basic single-arg instantiation ───────────────────────────────────
 
 /// Constraint def with single param, structure with one instantiation.
-/// After substitution, constraint expr should be `thickness > 2`.
+/// After substitution, constraint expr should be `thickness > 2mm`.
+///
+/// NOTE (task 4490): `wall > 2` was updated to `wall > 2mm` because comparing
+/// a dimensional Length parameter to a bare integer (> 2) is now correctly
+/// rejected by the compile-time operand guard.  The literal `2mm` compiles to
+/// Scalar<Length>(0.002 SI m).
 #[test]
 fn basic_constraint_inst_compiles() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param thickness: Length
@@ -74,7 +79,7 @@ structure S {
     assert_eq!(tmpl.constraints.len(), 1, "expected exactly 1 constraint");
 
     let cc = &tmpl.constraints[0];
-    // The compiled expr should be BinOp(Gt, ValueRef(S.thickness), Literal(2.0))
+    // The compiled expr should be BinOp(Gt, ValueRef(S.thickness), Literal(Scalar<Length>(0.002)))
     match &cc.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             assert_eq!(*op, BinOp::Gt, "expected Gt operator");
@@ -85,16 +90,16 @@ structure S {
                 }
                 other => panic!("expected ValueRef for left, got {:?}", other),
             }
-            // Number literal `2` compiles to Int(2).
-            match &right.kind {
-                CompiledExprKind::Literal(Value::Int(v)) => {
-                    assert_eq!(*v, 2, "right should be 2, got {v}");
-                }
-                CompiledExprKind::Literal(Value::Real(v)) => {
-                    assert!((v - 2.0).abs() < 1e-9, "right should be 2.0, got {v}");
-                }
-                other => panic!("expected Literal(2 or 2.0) for right, got {:?}", other),
-            }
+            // Literal `2mm` compiles to Scalar<Length>(0.002 SI m).
+            assert!(
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                    if (si_value - 0.002_f64).abs() < 1e-9
+                ),
+                "right should be Literal(Scalar 2mm = 0.002 SI m), got {:?}",
+                right.kind
+            );
         }
         other => panic!("expected BinOp for constraint expr, got {:?}", other),
     }
@@ -103,6 +108,10 @@ structure S {
 // ── Step 9: multi-predicate constraint def ───────────────────────────────────
 
 /// Constraint def with 3 params and 2 predicates; structure instantiates with literals.
+///
+/// NOTE (task 4490): `lo: 1, hi: 10` were updated to `lo: 1mm, hi: 10mm` because
+/// passing a bare integer as a Length argument results in `w >= 1` (Scalar<Length>
+/// >= Int) which is now correctly rejected by the compile-time dimension guard.
 #[test]
 fn multi_predicate_constraint_inst() {
     let source = r#"
@@ -115,7 +124,7 @@ constraint def Bounded {
 }
 structure S {
     param w: Length
-    constraint Bounded(x: w, lo: 1, hi: 10)
+    constraint Bounded(x: w, lo: 1mm, hi: 10mm)
 }
 "#;
     let (tmpl, diags) = compile_template(source, "S");
@@ -125,7 +134,7 @@ structure S {
 
     assert_eq!(tmpl.constraints.len(), 2, "expected exactly 2 constraints");
 
-    // First constraint: w >= 1
+    // First constraint: w >= 1mm (Scalar<Length>(0.001 SI m))
     match &tmpl.constraints[0].expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             assert_eq!(*op, BinOp::Ge, "first constraint should be Ge (>=)");
@@ -133,21 +142,20 @@ structure S {
                 matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "w"),
                 "left should be ValueRef(S.w)"
             );
-            let right_is_one = match &right.kind {
-                CompiledExprKind::Literal(Value::Int(v)) => *v == 1,
-                CompiledExprKind::Literal(Value::Real(v)) => (v - 1.0).abs() < 1e-9,
-                _ => false,
-            };
             assert!(
-                right_is_one,
-                "right should be Literal(1), got {:?}",
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                    if (si_value - 0.001_f64).abs() < 1e-9
+                ),
+                "right should be Literal(Scalar 1mm = 0.001 SI m), got {:?}",
                 right.kind
             );
         }
         other => panic!("expected BinOp for first constraint, got {:?}", other),
     }
 
-    // Second constraint: w <= 10
+    // Second constraint: w <= 10mm (Scalar<Length>(0.010 SI m))
     match &tmpl.constraints[1].expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             assert_eq!(*op, BinOp::Le, "second constraint should be Le (<=)");
@@ -155,14 +163,13 @@ structure S {
                 matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == "w"),
                 "left should be ValueRef(S.w)"
             );
-            let right_is_ten = match &right.kind {
-                CompiledExprKind::Literal(Value::Int(v)) => *v == 10,
-                CompiledExprKind::Literal(Value::Real(v)) => (v - 10.0).abs() < 1e-9,
-                _ => false,
-            };
             assert!(
-                right_is_ten,
-                "right should be Literal(10), got {:?}",
+                matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                    if (si_value - 0.010_f64).abs() < 1e-9
+                ),
+                "right should be Literal(Scalar 10mm = 0.010 SI m), got {:?}",
                 right.kind
             );
         }
@@ -319,7 +326,7 @@ fn constraint_inst_with_where_clause() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param mode: Bool
@@ -359,12 +366,16 @@ structure S {
 
 /// Single-predicate constraint def instantiation should produce a CompiledConstraint
 /// with label == Some("MinWall#0[0]").
+///
+/// NOTE (task 4490): `wall > 2` was updated to `wall > 2mm` because comparing
+/// a dimensional Length parameter to a bare integer (> 2) is now correctly
+/// rejected by the compile-time operand guard.
 #[test]
 fn constraint_inst_label_single_predicate() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param thickness: Length
@@ -389,6 +400,10 @@ structure S {
 
 /// Multi-predicate constraint def instantiation should produce labeled constraints
 /// Some("Bounded#0[0]") and Some("Bounded#0[1]") respectively.
+///
+/// NOTE (task 4490): `lo: 1, hi: 10` were updated to `lo: 1mm, hi: 10mm` because
+/// passing a bare integer as a Length argument results in `w >= 1` (Scalar<Length>
+/// >= Int) which is now correctly rejected by the compile-time dimension guard.
 #[test]
 fn constraint_inst_label_multi_predicate() {
     let source = r#"
@@ -401,7 +416,7 @@ constraint def Bounded {
 }
 structure S {
     param w: Length
-    constraint Bounded(x: w, lo: 1, hi: 10)
+    constraint Bounded(x: w, lo: 1mm, hi: 10mm)
 }
 "#;
     let (tmpl, diags) = compile_template(source, "S");
@@ -680,12 +695,16 @@ structure S {
 /// The label format is `{def_name}#{inst_idx}[{pred_idx}]`; each instantiation
 /// gets its own inst_idx so two single-predicate instantiations become
 /// `MinWall#0[0]` and `MinWall#1[0]`.
+///
+/// NOTE (task 4490): `wall > 2` was updated to `wall > 2mm` because comparing
+/// a dimensional Length parameter to a bare integer (> 2) is now correctly
+/// rejected by the compile-time operand guard.
 #[test]
 fn multi_instantiation_labels_are_unique() {
     let source = r#"
 constraint def MinWall {
     param wall: Length
-    wall > 2
+    wall > 2mm
 }
 structure S {
     param wall_a: Length
@@ -717,5 +736,106 @@ structure S {
         labels.contains(&Some("MinWall#1[0]".to_string())),
         "expected MinWall#1[0] among labels, got {:?}",
         labels
+    );
+}
+
+// ── η/4480 step-05: explicit arg-binding capture on CompiledConstraint ─────────
+//
+// The η conformance pass (PRD docs/prds/v0_6/gdt-geometric-zones-and-containment.md,
+// contract C3/C5) detects a *geometric* `Conforms` instance by the presence of an
+// EXPLICIT `actual` argument binding on the compiled constraint instance.
+// `Conforms`'s predicate body never references `actual`, so — unlike
+// `RepresentationWithin`, whose args ARE its predicate — the binding cannot be
+// recovered by walking the compiled predicate. It must be captured at
+// instantiation time onto `CompiledConstraint.arg_bindings`.
+//
+// This test pins the general capability with a minimal fixture: a constraint def
+// whose `u : Geometry` param is UNUSED in the predicate. An explicit `u: g`
+// binding must survive to `arg_bindings`, while an instantiation that omits `u`
+// (letting it fall to its `nominal()` default) must NOT record `u`. The compiled
+// predicate must be identical in both cases (B4: scalar path byte-identical).
+
+/// Collect the parameter names captured in a constraint's `arg_bindings` — the
+/// explicit call-site argument bindings recorded on the compiled instance.
+fn binding_names(cc: &reify_compiler::CompiledConstraint) -> Vec<&str> {
+    cc.arg_bindings.iter().map(|(name, _)| name.as_str()).collect()
+}
+
+#[test]
+fn explicit_arg_binding_for_unused_param_survives_to_compiled_constraint() {
+    // Two instantiations of the SAME constraint def in the SAME structure, so
+    // the compiled predicate (`thickness >= 0mm`, qualified by entity "S") is
+    // byte-identical between them — the only difference is whether the UNUSED
+    // geometry param `u` was explicitly bound.
+    let source = r#"
+constraint def X {
+    param a : Length
+    param u : Geometry = nominal()
+    a >= 0mm
+}
+structure S {
+    param thickness : Length
+    param g : Geometry
+    constraint X(a: thickness, u: g)
+    constraint X(a: thickness)
+}
+"#;
+    let (tmpl, diags) = compile_template(source, "S");
+
+    let errors = error_diags(&diags);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+    assert_eq!(
+        tmpl.constraints.len(),
+        2,
+        "expected exactly 2 constraints (two X instantiations)"
+    );
+
+    // Partition by whether the UNUSED geometry param `u` was explicitly bound.
+    let explicit = tmpl
+        .constraints
+        .iter()
+        .find(|c| binding_names(c).contains(&"u"))
+        .expect("one instantiation explicitly binds the unused param `u`");
+    let default_only = tmpl
+        .constraints
+        .iter()
+        .find(|c| !binding_names(c).contains(&"u"))
+        .expect("one instantiation omits `u` (falls to its nominal() default)");
+
+    // Explicit instantiation records BOTH the used `a` and the UNUSED `u`.
+    let explicit_names = binding_names(explicit);
+    assert!(
+        explicit_names.contains(&"a"),
+        "explicit binding must record 'a', got {:?}",
+        explicit_names
+    );
+    assert!(
+        explicit_names.contains(&"u"),
+        "explicit binding of the UNUSED geometry param 'u' must survive to \
+         arg_bindings (the η detection signal), got {:?}",
+        explicit_names
+    );
+
+    // Default-only instantiation records `a` only — `u` fell to nominal().
+    let default_names = binding_names(default_only);
+    assert!(
+        default_names.contains(&"a"),
+        "default-only binding must record 'a', got {:?}",
+        default_names
+    );
+    assert!(
+        !default_names.contains(&"u"),
+        "an omitted param (defaulted to nominal()) must NOT appear in arg_bindings, \
+         got {:?}",
+        default_names
+    );
+
+    // B4: binding the unused param does NOT change the compiled predicate — both
+    // instantiations live in entity "S", so the scalar predicate is byte-identical.
+    assert_eq!(
+        format!("{:?}", explicit.expr.kind),
+        format!("{:?}", default_only.expr.kind),
+        "binding the unused param must NOT change the compiled predicate (B4)"
     );
 }

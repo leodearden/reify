@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
-import type { MeshData, VisibilityState } from '../../types';
+import type { MeshData, VisibilityState, TensegritySurfaceData } from '../../types';
 import { createFeaModeStore } from '../../stores';
 
 // Stub ResizeObserver for jsdom (which doesn't support it)
@@ -40,6 +40,19 @@ const mockBakeColours = vi.hoisted(() =>
 // Mock the colormap module so Viewport's bake closure is testable
 vi.mock('../../viewport/colormap', () => ({
   bakeColours: mockBakeColours,
+}));
+
+// Hoisted bridge mocks — must be hoisted so vi.mock factory can reference them.
+// subscribeFeaCaseToStore: wired in Viewport by step-10 (returns an unlisten fn).
+// setActiveFeaCase: wired in Viewport by step-14 (outbound case-selection call).
+const mockSubscribeFeaCaseToStore = vi.hoisted(() => vi.fn(() => Promise.resolve(() => {})));
+const mockSetActiveFeaCase = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+// Mock the bridge module used by Viewport so that IPC calls are captured
+// without hitting the real Tauri backend (which doesn't exist in jsdom).
+vi.mock('../../bridge', () => ({
+  subscribeFeaCaseToStore: mockSubscribeFeaCaseToStore,
+  setActiveFeaCase: mockSetActiveFeaCase,
 }));
 
 // Mock the viewport modules
@@ -143,6 +156,17 @@ vi.mock('../../viewport/wireManager', () => ({
     sync: mockWireSync,
     dispose: mockWireDispose,
     setResolution: mockWireSetResolution,
+  })),
+}));
+
+// ── surfaceManager mock (β) ───────────────────────────────────────────────────
+const mockSurfaceSync = vi.fn();
+const mockSurfaceDispose = vi.fn();
+
+vi.mock('../../viewport/surfaceManager', () => ({
+  createSurfaceManager: vi.fn(() => ({
+    sync: mockSurfaceSync,
+    dispose: mockSurfaceDispose,
   })),
 }));
 
@@ -1223,6 +1247,38 @@ describe('Viewport FEA Lock Current + readout wiring', () => {
 // 'vonMises_top' (the PREFERRED_FEA_CHANNELS second entry, highest preference
 // among the three shell channels).
 // ─────────────────────────────────────────────────────────────────────────────
+// Viewport FEA outbound case-selection effect (task 3026 step-13 — RED)
+// Verifies that Viewport.tsx wires feaModeStore.activeCaseId changes to a
+// setActiveFeaCase(case) bridge call — step-14 adds the createEffect.
+describe('Viewport FEA outbound case-selection effect (task 3026 step-13)', () => {
+  it('(a) setActiveCaseId("overload") fires setActiveFeaCase with the case name', () => {
+    const store = createFeaModeStore();
+    mockSetActiveFeaCase.mockClear();
+
+    render(() => <Viewport meshes={{}} viewportId="test-case-sel-a" feaModeStore={store as any} />);
+
+    // On initial mount activeCaseId is null — no outbound call expected
+    expect(mockSetActiveFeaCase).not.toHaveBeenCalled();
+
+    // Transition to a non-null case selection
+    store.setActiveCaseId('overload');
+
+    // FAILS until step-14 adds the createEffect watching activeCaseId
+    expect(mockSetActiveFeaCase).toHaveBeenCalledWith('overload');
+    expect(mockSetActiveFeaCase).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) no outbound call on initial mount when activeCaseId is null (default)', () => {
+    const store = createFeaModeStore();
+    mockSetActiveFeaCase.mockClear();
+
+    render(() => <Viewport meshes={{}} viewportId="test-case-sel-b" feaModeStore={store as any} />);
+
+    // activeCaseId defaults to null → no setActiveFeaCase call on mount
+    expect(mockSetActiveFeaCase).not.toHaveBeenCalled();
+  });
+});
+
 describe('Viewport FEA auto-enable determinism', () => {
   it('(test-1) channels inserted as {vonMises_bottom, vonMises_mid, vonMises_top} → channel is vonMises_top', () => {
     const store = createFeaModeStore();
@@ -1272,5 +1328,60 @@ describe('Viewport FEA auto-enable determinism', () => {
 
     expect(store.state.enabled).toBe(true);
     expect(store.state.channel).toBe('vonMises_top');
+  });
+});
+
+// ── β: surfaceManager integration ─────────────────────────────────────────────
+//
+// Verifies that Viewport.tsx creates a surfaceManager and drives surfaceManager.sync
+// reactively from props.tensegritySurfaces.
+//
+// RED until Viewport.tsx adds createSurfaceManager + the reactive sync effect
+// (step-12).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Viewport surfaceManager integration (β)', () => {
+  function makeSurface(overrides?: Partial<TensegritySurfaceData>): TensegritySurfaceData {
+    return {
+      entity_path: 'Patch',
+      kind: 'membrane',
+      i0: 0, i1: 1, i2: 2,
+      x0: 0.0, y0: 0.0, z0: 0.0,
+      x1: 1.0, y1: 0.0, z1: 0.0,
+      x2: 0.5, y2: 0.866, z2: 0.0,
+      ...overrides,
+    };
+  }
+
+  it('rendering Viewport with tensegritySurfaces calls surfaceManager.sync', () => {
+    const surfaces: TensegritySurfaceData[] = [makeSurface()];
+    render(() => <Viewport meshes={{}} viewportId="test-sm-vp" tensegritySurfaces={surfaces} />);
+    // surfaceManager.sync must have been called at least once via createEffect on mount.
+    expect(mockSurfaceSync).toHaveBeenCalled();
+    const lastCall = mockSurfaceSync.mock.calls[mockSurfaceSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual(surfaces);
+  });
+
+  it('updating tensegritySurfaces prop re-syncs the surfaceManager', () => {
+    const [surfaces, setSurfaces] = createSignal<TensegritySurfaceData[]>([makeSurface()]);
+    render(() => <Viewport meshes={{}} viewportId="test-sm-vp2" tensegritySurfaces={surfaces()} />);
+    const callCountAfterMount = mockSurfaceSync.mock.calls.length;
+
+    // Update the prop to an empty array.
+    setSurfaces([]);
+
+    // sync must have been called again after the prop update.
+    expect(mockSurfaceSync.mock.calls.length).toBeGreaterThan(callCountAfterMount);
+    const lastCall = mockSurfaceSync.mock.calls[mockSurfaceSync.mock.calls.length - 1];
+    expect(lastCall[0]).toEqual([]);
+  });
+
+  it('unmounting Viewport disposes the surfaceManager', () => {
+    const { unmount } = render(() => <Viewport meshes={{}} viewportId="test-sm-vp3" tensegritySurfaces={[]} />);
+    mockSurfaceDispose.mockClear();
+
+    unmount();
+
+    expect(mockSurfaceDispose).toHaveBeenCalled();
   });
 });

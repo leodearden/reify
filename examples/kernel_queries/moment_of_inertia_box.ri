@@ -2,7 +2,7 @@
 // PRD: docs/prds/v0_3/kernel-geometry-queries.md §9 KGQ-λ
 //
 // User-observable signal:
-//   moment_of_inertia(box(50mm, 30mm, 10mm), 7850.0)
+//   moment_of_inertia(box(50mm, 30mm, 10mm), 7850kg/m^3)
 //   → rank-2 Value::Tensor (3×3) of MOMENT_OF_INERTIA-dimensioned scalars
 //
 // Analytic centroidal moments (W=0.05 m, H=0.03 m, D=0.01 m):
@@ -12,19 +12,12 @@
 //   I_zz = (1/12)·m·(W² + H²) ≈ 3.33625e-5 kg·m²
 //   off-diagonals = 0 (axis-aligned box, centroidal frame)
 //
-// Grammar note (v0.3): density must be a bare numeric Real literal
-// (compound-unit density literals, e.g. 7850.0 kg/m³, are not yet
-// supported by the v0.3 grammar). Passing a dimensioned Scalar as density
-// produces a Severity::Warning diagnostic and resolves to Value::Undef.
-//
 // Pinning test:
 //   crates/reify-eval/tests/kernel_queries_moment_of_inertia_smoke.rs::
 //     moment_of_inertia_box_evals_to_analytic_tensor
-//
-// Grammar modelled on examples/topology_selectors/block_inertia.ri
 
 structure def MomentOfInertiaBox {
     let b = box(50mm, 30mm, 10mm)
-    let steel_density = 7850.0
+    let steel_density = 7850kg/m^3
     let i = moment_of_inertia(b, steel_density)
 }

@@ -1,0 +1,7 @@
+// Fixture for task 4601 (type-args/proj α): regression pin for type-arg application at a use site.
+// Exercises `param c : Coupling<Prismatic>` which parses 0-ERROR on main
+// (pre-existing capability; the parameterized_type form already works).
+// No tuples (project constraint).
+structure def UseTypeArgApplication {
+    param c : Coupling<Prismatic>
+}

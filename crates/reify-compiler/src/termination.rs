@@ -27,7 +27,11 @@ pub(crate) fn check_recursive_termination(
         let scc = &cyclic_sccs[scc_idx];
 
         for sub in &template.sub_components {
-            // Only check subs that target another template in the same SCC (recursive subs)
+            // Only check subs that target another template in the same SCC (recursive subs).
+            // NOTE: this tests SCC *membership* — whether the target is in the same recursive
+            // cycle — NOT whether it exists at all. Sub-target existence (module ∪ prelude) is
+            // validated separately in `conformance::sub_component_validation::check_sub_structure_existence`
+            // (task 4528), which runs before this pass in `compile_with_prelude_context_checked`.
             if !scc.contains(&sub.structure_name) {
                 continue;
             }

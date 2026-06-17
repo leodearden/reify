@@ -54,7 +54,7 @@ fn guarded_module(active: bool, x_type: &str, x_default: &str) -> CompiledModule
 /// it should use `guarded_module` (members-branch) or inline its source.
 fn guarded_module_with_else(y_type: &str, y_default: &str) -> CompiledModule {
     compile_source(&format!(
-        "structure S {{ param active : Bool = false\n where active {{ param x : Scalar = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
+        "structure S {{ param active : Bool = false\n where active {{ param x : Length = 5mm }} else {{ param y : {y_type} = {y_default} }} }}"
     ))
 }
 
@@ -69,7 +69,7 @@ fn guarded_module_with_else(y_type: &str, y_default: &str) -> CompiledModule {
 #[test]
 fn eval_honors_single_param_override_on_cold_start() {
     let mut engine = fresh_engine();
-    let compiled = compile_source("structure S { param width: Scalar = 100mm }");
+    let compiled = compile_source("structure S { param width: Length = 100mm }");
 
     // Initial eval to register the template + populate snapshot with defaults.
     let first = engine.eval(&compiled);
@@ -107,7 +107,7 @@ fn eval_purges_override_for_cell_absent_from_new_graph() {
     let mut engine = fresh_engine();
 
     let module_a = compile_source(
-        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+        "structure S { param width: Length = 100mm\n param height: Length = 200mm }",
     );
     let width_id = ValueCellId::new("S", "width");
 
@@ -119,7 +119,7 @@ fn eval_purges_override_for_cell_absent_from_new_graph() {
     // override entry for `width` must have been purged — the cell no longer
     // exists in the graph, so a dormant entry would zombie-resurrect on a
     // future edit that re-adds `width`.
-    let module_b = compile_source("structure S { param height: Scalar = 200mm }");
+    let module_b = compile_source("structure S { param height: Length = 200mm }");
     let result_b = engine.eval(&module_b);
     assert!(
         result_b.values.get(&width_id).is_none(),
@@ -136,7 +136,7 @@ fn eval_purges_override_for_cell_absent_from_new_graph() {
     // same 100mm default). The re-added `width` cell must resolve to the
     // MODULE DEFAULT (0.1m), NOT the zombie 0.12m override.
     let module_c = compile_source(
-        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+        "structure S { param width: Length = 100mm\n param height: Length = 200mm }",
     );
     let result_c = engine.eval(&module_c);
     assert_eq!(
@@ -151,7 +151,7 @@ fn eval_purges_override_for_cell_absent_from_new_graph() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// When the user source is edited so that a Param's type-kind no longer
-/// matches the override value (here: Scalar[LENGTH] override against an Int
+/// matches the override value (here: Length[LENGTH] override against an Int
 /// cell), eval() must:
 /// - fall back to the module default,
 /// - emit a Warning diagnostic naming the cell + the mismatch,
@@ -166,7 +166,7 @@ fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
     let width_id = ValueCellId::new("S", "width");
 
     // Module A: width is Scalar[LENGTH]. Set a matching override.
-    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let module_a = compile_source("structure S { param width: Length = 100mm }");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
 
@@ -203,7 +203,7 @@ fn eval_skips_type_kind_mismatched_override_and_emits_warning_diagnostic() {
     // (c) The override is RETAINED (behavioural check: re-compile module A
     //     and eval; the Scalar override must reappear because the mismatch
     //     eval did not remove it from param_overrides).
-    let module_a_again = compile_source("structure S { param width: Scalar = 100mm }");
+    let module_a_again = compile_source("structure S { param width: Length = 100mm }");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&width_id),
@@ -232,7 +232,7 @@ fn eval_skips_dimension_mismatched_override_and_emits_warning_diagnostic() {
     let width_id = ValueCellId::new("S", "width");
 
     // Module A: width is Scalar[LENGTH]. Set a LENGTH-dimensioned override.
-    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let module_a = compile_source("structure S { param width: Length = 100mm }");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
 
@@ -272,7 +272,7 @@ fn eval_skips_dimension_mismatched_override_and_emits_warning_diagnostic() {
 
     // (c) The override is RETAINED — recompile module A, eval, the LENGTH
     //     override reappears on a matching cell.
-    let module_a_again = compile_source("structure S { param width: Scalar = 100mm }");
+    let module_a_again = compile_source("structure S { param width: Length = 100mm }");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&width_id),
@@ -303,7 +303,7 @@ fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_misma
 
     // Module A: both params are Scalar[LENGTH]. Override both.
     let module_a = compile_source(
-        "structure S { param width: Scalar = 100mm\n param thickness: Scalar = 5mm }",
+        "structure S { param width: Length = 100mm\n param thickness: Length = 5mm }",
     );
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&width_id, length_scalar(0.12));
@@ -312,7 +312,7 @@ fn eval_partial_mismatch_preserves_compatible_overrides_and_warns_only_for_misma
     // Module B: width is now an Int (type-kind mismatch for its override);
     //           thickness stays Scalar[LENGTH] (override remains compatible).
     let module_b =
-        compile_source("structure S { param width: Int = 80\n param thickness: Scalar = 5mm }");
+        compile_source("structure S { param width: Int = 80\n param thickness: Length = 5mm }");
     let result_b = engine.eval(&module_b);
 
     // (a) thickness override survives unchanged.
@@ -369,7 +369,7 @@ fn clear_param_overrides_empties_map_and_subsequent_eval_uses_defaults() {
     let mut engine = fresh_engine();
     let width_id = ValueCellId::new("S", "width");
 
-    let module_a = compile_source("structure S { param width: Scalar = 100mm }");
+    let module_a = compile_source("structure S { param width: Length = 100mm }");
     let _ = engine.eval(&module_a);
 
     // Establish the override, confirm it takes effect.
@@ -407,7 +407,7 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
     let height_id = ValueCellId::new("S", "height");
 
     let module = compile_source(
-        "structure S { param width: Scalar = 100mm\n param height: Scalar = 200mm }",
+        "structure S { param width: Length = 100mm\n param height: Length = 200mm }",
     );
     let result = engine.eval(&module);
 
@@ -462,7 +462,7 @@ fn eval_on_fresh_engine_with_no_overrides_uses_defaults_and_emits_no_diagnostics
 #[test]
 fn eval_honors_override_on_guarded_group_active_member_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module(true, "Scalar", "5mm");
+    let module = guarded_module(true, "Length", "5mm");
     let x_id = ValueCellId::new("S", "x");
 
     // Initial eval: x is inside the active branch, default should be 5mm = 0.005m.
@@ -500,7 +500,7 @@ fn eval_honors_override_on_guarded_group_active_member_param() {
 #[test]
 fn eval_honors_override_on_guarded_group_else_member_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else("Scalar", "10mm");
+    let module = guarded_module_with_else("Length", "10mm");
     let x_id = ValueCellId::new("S", "x");
     let y_id = ValueCellId::new("S", "y");
 
@@ -534,7 +534,7 @@ fn eval_honors_override_on_guarded_group_else_member_param() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// When the user source is edited so that a guarded-group Param's type-kind no
-/// longer matches the override value (here: Scalar[LENGTH] override against an
+/// longer matches the override value (here: Length[LENGTH] override against an
 /// Int cell inside a `where active { ... }` block), eval() must:
 /// - fall back to the module default (the Int default wins),
 /// - emit a Warning diagnostic naming the cell + "type-kind",
@@ -548,7 +548,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a matching override.
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
@@ -583,7 +583,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = guarded_module(true, "Scalar", "5mm");
+    let module_a_again = guarded_module(true, "Length", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -610,7 +610,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     let x_id = ValueCellId::new("S", "x");
 
     // Module A: x is Scalar[LENGTH] inside a guarded group. Set a LENGTH override.
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&x_id, length_scalar(0.12));
 
@@ -660,7 +660,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_member_with_warning
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
-    let module_a_again = guarded_module(true, "Scalar", "5mm");
+    let module_a_again = guarded_module(true, "Length", "5mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&x_id),
@@ -695,7 +695,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // matching LENGTH override.
-    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let module_a = guarded_module_with_else("Length", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
@@ -730,7 +730,7 @@ fn eval_skips_type_kind_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) The override is RETAINED — re-eval Module A: the Scalar override resurfaces.
-    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let module_a_again = guarded_module_with_else("Length", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
@@ -768,7 +768,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
 
     // Module A: y is Scalar[LENGTH] in the else-branch (guard = false). Set a
     // LENGTH override.
-    let module_a = guarded_module_with_else("Scalar", "10mm");
+    let module_a = guarded_module_with_else("Length", "10mm");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
@@ -818,7 +818,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
     );
 
     // (c) Override is RETAINED — re-eval Module A: LENGTH override resurfaces.
-    let module_a_again = guarded_module_with_else("Scalar", "10mm");
+    let module_a_again = guarded_module_with_else("Length", "10mm");
     let result_a2 = engine.eval(&module_a_again);
     assert_eq!(
         result_a2.values.get(&y_id),
@@ -837,7 +837,7 @@ fn eval_skips_dimension_mismatched_override_on_guarded_group_else_member_with_wa
 /// returns `None`, which would panic any caller that does `.get().unwrap()`.
 ///
 /// Three-phase setup:
-///   A) Module with `param p: Scalar = 1mm` + `let q: Scalar = p` — set a
+///   A) Module with `param p: Length = 1mm` + `let q: Length = p` — set a
 ///      Scalar[LENGTH] override (0.5 m) so it is stored in param_overrides.
 ///   B) Module with `param p: Int` (NO default) + `let q: Int = p` — the
 ///      stored Scalar override is now type-kind incompatible.
@@ -856,8 +856,8 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
     let p_id = ValueCellId::new("S", "p");
     let q_id = ValueCellId::new("S", "q");
 
-    // Phase A: module with p: Scalar = 1mm. Set a valid Scalar[LENGTH] override.
-    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    // Phase A: module with p: Length = 1mm. Set a valid Scalar[LENGTH] override.
+    let module_a = compile_source("structure S { param p: Length = 1mm\n let q: Length = p }");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
 
@@ -920,7 +920,7 @@ fn eval_inserts_undef_for_no_default_param_with_rejected_override() {
 /// rather than a missing key — the same S4 guarantee as the type-kind path.
 ///
 /// Three-phase setup:
-///   A) Module with `param p: Scalar = 1mm` + `let q: Scalar = p` — set a
+///   A) Module with `param p: Length = 1mm` + `let q: Length = p` — set a
 ///      Scalar[LENGTH] override (0.5 m).
 ///   B) Module with `param p: Mass` (NO default) + `let q: Mass = p` — the
 ///      stored LENGTH override is now dimension-incompatible with MASS.
@@ -938,8 +938,8 @@ fn eval_inserts_undef_for_no_default_param_with_dimension_rejected_override() {
     let p_id = ValueCellId::new("S", "p");
     let q_id = ValueCellId::new("S", "q");
 
-    // Phase A: module with p: Scalar = 1mm. Set a valid Scalar[LENGTH] override.
-    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    // Phase A: module with p: Length = 1mm. Set a valid Scalar[LENGTH] override.
+    let module_a = compile_source("structure S { param p: Length = 1mm\n let q: Length = p }");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
 
@@ -1067,7 +1067,7 @@ fn eval_omits_no_default_no_override_param_cell_from_result_values() {
 /// comment (engine_eval.rs:584-593) documents that deferral. Task-2195 resolves it.
 ///
 /// Setup mirrors `eval_inserts_undef_for_no_default_param_with_rejected_override`:
-///   A) Param `p: Scalar = 1mm` — set a Scalar[LENGTH] override.
+///   A) Param `p: Length = 1mm` — set a Scalar[LENGTH] override.
 ///   B) Param `p: Int` (NO default) — override is type-kind incompatible → S4 arm fires.
 ///
 /// Assertions (on state after evaluating module B):
@@ -1081,7 +1081,7 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
     let p_id = ValueCellId::new("S", "p");
 
     // Phase A: set a valid Scalar override so it's stored.
-    let module_a = compile_source("structure S { param p: Scalar = 1mm\n let q: Scalar = p }");
+    let module_a = compile_source("structure S { param p: Length = 1mm\n let q: Length = p }");
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&p_id, length_scalar(0.5));
 
@@ -1130,7 +1130,7 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
 /// neither journal events nor cache writes for any of its four value-write paths.
 /// Task-2195 fixes that. This test drives the implementation.
 ///
-/// Setup: `guarded_module(true, "Scalar", "5mm")` — guard is `active: Bool = true`
+/// Setup: `guarded_module(true, "Length", "5mm")` — guard is `active: Bool = true`
 /// so the `members` loop runs `eval_guarded_group_param_cell` on `S.x`. The
 /// override bucket is empty on a fresh engine, so the default-eval path fires
 /// and produces `Value::Scalar { si_value: 0.005, dimension: LENGTH }`.
@@ -1145,7 +1145,7 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
 #[test]
 fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module(true, "Scalar", "5mm");
+    let module = guarded_module(true, "Length", "5mm");
     engine.eval(&module);
 
     let x_id = ValueCellId::new("S", "x");
@@ -1200,7 +1200,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 /// (engine_eval.rs else_members loop). Step-4 updated BOTH call sites; this test
 /// would catch a partial fix that only updated the `members` call site.
 ///
-/// Setup: `guarded_module_with_else("Scalar", "10mm")` — guard is
+/// Setup: `guarded_module_with_else("Length", "10mm")` — guard is
 /// `active: Bool = false`, so the `else_members` loop runs the helper on `S.y`.
 /// With a fresh engine (no override), the default-eval path fires and produces
 /// `Value::Scalar { si_value: 0.01, dimension: LENGTH }` (10mm = 0.01 m SI).
@@ -1211,7 +1211,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
 #[test]
 fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param() {
     let mut engine = fresh_engine();
-    let module = guarded_module_with_else("Scalar", "10mm");
+    let module = guarded_module_with_else("Length", "10mm");
     engine.eval(&module);
 
     let y_id = ValueCellId::new("S", "y");
@@ -1268,9 +1268,9 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
 /// only instrumented the success paths.
 ///
 /// Two-phase setup triggering the else-branch helper's rejected-no-default arm:
-///   A) `structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }`
+///   A) `structure S { param active : Bool = false\n where active { param x : Length = 5mm } else { param y : Length = 10mm } }`
 ///      — set a Scalar[LENGTH] override on `S.y` (valid override stored).
-///   B) `structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int } }`
+///   B) `structure S { param active : Bool = false\n where active { param x : Length = 5mm } else { param y : Int } }`
 ///      — `y` is now `Int` with NO default; the Scalar override is type-kind
 ///        incompatible → helper's rejected-override-no-default arm fires.
 ///
@@ -1286,16 +1286,16 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
     let y_id = ValueCellId::new("S", "y");
     let node_id = NodeId::Value(y_id.clone());
 
-    // Phase A: compile module with y: Scalar = 10mm. Set a valid Scalar override.
+    // Phase A: compile module with y: Length = 10mm. Set a valid Scalar override.
     let module_a = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Scalar = 10mm } }",
+        "structure S { param active : Bool = false\n where active { param x : Length = 5mm } else { param y : Length = 10mm } }",
     );
     let _ = engine.eval(&module_a);
     engine.set_param_and_invalidate(&y_id, length_scalar(0.12));
 
     // Phase B: y is now Int (no default) — Scalar override is type-kind incompatible.
     let module_b = compile_source(
-        "structure S { param active : Bool = false\n where active { param x : Scalar = 5mm } else { param y : Int } }",
+        "structure S { param active : Bool = false\n where active { param x : Length = 5mm } else { param y : Int } }",
     );
     // Snapshot journal length before phase B so we can check the delta for phase B alone
     // (phase A already contributed a Started+Completed pair for y).
@@ -1498,13 +1498,13 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
 /// from the snapshot's `VersionId` (e.g., reading a stale value, off-by-one
 /// increment) would break this test.
 ///
-/// Setup: `structure S { param width: Scalar = 100mm }` — single top-level Param
+/// Setup: `structure S { param width: Length = 100mm }` — single top-level Param
 /// cell. After `engine.eval(&module)`, the journal for `S.width` must hold a
 /// Started+Completed pair, and both events must carry the engine's snapshot version.
 #[test]
 fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
     let mut engine = fresh_engine();
-    let module = compile_source("structure S { param width: Scalar = 100mm }");
+    let module = compile_source("structure S { param width: Length = 100mm }");
     engine.eval(&module);
 
     let width_id = ValueCellId::new("S", "width");
@@ -1539,8 +1539,8 @@ fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
 ///
 /// Uses two separate engine instances so each arm can be exercised independently
 /// (a single module's guard is either true or false, not both at once):
-///   (1) `engine_a` with `guarded_module(true, "Scalar", "5mm")` — members call site.
-///   (2) `engine_b` with `guarded_module_with_else("Scalar", "10mm")` — else_members call site.
+///   (1) `engine_a` with `guarded_module(true, "Length", "5mm")` — members call site.
+///   (2) `engine_b` with `guarded_module_with_else("Length", "10mm")` — else_members call site.
 ///
 /// If either call site threads a different or stale version (e.g., a future
 /// refactor moves the `param_ctx` initialization into the wrong scope and captures
@@ -1549,7 +1549,7 @@ fn eval_threads_snapshot_version_through_top_level_param_journal_events() {
 fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_both_call_sites() {
     // (1) members call site — guard is true, x is evaluated via the members loop.
     let mut engine_a = fresh_engine();
-    let module_a = guarded_module(true, "Scalar", "5mm");
+    let module_a = guarded_module(true, "Length", "5mm");
     engine_a.eval(&module_a);
 
     let x_id = ValueCellId::new("S", "x");
@@ -1572,7 +1572,7 @@ fn eval_threads_snapshot_version_through_guarded_group_param_journal_events_on_b
 
     // (2) else_members call site — guard is false, y is evaluated via the else_members loop.
     let mut engine_b = fresh_engine();
-    let module_b = guarded_module_with_else("Scalar", "10mm");
+    let module_b = guarded_module_with_else("Length", "10mm");
     engine_b.eval(&module_b);
 
     let y_id = ValueCellId::new("S", "y");

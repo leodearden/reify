@@ -744,8 +744,8 @@ fn user_shadowed_parametric_prelude_alias_emits_no_info_diagnostic() {
         .expect("value cell `p` not found on `S`");
     assert_eq!(
         p_cell.cell_type,
-        Type::Real,
-        "param `p : Vec` must resolve to Type::Real via user's shadow alias"
+        Type::dimensionless_scalar(),
+        "param `p : Vec` must resolve to Type::dimensionless_scalar() via user's shadow alias"
     );
 
     // (2) Zero Info diagnostics — no misleading Info about cross-module propagation.
@@ -833,7 +833,7 @@ fn unrelated_unresolved_no_info_emitted() {
 /// **Forward-looking guard**: currently only one resolution path runs for this form
 /// (via `fixup_option_none_for_let`; `compile_expr` intercepts `none` before
 /// consulting the annotation, and the entity-let pre-pass registers a placeholder
-/// `Type::Real` without resolving), so the `info_diags.len() == 1` assertion holds
+/// `Type::dimensionless_scalar()` without resolving), so the `info_diags.len() == 1` assertion holds
 /// whether or not span-level dedup is active.  The dedup mechanism itself is
 /// exercised by the unit test
 /// `should_emit_skipped_parametric_prelude_info_dedups_per_span` in

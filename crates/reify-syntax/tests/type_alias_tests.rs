@@ -466,7 +466,7 @@ fn parse_type_alias_mixed_operator_precedence() {
     let (outer_op, outer_left, outer_right) = as_dim_op(&ta.type_expr);
     assert!(matches!(outer_op, DimOp::Mul), "outer op should be Mul");
 
-    // Right of outer *: Scalar
+    // Right of outer *: Length
     let (rname, _) = as_named(outer_right);
     assert_eq!(rname, "Scalar");
 

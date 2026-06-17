@@ -67,7 +67,7 @@ fn make_displacement_field(name: &str, data: Vec<f64>) -> Value {
         oob_emitted: AtomicBool::new(false),
     };
     Value::Field {
-        domain_type: Type::Real,
+        domain_type: Type::dimensionless_scalar(),
         codomain_type: length,
         source: FieldSourceKind::Sampled,
         lambda: Arc::new(Value::SampledField(sf)),
@@ -117,13 +117,13 @@ fn make_displacement_extractor_lambda() -> Value {
             // is dropped because IndexAccess does not consult `result_type` at
             // runtime; the precise per-case shape is noted in the IndexAccess
             // result_type comment below).
-            Type::Map(Box::new(Type::String), Box::new(Type::Real)),
+            Type::Map(Box::new(Type::String), Box::new(Type::dimensionless_scalar())),
         ),
         CompiledExpr::literal(Value::String("displacement".to_string()), Type::String),
         // Documentary result type: actual runtime shape is Field<Real, Length>
         // (the displacement Field codomain). IndexAccess does not consult
         // `result_type` at runtime, so this is a documentary annotation only.
-        Type::Real,
+        Type::dimensionless_scalar(),
     );
     Value::Lambda {
         params: vec![("e".to_string(), e_id)],
@@ -157,8 +157,8 @@ fn worst_case_with_displacement_extractor_lambda_returns_dominant_case_name() {
     let expr = make_function_call(
         "worst_case",
         vec![
-            CompiledExpr::literal(mcr, Type::Real),
-            CompiledExpr::literal(lambda, Type::Real),
+            CompiledExpr::literal(mcr, Type::dimensionless_scalar()),
+            CompiledExpr::literal(lambda, Type::dimensionless_scalar()),
         ],
         Type::String,
     );
@@ -198,8 +198,8 @@ fn worst_case_with_displacement_extractor_lambda_tie_breaks_lex_smaller_case() {
     let expr = make_function_call(
         "worst_case",
         vec![
-            CompiledExpr::literal(mcr, Type::Real),
-            CompiledExpr::literal(lambda, Type::Real),
+            CompiledExpr::literal(mcr, Type::dimensionless_scalar()),
+            CompiledExpr::literal(lambda, Type::dimensionless_scalar()),
         ],
         Type::String,
     );

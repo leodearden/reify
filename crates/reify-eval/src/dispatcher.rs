@@ -151,7 +151,7 @@ pub fn is_long_chain_realization(
 ///
 /// # Integration status
 ///
-/// TODO(task-2642): wire this builder into the realization timing loop
+/// TODO(#3445): wire this builder into the realization timing loop
 /// in `geometry_ops.rs` once the kernel-registry mechanism + OCCT adapter
 /// migration lands. Until then, `long_chain_diagnostic` is scaffolding
 /// — public API with no in-tree caller — exactly mirroring the scope
@@ -229,14 +229,9 @@ pub fn long_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3435/δ): wire this builder into the dispatcher's `None`-return
-/// path in op-execution once the multi-kernel dispatch surface lands (PRD
-/// `docs/prds/v0_3/multi-kernel-phase-3.md` §8 DAG; consumers δ/ε =
-/// IDs 3435/3436). Until then, `no_kernel_chain_diagnostic` is scaffolding
-/// — public API with no in-tree caller — exactly mirroring the scope
-/// boundary documented at the module level and the `long_chain_diagnostic`
-/// precedent (task 2646). Greppable callout intentionally duplicated here so
-/// a future wiring pass can locate the seam without re-reading module docs.
+/// Wired: `engine_build.rs` calls this builder on the dispatcher's
+/// `None`-return path in op-execution (the BFS-exhausted case), so the
+/// diagnostic reaches users whenever no kernel + conversion chain exists.
 ///
 /// # Severity rationale
 ///
@@ -291,7 +286,7 @@ pub fn no_kernel_chain_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3443/ο): wire this builder into the `#kernel(...)` pragma
+/// TODO(#3443): wire this builder into the `#kernel(...)` pragma
 /// surface once it lands (PRD `docs/prds/v0_3/multi-kernel-phase-3.md`
 /// §5 + §8 DAG; consumer ο = ID 3443). Until then, scaffolding — public
 /// API with no in-tree caller — mirroring the `long_chain_diagnostic`
@@ -334,7 +329,7 @@ pub fn kernel_pragma_unsatisfiable_diagnostic(
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller
@@ -370,7 +365,7 @@ pub fn pinned_kernel_missing_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller
@@ -409,7 +404,7 @@ pub fn unpinned_kernel_loaded_diagnostic(kernel_id: &str) -> Diagnostic {
 ///
 /// # Integration status
 ///
-/// TODO(task-3444/π): wire this builder into `reify.toml` parsing in
+/// TODO(#3444): wire this builder into `reify.toml` parsing in
 /// `Engine::with_registered_kernels` once it lands (PRD
 /// `docs/prds/v0_3/multi-kernel-phase-3.md` §5 + §8 DAG; consumer π =
 /// ID 3444). Until then, scaffolding — public API with no in-tree caller
@@ -573,24 +568,33 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConversionProjection {
-    /// Tessellate the source kernel's BRep handle into a mesh — the only
-    /// `BRep → Mesh` realisation in v0.3 ε. The executor calls
+    /// Tessellate the source kernel's BRep handle into a mesh — the
+    /// `BRep → Mesh` realisation. The executor calls
     /// `source_kernel.tessellate(handle, per_stage_tol)` to produce the mesh,
     /// then hands it to the target kernel's `ingest_mesh`.
     Tessellate,
+    /// Voxelize a Mesh handle via the target kernel's `ingest_mesh` — the sole
+    /// `Mesh → Voxel` realisation. The executor calls `plan.kernel.ingest_mesh(&mesh)`
+    /// where `mesh` was produced by the preceding `Tessellate` stage (or is the
+    /// direct input). `ingest_mesh` on the OpenVDB kernel converts the interchange
+    /// mesh into a voxel grid on ingest, so no separate voxelise call is needed.
+    Voxelize,
 }
 
-/// Classifies a single conversion stage `(from, to)` into the v0.3-ε-executable
-/// [`ConversionProjection`], or `None` when ε cannot perform that crossing.
+/// Classifies a single conversion stage `(from, to)` into the v0.3-β-executable
+/// [`ConversionProjection`], or `None` when β cannot perform that crossing.
 ///
 /// The conversion executor walks a [`DispatchPlan`]'s `conversions` chain and
 /// calls this for each `(from, to)` stage: a `Some(projection)` is run, while a
 /// `None` surfaces as the realization-failed diagnostic (NOT a panic) — the
-/// plan named a crossing the current ε slice cannot execute.
+/// plan named a crossing the current β slice cannot execute.
 ///
-/// v0.3 ε supports exactly one crossing: `(BRep, Mesh) ⇒ Tessellate`. Every
-/// other ordered pair returns `None`. Adding a conversion to ε means adding a
-/// [`ConversionProjection`] variant and a row to the match below.
+/// v0.3 β supports exactly two crossings:
+/// - `(BRep, Mesh) ⇒ Tessellate` — BRep→Mesh via source kernel `tessellate`.
+/// - `(Mesh, Voxel) ⇒ Voxelize` — Mesh→Voxel via target kernel `ingest_mesh`.
+///
+/// Every other ordered pair returns `None`. Adding a conversion to β means
+/// adding a [`ConversionProjection`] variant and a row to the match below.
 // `#[allow(dead_code)]`: see [`ConversionProjection`] — wired into the non-test
 // build path by `execute_realization_ops` in task 4050 step-8.
 #[allow(dead_code)]
@@ -600,6 +604,7 @@ pub(crate) fn v03_conversion_projection(
 ) -> Option<ConversionProjection> {
     match (from, to) {
         (ReprKind::BRep, ReprKind::Mesh) => Some(ConversionProjection::Tessellate),
+        (ReprKind::Mesh, ReprKind::Voxel) => Some(ConversionProjection::Voxelize),
         _ => None,
     }
 }
@@ -712,7 +717,7 @@ pub fn dispatch(
         // Expansion step: for every kernel-declared conversion
         // (Convert{from: current_repr}, to), enqueue (to, chain + entry).
         //
-        // TODO(perf): O(K · S) per popped state where K=#kernels, S=avg
+        // TODO(#4593): O(K · S) per popped state where K=#kernels, S=avg
         // supports size. v0.2 has ~50 entries × 4 kernels so this is fine,
         // but if a future kernel grows a large supports table, pre-index
         // conversion edges into a `BTreeMap<ReprKind, Vec<(kernel_name,
@@ -1723,22 +1728,29 @@ mod tests {
         );
     }
 
-    /// Task 4050 (steps 5/6): [`v03_conversion_projection`] classifies a single
-    /// conversion stage `(from, to)` into the v0.3-ε-executable projection.
+    /// Task 4050 (steps 5/6) + task 4422 (β): [`v03_conversion_projection`]
+    /// classifies a single conversion stage `(from, to)` into the
+    /// v0.3-β-executable projection.
     ///
-    /// ε supports exactly ONE conversion shape — `(BRep, Mesh)` ⇒ `Tessellate`
-    /// (the source kernel tessellates its BRep handle into a mesh, which the
-    /// target kernel then ingests via `ingest_mesh`). EVERY other ordered
-    /// `(from, to)` pair over the four [`ReprKind`] variants is NOT runnable in
-    /// ε and must classify as `None`, so the conversion executor surfaces it as
-    /// a realization-failed diagnostic rather than attempting (or panicking on)
-    /// an unsupported stage.
+    /// β supports exactly TWO conversion shapes:
+    /// - `(BRep, Mesh)` ⇒ `Tessellate` — the source kernel tessellates its
+    ///   BRep handle into a mesh, which the target kernel then ingests via
+    ///   `ingest_mesh`.
+    /// - `(Mesh, Voxel)` ⇒ `Voxelize` — the target kernel voxelises the
+    ///   interchange mesh via `ingest_mesh` (producing a voxel grid).
     ///
-    /// Exhaustively pins all 16 ordered pairs: the one supported cell returns
-    /// `Some(Tessellate)`; the other 15 return `None`. A future ε that learns a
-    /// new conversion (e.g. `(Mesh, Voxel)`) must update this table explicitly.
+    /// EVERY other ordered `(from, to)` pair over the four [`ReprKind`]
+    /// variants is NOT runnable in β and must classify as `None`, so the
+    /// conversion executor surfaces it as a realization-failed diagnostic
+    /// rather than attempting (or panicking on) an unsupported stage.
+    ///
+    /// Exhaustively pins all 16 ordered pairs: the two supported cells return
+    /// `Some(Tessellate)` for `(BRep, Mesh)` and `Some(Voxelize)` for
+    /// `(Mesh, Voxel)`; the other 14 return `None`. Adding a new conversion
+    /// to β means adding a [`ConversionProjection`] variant and a row to
+    /// `v03_conversion_projection`, and updating this table explicitly.
     #[test]
-    fn v03_conversion_projection_supports_only_brep_to_mesh_tessellate() {
+    fn v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel() {
         use super::{ConversionProjection, v03_conversion_projection};
 
         let all = [
@@ -1755,14 +1767,21 @@ mod tests {
                     assert_eq!(
                         got,
                         Some(ConversionProjection::Tessellate),
-                        "(BRep, Mesh) is the sole ε-executable stage and must \
-                         classify as the Tessellate projection",
+                        "(BRep, Mesh) must classify as the Tessellate projection \
+                         (BRep→Mesh realised by source kernel tessellate)",
+                    );
+                } else if from == ReprKind::Mesh && to == ReprKind::Voxel {
+                    assert_eq!(
+                        got,
+                        Some(ConversionProjection::Voxelize),
+                        "(Mesh, Voxel) must classify as the Voxelize projection \
+                         (Mesh→Voxel realised by target kernel ingest_mesh)",
                     );
                 } else {
                     assert_eq!(
                         got, None,
-                        "({from:?}, {to:?}) is not ε-executable and must classify \
-                         as None (only BRep→Mesh is supported in v0.3 ε)",
+                        "({from:?}, {to:?}) is not β-executable and must classify \
+                         as None (only BRep→Mesh and Mesh→Voxel are supported in v0.3-β)",
                     );
                 }
             }

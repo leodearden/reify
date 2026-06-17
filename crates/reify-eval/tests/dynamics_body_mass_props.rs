@@ -8,36 +8,28 @@
 //!
 //! Observable signal (kernel-INDEPENDENT, so a `MockGeometryKernel` suffices):
 //! a body with NO resolvable `Material.density` passed to `body_mass_props`
-//! must (a) emit exactly one `W_DynamicsDefaultDensity` warning (the density
-//! ladder falls through to the 1000 kg/m³ water default) and (b) leave the
-//! `mp` cell as a `MassProperties` `StructureInstance`. The geometric fields
-//! (`mass`/`com`/`inertia`) are the deferred `Value::Undef` sentinel because
-//! the density-aware KGQ kernel query (`moment_of_inertia(Solid, Density)`,
-//! task 3620) is NOT wired by this batch — so the warning + structure shape are
-//! the only signals here, and both are kernel-independent.
+//! must (a) emit exactly one `E_DynamicsNoDensity` error (the density ladder
+//! has no water fallback — ambient-default-material C, task 4498) and (b) leave
+//! the `mp` cell as a `MassProperties` `StructureInstance` with deferred
+//! `Value::Undef` geometric fields.
 //!
 //! The MassProperties PSD inertia-validation hook (engine_eval.rs, task 3822)
 //! classifies an `inertia == Value::Undef` field as `Skip` (no false
 //! positives), so the assembled deferred instance is neither clobbered to a
 //! bare `Undef` nor flagged `E_DynamicsInertiaNotPSD` — leaving exactly the one
-//! `W_DynamicsDefaultDensity` warning asserted below.
-//!
-//! Step-11 RED: before step-12 wires `post_process_body_mass_props` into
-//! `engine_build.rs`, the `mp` cell stays at the `Value::Undef` left by the
-//! pure `eval_expr` path (a builtin `FunctionCall` has no pure-eval rule) and
-//! no warning is emitted — so both assertions fail. Step-12 makes it GREEN.
+//! `E_DynamicsNoDensity` error asserted below.
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{MockGeometryKernel, errors_only, parse_and_compile_with_stdlib};
 
 /// A body with no `Material` (hence no `Material.density`) is passed to
-/// `body_mass_props`, so the fn-level density ladder falls through to the
-/// 1000 kg/m³ water default and emits `W_DynamicsDefaultDensity`. The `mp`
-/// cell must resolve to a `MassProperties` `StructureInstance` (geometric
-/// fields deferred to `Undef`).
+/// `body_mass_props` — the fn-level density ladder now produces a hard
+/// `E_DynamicsNoDensity` error (ambient-default-material C, task 4498). The
+/// `mp` cell must still resolve to a `MassProperties` `StructureInstance`
+/// with all geometric fields at `Value::Undef` (degrade shape).
 #[test]
-fn body_mass_props_without_material_density_warns_and_assembles_mass_properties() {
+fn body_mass_props_without_material_density_errors_with_no_density() {
     let source = "structure def MassPropsBox {\n    \
         let body = box(50mm, 30mm, 10mm)\n    \
         let mp = body_mass_props(body)\n}";
@@ -49,36 +41,51 @@ fn body_mass_props_without_material_density_warns_and_assembles_mass_properties(
         errors_only(&compiled)
     );
 
-    // Kernel-independent: body_mass_props does not consult the kernel in this
-    // batch (geometric fields stay Undef), so a plain mock kernel is enough.
+    // Kernel-independent: body_mass_props does not consult the kernel when no
+    // density resolves (geometric fields stay Undef), so a plain mock kernel is
+    // enough.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 
-    // (1) Exactly one DynamicsDefaultDensity warning (default-water fallback).
-    let default_density: Vec<_> = result
+    // (1) Exactly one DynamicsNoDensity error (no water fallback).
+    let no_density: Vec<_> = result
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::DynamicsDefaultDensity))
+        .filter(|d| d.code == Some(DiagnosticCode::DynamicsNoDensity))
         .collect();
     assert_eq!(
-        default_density.len(),
+        no_density.len(),
         1,
-        "exactly one W_DynamicsDefaultDensity warning expected when body_mass_props \
-         falls back to the water default; got {} (all diagnostics: {:#?})",
-        default_density.len(),
+        "exactly one E_DynamicsNoDensity error expected when body_mass_props has no \
+         resolvable density; got {} (all diagnostics: {:#?})",
+        no_density.len(),
         result.diagnostics,
     );
     assert_eq!(
-        default_density[0].severity,
-        Severity::Warning,
-        "the default-density diagnostic must be a Warning (computation still proceeds)"
+        no_density[0].severity,
+        Severity::Error,
+        "the no-density diagnostic must be a hard Severity::Error"
+    );
+    // Message must name all three fixes.
+    let msg = &no_density[0].message;
+    assert!(
+        msg.contains("explicit density argument"),
+        "error message must mention 'explicit density argument' fix; got: {msg:?}"
+    );
+    assert!(
+        msg.contains("Material"),
+        "error message must mention Material density fix; got: {msg:?}"
+    );
+    assert!(
+        msg.contains("default Material"),
+        "error message must mention `default Material` ambient fix; got: {msg:?}"
     );
 
     // (2) The `mp` cell evaluates to a MassProperties StructureInstance. The
-    // geometric fields may be Undef (deferred KGQ kernel seam, task 3620); the
+    // geometric fields are Undef (no density → geometry query skipped); the
     // PSD hook's Undef-inertia Skip rule keeps the instance intact.
     let cell = ValueCellId::new("MassPropsBox", "mp");
     match result.values.get(&cell) {
@@ -91,7 +98,7 @@ fn body_mass_props_without_material_density_warns_and_assembles_mass_properties(
         }
         other => panic!(
             "MassPropsBox.mp must be a MassProperties StructureInstance (geometric fields \
-             may be deferred Undef), got {other:?}"
+             deferred Undef on no-density error), got {other:?}"
         ),
     }
 }
@@ -114,7 +121,8 @@ fn body_mass_props_without_material_density_warns_and_assembles_mass_properties(
 fn body_mass_props_box_evals_to_computed_mass_properties() {
     let source = "structure def MassPropsBox {\n    \
         let b = box(50mm, 30mm, 10mm)\n    \
-        let mp = body_mass_props(b, 7850.0)\n}";
+        let rho = 7850kg/m^3\n    \
+        let mp = body_mass_props(b, rho)\n}";
 
     // Validate compilation unconditionally — a grammar/signature regression
     // must fail on every runner, not just those with OCCT.
@@ -225,7 +233,7 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
         }
     }
 
-    // ── inertia: Value::Matrix of Value::Real ─────────────────────────────────
+    // ── inertia: Value::Matrix of Value::Scalar{MOMENT_OF_INERTIA} ───────────
     let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
         Value::Matrix(rows) => rows,
         other => panic!("inertia field must be Value::Matrix, got {other:?}"),
@@ -237,8 +245,14 @@ fn body_mass_props_box_evals_to_computed_mass_properties() {
 
     let get = |r: usize, c: usize| -> f64 {
         match &inertia_rows[r][c] {
-            Value::Real(v) => *v,
-            other => panic!("inertia[{r}][{c}] must be Value::Real, got {other:?}"),
+            Value::Scalar { si_value, dimension }
+                if *dimension == DimensionVector::MOMENT_OF_INERTIA =>
+            {
+                *si_value
+            }
+            other => panic!(
+                "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+            ),
         }
     };
 

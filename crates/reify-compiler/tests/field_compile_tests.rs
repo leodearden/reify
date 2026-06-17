@@ -10,7 +10,7 @@ use reify_core::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
 #[test]
 fn compile_field_analytical() {
     let module =
-        compile_source("field def temp : Point3 -> Scalar { source = analytical { |p| 1.0m } }");
+        compile_source("field def temp : Point3 -> Length { source = analytical { |p| 1.0m } }");
     assert!(
         errors_only(&module).is_empty(),
         "errors: {:?}",
@@ -25,7 +25,7 @@ fn compile_field_analytical() {
     // Domain and codomain types should be resolved
     // Point3 is not a built-in type, so it resolves to StructureRef
     assert_eq!(format!("{}", field.domain_type), "Point3");
-    // Scalar resolves to Type::length() which displays as "Scalar[m]"
+    // Length resolves to Type::length() which displays as "Scalar[m]"
     assert_eq!(format!("{}", field.codomain_type), "Scalar[m]");
 
     // Source should be analytical with a compiled lambda expression
@@ -359,14 +359,14 @@ fn compile_field_sampled_rejects_duplicate_grid_key() {
 
 #[test]
 fn compile_field_compose_type_check_valid() {
-    // Field<Point3, Scalar> composed with Field<Scalar, Scalar> is valid:
-    // codomain of first (Scalar) matches domain of second (Scalar).
-    // Result should be Field<Point3, Scalar>.
+    // Field<Point3, Length> composed with Field<Length, Length> is valid:
+    // codomain of first (Length) matches domain of second (Length).
+    // Result should be Field<Point3, Length>.
     let module = compile_source(
         r#"
-field def f1 : Point3 -> Scalar { source = analytical { |p| 1.0m } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| 1.0m } }
-field def composed : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
+field def f1 : Point3 -> Length { source = analytical { |p| 1.0m } }
+field def f2 : Length -> Length { source = analytical { |x| 1.0m } }
+field def composed : Point3 -> Length { source = composed { |p| f2(f1(p)) } }
 "#,
     );
     // Should compile without type errors (warnings for StructureRef types are OK)
@@ -405,8 +405,8 @@ fn compile_field_compose_type_mismatch() {
     let module = compile_source(
         r#"
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
-field def bad_compose : Point3 -> Scalar { source = composed { |p| f2(f1(p)) } }
+field def f2 : Length -> Length { source = analytical { |x| x } }
+field def bad_compose : Point3 -> Length { source = composed { |p| f2(f1(p)) } }
 "#,
     );
     // Should have at least one diagnostic about field composition type mismatch
@@ -438,8 +438,8 @@ fn compose_type_check_nested_in_match() {
 enum Mode { A B }
 
 field def f1 : Point3 -> Vector3 { source = analytical { |p| p } }
-field def f2 : Scalar -> Scalar { source = analytical { |x| x } }
-field def bad_nested : Point3 -> Scalar {
+field def f2 : Length -> Length { source = analytical { |x| x } }
+field def bad_nested : Point3 -> Length {
     source = composed { |p| match Mode.A { A => f2(f1(p)) B => f2(f1(p)) } }
 }
 "#,
@@ -463,8 +463,8 @@ field def bad_nested : Point3 -> Scalar {
 fn compile_duplicate_field_names() {
     let module = compile_source(
         r#"
-field def temp : Point3 -> Scalar { source = analytical { |p| p } }
-field def temp : Scalar -> Scalar { source = analytical { |x| x } }
+field def temp : Point3 -> Length { source = analytical { |p| p } }
+field def temp : Length -> Length { source = analytical { |x| x } }
 "#,
     );
     // Should emit a diagnostic about duplicate entity definition (covers field-vs-field collision
@@ -490,10 +490,10 @@ field def temp : Scalar -> Scalar { source = analytical { |x| x } }
 
 #[test]
 fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
-    // Body returns Real (param x has default Real type), codomain declared as Scalar[m].
+    // Body returns Real (param x has default Real type), codomain declared as Length (Scalar[m]).
     // implicitly_converts_to(Real, Scalar[LENGTH]) is false → FieldCodomainMismatch.
     let module =
-        compile_source("field def temp : Real -> Scalar { source = analytical { |x| x } }");
+        compile_source("field def temp : Real -> Length { source = analytical { |x| x } }");
 
     let has_mismatch = module.diagnostics.iter().any(|d| {
         d.severity == reify_core::Severity::Error
@@ -509,10 +509,10 @@ fn compile_field_analytical_codomain_dimension_mismatch_emits_diagnostic() {
     // Checking the full phrase rather than bare type names avoids false positives
     // from substrings like "Vector<Real>", "Scalar<Temperature>", etc.
     //
-    // `Scalar` in the source resolves to Type::length() (type_resolution.rs:374-376),
+    // `Length` in the source resolves to Type::length() (type_resolution.rs:374-376),
     // which Displays as `Scalar[m]` (ty.rs:296-302 + dimension.rs:308-327: the LENGTH
     // basis dimension emits "m"). Pinning the exact `Scalar[m]` rendering ensures a
-    // future change to `Scalar`'s default dimension (e.g. switching to dimensionless
+    // future change to `Length`'s resolution (e.g. a compiler breaking change)
     // or to a different SI base) causes this assertion to fail loudly rather than
     // silently passing with a changed rendering.
     let mismatch_diag = module
@@ -563,13 +563,13 @@ fn compile_field_analytical_matching_codomain_does_not_emit_mismatch() {
 fn compile_field_analytical_int_body_widens_to_real_codomain() {
     // Body literal `1` is typed as Type::Int (expr.rs:257-258): whole-number
     // literals without a unit suffix always produce Int, not Real.
-    // Codomain is Real (Type::Real).
+    // Codomain is Real (Type::dimensionless_scalar()).
     //
     // implicitly_converts_to(Int, Real) returns false (type_compat.rs:52-169:
     // identity check fails because Int != Real; none of rules 1a/1b/2a/2b/2c/3
     // match the Int→Real direction; the default arm returns false).
     //
-    // The dedicated `(Type::Int, Type::Real)` arm at functions.rs:170-171 is
+    // The dedicated `(Type::Int, Type::dimensionless_scalar())` arm at functions.rs:170-171 is
     // the *only* thing that keeps this source valid. Removing that arm would
     // cause field_codomain_compatible to return false and emit
     // DiagnosticCode::FieldCodomainMismatch, making this test fail.
@@ -676,7 +676,7 @@ field def f3 : Real -> Real { source = composed { |p| f2(f1(p)) } }
 #[test]
 fn compile_field_imported_well_formed_no_error() {
     let module = compile_source(
-        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB grid = "density" } }"#,
+        r#"field def f : Point3 -> Length { source = imported { path = "x.vdb" format = OpenVDB grid = "density" } }"#,
     );
 
     // (a) No FieldImportedV02 deferral; no Severity::Error diagnostics.
@@ -709,7 +709,7 @@ fn compile_field_imported_well_formed_no_error() {
 #[test]
 fn compile_field_imported_missing_path_emits_error() {
     let module = compile_source(
-        r#"field def f : Point3 -> Scalar { source = imported { format = OpenVDB grid = "density" } }"#,
+        r#"field def f : Point3 -> Length { source = imported { format = OpenVDB grid = "density" } }"#,
     );
     let errors = errors_only(&module);
     assert!(
@@ -726,7 +726,7 @@ fn compile_field_imported_missing_path_emits_error() {
 #[test]
 fn compile_field_imported_missing_format_emits_error() {
     let module = compile_source(
-        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" grid = "density" } }"#,
+        r#"field def f : Point3 -> Length { source = imported { path = "x.vdb" grid = "density" } }"#,
     );
     let errors = errors_only(&module);
     assert!(
@@ -743,7 +743,7 @@ fn compile_field_imported_missing_format_emits_error() {
 #[test]
 fn compile_field_imported_missing_grid_emits_error() {
     let module = compile_source(
-        r#"field def f : Point3 -> Scalar { source = imported { path = "x.vdb" format = OpenVDB } }"#,
+        r#"field def f : Point3 -> Length { source = imported { path = "x.vdb" format = OpenVDB } }"#,
     );
     let errors = errors_only(&module);
     assert!(
@@ -760,7 +760,7 @@ fn compile_field_imported_missing_grid_emits_error() {
 #[test]
 fn compile_field_imported_unsupported_format_emits_error() {
     let module = compile_source(
-        r#"field def f : Point3 -> Scalar { source = imported { path = "x.hdf5" format = HDF5 grid = "density" } }"#,
+        r#"field def f : Point3 -> Length { source = imported { path = "x.hdf5" format = HDF5 grid = "density" } }"#,
     );
     let errors = errors_only(&module);
     assert!(

@@ -86,6 +86,12 @@ pub(crate) fn sanitize_value(v: Value) -> Value {
         Value::Scalar { si_value, .. } if !si_value.is_finite() => Value::Undef,
         Value::Complex { re, im, .. } if !re.is_finite() || !im.is_finite() => Value::Undef,
         Value::Orientation { w, x, y, z } if !quaternion_is_finite(*w, *x, *y, *z) => Value::Undef,
+        // Direction (β / task 4382): a non-finite component sanitizes to Undef,
+        // mirroring the Orientation guard. (Wildcard below means this is not
+        // compile-forced, but a non-finite Direction must not propagate.)
+        Value::Direction { x, y, z } if !x.is_finite() || !y.is_finite() || !z.is_finite() => {
+            Value::Undef
+        }
         _ => v,
     }
 }

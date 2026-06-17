@@ -34,27 +34,27 @@
 //
 // Signature notes:
 //
-//   `loads : List<Real>` and `supports : List<Real>`:
-//     Placeholder types for `List<Load>` and `List<Support>`. Same
-//     TODO(load-trait) constraint as `solve_elastic_static`. Callers pass
-//     the values via `LoadCase.loads` / `LoadCase.supports` member access,
-//     which satisfies the type resolver at compile time while preserving the
-//     actual `Value::StructureInstance` items at runtime.
+//   `loads : List<Load>` and `supports : List<Support>`:
+//     Tightened from `List<Real>` placeholders (task ζ/4444) to match
+//     `LoadCase.loads : List<Load>` and `LoadCase.supports : List<Support>`.
+//     Callers pass the values via `LoadCase.loads` / `LoadCase.supports`
+//     member access (or inline typed list literals).  Conformance is enforced
+//     at compile time for StructureInstanceCtor list elements.
 //
-//   `options : BucklingOptions` (no default):
-//     Even though `BucklingOptions` is now in the prelude (loaded earlier via
-//     `std.solver.buckling`), the TODO(phase-order) default is still deferred
-//     to a follow-up task.  Callers must pass `BucklingOptions()` explicitly.
-//     TODO(phase-order): add `= BucklingOptions()` default once confirmed safe.
+//   `options : BucklingOptions = BucklingOptions()`:
+//     `BucklingOptions` is in the prelude (loaded earlier via `std.solver.buckling`),
+//     so the cross-module ctor default compiles cleanly (task-4544 resolved).
+//     Callers may omit `options` to use the all-defaults instance, or pass a
+//     custom `BucklingOptions(...)` to override specific fields.
 @optimized("solver::buckling")
 pub fn solve_buckling(
     material  : ElasticMaterial,
     length    : Length,
     width     : Length,
     height    : Length,
-    loads     : List<Real>,
-    supports  : List<Real>,
-    options   : BucklingOptions
+    loads     : List<Load>,
+    supports  : List<Support>,
+    options   : BucklingOptions = BucklingOptions()
 ) -> BucklingResult {
     BucklingResult()
 }
@@ -101,4 +101,37 @@ pub fn mode_shape(
     n      : Int
 ) -> Field<Point3<Length>, Vector3<Length>> {
     result.modes[n].mode_shape
+}
+
+// ── solve_buckling_load_cases ─────────────────────────────────────────────────
+
+// `solve_buckling_load_cases` — multi-load-case buckling eigenvalue solve.
+//
+// @optimized("solver::buckling_multi_case") routes to the trampoline in
+// `crates/reify-eval/src/compute_targets/buckling_multi_case.rs`.
+//
+// Signature mirrors `solve_load_cases` (fea_multi_case.ri) but:
+//   - material : ElasticMaterial  (matches single-case `solve_buckling`)
+//   - options  : BucklingOptions  (shared across all cases; LoadCase.options
+//     carries ElasticOptions — wrong type for buckling, so it is ignored
+//     by the trampoline per design decision DD-4 in .task/plan.json)
+//   - returns  : MultiCaseBucklingResult
+//
+// The inline contract-body `MultiCaseBucklingResult(cases: map{})` is never
+// reached — the @optimized trampoline always intercepts.
+//
+// PRD: docs/prds/v0_5/buckling-eigensolver.md §7 + §13 task η.
+@optimized("solver::buckling_multi_case")
+pub fn solve_buckling_load_cases(
+    material : ElasticMaterial,
+    length   : Length,
+    width    : Length,
+    height   : Length,
+    cases    : List<LoadCase>,
+    options  : BucklingOptions = BucklingOptions()
+) -> MultiCaseBucklingResult {
+    // Inline contract-body — never reached; @optimized intercepts at the
+    // call site and routes to the `solver::buckling_multi_case` trampoline
+    // (crates/reify-eval/src/compute_targets/buckling_multi_case.rs).
+    MultiCaseBucklingResult(cases: map{})
 }

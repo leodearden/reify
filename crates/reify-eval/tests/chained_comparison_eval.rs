@@ -19,7 +19,7 @@ fn chain_range_satisfied() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -46,7 +46,7 @@ fn chain_range_violated_below() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 1mm
+    param thickness : Length = 1mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -73,7 +73,7 @@ fn chain_range_violated_above() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 15mm
+    param thickness : Length = 15mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -100,7 +100,7 @@ fn chain_boundary_strict_lt_at_lower() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 2mm
+    param thickness : Length = 2mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -127,7 +127,7 @@ fn chain_boundary_strict_lt_at_upper() {
     let result = eval_source(
         r#"
 structure S {
-    param thickness : Scalar = 10mm
+    param thickness : Length = 10mm
     let result = 2mm < thickness < 10mm
 }
 "#,
@@ -290,31 +290,37 @@ structure S {
     );
 }
 
-// ── step-11: dimensional_mismatch_returns_undef ───────────────────────────
+// ── step-11: dimensional_mismatch_rejected_at_compile_time ─────────────────
 
-/// `2mm < mass_param < 10mm` where mass_param has MASS dimension (5kg).
-/// eval_cmp returns Undef for LENGTH vs MASS comparison.
-/// And(Undef, Undef) = Undef.
+/// `2mm < mass_param < 10mm` where mass_param has MASS dimension (5kg) — a static
+/// LENGTH-vs-MASS dimensional mismatch.
+///
+/// BEHAVIOR CHANGE (task 4490 type-hygiene guard): this mismatch is now REJECTED at
+/// COMPILE time with a `dimension mismatch in comparison` diagnostic. Previously it
+/// compiled and `eval_cmp` returned `Value::Undef` at runtime (silent indeterminacy);
+/// making exactly this loud at compile time is 4490's headline user-observable signal.
 #[test]
-fn dimensional_mismatch_returns_undef() {
-    let result = eval_source(
-        r#"
+fn dimensional_mismatch_rejected_at_compile_time() {
+    let source = r#"
 structure S {
     param mass_param : Mass = 5kg
     let result = 2mm < mass_param < 10mm
 }
-"#,
-    );
-    let id = ValueCellId::new("S", "result");
-    let val = result
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("'result' not found in eval result"));
-    assert_eq!(
-        val,
-        &Value::Undef,
-        "LENGTH vs MASS dimension mismatch should yield Undef, got: {:?}",
-        val
+"#;
+    let parsed = reify_syntax::parse(source, ModulePath::single("chain_dim_mismatch"));
+    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let compiled = reify_compiler::compile(&parsed);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in comparison")),
+        "expected a compile-time dimension-mismatch error for `2mm < mass_param < 10mm` \
+         (Length vs Mass); got: {errors:?}"
     );
 }
 
@@ -330,7 +336,7 @@ fn desugaring_structure_verified() {
 
     let source = r#"
 structure S {
-    param thickness : Scalar = 5mm
+    param thickness : Length = 5mm
     let result = 2mm < thickness < 10mm
 }
 "#;

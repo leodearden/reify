@@ -1,0 +1,192 @@
+; ── Task 4395: geometric-joints α — `joint … with` definition syntax ──
+; Corpus tests documenting the CST shape for joint_definition in its two DOF
+; surface forms (single and record) and two body forms (block and single-expr).
+;
+; step-2 (single form): single joint_dof_field, with and without `in` range.
+; step-4 (record form): braced joint_dof with multiple joint_dof_field children.
+
+================================================================================
+joint_definition: single DOF field, no range, single-expr body
+================================================================================
+
+joint ball(c: Point, d: Point) with orientation: Orientation = coincident(c, d)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))
+
+================================================================================
+joint_definition: single DOF field with `in` range, block body
+================================================================================
+
+joint revolute(a: Axis, b: Axis) with angle: Angle in 0deg..120deg = { coaxial(a, b) }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))
+        range: (range_expression
+          lower: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name)))
+          upper: (quantity_literal
+            value: (number_literal)
+            unit: (unit_expr
+              (unit_name))))))
+    body: (joint_body
+      (relation_member
+        expr: (function_call
+          name: (identifier)
+          (argument_list
+            (identifier)
+            (identifier)))))))
+
+================================================================================
+joint_definition: record DOF form with two fields, single-expr body
+================================================================================
+
+joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = coaxial(a, b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))
+
+================================================================================
+joint_definition: record DOF form with trailing comma
+================================================================================
+
+joint prismatic(a: Axis, b: Axis) with { angle: Angle, } = coaxial(a, b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))
+
+================================================================================
+joint_definition: record DOF form with three fields
+================================================================================
+
+joint spherical(a: Point, b: Point, c: Point) with { x: Angle, y: Angle, z: Angle } = coincident(a, b)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (joint_definition
+    name: (identifier)
+    (fn_param_list
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (fn_param
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    dof: (joint_dof
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier)))
+      (joint_dof_field
+        name: (identifier)
+        type: (type_expr
+          (identifier))))
+    body: (joint_body
+      result: (function_call
+        name: (identifier)
+        (argument_list
+          (identifier)
+          (identifier))))))

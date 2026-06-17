@@ -654,7 +654,7 @@ fn bracket_fillet_radius_sweep_obeys_materially_better_rule_with_calibrated_defa
 /// shifts element shapes) and as reference data for the production threshold
 /// question task #3451 answers.
 #[test]
-#[ignore]
+#[ignore = "empirical baseline capture; run explicitly with --ignored"]
 fn procedural_fixture_baseline_distribution_pins_task_3451_empirical_capture() {
     use reify_mesh_morph::{MorphOptions, QualityVerdict, quality_check};
 

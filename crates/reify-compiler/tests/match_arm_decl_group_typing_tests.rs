@@ -78,6 +78,7 @@ fn sub_member(name: &str, structure_name: &str) -> MemberDecl {
         keyed_members: vec![],
         is_aux: false,
         pose_expr: None,
+        relate_relations: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -362,7 +363,7 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
 ///     let probe = self.head.across_flats
 /// }
 /// ```
-/// Asserts `probe.cell_type == Type::Real` (the common field's type, not Union).
+/// Asserts `probe.cell_type == Type::dimensionless_scalar()` (the common field's type, not Union).
 /// Pins PRD acceptance criterion 1 (common fields type-check via the cluster).
 #[test]
 fn self_dot_cluster_dot_common_field_resolves_to_arm_field_type() {
@@ -420,7 +421,7 @@ fn self_dot_cluster_dot_common_field_resolves_to_arm_field_type() {
 
     assert_eq!(
         probe_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "expected probe.cell_type == Real (common field across all arms), got {}",
         probe_type
     );
@@ -523,7 +524,7 @@ fn self_dot_cluster_dot_arm_specific_field_emits_diagnostic_listing_missing_arms
 ///     let across = bolt.head.across_flats
 /// }
 /// ```
-/// Asserts (a) no Error diagnostics, (b) `across.cell_type == Type::Real`.
+/// Asserts (a) no Error diagnostics, (b) `across.cell_type == Type::dimensionless_scalar()`.
 /// Pins PRD acceptance criterion 3 (external cluster access typechecks).
 #[test]
 fn external_sub_dot_cluster_dot_common_field_typechecks() {
@@ -581,7 +582,7 @@ fn external_sub_dot_cluster_dot_common_field_typechecks() {
 
     assert_eq!(
         across_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "expected across.cell_type == Real (common field across all arms of Bolt's cluster), \
          got {}",
         across_type
@@ -753,6 +754,7 @@ fn collection_sub_member(name: &str, structure_name: &str) -> MemberDecl {
         keyed_members: vec![],
         is_aux: false,
         pose_expr: None,
+        relate_relations: vec![],
         span: zero_span(),
         content_hash: ContentHash(0),
     })
@@ -779,7 +781,7 @@ fn index_access(object: Expr, idx_val: f64) -> Expr {
 // ─── Task 2871 regression tests ──────────────────────────────────────────────
 
 /// Task 2871 step-1 (RED before step-2): `bolts[0].head.across_flats`
-/// typechecks to `Type::Real` when both arm structures declare
+/// typechecks to `Type::dimensionless_scalar()` when both arm structures declare
 /// `across_flats : Real`.
 ///
 /// Constructs:
@@ -799,7 +801,7 @@ fn index_access(object: Expr, idx_val: f64) -> Expr {
 ///     let probe = bolts[0].head.across_flats
 /// }
 /// ```
-/// Asserts (a) no Error diagnostics and (b) `probe.cell_type == Type::Real`.
+/// Asserts (a) no Error diagnostics and (b) `probe.cell_type == Type::dimensionless_scalar()`.
 /// Pins PRD acceptance criterion 1 for the indexed-access / collection-sub
 /// entry point (task 2871 option (a)).
 #[test]
@@ -861,7 +863,7 @@ fn external_collection_sub_indexed_dot_cluster_dot_common_field_typechecks() {
 
     assert_eq!(
         probe_type,
-        Type::Real,
+        Type::dimensionless_scalar(),
         "expected probe.cell_type == Real (common field across all arms of \
          collection sub Bolt's cluster), got {}",
         probe_type

@@ -117,6 +117,7 @@ mod tests {
             Pattern::PLayerViolation,
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
+            Pattern::PTodo,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -128,6 +129,7 @@ mod tests {
                 Pattern::PLayerViolation => {}
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
+                Pattern::PTodo => {}
             }
         }
 
@@ -2469,6 +2471,298 @@ mod tests {
             "domain-noun 'placeholder' (sentinel geometry fn) must NOT be flagged as \
              phantom-done; got {:?}",
             findings
+        );
+    }
+
+    /// Step-5 RED — P5 git-diff-leg: task-id commit reachable on main (siblings
+    /// non-empty) but coverage check fails and deliverable-presence also fails.
+    /// Pure-reachability fallback in the siblings block should fire.
+    ///
+    /// Fixture (models task 4242 in the git-diff leg):
+    /// - task_completed event IS present for "4242" (bypasses merged-arm entirely)
+    /// - kind="found_on_main"; commit="stale_sha_4242"
+    /// - diff_changed_paths("main","stale_sha_4242") → [] (all files missing)
+    /// - log_grep("main","4242") → [sibling_sha] (siblings non-empty → block entered)
+    /// - diff_changed_paths("main","sibling_sha") → [] (coverage FAILS — none of
+    ///   the missing files covered by sibling)
+    /// - path_tracked_on("main","crates/x/deliver.rs") defaults false → (b) doesn't rescue
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low citing the sibling commit.
+    ///
+    /// Fails on current code (coverage fails + files absent → High).
+    #[test]
+    fn git_diff_leg_task_id_commit_reachable_downgrades_to_low() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "4242");
+
+        let mut git = MockGitOps::new();
+        // Primary diff: claimed commit covers nothing → all files missing.
+        git.set_diff_changed_paths("main", "stale_sha_4242", vec![]);
+        // Sibling rescue: siblings non-empty but their diff covers NONE of the
+        // missing files → coverage check fails (still_missing non-empty).
+        let sibling = GitCommit {
+            sha: "sibling_sha_4242".to_string(),
+            subject: "feat(task-4242) step-2 GREEN".to_string(),
+        };
+        git.set_log_grep("main", "4242", vec![sibling]);
+        // Sibling diff covers an unrelated file — NOT crates/x/deliver.rs.
+        git.set_diff_changed_paths("main", "sibling_sha_4242", vec!["docs/unrelated.md".to_string()]);
+        // path_tracked_on defaults false → deliverable-presence does NOT rescue.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4242".to_string(),
+            TaskMetadata {
+                task_id: "4242".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/deliver.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("found_on_main".to_string()),
+                    commit: Some("stale_sha_4242".to_string()),
+                    note: None,
+                }),
+                title: "Git-diff-leg pure-reachability test task".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "task-id commit reachable (siblings non-empty) → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4242");
+        // Evidence must cite the sibling commit.
+        let cited_sibling = f.evidence.iter().any(|e| match e {
+            EvidenceRef::Commit { sha, .. } => sha == "sibling_sha_4242",
+            _ => false,
+        });
+        assert!(
+            cited_sibling,
+            "expected EvidenceRef::Commit citing sibling_sha_4242; got {:?}",
+            f.evidence
+        );
+    }
+
+    /// Step-3 RED — P5 merged-arm: all deliverable files present on main despite
+    /// no task_completed event and no reachable task-id commit. (b) rescue.
+    ///
+    /// Fixture:
+    /// - NO task_completed event for "4285"
+    /// - kind="merged"; commit="reaped_sha_4285" (not an ancestor)
+    /// - log_grep("main","4285") → [] so (a) rescue does NOT fire
+    /// - Every metadata.files entry set_path_tracked_on true → (b) fires
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low whose summary
+    /// mentions "deliverable" and "present".
+    ///
+    /// Fails after step-2 impl (still High because (a) is empty and merged
+    /// arm has no (b) rescue yet).
+    #[test]
+    fn merged_no_event_deliverable_present_downgrades_to_low() {
+        let conn = seed_db();
+        // No task_completed event.
+
+        let mut git = MockGitOps::new();
+        // Claimed commit not an ancestor.
+        git.set_is_ancestor("reaped_sha_4285", "main", false);
+        // log_grep returns empty → (a) rescue does NOT fire.
+        git.set_log_grep("main", "4285", vec![]);
+        // Empty diff for the claimed commit.
+        git.set_diff_changed_paths("main", "reaped_sha_4285", vec![]);
+        // ALL metadata.files entries are tracked on main → (b) should fire.
+        git.set_path_tracked_on("main", "crates/x/foo.rs", true);
+        git.set_path_tracked_on("main", "crates/x/bar.rs", true);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4285".to_string(),
+            TaskMetadata {
+                task_id: "4285".to_string(),
+                status: "done".to_string(),
+                files: vec![
+                    "crates/x/foo.rs".to_string(),
+                    "crates/x/bar.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("reaped_sha_4285".to_string()),
+                    note: None,
+                }),
+                title: "Wire foo and bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "all deliverables present on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4285");
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("deliverable") && s.contains("present"),
+            "summary should mention 'deliverable' and 'present'; got {:?}",
+            f.summary
+        );
+    }
+
+    /// Step-1 RED — P5 merged-arm: task-id-referencing commit reachable from
+    /// main despite no task_completed event in runs.db. Models the task-4284
+    /// false-positive: the merge commit `4f7b633f` is reachable on main but
+    /// the branch ref was reaped, so the claimed commit SHA is unresolvable
+    /// and is_ancestor returns false.
+    ///
+    /// Fixture:
+    /// - NO task_completed event in runs.db for "4284"
+    /// - kind="merged"; commit="reaped_sha_4284" (not an ancestor of main)
+    /// - log_grep("main","4284") → [GitCommit{sha:"4f7b633f", ...}]  ← (a) fires
+    /// - metadata.files non-empty; path_tracked_on defaults false         ← (b) does not fire
+    ///
+    /// Expected: exactly one P5PhantomDone at Severity::Low whose summary
+    /// mentions the work landed/is reachable on main and whose evidence
+    /// includes an EvidenceRef::Commit citing "4f7b633f".
+    ///
+    /// Fails on current code (merged Ok(false) + non-ancestor → High
+    /// "no task_completed event").
+    #[test]
+    fn merged_no_event_task_id_commit_reachable_downgrades_to_low() {
+        let conn = seed_db();
+        // Deliberately do NOT insert a task_completed event for "4284".
+
+        let mut git = MockGitOps::new();
+        // The claimed commit is NOT an ancestor of main (branch was reaped).
+        git.set_is_ancestor("reaped_sha_4284", "main", false);
+        // log_grep finds the real merge commit on main — (a) rescue should fire.
+        let merge_commit = GitCommit {
+            sha: "4f7b633f".to_string(),
+            subject: "Merge task/4284 into main".to_string(),
+        };
+        git.set_log_grep("main", "4284", vec![merge_commit]);
+        // Provide empty diff so the git-diff leg produces nothing useful.
+        git.set_diff_changed_paths("main", "reaped_sha_4284", vec![]);
+        // metadata.files has a real entry but path_tracked_on defaults false,
+        // so (b) does NOT rescue.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "4284".to_string(),
+            TaskMetadata {
+                task_id: "4284".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/x/deliver.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("reaped_sha_4284".to_string()),
+                    note: None,
+                }),
+                title: "Wire deliver into bar".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "task-id commit reachable on main → must downgrade to Low; got {:?}",
+            f.severity
+        );
+        assert_eq!(f.task_id, "4284");
+        // Summary must mention reachability / landed / not phantom-done.
+        let s = f.summary.to_lowercase();
+        assert!(
+            s.contains("reachable") || s.contains("landed") || s.contains("not phantom"),
+            "summary should mention reachable/landed/not phantom; got {:?}",
+            f.summary
+        );
+        // Evidence must include EvidenceRef::Commit citing the merge commit sha.
+        let cited_commit = f.evidence.iter().find_map(|e| match e {
+            EvidenceRef::Commit { sha, .. } => Some(sha.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            cited_commit,
+            Some("4f7b633f"),
+            "Low finding must include EvidenceRef::Commit {{ sha: '4f7b633f' }}; got {:?}",
+            f.evidence
         );
     }
 

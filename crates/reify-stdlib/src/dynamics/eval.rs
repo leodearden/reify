@@ -38,6 +38,7 @@ use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
 use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
 use crate::mechanism::is_world;
+use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use std::collections::BTreeMap;
@@ -57,6 +58,32 @@ fn cell_f64(v: &Value) -> Option<f64> {
         Value::Real(r) => Some(*r),
         Value::Scalar { si_value, .. } => Some(*si_value),
         _ => None,
+    }
+}
+
+/// Extract an `f64` from a **mass** value cell.
+///
+/// Accepts dimensionless numerics (`Int`, `Real`) and `Scalar`s whose dimension
+/// is exactly [`DimensionVector::MASS`].  Rejects any `Scalar` with a different
+/// dimension (e.g. `Length`, `Angle`) — a caller passing `5 m` as a mass
+/// argument would otherwise be silently accepted and treated as `5 kg`,
+/// producing a physically-wrong `MassProperties` with no diagnostic.
+///
+/// This is intentionally stricter than the bare [`cell_f64`] used elsewhere:
+/// the mass field of a `MassProperties` is dimension-aware (it is stored as a
+/// `Scalar{dimension:MASS}`), so input validation must be too.  Dimensionless
+/// numerics are still accepted for ergonomics (`point_mass(2.5)` in unit-free
+/// test helpers), matching the sibling `dynamics_ops` behaviour.
+fn cell_mass_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, dimension } if *dimension == DimensionVector::MASS => {
+            Some(*si_value)
+        }
+        // Wrong dimension (e.g. Length, Angle): reject so the caller can
+        // surface Value::Undef rather than silently producing wrong mass.
+        Value::Scalar { .. } => None,
+        // Dimensionless Int/Real are accepted for test ergonomics.
+        other => cell_f64(other),
     }
 }
 
@@ -109,6 +136,8 @@ pub(crate) fn eval_dynamics(name: &str, args: &[Value]) -> Option<Value> {
             Some(eval_inverse_dynamics_at_snapshot(args))
         }
         "inverse_dynamics_lower" => Some(eval_inverse_dynamics(args)),
+        "point_mass" => Some(eval_point_mass(args)),
+        "mass_properties" => Some(eval_mass_properties(args)),
         _ => None,
     }
 }
@@ -286,11 +315,12 @@ fn inertia_3x3_from_value(v: &Value) -> Option<[[f64; 3]; 3]> {
 ///
 /// Accepts the canonical `dynamics_ops::assemble_mass_properties` shape (mass: a
 /// Mass-scalar; com: a `Value::Point` of Length-scalars; inertia: a 3×3
-/// `Value::Matrix` of `Real`) plus the equivalent list-shaped encodings a
-/// user-authored MassProperties may produce. The `com` Length dimension is
-/// stripped to SI metres. Returns `None` for any non-MassProperties value or a
-/// malformed/absent field.
-fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
+/// `Value::Matrix` of MomentOfInertia-dimensioned scalars, kg·m²) plus the
+/// equivalent list-shaped encodings a user-authored MassProperties may produce.
+/// The `com` Length dimension and inertia MomentOfInertia dimension are both
+/// stripped to raw SI f64 values via `cell_f64`. Returns `None` for any
+/// non-MassProperties value or a malformed/absent field.
+pub(crate) fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3])> {
     let data = match v {
         Value::StructureInstance(d) if d.type_name == "MassProperties" => d,
         _ => return None,
@@ -299,6 +329,195 @@ fn mass_properties_from_value(v: &Value) -> Option<(f64, [f64; 3], [[f64; 3]; 3]
     let com = vec3_from_value(data.fields.get("com")?)?;
     let inertia = inertia_3x3_from_value(data.fields.get("inertia")?)?;
     Some((mass, com, inertia))
+}
+
+// ── resolve_body_mass — single mass read-path (task 4278) ────────────────────
+
+/// The single canonical read-path for body mass in every inverse-dynamics and
+/// modal consumer.
+///
+/// Rung precedences (highest first):
+/// (a) **Explicit MassProperties** — `body.solid` is a `MassProperties`
+///     StructureInstance → `Some(solid.clone())`.
+/// (b) **Derived geometry×density** — `body.derived_mass_props` is a
+///     `MassProperties` StructureInstance baked by the build-time
+///     `post_process_mechanism_mass_props` pass (task 4472) → `Some(that.clone())`.
+///     Rung (a) wins when `solid` is already an explicit MassProperties; rung (b)
+///     fires only when `solid` is absent or is not a MassProperties.
+/// (c) **Unresolvable** — neither rung above matched → `None`.
+///
+/// Consumers extract fields from the returned `Value` via
+/// [`mass_properties_from_value`].
+pub fn resolve_body_mass(body: &Value) -> Option<Value> {
+    let bm = match body {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    // Rung (a): explicit MassProperties solid wins unconditionally.
+    if let Some(solid) = map_get(bm, "solid")
+        && let Value::StructureInstance(d) = solid
+        && d.type_name == "MassProperties"
+    {
+        return Some(solid.clone());
+    }
+    // Rung (b): build-pass-baked derived_mass_props (task 4472).
+    if let Some(derived) = map_get(bm, "derived_mass_props")
+        && let Value::StructureInstance(d) = derived
+        && d.type_name == "MassProperties"
+    {
+        return Some(derived.clone());
+    }
+    // Rung (c): unresolvable.
+    None
+}
+
+// ── dynamics diagnose hook (task 4278) ───────────────────────────────────────
+
+/// Undef-path diagnostic hook for `inverse_dynamics` intrinsics.
+///
+/// Mirrors the `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose`
+/// pattern: called by `reify-expr`'s `emit_undef_builtin_diagnostics` after
+/// the builtin returns `Value::Undef`, re-derives the cause by inspecting the
+/// mechanism's spanning-tree bodies, and emits
+/// [`DiagnosticCode::DynamicsBodyMassUnresolved`] for the first body whose mass
+/// cannot be resolved via [`resolve_body_mass`].
+///
+/// Returns `None` for non-dynamics names, non-mechanism args[0], or fully-
+/// resolvable mechanisms (no spurious fire). Closing-edge bodies are excluded
+/// from the walk because the closed-chain RNEA never reads their mass.
+///
+/// **Best-effort attribution.** This hook re-derives the Undef cause
+/// independently of the actual call; it does not receive the real reason the
+/// builtin returned `Value::Undef`. If `inverse_dynamics_lower` returns `Undef`
+/// for an unrelated reason (e.g. malformed trajectory, missing world transform)
+/// while a body also happens to have unresolvable mass, the diagnostic will
+/// attribute the failure to mass. This matches the established behaviour of the
+/// sibling `stackup_diagnose` / `fea_diagnose` / `geometry_diagnose` hooks and
+/// is acceptable — the hook provides a best-effort hint, not an authoritative
+/// root-cause analysis.
+pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
+    match name {
+        "inverse_dynamics_lower" | "inverse_dynamics_at_snapshot_lower" => {}
+        _ => return None,
+    }
+    let mech = match args.first() {
+        Some(Value::Map(m)) => m,
+        _ => return None,
+    };
+    let bodies = match map_get(mech, "bodies") {
+        Some(Value::List(b)) => b,
+        _ => return None,
+    };
+    // Closing-edge bodies are appended at the end; their mass is never read by
+    // the RNEA so we skip them to avoid false positives.
+    let n_lc = match map_get(mech, "loop_closures") {
+        Some(Value::List(lc)) => lc.len(),
+        _ => 0,
+    };
+    let n_tree = bodies.len().saturating_sub(n_lc);
+    for body in &bodies[..n_tree] {
+        if resolve_body_mass(body).is_none() {
+            let id_str = match body {
+                Value::Map(bm) => match map_get(bm, "id") {
+                    Some(Value::Int(k)) => k.to_string(),
+                    _ => "?".to_string(),
+                },
+                _ => "?".to_string(),
+            };
+            return Some(
+                Diagnostic::error(format!(
+                    "inverse_dynamics: body '{id_str}' has no resolvable mass \
+                     (no MassProperties on body.solid)"
+                ))
+                .with_code(DiagnosticCode::DynamicsBodyMassUnresolved),
+            );
+        }
+    }
+    None
+}
+
+// ── MassProperties constructor helpers (task 4278) ──────────────────────────
+
+/// Build a canonical registry-free `MassProperties` `Value::StructureInstance`
+/// matching the `assemble_mass_properties` shape:
+/// - `mass`   → `Value::Scalar { dimension: MASS }`
+/// - `com`    → `Value::Point` of `Value::length` scalars (SI metres)
+/// - `inertia`→ `Value::Matrix` of `Value::Scalar { dimension: MOMENT_OF_INERTIA }` (3×3, kg·m²)
+/// - `origin` → `Value::Real(0.0)` (unused sentinel, mirrors `dynamics_ops`)
+///
+/// Inertia cells are MomentOfInertia-dimensioned scalars (kg·m²), matching the
+/// `inertia_value` populate pattern in `dynamics_ops`. The PSD hook and
+/// `inertia_3x3_from_value` both read them unchanged via `cell_f64`, which strips
+/// `si_value` from any `Value::Scalar`.
+fn make_mass_properties(mass: f64, com: [f64; 3], inertia: [[f64; 3]; 3]) -> Value {
+    let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+    let inertia_matrix = Value::Matrix(
+        inertia
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|&x| Value::Scalar {
+                        si_value: x,
+                        dimension: DimensionVector::MOMENT_OF_INERTIA,
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
+    mint_instance(
+        "MassProperties",
+        vec![
+            (
+                "mass".to_string(),
+                Value::Scalar {
+                    si_value: mass,
+                    dimension: DimensionVector::MASS,
+                },
+            ),
+            ("com".to_string(), com_point),
+            ("inertia".to_string(), inertia_matrix),
+            ("origin".to_string(), Value::Real(0.0)),
+        ],
+    )
+}
+
+/// Evaluate `mass_properties(mass, com, inertia)` — a full `MassProperties`
+/// with caller-supplied centre-of-mass and inertia tensor. Validates arity and
+/// field shapes; returns `Value::Undef` on any malformed input, including a
+/// mass argument whose dimension is not `MASS` (e.g. a `Length` scalar).
+fn eval_mass_properties(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Undef;
+    }
+    let mass = match cell_mass_f64(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    let com = match vec3_from_value(&args[1]) {
+        Some(c) => c,
+        None => return Value::Undef,
+    };
+    let inertia = match inertia_3x3_from_value(&args[2]) {
+        Some(i) => i,
+        None => return Value::Undef,
+    };
+    make_mass_properties(mass, com, inertia)
+}
+
+/// Evaluate `point_mass(mass)` — a degenerate `MassProperties` with com at the
+/// origin and zero inertia tensor. Returns `Value::Undef` for wrong arity, a
+/// non-numeric mass argument, or a mass scalar whose dimension is not `MASS`
+/// (e.g. a `Length` scalar — would silently produce a wrong MassProperties
+/// without this guard).
+fn eval_point_mass(args: &[Value]) -> Value {
+    if args.len() != 1 {
+        return Value::Undef;
+    }
+    let mass = match cell_mass_f64(&args[0]) {
+        Some(m) => m,
+        None => return Value::Undef,
+    };
+    make_mass_properties(mass, [0.0, 0.0, 0.0], [[0.0; 3]; 3])
 }
 
 /// Convert a `Value::Transform { rotation: Orientation, translation: Vector }`
@@ -448,6 +667,11 @@ fn snapshot_inverse_dynamics(
             Some(Value::Int(n)) => *n,
             _ => return None,
         };
+        // PRD §7.2 no-bypass invariant (route 4): the `world_transform` read here is
+        // the FK pose baked by `snapshot()` via `joint_world_transform` → `transform_at`.
+        // Any pivot offset is already composed into this value — this site reads the
+        // offset-aware pose and MUST NOT reconstruct per-joint transforms from the joint Map.
+        // Verified behaviourally by γ B8 route-4 test and the B3 dynamics test.
         world_tf.insert(id, map_get(sbm, "world_transform")?);
     }
 
@@ -481,7 +705,6 @@ fn snapshot_inverse_dynamics(
 
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n);
     let mut ids: Vec<i64> = Vec::with_capacity(n);
-    let mut solids: Vec<&Value> = Vec::with_capacity(n);
     for b in bodies {
         let bm = match b {
             Value::Map(m) => m,
@@ -492,7 +715,6 @@ fn snapshot_inverse_dynamics(
             Some(Value::Int(k)) => *k,
             _ => return None,
         });
-        solids.push(map_get(bm, "solid")?);
     }
 
     // ── parent body index per body (None = world-parented base) ──
@@ -531,7 +753,8 @@ fn snapshot_inverse_dynamics(
     // ── build RneaLinks in topological order ──
     let mut links: Vec<RneaLink> = Vec::with_capacity(n);
     for &bi in &ordered {
-        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let mp = resolve_body_mass(&bodies[bi])?;
+        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         // X_{p→i}: base link is ᶜXᵂ = from_frame3(world_transform) (pins the
@@ -1023,7 +1246,6 @@ fn closed_chain_inverse_dynamics(
     // ── per-spanning-tree-body fields ─────────────────────────────────────────
     let mut at_joints: Vec<&Value> = Vec::with_capacity(n_tree);
     let mut ids: Vec<i64> = Vec::with_capacity(n_tree);
-    let mut solids: Vec<&Value> = Vec::with_capacity(n_tree);
     for b in tree_bodies {
         let bm = match b {
             Value::Map(m) => m,
@@ -1034,7 +1256,6 @@ fn closed_chain_inverse_dynamics(
             Some(Value::Int(k)) => *k,
             _ => return None,
         });
-        solids.push(map_get(bm, "solid")?);
     }
 
     // ── parent index per spanning-tree body (None = world root) ──────────────
@@ -1094,7 +1315,8 @@ fn closed_chain_inverse_dynamics(
     // ── build RneaLinks in topological order ──────────────────────────────────
     let mut links: Vec<RneaLink> = Vec::with_capacity(n_tree);
     for &bi in &ordered {
-        let (mass, com, inertia_about_com) = mass_properties_from_value(solids[bi])?;
+        let mp = resolve_body_mass(&tree_bodies[bi])?;
+        let (mass, com, inertia_about_com) = mass_properties_from_value(&mp)?;
         let child_frame = frame3_from_transform_value(world_tf.get(&ids[bi])?)?;
         let xc = SpatialTransform6::from_frame3(&child_frame);
         let parent_to_child = match parent_idx[bi] {
@@ -1220,7 +1442,7 @@ mod tests {
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
-    /// of `Real`, `origin` a `Real`.
+    /// of MomentOfInertia-dimensioned scalars (kg·m²), `origin` a `Real`.
     fn mass_properties_fixture(
         mass: f64,
         com: [f64; 3],
@@ -1230,7 +1452,14 @@ mod tests {
         let inertia_matrix = Value::Matrix(
             inertia
                 .iter()
-                .map(|row| row.iter().map(|&x| Value::Real(x)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|&x| Value::Scalar {
+                            si_value: x,
+                            dimension: DimensionVector::MOMENT_OF_INERTIA,
+                        })
+                        .collect()
+                })
                 .collect(),
         );
         mint_instance(
@@ -2962,5 +3191,879 @@ mod tests {
             "positions slice length != body count must return None \
              (fail-honest one-per-body invariant)"
         );
+    }
+
+    // ── KIN-OFFSET γ step-7 (B3): dynamics offset FK + finitude ─────────────────
+    //
+    // B3 dynamics: asserts (A) the snapshot body's world_transform that the dynamics
+    // reads (in snapshot_inverse_dynamics) is offset-aware (matches hand-computed offset-shifted
+    // position, exact SE(3) composition, tol ≈1e-9) and (B) inverse_dynamics on the
+    // offset mechanism returns a finite, well-formed result — not Undef.
+    //
+    // Setup: offset_revolute_z(L=0.1m), 1 kg point mass at CoM=(0,0,−0.1),
+    // zero inertia. Joint at θ=π/6, static (q̇=q̈=0).
+    //
+    // For offset_revolute_z(L): transform_at = {R_z(θ), (L,0,0)} (origin pre-compose).
+    // World translation = (L, 0, 0) = (0.1, 0, 0) regardless of θ — a clean, exact
+    // hand-computable reference proving the FK input to dynamics is offset-aware
+    // (route 4 of the PRD §7.2 no-bypass invariant, verified by γ B8 route-4 test).
+    //
+    // Does NOT assert a precise analytic torque (that is β/B7 with a tolerance derived
+    // from the loop-Newton floor); γ is a re-validation, not a new analytic e2e.
+
+    #[test]
+    fn inverse_dynamics_offset_joint_fk_world_transform_correct_and_finite() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        // ── Shared offset_revolute_z(0.1) fixture ─────────────────────────────
+        // offset_revolute_z uses range 0..π; θ=π/6 ≈ 0.52 is well within it.
+        let joint = crate::test_fixtures::offset_revolute_z(0.1);
+        assert!(
+            matches!(joint, Value::Map(_)),
+            "offset_revolute_z(0.1) must yield a Map, got {:?}",
+            joint
+        );
+
+        // ── Single-body mechanism (1 kg point mass, CoM at (0,0,−0.1)) ───────
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let mech = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech, mp.clone(), joint.clone()]);
+        assert!(matches!(mech, Value::Map(_)), "body() must yield a Mechanism Map");
+
+        // ── Snapshot at θ = π/6 (30°) ────────────────────────────────────────
+        let theta = PI / 6.0;
+        let binding = eval_builtin("bind", &[joint.clone(), Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must yield a Snapshot Map");
+
+        // ── PRIMARY: world_transform.translation == (0.1, 0, 0) ──────────────
+        // For offset_revolute_z(L=0.1): transform_at = {R_z(θ), (L,0,0)}.
+        // T_world = I ∘ transform_at = {R_z(θ), (0.1, 0, 0)}.
+        // Translation is (0.1, 0, 0) regardless of θ — the offset is baked in.
+        let wt = crate::test_fixtures::body_world_transform(&snap, 0);
+
+        // Decompose world_transform.
+        let (rotation, translation) = match wt {
+            Value::Transform { rotation, translation } => (rotation.as_ref(), translation.as_ref()),
+            other => panic!("expected Transform, got {:?}", other),
+        };
+        let comps = match translation {
+            Value::Vector(c) if c.len() == 3 => c,
+            other => panic!("expected Vector(3) translation, got {:?}", other),
+        };
+        let read_f64 = |v: &Value| -> f64 {
+            match v {
+                Value::Real(r) => *r,
+                Value::Scalar { si_value, .. } => *si_value,
+                other => panic!("expected numeric component, got {:?}", other),
+            }
+        };
+        let tx = read_f64(&comps[0]);
+        let ty = read_f64(&comps[1]);
+        let tz = read_f64(&comps[2]);
+
+        let tol = 1e-9;
+        assert!(
+            (tx - 0.1).abs() < tol,
+            "B3 dynamics route-4: world_transform.tx should be 0.1 m (offset), got {tx}"
+        );
+        assert!(
+            ty.abs() < tol,
+            "B3 dynamics route-4: world_transform.ty should be 0, got {ty}"
+        );
+        assert!(
+            tz.abs() < tol,
+            "B3 dynamics route-4: world_transform.tz should be 0, got {tz}"
+        );
+
+        // Rotation should be R_z(π/6) (offset origin has identity rotation).
+        let (qw, qx, qy, qz) = match rotation {
+            Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+            other => panic!("expected Orientation, got {:?}", other),
+        };
+        let exp_qw = (theta / 2.0).cos();
+        let exp_qz = (theta / 2.0).sin();
+        let rot_ok =
+            (qw - exp_qw).abs() < tol && qx.abs() < tol && qy.abs() < tol && (qz - exp_qz).abs() < tol
+            || (qw + exp_qw).abs() < tol && qx.abs() < tol && qy.abs() < tol && (qz + exp_qz).abs() < tol;
+        assert!(
+            rot_ok,
+            "B3 dynamics route-4: world_transform rotation should be R_z(π/6) ≈ \
+             ({exp_qw:.6},0,0,{exp_qz:.6}) up to sign, got ({qw:.6},{qx:.6},{qy:.6},{qz:.6})"
+        );
+
+        // ── SECONDARY: inverse_dynamics returns a finite, well-formed result ──
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be a recognised dynamics intrinsic");
+
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!("expected a List<JointForce>, got {other:?}"),
+        };
+        assert_eq!(forces.len(), 1, "one joint → one JointForce");
+
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+        // ── Finitude smoke test (intentionally NOT offset-discriminating for the torque) ──
+        //
+        // For a z-axis revolute with z-directed gravity g=(0,0,−9.81):
+        //   τ_z = (r_CoM × F_grav)·ẑ = r_x·F_y − r_y·F_x = r_x·0 − r_y·0 = 0
+        // for ANY CoM position — moving the CoM off the rotation axis (x,y ≠ 0)
+        // does not produce a nonzero τ_z because F_grav ∥ ẑ makes the cross product
+        // perpendicular to ẑ.  τ_z = 0 is exact physics, not a numerical coincidence.
+        //
+        // Offset-discriminating dynamics coverage (a nonzero analytic torque that
+        // changes with L) requires a non-z joint axis or non-z gravity and is
+        // deliberately deferred to β/B7.  This assertion's role is to confirm that
+        // inverse_dynamics returns a finite, well-formed result on an offset mechanism,
+        // complementing the PRIMARY assertion above (world_transform.tx == L) which
+        // is the offset-discriminating check for route 4.
+        assert!(
+            torque.is_finite() && torque.abs() < 1e-6,
+            "B3 dynamics finitude: inverse_dynamics must return a finite result \
+             (z-revolute + z-gravity → τ_z = 0 exactly for any CoM); got {torque}"
+        );
+    }
+
+    // ── task-4278 step-1 RED: point_mass constructor ───────────────────────────
+    //
+    // `eval_dynamics("point_mass", &[mass_scalar])` must return a MassProperties
+    // StructureInstance with mass==supplied value, com==[0,0,0], inertia==zeros.
+    // RED until step-2 adds the dispatch arm.
+
+    #[test]
+    fn eval_dynamics_point_mass_roundtrip() {
+        let result = eval_dynamics(
+            "point_mass",
+            &[Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::MASS,
+            }],
+        )
+        .expect("point_mass is a recognised dynamics constructor");
+        assert!(
+            !matches!(result, Value::Undef),
+            "point_mass with valid arg must not return Undef"
+        );
+        let (mass, com, inertia) =
+            mass_properties_from_value(&result).expect("result must be a MassProperties");
+        assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
+        for &c in &com {
+            assert!(c.abs() < 1e-12, "com should be origin, got {com:?}");
+        }
+        for row in &inertia {
+            for &v in row {
+                assert!(v.abs() < 1e-12, "inertia should be zero, got {inertia:?}");
+            }
+        }
+        // type_name must be "MassProperties"
+        match &result {
+            Value::StructureInstance(d) => {
+                assert_eq!(d.type_name, "MassProperties", "wrong type_name");
+            }
+            other => panic!("expected StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_wrong_arity_returns_undef() {
+        // zero args → Undef
+        let r0 = eval_dynamics("point_mass", &[]).expect("point_mass recognised");
+        assert!(
+            matches!(r0, Value::Undef),
+            "zero args must return Undef, got {r0:?}"
+        );
+        // two args → Undef
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let r2 = eval_dynamics("point_mass", &[mass.clone(), mass])
+            .expect("point_mass recognised");
+        assert!(matches!(r2, Value::Undef), "two args must return Undef, got {r2:?}");
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_non_numeric_arg_returns_undef() {
+        let r = eval_dynamics("point_mass", &[Value::String("bad".to_string())])
+            .expect("point_mass recognised");
+        assert!(matches!(r, Value::Undef), "non-numeric arg must return Undef, got {r:?}");
+    }
+
+    // ── amendment: dimension-mismatch guards (reviewer suggestion 1) ─────────
+    //
+    // Passing a wrong-dimension Scalar (e.g. Length instead of Mass) must return
+    // Value::Undef rather than silently producing a physically-wrong MassProperties.
+
+    #[test]
+    fn eval_dynamics_point_mass_length_scalar_returns_undef() {
+        // 5 m is a Length, NOT a Mass — must be rejected.
+        let length_arg = Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH };
+        let r = eval_dynamics("point_mass", &[length_arg])
+            .expect("point_mass recognised");
+        assert!(
+            matches!(r, Value::Undef),
+            "Length-dimensioned scalar must return Undef (not silently treat as 5 kg), got {r:?}"
+        );
+    }
+
+    #[test]
+    fn eval_dynamics_point_mass_dimensionless_real_still_accepted() {
+        // Dimensionless Real is still accepted for test ergonomics.
+        let r = eval_dynamics("point_mass", &[Value::Real(3.0)])
+            .expect("point_mass recognised");
+        assert!(
+            !matches!(r, Value::Undef),
+            "dimensionless Real must still be accepted, got {r:?}"
+        );
+        let (mass, _, _) = mass_properties_from_value(&r).expect("must be MassProperties");
+        assert!((mass - 3.0).abs() < 1e-12, "mass should be 3.0, got {mass}");
+    }
+
+    // ── task-4278 step-3 RED: mass_properties(mass, com, inertia) constructor ───
+    //
+    // eval_dynamics("mass_properties", &[mass, com, inertia]) must round-trip via
+    // mass_properties_from_value. RED until step-4 adds the dispatch arm.
+
+    #[test]
+    fn eval_dynamics_mass_properties_roundtrip() {
+        let mass_val = Value::Scalar { si_value: 3.0, dimension: DimensionVector::MASS };
+        let com_val = Value::Point(vec![Value::length(0.1), Value::length(0.2), Value::length(0.3)]);
+        let inertia = [[1.0, 0.1, 0.2], [0.1, 2.0, 0.3], [0.2, 0.3, 3.0]];
+        let inertia_val = Value::Matrix(
+            inertia.iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+
+        let result = eval_dynamics("mass_properties", &[mass_val, com_val, inertia_val])
+            .expect("mass_properties is a recognised dynamics constructor");
+        assert!(!matches!(result, Value::Undef), "valid args must not return Undef");
+
+        let (m, com, got_inertia) = mass_properties_from_value(&result)
+            .expect("result must be a MassProperties");
+        assert!((m - 3.0).abs() < 1e-12, "mass mismatch: {m}");
+        assert!((com[0] - 0.1).abs() < 1e-12, "com[0] mismatch: {}", com[0]);
+        assert!((com[1] - 0.2).abs() < 1e-12, "com[1] mismatch: {}", com[1]);
+        assert!((com[2] - 0.3).abs() < 1e-12, "com[2] mismatch: {}", com[2]);
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (got_inertia[r][c] - inertia[r][c]).abs() < 1e-12,
+                    "inertia[{r}][{c}] mismatch"
+                );
+            }
+        }
+        match &result {
+            Value::StructureInstance(d) => assert_eq!(d.type_name, "MassProperties"),
+            other => panic!("expected StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_list_com_accepted() {
+        // com supplied as a Value::List of numeric scalars (not Point) — must also work
+        let mass_val = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let com_val = Value::List(vec![Value::length(0.0), Value::length(0.0), Value::length(0.5)]);
+        let inertia_val = Value::Matrix(
+            [[0.0f64; 3]; 3].iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+        let result = eval_dynamics("mass_properties", &[mass_val, com_val, inertia_val])
+            .expect("mass_properties recognised");
+        assert!(!matches!(result, Value::Undef), "List com must be accepted");
+        let (_, com, _) = mass_properties_from_value(&result).expect("must be MassProperties");
+        assert!((com[2] - 0.5).abs() < 1e-12, "com[2] via List: {}", com[2]);
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_wrong_arity_returns_undef() {
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        // 0 args
+        assert!(matches!(
+            eval_dynamics("mass_properties", &[]).expect("recognised"),
+            Value::Undef
+        ));
+        // 1 arg
+        assert!(matches!(
+            eval_dynamics("mass_properties", std::slice::from_ref(&mass)).expect("recognised"),
+            Value::Undef
+        ));
+        // 2 args
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        assert!(matches!(
+            eval_dynamics("mass_properties", &[mass, com]).expect("recognised"),
+            Value::Undef
+        ));
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_non_3x3_inertia_returns_undef() {
+        let mass = Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS };
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        // 2×3 matrix (not 3×3)
+        let bad_inertia = Value::Matrix(vec![
+            vec![Value::Real(0.0); 3],
+            vec![Value::Real(0.0); 3],
+        ]);
+        let r = eval_dynamics("mass_properties", &[mass, com, bad_inertia]).expect("recognised");
+        assert!(matches!(r, Value::Undef), "non-3×3 inertia must return Undef");
+    }
+
+    #[test]
+    fn eval_dynamics_mass_properties_length_mass_arg_returns_undef() {
+        // Passing a Length scalar as the mass argument must be rejected.
+        // Without the dimension guard, 5 m would be silently treated as 5 kg.
+        let length_mass = Value::Scalar { si_value: 5.0, dimension: DimensionVector::LENGTH };
+        let com = Value::Point(vec![Value::length(0.0); 3]);
+        let inertia_val = Value::Matrix(
+            [[0.0f64; 3]; 3].iter().map(|row| row.iter().map(|&x| Value::Real(x)).collect()).collect(),
+        );
+        let r = eval_dynamics("mass_properties", &[length_mass, com, inertia_val]).expect("recognised");
+        assert!(
+            matches!(r, Value::Undef),
+            "Length-dimensioned mass arg must return Undef (not silently treat as kg), got {r:?}"
+        );
+    }
+
+    // ── task-4472 step-1 RED: resolve_body_mass rung (b) ─────────────────────
+    //
+    // Tests for rung (b): a body whose solid is NOT a MassProperties but which
+    // carries a `derived_mass_props` MassProperties key → resolve_body_mass
+    // returns Some(derived_mass_props).
+    //
+    // All four tests are RED today because rung (b) is not yet implemented
+    // (step-2 will green them).
+
+    /// Build a body `Value::Map` that has the given `solid` PLUS an injected
+    /// `derived_mass_props` key set to `mp`. Bypasses `eval_builtin("body",…)` so
+    /// the solid is set to a non-MassProperties value independently of whether
+    /// mechanism.rs would accept it.
+    fn body_with_solid_and_derived(solid: Value, mp: Value) -> Value {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<Value, Value> = BTreeMap::new();
+        m.insert(Value::String("id".to_string()), Value::Int(0));
+        m.insert(Value::String("solid".to_string()), solid);
+        m.insert(Value::String("derived_mass_props".to_string()), mp);
+        Value::Map(m)
+    }
+
+    /// Replace the `solid` of every body in a mechanism Map with `new_solid`,
+    /// inject `derived_mass_props = mp` into each body, and return the patched
+    /// mechanism.  Used by the rung-(b) integration test to swap the explicit
+    /// MassProperties solid out and replace it with a derived key.
+    fn patch_mechanism_bodies(mech: &Value, new_solid: Value, mp: Value) -> Value {
+        use std::collections::BTreeMap;
+        let m = match mech {
+            Value::Map(m) => m,
+            other => panic!("expected mechanism Map, got {other:?}"),
+        };
+        let bodies = match m.get(&Value::String("bodies".to_string())) {
+            Some(Value::List(b)) => b,
+            _ => panic!("mechanism missing bodies list"),
+        };
+        let patched_bodies: Vec<Value> = bodies
+            .iter()
+            .map(|body| {
+                let bm = match body {
+                    Value::Map(bm) => bm,
+                    other => panic!("body must be a Map, got {other:?}"),
+                };
+                let mut b2: BTreeMap<Value, Value> = bm.clone().into_iter().collect();
+                b2.insert(Value::String("solid".to_string()), new_solid.clone());
+                b2.insert(
+                    Value::String("derived_mass_props".to_string()),
+                    mp.clone(),
+                );
+                Value::Map(b2)
+            })
+            .collect();
+        let mut m2: BTreeMap<Value, Value> = m.clone().into_iter().collect();
+        m2.insert(
+            Value::String("bodies".to_string()),
+            Value::List(patched_bodies),
+        );
+        Value::Map(m2)
+    }
+
+    // (a) A body with a non-MassProperties solid and a derived_mass_props key
+    //     → resolve_body_mass returns Some(derived_mass_props).
+    #[test]
+    fn resolve_body_mass_rung_b_derived_props_resolves() {
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        // solid is a plain Real (not MassProperties)
+        let body = body_with_solid_and_derived(Value::Real(0.0), mp.clone());
+        let resolved = resolve_body_mass(&body)
+            .expect("body with derived_mass_props must resolve to Some");
+        let (mass, com, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        assert!((mass - 1.0).abs() < 1e-12, "mass = {mass}");
+        assert!((com[2] - (-0.1)).abs() < 1e-12, "com[2] = {}", com[2]);
+    }
+
+    // (b) When solid IS a MassProperties, rung (a) wins — derived key ignored.
+    #[test]
+    fn resolve_body_mass_rung_a_wins_over_derived() {
+        let mp_solid = mass_properties_fixture(5.0, [0.1, 0.2, 0.3], [[0.0; 3]; 3]);
+        let mp_derived = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+        let body = body_with_solid_and_derived(mp_solid, mp_derived);
+        let resolved = resolve_body_mass(&body)
+            .expect("body with MassProperties solid must resolve via rung (a)");
+        let (mass, _, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        // Rung (a) wins: mass = 5.0 (from solid), not 1.0 (from derived).
+        assert!((mass - 5.0).abs() < 1e-12, "rung (a) mass = {mass}; expected 5.0");
+    }
+
+    // (c) A body with neither a MassProperties solid nor derived_mass_props → None.
+    #[test]
+    fn resolve_body_mass_rung_c_none_when_no_derived() {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<Value, Value> = BTreeMap::new();
+        m.insert(Value::String("id".to_string()), Value::Int(0));
+        m.insert(Value::String("solid".to_string()), Value::Real(0.0));
+        let body = Value::Map(m);
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "non-MassProperties solid with no derived_mass_props must return None"
+        );
+    }
+
+    // (d) Integration: mirror inverse_dynamics_at_snapshot_single_pendulum_static_gravity
+    // but move the MassProperties to derived_mass_props (solid = Real(0.0)).
+    // Rung (b) must resolve the mass, so the RNEA still yields ≈0.4905 N·m.
+    // RED today: rung (b) is a stub → consumer sees Undef → result is Undef.
+    #[test]
+    fn inverse_dynamics_at_snapshot_rung_b_derived_mass_static_gravity() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
+
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+
+        // Build mechanism with a non-MassProperties solid (Real(0.0)).
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech_real_solid =
+            eval_builtin("body", &[mech0, Value::Real(0.0), joint.clone()]);
+        assert!(
+            matches!(mech_real_solid, Value::Map(_)),
+            "body() must yield a Mechanism Map"
+        );
+
+        // Inject derived_mass_props = mp into the first body.
+        let mech = patch_mechanism_bodies(&mech_real_solid, Value::Real(0.0), mp.clone());
+
+        // snapshot at θ = −30°
+        let theta = -PI / 6.0;
+        let binding = eval_builtin("bind", &[joint.clone(), Value::angle(theta)]);
+        let snap = eval_builtin("snapshot", &[mech.clone(), Value::List(vec![binding])]);
+        assert!(matches!(snap, Value::Map(_)), "snapshot() must yield a Snapshot Map");
+
+        let q_dot = Value::List(vec![Value::Real(0.0)]);
+        let q_ddot = Value::List(vec![Value::Real(0.0)]);
+
+        let result = eval_dynamics(
+            "inverse_dynamics_at_snapshot_lower",
+            &[mech, snap, q_dot, q_ddot],
+        )
+        .expect("inverse_dynamics_at_snapshot_lower must be recognised");
+
+        let forces = match &result {
+            Value::List(f) => f,
+            other => panic!(
+                "expected a List<JointForce> (rung b resolved), got {other:?}"
+            ),
+        };
+        assert_eq!(forces.len(), 1, "one joint ⇒ one JointForce");
+
+        let value = field(&forces[0], "JointForce", "value");
+        let torque = num(field(value, "ScalarTorque", "magnitude"));
+
+        let expected = 0.4905_f64;
+        assert!(
+            (torque - expected).abs() < 1e-6,
+            "rung (b) torque expected {expected} N·m, got {torque}"
+        );
+    }
+
+    // ── task-4278 step-5 RED: resolve_body_mass ────────────────────────────────
+    //
+    // resolve_body_mass(&body) must return Some(MassProperties) for a body whose
+    // solid is a MassProperties StructureInstance, and None for non-resolvable
+    // solids. RED until step-6 implements the function.
+
+    /// Build a body Map with the given solid as its `solid` field.  Mimics what
+    /// mechanism.rs does when adding a body: the solid is stored verbatim.
+    fn body_with_solid(solid: Value) -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech0 = eval_builtin("mechanism", &[]);
+        let mech = eval_builtin("body", &[mech0, solid, joint]);
+        // Extract bodies[0] — the body Map.
+        match mech {
+            Value::Map(ref m) => {
+                let bodies = match map_get(m, "bodies") {
+                    Some(Value::List(b)) => b,
+                    _ => panic!("mechanism missing bodies"),
+                };
+                bodies[0].clone()
+            }
+            other => panic!("body() must return a Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_some_for_mass_properties_solid() {
+        let pm = eval_dynamics("point_mass", &[
+            Value::Scalar { si_value: 2.5, dimension: DimensionVector::MASS },
+        ])
+        .expect("point_mass recognised");
+        let body = body_with_solid(pm);
+
+        let resolved = resolve_body_mass(&body).expect("MassProperties solid must resolve");
+        let (mass, com, _) = mass_properties_from_value(&resolved)
+            .expect("resolved value must be a valid MassProperties");
+        assert!((mass - 2.5).abs() < 1e-12, "mass should be 2.5 kg, got {mass}");
+        for &c in &com {
+            assert!(c.abs() < 1e-12, "com should be origin for point_mass, got {com:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_real_solid() {
+        let body = body_with_solid(Value::Real(1.0));
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "a plain Real solid must not resolve"
+        );
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_absent_solid() {
+        // Hand-craft a body Map with no `solid` key at all.
+        let body = Value::Map({
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(Value::String("id".to_string()), Value::Int(0));
+            m
+        });
+        assert!(
+            resolve_body_mass(&body).is_none(),
+            "a body Map with no solid key must return None"
+        );
+    }
+
+    #[test]
+    fn resolve_body_mass_returns_none_for_non_map_body() {
+        // A non-Map Value is not a body.
+        assert!(resolve_body_mass(&Value::Real(0.0)).is_none());
+    }
+
+    // ── task-4278 step-7 RED: inverse_dynamics retrofit + typed diagnostic ───────
+    //
+    // (a) point_mass body → inverse_dynamics_lower yields finite torques.
+    // (b) non-resolvable body.solid → Undef + diagnose returns DynamicsBodyMassUnresolved.
+    // (c) resolvable mechanism → diagnose returns None.
+    // RED because `diagnose` does not exist yet (step-8).
+
+    /// Build a MotionTrajectory for a single-revolute mechanism: two motionless
+    /// samples at the given joint angle θ (rad).
+    fn motionless_trajectory(theta: f64) -> Value {
+        mint_instance(
+            "MotionTrajectory",
+            vec![
+                ("mechanism".to_string(), Value::Real(0.0)),
+                (
+                    "samples".to_string(),
+                    Value::List(vec![
+                        trajectory_sample(0.0, theta, 0.0, 0.0),
+                        trajectory_sample(1.0, theta, 0.0, 0.0),
+                    ]),
+                ),
+            ],
+        )
+    }
+
+    /// Build a 1-body revolute mechanism with the given solid.
+    fn revolute_mechanism_with_solid(solid: Value) -> Value {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+        let axis_y = Value::Vector(vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)]);
+        let range = Value::Range {
+            lower: Some(Box::new(Value::angle(-PI))),
+            upper: Some(Box::new(Value::angle(PI))),
+            lower_inclusive: true,
+            upper_inclusive: true,
+        };
+        let joint = eval_builtin("revolute", &[axis_y, range]);
+        let mech0 = eval_builtin("mechanism", &[]);
+        eval_builtin("body", &[mech0, solid, joint])
+    }
+
+    #[test]
+    fn inverse_dynamics_lower_point_mass_yields_finite_torque() {
+        use crate::eval_builtin;
+        use std::f64::consts::PI;
+
+        let pm = eval_builtin(
+            "point_mass",
+            &[Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }],
+        );
+        // Build a mechanism with com at origin — pick θ = 0 for a zero-gravity
+        // torque case (gravity acts along z, com at origin → zero arm).  We only
+        // need FINITE (not panic/Undef) output to confirm the RNEA ran.
+        let mech = revolute_mechanism_with_solid(pm);
+        let theta = -PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech, traj])
+            .expect("inverse_dynamics_lower is a recognised intrinsic");
+        assert!(
+            !matches!(result, Value::Undef),
+            "point_mass body must not return Undef, got {result:?}"
+        );
+        let per_sample = match &result {
+            Value::List(s) => s,
+            other => panic!("expected List<List<JointForce>>, got {other:?}"),
+        };
+        assert!(!per_sample.is_empty(), "must have at least one sample");
+        // Each sample must contain at least one finite JointForce.
+        for sample_forces in per_sample {
+            let forces = match sample_forces {
+                Value::List(f) => f,
+                other => panic!("inner sample must be a List, got {other:?}"),
+            };
+            assert!(!forces.is_empty(), "sample must have at least one JointForce");
+            let value = field(&forces[0], "JointForce", "value");
+            let torque = num(field(value, "ScalarTorque", "magnitude"));
+            assert!(torque.is_finite(), "torque must be finite, got {torque}");
+        }
+    }
+
+    #[test]
+    fn diagnose_unresolvable_body_emits_dynamics_body_mass_unresolved() {
+        use reify_core::diagnostics::DiagnosticCode;
+
+        // Build a mechanism whose body.solid is a plain Real (non-resolvable).
+        let mech = revolute_mechanism_with_solid(Value::Real(1.0));
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        // inverse_dynamics_lower must return Undef for an unresolvable body.
+        let result = eval_dynamics("inverse_dynamics_lower", &[mech.clone(), traj.clone()])
+            .expect("inverse_dynamics_lower recognised");
+        assert!(
+            matches!(result, Value::Undef),
+            "unresolvable solid must return Undef, got {result:?}"
+        );
+
+        // diagnose must emit DynamicsBodyMassUnresolved.
+        let diag = diagnose("inverse_dynamics_lower", &[mech, traj])
+            .expect("diagnose must return Some for unresolvable body");
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::DynamicsBodyMassUnresolved),
+            "wrong diagnostic code: {diag:?}"
+        );
+    }
+
+    #[test]
+    fn diagnose_resolvable_mechanism_returns_none() {
+        use crate::eval_builtin;
+
+        let pm = eval_builtin(
+            "point_mass",
+            &[Value::Scalar { si_value: 1.0, dimension: DimensionVector::MASS }],
+        );
+        let mech = revolute_mechanism_with_solid(pm);
+        let theta = -std::f64::consts::PI / 6.0;
+        let traj = motionless_trajectory(theta);
+
+        let diag = diagnose("inverse_dynamics_lower", &[mech, traj]);
+        assert!(
+            diag.is_none(),
+            "a fully-resolvable mechanism must not emit a diagnostic, got {diag:?}"
+        );
+    }
+
+    // ── step-5 RED (task 4494): make_mass_properties + eval_point_mass populate ──
+    //
+    // make_mass_properties/eval_point_mass must produce inertia cells as
+    // Value::Scalar{MOMENT_OF_INERTIA}, not plain Value::Real.
+    // RED until step-6 (task 4494) changes make_mass_properties to emit
+    // dimensioned scalars.
+
+    /// make_mass_properties must build the inertia field as a Value::Matrix of
+    /// Value::Scalar{dimension == MOMENT_OF_INERTIA} cells, mirroring the
+    /// eval_body_mass_props_core populate pattern. si_value must equal the
+    /// supplied f64 entry within 1e-12.
+    #[test]
+    fn make_mass_properties_inertia_cells_are_moment_of_inertia_scalars() {
+        let input_inertia = [[1.0_f64, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]];
+        let mp = make_mass_properties(2.5, [0.1, 0.2, 0.3], input_inertia);
+
+        let data = match &mp {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "inertia must have 3 rows");
+        for r in 0..3 {
+            assert_eq!(inertia_rows[r].len(), 3, "inertia row {r} must have 3 cols");
+            for c in 0..3 {
+                match &inertia_rows[r][c] {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned, got {dimension:?}"
+                        );
+                        assert!(
+                            (si_value - input_inertia[r][c]).abs() < 1e-12,
+                            "inertia[{r}][{c}] si_value: expected {}, got {}",
+                            input_inertia[r][c],
+                            si_value
+                        );
+                    }
+                    other => panic!(
+                        "inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// eval_point_mass (zero inertia) must also populate inertia cells as
+    /// Value::Scalar{MOMENT_OF_INERTIA} with si_value == 0.0.
+    #[test]
+    fn eval_point_mass_inertia_cells_are_moment_of_inertia_scalars() {
+        let mp = eval_point_mass(&[Value::Scalar {
+            si_value: 2.5,
+            dimension: DimensionVector::MASS,
+        }]);
+
+        let data = match &mp {
+            Value::StructureInstance(d) => d,
+            other => panic!("expected MassProperties StructureInstance, got {other:?}"),
+        };
+        assert_eq!(data.type_name, "MassProperties");
+        let inertia_rows = match data.fields.get("inertia").expect("inertia field") {
+            Value::Matrix(rows) => rows,
+            other => panic!("inertia field must be Value::Matrix, got {other:?}"),
+        };
+        assert_eq!(inertia_rows.len(), 3, "point_mass inertia must have 3 rows");
+        for (r, row) in inertia_rows.iter().enumerate() {
+            assert_eq!(row.len(), 3, "row {r} must have 3 cols");
+            for (c, cell) in row.iter().enumerate() {
+                match cell {
+                    Value::Scalar { si_value, dimension } => {
+                        assert_eq!(
+                            *dimension,
+                            DimensionVector::MOMENT_OF_INERTIA,
+                            "point_mass inertia[{r}][{c}] must be MOMENT_OF_INERTIA-dimensioned"
+                        );
+                        assert!(
+                            si_value.abs() < 1e-15,
+                            "point_mass inertia[{r}][{c}] si_value must be 0.0, got {si_value}"
+                        );
+                    }
+                    other => panic!(
+                        "point_mass inertia[{r}][{c}] must be Value::Scalar{{MOMENT_OF_INERTIA}}, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    // ── step-5 (task 4494): numeric-identity round-trip for RNEA extraction ──────
+    //
+    // Proves mass_properties_from_value is dimension-agnostic: a MassProperties
+    // whose inertia cells are Value::Scalar{MOMENT_OF_INERTIA} yields the same
+    // (mass, com, inertia) f64 triple as the equivalent Value::Real-celled fixture.
+    // GREEN immediately (cell_f64 already strips si_value from dimensioned scalars).
+
+    /// mass_properties_from_value returns identical f64 triples whether the
+    /// inertia cells are plain Value::Real or Value::Scalar{MOMENT_OF_INERTIA}.
+    /// This confirms the RNEA extraction path is dimension-agnostic and that
+    /// RNEA τ output is byte-identical after the step-6 populate change.
+    #[test]
+    fn mass_properties_from_value_round_trip_is_identical_for_dimensioned_inertia() {
+        let mass = 3.0_f64;
+        let com = [0.01, -0.02, 0.05];
+        let inertia = [[0.1, 0.0, 0.0], [0.0, 0.2, 0.0], [0.0, 0.0, 0.3]];
+
+        // Existing fixture: Value::Real inertia cells.
+        let mp_real = mass_properties_fixture(mass, com, inertia);
+
+        // New fixture: Value::Scalar{MOMENT_OF_INERTIA} inertia cells.
+        let com_point = Value::Point(com.iter().map(|&c| Value::length(c)).collect());
+        let inertia_dimensioned = Value::Matrix(
+            inertia
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&x| Value::Scalar {
+                            si_value: x,
+                            dimension: DimensionVector::MOMENT_OF_INERTIA,
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
+        let mp_dimensioned = mint_instance(
+            "MassProperties",
+            vec![
+                (
+                    "mass".to_string(),
+                    Value::Scalar {
+                        si_value: mass,
+                        dimension: DimensionVector::MASS,
+                    },
+                ),
+                ("com".to_string(), com_point),
+                ("inertia".to_string(), inertia_dimensioned),
+                ("origin".to_string(), Value::Real(0.0)),
+            ],
+        );
+
+        let (m_real, c_real, i_real) =
+            mass_properties_from_value(&mp_real).expect("Value::Real inertia must parse");
+        let (m_dim, c_dim, i_dim) =
+            mass_properties_from_value(&mp_dimensioned).expect("MOMENT_OF_INERTIA inertia must parse");
+
+        assert!((m_real - m_dim).abs() < 1e-15, "mass must be identical");
+        for i in 0..3 {
+            assert!((c_real[i] - c_dim[i]).abs() < 1e-15, "com[{i}] must be identical");
+        }
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!(
+                    (i_real[r][c] - i_dim[r][c]).abs() < 1e-15,
+                    "inertia[{r}][{c}] must be identical (got real={}, dim={})",
+                    i_real[r][c],
+                    i_dim[r][c]
+                );
+            }
+        }
     }
 }

@@ -18,6 +18,7 @@
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeWedge.hxx>
+#include <BRepPrimAPI_MakeTorus.hxx>
 
 // OCCT booleans
 #include <BRepAlgoAPI_BooleanOperation.hxx>
@@ -41,6 +42,7 @@
 // OCCT loft / offset / shell / thicken
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
@@ -65,6 +67,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <Geom_Circle.hxx>
+#include <Geom_Ellipse.hxx>
 #include <Geom_Plane.hxx>
 #include <Geom_Surface.hxx>
 
@@ -94,6 +97,13 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pln.hxx>
+// Analytic surface/curve geometry accessors (geometric-relations ε)
+#include <gp_Cylinder.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Lin.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Elips.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 
 // OCCT properties + surface adaptor
@@ -123,6 +133,8 @@
 
 // OCCT STEP export
 #include <STEPControl_Writer.hxx>
+#include <STEPControl_Controller.hxx>
+#include <Interface_Static.hxx>
 #include <Standard_Failure.hxx>
 
 // OCCT local surface properties (curvature via GeomLProp_SLProps)
@@ -364,6 +376,19 @@ std::unique_ptr<OcctShape> make_wedge(double dx, double dy, double dz, double lt
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepPrimAPI_MakeWedge failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = maker.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> make_torus(double major_r, double minor_r) {
+    return wrap_occt_call("make_torus", [&]() {
+        BRepPrimAPI_MakeTorus maker(major_r, minor_r);
+        maker.Build();
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepPrimAPI_MakeTorus failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
@@ -1635,6 +1660,52 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
     });
 }
 
+std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
+    const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_fillet_edges_with_history", [&]() {
+        if (!std::isfinite(radius) || radius <= 0.0) {
+            throw std::runtime_error(
+                "make_fillet_edges_with_history: radius must be a finite positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // all-edges path is `fillet_all_edges`, not this function.
+            throw std::runtime_error(
+                "make_fillet_edges_with_history: edge_indices must be non-empty "
+                "(the all-edges path uses fillet_all_edges)");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Build the canonical 1-based edge map. TopExp::MapShapes is
+            // deterministic for a given shape, so this matches both
+            // OcctShape::edge_map() (the history parent-index domain) and
+            // get_edges() (which mints the handle order the 0-based
+            // edge_indices reference via the extracted_edges cache).
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            BRepFilletAPI_MakeFillet fillet(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_fillet_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                fillet.Add(radius, TopoDS::Edge(edge_map.FindKey(idx + 1)));
+            }
+            fillet.Build();
+            if (!fillet.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeFillet failed (curated per-edge selection)");
+            }
+            return fillet;
+        });
+    });
+}
+
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
     const OcctShape& shape, double distance) {
     return wrap_occt_call("make_chamfer_with_history", [&]() {
@@ -1650,6 +1721,126 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
             chamfer.Build();
             if (!chamfer.IsDone()) {
                 throw std::runtime_error("BRepFilletAPI_MakeChamfer failed");
+            }
+            return chamfer;
+        });
+    });
+}
+
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
+    const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_edges_with_history", [&]() {
+        if (!std::isfinite(distance) || distance <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: distance must be a finite positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // all-edges path is `chamfer_all_edges`, not this function.
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: edge_indices must be non-empty "
+                "(the all-edges path uses chamfer_all_edges)");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Build the canonical 1-based edge map. TopExp::MapShapes is
+            // deterministic for a given shape, so this matches both
+            // OcctShape::edge_map() (the history parent-index domain) and
+            // get_edges() (which mints the handle order the 0-based
+            // edge_indices reference via the extracted_edges cache).
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                chamfer.Add(distance, TopoDS::Edge(edge_map.FindKey(idx + 1)));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated per-edge selection)");
+            }
+            return chamfer;
+        });
+    });
+}
+
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_asymmetric_edges_with_history(
+    const OcctShape& shape, double d1, double d2,
+    const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_asymmetric_edges_with_history", [&]() {
+        if (!std::isfinite(d1) || d1 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d1 must be a finite "
+                "positive value");
+        }
+        if (!std::isfinite(d2) || d2 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d2 must be a finite "
+                "positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // Rust wrapper enumerates all parent edge indices for the empty=all
+            // path, so this function always receives a non-empty selection.
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: edge_indices must be "
+                "non-empty");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Canonical 1-based edge map (matches OcctShape::edge_map() and
+            // get_edges(), so the 0-based edge_indices line up), plus the
+            // edge→adjacent-faces ancestor map used to pick the reference face F
+            // for each MakeChamfer::Add(d1, d2, E, F): d1 lands on F, d2 on the
+            // other adjacent face.
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+            TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                const TopoDS_Shape& edge = edge_map.FindKey(idx + 1);
+                // Reference face F = first adjacent face from the edge→face
+                // incidence map. Deterministic for a given shape; the test
+                // asserts the setback pair as an unordered {d1, d2}, robust to
+                // which physical face F resolves to.
+                if (!edge_face_map.Contains(edge)) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                const TopTools_ListOfShape& adj_faces = edge_face_map.FindFromKey(edge);
+                TopTools_ListIteratorOfListOfShape face_it(adj_faces);
+                if (!face_it.More()) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                chamfer.Add(d1, d2, TopoDS::Edge(edge), TopoDS::Face(face_it.Value()));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated asymmetric per-edge "
+                    "selection)");
             }
             return chamfer;
         });
@@ -2031,7 +2222,97 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
     });
 }
 
-// --- Thicken / Shell ---
+// --- zone_slab / Thicken / Shell / Offset Solid ---
+
+// Create a centered slab solid from a face by extruding ±width/2 about the face plane.
+// Algorithm: extract the face normal, translate the face by -width/2 in the normal
+// direction (centering), then extrude by width in the normal direction using
+// BRepPrimAPI_MakePrism.  This is the correct OCCT approach for face→solid; the
+// PerformBySimple path is for shells/solids (used by thicken_shape below).
+//
+// Planar face guarantee: for a planar face the result is a right prism (closed solid)
+// with V = width·Area exactly (GProp-analytic); centroid.z ≈ 0 (symmetric centering).
+// Curved face guarantee: for a surface patch (e.g. cylindrical) the result is a
+// non-degenerate extruded solid with volume > 0 (PRD G6 smoke bar).
+//
+// NOTE — approximation for curved faces: this implementation extracts a single surface
+// normal at the first (U,V) parameter and extrudes the entire face along that one
+// constant direction (a linear prism).  For planar faces this is exact (the normal is
+// uniform and the prism is a right slab).  For curved patches (e.g. cylindrical) the
+// result is a linear sweep of the curved profile, NOT a true ±width/2 offset zone about
+// the surface.  Proper curved-face zone semantics (e.g. via BRepOffsetAPI_MakeOffsetShape
+// thick-shell of the surface) are deferred; task θ owns the full §9 accuracy matrix.
+std::unique_ptr<OcctShape> zone_slab_shape(const OcctShape& face, double width) {
+    return wrap_occt_call("zone_slab_shape", [&]() {
+        if (!(std::isfinite(width) && width > 0.0)) {
+            throw std::runtime_error("zone_slab_shape: width must be finite and positive");
+        }
+
+        // Step 1: extract the face normal at the first point on the surface.
+        gp_Dir normal(0.0, 0.0, 1.0); // fallback: +Z
+        {
+            TopExp_Explorer ex(face.shape, TopAbs_FACE);
+            if (ex.More()) {
+                BRepAdaptor_Surface surf(TopoDS::Face(ex.Current()));
+                gp_Vec du, dv;
+                gp_Pnt p;
+                surf.D1(surf.FirstUParameter(), surf.FirstVParameter(), p, du, dv);
+                gp_Vec n = du.Crossed(dv);
+                if (n.Magnitude() > 1e-12) {
+                    normal = gp_Dir(n);
+                }
+            }
+        }
+
+        // Step 2: translate the face by -width/2 in the normal direction so the
+        // slab will be centered ±width/2 about the nominal face plane.
+        // (For curved faces this uses the single extracted normal — see approximation note above.)
+        gp_Vec shift(normal);
+        shift.Multiply(-width / 2.0);
+        gp_Trsf trsf;
+        trsf.SetTranslation(shift);
+        BRepBuilderAPI_Transform mover(face.shape, trsf, /*copy=*/Standard_True);
+        TopoDS_Shape start_face = mover.Shape();
+
+        // Step 3: extrude the translated face by width in the normal direction to
+        // produce the slab solid.
+        gp_Vec extrusion(normal);
+        extrusion.Multiply(width);
+        BRepPrimAPI_MakePrism prism(start_face, extrusion);
+        if (!prism.IsDone()) {
+            throw std::runtime_error("zone_slab_shape: BRepPrimAPI_MakePrism failed");
+        }
+
+        auto result = std::make_unique<OcctShape>();
+        result->shape = prism.Shape();
+        return result;
+    });
+}
+
+std::unique_ptr<OcctShape> offset_solid_shape(const OcctShape& shape, double distance) {
+    return wrap_occt_call("offset_solid_shape", [&]() {
+        BRepOffsetAPI_MakeOffsetShape maker;
+        maker.PerformBySimple(shape.shape, distance);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("BRepOffsetAPI_MakeOffsetShape failed");
+        }
+        TopoDS_Shape result = maker.Shape();
+        if (result.IsNull()) {
+            throw std::runtime_error("offset_solid_shape: result shape is null");
+        }
+        if (!BRepCheck_Analyzer(result).IsValid()) {
+            throw std::runtime_error("offset_solid_shape: result shape is invalid");
+        }
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(result, props);
+        if (props.Mass() <= Precision::Confusion()) {
+            throw std::runtime_error("offset_solid_shape: result has degenerate (near-zero) volume");
+        }
+        auto out = std::make_unique<OcctShape>();
+        out->shape = result;
+        return out;
+    });
+}
 
 std::unique_ptr<OcctShape> thicken_shape(const OcctShape& shape, double offset) {
     return wrap_occt_call("thicken_shape", [&]() {
@@ -2075,6 +2356,116 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
     });
 }
 
+// --- Offset curve (offset_curve ι) ---
+
+// Self-correcting planar offset of a spine wire by `distance`: a POSITIVE
+// `distance` grows the curve outward (a radius-10mm arc becomes radius-12mm
+// when offset by 2mm).  BRepOffsetAPI_MakeOffset's positive-offset side
+// depends on the spine wire's orientation and plane normal, so rather than
+// hard-code a sign we pick whichever signed offset yields the LONGER wire
+// (outward ⇒ larger radius/perimeter for a planar arc).  `IsOpenResult=true`
+// keeps an open arc spine open (single concentric edge, no end caps) so the
+// result stays a clean curve.  Throws on a non-wire shape or a MakeOffset
+// failure; callers wrap it in `wrap_occt_call`.
+static TopoDS_Shape offset_curve_planar_wire(const OcctShape& shape, double distance) {
+    if (shape.shape.ShapeType() != TopAbs_WIRE) {
+        throw std::runtime_error("offset_curve: shape must be a wire");
+    }
+    TopoDS_Wire wire = TopoDS::Wire(shape.shape);
+
+    auto build_offset = [&](double signed_off) -> TopoDS_Shape {
+        BRepOffsetAPI_MakeOffset maker(wire, GeomAbs_Arc, Standard_True);
+        maker.Perform(signed_off);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("offset_curve: BRepOffsetAPI_MakeOffset failed");
+        }
+        return maker.Shape();
+    };
+    auto length_of = [](const TopoDS_Shape& s) -> double {
+        GProp_GProps props;
+        BRepGProp::LinearProperties(s, props);
+        return props.Mass();
+    };
+
+    GProp_GProps spine_props;
+    BRepGProp::LinearProperties(wire, spine_props);
+    const double spine_len = spine_props.Mass();
+
+    TopoDS_Shape positive = build_offset(distance);
+    return (length_of(positive) >= spine_len) ? positive : build_offset(-distance);
+}
+
+// Translate `s` by the vector `v`.  Carries the planar offset along a
+// caller-supplied direction (overload 3) or a reference-surface normal
+// (overload 2) so those overloads genuinely consume their extra argument.
+static TopoDS_Shape displace_shape(const TopoDS_Shape& s, const gp_Vec& v) {
+    gp_Trsf trsf;
+    trsf.SetTranslation(v);
+    BRepBuilderAPI_Transform mover(s, trsf, Standard_True);
+    if (!mover.IsDone()) {
+        throw std::runtime_error("offset_curve: displacement transform failed");
+    }
+    return mover.Shape();
+}
+
+// Overload 1 (2D planar): offset the curve in its own plane.
+std::unique_ptr<OcctShape> make_offset_curve(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_curve", [&]() {
+        auto result = std::make_unique<OcctShape>();
+        result->shape = offset_curve_planar_wire(shape, distance);
+        return result;
+    });
+}
+
+// Overload 3 (direction: Vector3): offset the curve in its plane, then carry
+// the result along the unit `(dx,dy,dz)` direction by `distance` so the offset
+// is taken "in a given direction" (PRD task ι).  Bar: non-Undef Curve.
+std::unique_ptr<OcctShape> make_offset_curve_directional(
+    const OcctShape& shape, double distance, double dx, double dy, double dz) {
+    return wrap_occt_call("make_offset_curve_directional", [&]() {
+        gp_Vec dir(dx, dy, dz);
+        if (dir.Magnitude() < Precision::Confusion()) {
+            throw std::runtime_error(
+                "make_offset_curve_directional: direction must be non-zero");
+        }
+        dir.Normalize();
+        TopoDS_Shape offset = offset_curve_planar_wire(shape, distance);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = displace_shape(offset, dir.Multiplied(distance));
+        return result;
+    });
+}
+
+// Overload 2 (reference: Surface): offset the curve in its plane, then carry
+// the result along the reference face's surface normal by `distance` so the
+// offset is taken "along the surface" (PRD task ι).  Bar: non-Undef Curve.
+std::unique_ptr<OcctShape> make_offset_curve_on_surface(
+    const OcctShape& shape, double distance, const OcctShape& reference) {
+    return wrap_occt_call("make_offset_curve_on_surface", [&]() {
+        if (reference.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "make_offset_curve_on_surface: reference must be a face");
+        }
+        TopoDS_Face face = TopoDS::Face(reference.shape);
+        BRepAdaptor_Surface surf(face);
+        const Standard_Real u = 0.5 * (surf.FirstUParameter() + surf.LastUParameter());
+        const Standard_Real v = 0.5 * (surf.FirstVParameter() + surf.LastVParameter());
+        gp_Pnt pnt;
+        gp_Vec d1u, d1v;
+        surf.D1(u, v, pnt, d1u, d1v);
+        gp_Vec normal = d1u.Crossed(d1v);
+        if (normal.Magnitude() < Precision::Confusion()) {
+            throw std::runtime_error(
+                "make_offset_curve_on_surface: reference surface normal is degenerate");
+        }
+        normal.Normalize();
+        TopoDS_Shape offset = offset_curve_planar_wire(shape, distance);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = displace_shape(offset, normal.Multiplied(distance));
+        return result;
+    });
+}
+
 // --- Draft ---
 
 std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
@@ -2114,6 +2505,100 @@ std::unique_ptr<OcctShape> draft_shape(const OcctShape& shape, double angle_rad,
         drafter.Build();
         if (!drafter.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_DraftAngle failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = drafter.Shape();
+        return result;
+    });
+}
+
+/// Apply `BRepOffsetAPI_DraftAngle` to a CURATED subset of faces identified
+/// by 0-based canonical-order indices (matching the `get_faces` / TopExp
+/// `MapShapes(TopAbs_FACE)` order). Mirrors `draft_shape`'s neutral-plane
+/// and pull-dir extraction from `plane_shape`'s first planar face, then
+/// uses the same per-face `AddDone / Remove` skip pattern for only the
+/// selected faces. Throws on empty `face_indices` (defense-in-depth) and
+/// on any out-of-range index.
+///
+/// The all-faces path uses `draft_shape`; this function requires
+/// `face_indices` to be non-empty.
+std::unique_ptr<OcctShape> draft_faces_shape(const OcctShape& shape, double angle_rad,
+    const OcctShape& plane_shape, const rust::Vec<uint32_t>& face_indices) {
+    return wrap_occt_call("draft_faces_shape", [&]() {
+        if (face_indices.size() == 0) {
+            throw std::runtime_error(
+                "draft_faces_shape: face_indices must be non-empty "
+                "(the all-faces path uses draft_shape)");
+        }
+
+        // Extract the neutral plane and pull direction from plane_shape's
+        // first planar face — identical to draft_shape.
+        gp_Dir pull_dir;
+        gp_Pln neutral_plane;
+        {
+            TopExp_Explorer face_ex(plane_shape.shape, TopAbs_FACE);
+            if (!face_ex.More()) {
+                throw std::runtime_error("draft_faces_shape: plane_shape has no faces");
+            }
+            TopoDS_Face plane_face = TopoDS::Face(face_ex.Current());
+            Handle(Geom_Surface) surface = BRep_Tool::Surface(plane_face);
+            Handle(Geom_Plane) geom_plane = Handle(Geom_Plane)::DownCast(surface);
+            if (geom_plane.IsNull()) {
+                throw std::runtime_error(
+                    "draft_faces_shape: plane_shape does not contain a planar face");
+            }
+            neutral_plane = geom_plane->Pln();
+            pull_dir = neutral_plane.Axis().Direction();
+        }
+
+        // Build the canonical 1-based face map. TopExp::MapShapes is
+        // deterministic for a given shape, matching the order that
+        // `get_faces` uses (and thus the 0-based indices from
+        // `extract_faces`).
+        TopTools_IndexedMapOfShape face_map;
+        TopExp::MapShapes(shape.shape, TopAbs_FACE, face_map);
+        const uint32_t face_count = static_cast<uint32_t>(face_map.Extent());
+
+        BRepOffsetAPI_DraftAngle drafter(shape.shape);
+
+        uint32_t added_count = 0;
+        for (auto idx : face_indices) {
+            if (idx >= face_count) {
+                throw std::runtime_error(
+                    "draft_faces_shape: face index " + std::to_string(idx) +
+                    " out of range (shape has " + std::to_string(face_count) + " faces)");
+            }
+            // face_indices are 0-based; the IndexedMap is 1-based.
+            TopoDS_Face face = TopoDS::Face(face_map.FindKey(idx + 1));
+            drafter.Add(face, pull_dir, angle_rad, neutral_plane);
+            if (!drafter.AddDone()) {
+                // This face is not draftable (e.g., parallel to pull direction
+                // or already at the requested angle) — skip it, matching
+                // draft_shape's per-face AddDone/Remove skip pattern.
+                drafter.Remove(face);
+            } else {
+                ++added_count;
+            }
+        }
+
+        // A curated selection that silently drafts zero faces is a
+        // user-actionable failure — unlike draft_shape's best-effort all-faces
+        // path, the user explicitly requested these faces.  Calling Build() on
+        // an empty drafter would either silently return the original shape or
+        // emit a generic failure; surface a clear diagnostic instead.
+        if (added_count == 0) {
+            throw std::runtime_error(
+                "draft_faces_shape: none of the " +
+                std::to_string(face_indices.size()) +
+                " selected face(s) were draftable at the requested angle "
+                "(all were rejected by AddDone); "
+                "try a different angle, pull direction, or face selection");
+        }
+
+        drafter.Build();
+        if (!drafter.IsDone()) {
+            throw std::runtime_error(
+                "BRepOffsetAPI_DraftAngle failed (curated per-face selection)");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = drafter.Shape();
@@ -2173,6 +2658,33 @@ std::unique_ptr<OcctShape> make_circle_face(double radius, double z_height) {
     });
 }
 
+std::unique_ptr<OcctShape> make_cylindrical_face(double radius, double height) {
+    return wrap_occt_call("make_cylindrical_face", [&]() {
+        if (!(std::isfinite(radius) && radius > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: radius must be finite and positive");
+        }
+        if (!(std::isfinite(height) && height > 0.0)) {
+            throw std::runtime_error("make_cylindrical_face: height must be finite and positive");
+        }
+        // Open lateral cylindrical face: axis = +Z, base at origin.
+        // U ∈ [0, 2π] (full revolution), V ∈ [0, height].
+        gp_Ax3 axes(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+        Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(axes, radius);
+        BRepBuilderAPI_MakeFace faceBuilder(
+            cyl,
+            0.0, 2.0 * M_PI,  // U: full revolution
+            0.0, height,       // V: 0..height
+            /*tolerance=*/1e-7
+        );
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_cylindrical_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
 std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, double z_height) {
     return wrap_occt_call("make_rectangle_face", [&]() {
         if (!(std::isfinite(width) && width > 0.0)) {
@@ -2198,6 +2710,87 @@ std::unique_ptr<OcctShape> make_rectangle_face(double width, double height, doub
         BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
         if (!faceBuilder.IsDone()) {
             throw std::runtime_error("make_rectangle_face: MakeFace failed");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = faceBuilder.Face();
+        return result;
+    });
+}
+
+/// Build a closed planar polygon face from n_points 2-D vertices in the XY plane
+/// at the given Z height.  coords is a flat slice of 2*n_points doubles (x,y pairs).
+/// Requires n_points >= 3, coords.size() == 2*n_points, all coordinates finite,
+/// and a non-degenerate (non-collinear) vertex set.
+std::unique_ptr<OcctShape> make_polygon_face(rust::Slice<const double> coords, size_t n_points, double z_height) {
+    return wrap_occt_call("make_polygon_face", [&]() {
+        if (n_points < 3) {
+            throw std::runtime_error("make_polygon_face: n_points must be >= 3");
+        }
+        if (coords.size() != 2 * n_points) {
+            throw std::runtime_error("make_polygon_face: coords.size() must equal 2 * n_points");
+        }
+        for (size_t i = 0; i < coords.size(); ++i) {
+            if (!std::isfinite(coords[i])) {
+                throw std::runtime_error("make_polygon_face: all coordinates must be finite");
+            }
+        }
+        BRepBuilderAPI_MakePolygon polyBuilder;
+        for (size_t i = 0; i < n_points; ++i) {
+            polyBuilder.Add(gp_Pnt(coords[2 * i], coords[2 * i + 1], z_height));
+        }
+        polyBuilder.Close();
+        if (!polyBuilder.IsDone()) {
+            throw std::runtime_error("make_polygon_face: MakePolygon failed (degenerate or collinear vertices)");
+        }
+        TopoDS_Wire wire = polyBuilder.Wire();
+        BRepBuilderAPI_MakeFace faceBuilder(wire, Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_polygon_face: MakeFace failed (degenerate polygon)");
+        }
+        TopoDS_Face face = faceBuilder.Face();
+        // Reject degenerate (zero-area) faces, e.g. collinear vertices.
+        GProp_GProps gprops;
+        BRepGProp::SurfaceProperties(face, gprops);
+        if (gprops.Mass() <= 0.0) {
+            throw std::runtime_error("make_polygon_face: polygon has zero area (collinear or degenerate vertices)");
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = face;
+        return result;
+    });
+}
+
+/// Build a flat ellipse face in the XY plane at the given Z height, centred at the origin.
+/// semi_major and semi_minor are the half-axis lengths along the major and minor axes
+/// respectively; both must be finite and positive.  OCCT requires major >= minor, so the
+/// function normalises: major = max(a, b), minor = min(a, b) and orients the Ax2 X-direction
+/// along the larger semi-axis.  Area = π·a·b is orientation-invariant.
+std::unique_ptr<OcctShape> make_ellipse_face(double semi_major, double semi_minor, double z_height) {
+    return wrap_occt_call("make_ellipse_face", [&]() {
+        if (!(std::isfinite(semi_major) && semi_major > 0.0)) {
+            throw std::runtime_error("make_ellipse_face: semi_major must be finite and positive");
+        }
+        if (!(std::isfinite(semi_minor) && semi_minor > 0.0)) {
+            throw std::runtime_error("make_ellipse_face: semi_minor must be finite and positive");
+        }
+        // OCCT gp_Elips requires major >= minor.
+        double major = std::max(semi_major, semi_minor);
+        double minor = std::min(semi_major, semi_minor);
+        // Orient X-axis along the longer semi-axis so the constructed ellipse matches input.
+        gp_Dir x_dir = (semi_major >= semi_minor) ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0);
+        gp_Ax2 ax2(gp_Pnt(0, 0, z_height), gp_Dir(0, 0, 1), x_dir);
+        Handle(Geom_Ellipse) ellipse = new Geom_Ellipse(gp_Elips(ax2, major, minor));
+        BRepBuilderAPI_MakeEdge edgeBuilder(ellipse);
+        if (!edgeBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeEdge failed");
+        }
+        BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
+        if (!wireBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeWire failed");
+        }
+        BRepBuilderAPI_MakeFace faceBuilder(wireBuilder.Wire(), Standard_True);
+        if (!faceBuilder.IsDone()) {
+            throw std::runtime_error("make_ellipse_face: MakeFace failed");
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = faceBuilder.Face();
@@ -2893,6 +3486,163 @@ rust::String edge_curve_kind(const OcctShape& shape) {
             case GeomAbs_BSplineCurve: return rust::String("BSplineCurve");
             case GeomAbs_OffsetCurve:  return rust::String("OffsetCurve");
             default:                   return rust::String("Other");
+        }
+    });
+}
+
+// --- Analytic-datum projection (geometric-relations ε) ---
+//
+// Project a face's / edge's underlying analytic surface / curve to a datum.
+// The `kind` byte in the returned struct selects the projected `Value` variant
+// on the Rust side (`analytic_surface_datum_to_value` / `_curve_` in lib.rs);
+// the two encodings MUST agree. Surface kinds:
+//   0 = Plane    → Value::Plane (origin on plane + unit normal)
+//   1 = Cylinder → Value::Axis  (point on axis + unit dir; scalar1 = radius)
+//   2 = Cone     → Value::Axis  (point on axis + unit dir; scalar1 = semi-angle,
+//                                scalar2 = apex distance from the axis location)
+//   3 = Sphere   → Value::Point (centre; scalar1 = radius)
+// A non-analytic surface (e.g. GeomAbs_SurfaceOfRevolution, B-spline) throws —
+// the construction-history trait path (ε step-12) covers that tail.
+
+AnalyticSurfaceDatum face_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("face_analytic_datum", [&]() -> AnalyticSurfaceDatum {
+        if (shape.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error("face_analytic_datum: shape is not a face");
+        }
+        TopoDS_Face face = TopoDS::Face(shape.shape);
+        if (face.IsNull()) {
+            throw std::runtime_error("face_analytic_datum: face is null");
+        }
+        BRepAdaptor_Surface adaptor(face);
+        switch (adaptor.GetType()) {
+            case GeomAbs_Plane: {
+                gp_Pln pln = adaptor.Plane();
+                gp_Ax1 ax = pln.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    0.0, 0.0, /*kind=*/0,
+                };
+            }
+            case GeomAbs_Cylinder: {
+                gp_Cylinder cyl = adaptor.Cylinder();
+                gp_Ax1 ax = cyl.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    cyl.Radius(), 0.0, /*kind=*/1,
+                };
+            }
+            case GeomAbs_Cone: {
+                gp_Cone cone = adaptor.Cone();
+                gp_Ax1 ax = cone.Axis();
+                gp_Pnt loc = ax.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticSurfaceDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    cone.SemiAngle(), loc.Distance(cone.Apex()), /*kind=*/2,
+                };
+            }
+            case GeomAbs_Sphere: {
+                gp_Sphere sph = adaptor.Sphere();
+                gp_Pnt c = sph.Location();
+                return AnalyticSurfaceDatum{
+                    Point3{ c.X(), c.Y(), c.Z() },
+                    Point3{ 0.0, 0.0, 0.0 },
+                    sph.Radius(), 0.0, /*kind=*/3,
+                };
+            }
+            default:
+                throw std::runtime_error(
+                    "face_analytic_datum: non-analytic surface "
+                    "(not Plane/Cylinder/Cone/Sphere)"
+                );
+        }
+    });
+}
+
+// Curve-datum `kind` byte (consumed by `analytic_curve_datum_to_value` in
+// lib.rs). All three analytic curve kinds project to an Axis datum:
+//   0 = Line    → Value::Axis (point on line + unit direction)
+//   1 = Circle  → Value::Axis (centre + circle axis; scalar1 = radius)
+//   2 = Ellipse → Value::Axis (centre + ellipse axis; scalar1 = major radius,
+//                              scalar2 = minor radius)
+// A non-analytic curve (B-spline, etc.) throws.
+
+AnalyticCurveDatum edge_analytic_datum(const OcctShape& shape) {
+    return wrap_occt_call("edge_analytic_datum", [&]() -> AnalyticCurveDatum {
+        if (shape.shape.ShapeType() != TopAbs_EDGE) {
+            throw std::runtime_error("edge_analytic_datum: shape is not an edge");
+        }
+        TopoDS_Edge edge = TopoDS::Edge(shape.shape);
+        if (edge.IsNull()) {
+            throw std::runtime_error("edge_analytic_datum: edge is null");
+        }
+        BRepAdaptor_Curve curve(edge);
+        switch (curve.GetType()) {
+            case GeomAbs_Line: {
+                gp_Lin lin = curve.Line();
+                gp_Pnt loc = lin.Location();
+                gp_Dir dir = lin.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    0.0, 0.0, /*kind=*/0,
+                };
+            }
+            case GeomAbs_Circle: {
+                gp_Circ circ = curve.Circle();
+                gp_Ax1 ax = circ.Axis();
+                gp_Pnt loc = circ.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    circ.Radius(), 0.0, /*kind=*/1,
+                };
+            }
+            case GeomAbs_Ellipse: {
+                gp_Elips elips = curve.Ellipse();
+                gp_Ax1 ax = elips.Axis();
+                gp_Pnt loc = elips.Location();
+                gp_Dir dir = ax.Direction();
+                return AnalyticCurveDatum{
+                    Point3{ loc.X(), loc.Y(), loc.Z() },
+                    Point3{ dir.X(), dir.Y(), dir.Z() },
+                    elips.MajorRadius(), elips.MinorRadius(), /*kind=*/2,
+                };
+            }
+            default:
+                throw std::runtime_error(
+                    "edge_analytic_datum: non-analytic curve "
+                    "(not Line/Circle/Ellipse)"
+                );
+        }
+    });
+}
+
+double shape_local_tolerance(const OcctShape& shape) {
+    return wrap_occt_call("shape_local_tolerance", [&]() -> double {
+        // BRep_Tool::Tolerance is overloaded per sub-shape kind, so dispatch on
+        // the topological type. Faces / edges / vertices each carry their own
+        // modelling tolerance; higher-level shapes (solids, shells, wires) have
+        // no single intrinsic tolerance, so reject them rather than guess.
+        switch (shape.shape.ShapeType()) {
+            case TopAbs_FACE:
+                return BRep_Tool::Tolerance(TopoDS::Face(shape.shape));
+            case TopAbs_EDGE:
+                return BRep_Tool::Tolerance(TopoDS::Edge(shape.shape));
+            case TopAbs_VERTEX:
+                return BRep_Tool::Tolerance(TopoDS::Vertex(shape.shape));
+            default:
+                throw std::runtime_error(
+                    "shape_local_tolerance: shape is not a face, edge, or vertex"
+                );
         }
     });
 }
@@ -4367,9 +5117,74 @@ std::unique_ptr<OcctShapeVec> split_shape(
 // all concurrent export_step() calls across all kernel threads.
 static std::mutex g_step_export_mutex;
 
-rust::String export_step(const OcctShape& shape) {
+ExportStepResult export_step(const OcctShape& shape, rust::Str schema) {
     std::lock_guard<std::mutex> lock(g_step_export_mutex);
     return wrap_occt_call("export_step", [&]() {
+        // Register the STEP statics BEFORE setting them. STEPControl_Controller
+        // ::Init() is the idempotent call that REGISTERS the
+        // `write.step.schema` Interface_Static; calling SetCVal before any
+        // controller exists is a silent no-op (the static is not registered
+        // yet). The writer's own constructor also runs Init(), but it then
+        // immediately builds its model from the STEP Template Model — which
+        // bakes in whatever `write.step.schema` holds AT CONSTRUCTION TIME.
+        // So the correct order is: Init() → SetCVal → construct writer →
+        // Transfer → Write. Setting the static AFTER constructing the writer
+        // is too late: the model has already captured the default schema.
+        STEPControl_Controller::Init();
+
+        // Map the kernel-neutral schema name (StepSchema::as_str()) to the
+        // OCCT `write.step.schema` enum token. The accepted tokens for this
+        // build are AP203 / AP214CD / AP214DIS / AP214IS / AP242DIS; we use
+        // the DIS variants for AP214/AP242. Unknown inputs default to the
+        // AP214 token so a malformed schema never aborts the export.
+        std::string neutral(schema);
+        const char* token = "AP214DIS";
+        bool want_ap242 = false;
+        if (neutral == "AP203") {
+            token = "AP203";
+        } else if (neutral == "AP214") {
+            token = "AP214DIS";
+        } else if (neutral == "AP242") {
+            token = "AP242DIS";
+            want_ap242 = true;
+        }
+
+        // Set the schema EXPLICITLY on every call — including the AP214
+        // default. `write.step.schema` is a process-global Interface_Static;
+        // export_step is serialized by g_step_export_mutex, but the static
+        // persists between calls, so without an explicit per-call set a prior
+        // AP203 export would leak its schema into a later default export.
+        bool ap242_fell_back = false;
+        Standard_Boolean set_ok =
+            Interface_Static::SetCVal("write.step.schema", token);
+
+        // Why `set_ok` is consulted ONLY for AP242 (and not AP203/AP214):
+        // STEPControl_Controller::Init() registers AP203 and all AP214 tokens
+        // (AP214CD/AP214DIS/AP214IS) unconditionally in every STEP-capable
+        // OCCT build, so SetCVal for those tokens cannot fail here — a failure
+        // would mean no STEP controller exists at all, in which case
+        // export_step itself could not run. They also have no safer fallback
+        // target, so reading back set_ok for them would be dead code. AP242DIS
+        // is the only token whose availability varies across OCCT builds/configs
+        // (it can be compiled out of older/minimal builds), so it is the only
+        // one that needs the rejection readback + honest AP214 fallback below.
+        if (want_ap242) {
+            // Honest AP242 degradation: if the linked OCCT rejected AP242DIS
+            // (SetCVal failed, or the static did not actually take the value),
+            // fall back to AP214DIS and report it. The linked OCCT 7.9.3 DOES
+            // support AP242DIS, so this branch is a guard for builds that
+            // don't — it is intentionally not exercised in-tree.
+            const char* current = Interface_Static::CVal("write.step.schema");
+            bool accepted = set_ok && current != nullptr &&
+                            std::string(current) == "AP242DIS";
+            if (!accepted) {
+                Interface_Static::SetCVal("write.step.schema", "AP214DIS");
+                ap242_fell_back = true;
+            }
+        }
+
+        // Construct the writer AFTER the schema is set, so its model captures
+        // the requested `write.step.schema`.
         STEPControl_Writer writer;
         writer.Transfer(shape.shape, STEPControl_AsIs);
 
@@ -4393,7 +5208,10 @@ rust::String export_step(const OcctShape& shape) {
         ifs.close();
         std::remove(tmpname);
 
-        return rust::String(content);
+        ExportStepResult result;
+        result.content = rust::String(content);
+        result.ap242_fell_back = ap242_fell_back;
+        return result;
     });
 }
 

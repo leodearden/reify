@@ -76,6 +76,60 @@ const SKIP_SET: &[(&str, &str)] = &[
          Parse-only smoke is in crates/reify-eval/tests/topology_selector_smoke_tests.rs; \
          full coverage will land via task 2691.",
     ),
+    (
+        "trajectory/tots_optimal_ptp.ri",
+        "complex TOTS SQP example (task 3872) exceeds the 10s per-file compile \
+         budget on loaded CI (~13.4s observed). Unlike the two entries above, \
+         this file DOES compile cleanly — it is a perf-only skip and is \
+         deliberately NOT mirrored into examples_smoke.rs::SKIP_SET (which is \
+         reserved for files that do not yet compile). Compile-correctness stays \
+         covered by examples_smoke.rs::all_examples_parse_and_compile_with_stdlib \
+         and crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs.",
+    ),
+    (
+        "auto/bearing_constraint_select.ri",
+        "strict `auto: Seal` with two stub-feasible candidates (ThinSeal, ThickSeal) \
+         resolves Ambiguous under the compile-time stub checker → E_AUTO_TYPE_PARAM_AMBIGUOUS \
+         Error; the zero-Error gate cannot pass. The unique-survivor selection \
+         (ThinSeal, whose thickness=1mm satisfies the `seal.thickness < bore_radius` \
+         constraint) is a REAL-checker behaviour exercised by task ζ's reify-eval \
+         auto_type_param_completion_e2e harness under SimpleConstraintChecker. \
+         Per-candidate ValueMap setup is delivered by task 4433 β \
+         (seed_candidate_value_map); loop wiring by γ.",
+    ),
+    (
+        "auto/bounded_fallback_unsound.ri",
+        "7 strict `auto: Layer` params (> max_depth=6 → depth-bound BFS fallback) with a \
+         joint constraint coupling all param member fields. Under the compile-time stub \
+         checker the TypeParam member reads emit code:None \"member access not yet supported\" \
+         Errors at structure-compile time — check_source_with_stdlib panics on compile \
+         errors (Panics docs). The joint-infeasibility hard error \
+         (E_AUTO_TYPE_PARAM_BOUNDED_INFEASIBLE) is a REAL-checker behaviour exercised by \
+         task ζ's reify-eval e2e. Mirrored from examples_smoke.rs::SKIP_SET (task 4434 γ).",
+    ),
+    (
+        "auto/bearing_unsat.ri",
+        "ζ negative fixture: strict `auto: Seal` with TWO candidates that BOTH violate the \
+         member constraint `seal.thickness < bore_radius=3mm` (ThickSeal=5mm, HugeSeal=8mm). \
+         Emits an Error under any checker (NoCandidate under real checker, Ambiguous under stub) \
+         — check_source_with_stdlib panics on compile errors. Exercised by task ζ's reify-eval \
+         auto_type_param_completion_e2e harness (bearing_unsat_emits_no_candidate_naming_constraint). \
+         Mirrored from examples_smoke.rs::SKIP_SET (task 4437 ζ).",
+    ),
+    (
+        "conditional_compilation/main.ri",
+        "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
+         through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
+         reify check cfg DAG (compile_entry_with_stdlib_cfg_checked). The single-file \
+         check_source_with_stdlib path cannot follow gated imports, so `Platform` is an \
+         unresolved-type Error — check_source_with_stdlib panics on compile errors. \
+         The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \
+         exit 0, each resolving the platform-correct Platform variant) is exercised \
+         end-to-end by crates/reify-cli/tests/cli_check_cfg_example.rs. \
+         The siblings (platform_linux.ri, platform_wasm.ri) compile clean single-file \
+         and are intentionally NOT skipped. \
+         Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

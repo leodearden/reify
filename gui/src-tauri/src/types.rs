@@ -126,6 +126,37 @@ pub struct TensegrityWireData {
     pub z2: f64,
 }
 
+/// IPC wire-format descriptor for a single tensegrity surface facet (membrane triangle).
+///
+/// Produced by `build_tensegrity_surfaces` in `engine.rs` by scanning the value
+/// cells of the loaded module for `TensegritySurface` instances emitted by the
+/// `tensegrity_surfaces()` builtin (α/task 4412).  Serialized over the Tauri IPC
+/// channel as part of `GuiState`.
+///
+/// # Field semantics
+/// - `entity_path`: owning entity name (e.g. `"TPatch"`), from `cell.id.entity`.
+/// - `kind`: `"membrane"` — the member-type tag α emits for each facet.
+/// - `i0/i1/i2`: integer node indices (corner indices into the node table).
+/// - `x0/y0/z0`, `x1/y1/z1`, `x2/y2/z2`: inline corner coordinates in SI metres
+///   (direct passthrough from the three corner fields; no unit conversion).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TensegritySurfaceData {
+    pub entity_path: String,
+    pub kind: String,
+    pub i0: i64,
+    pub i1: i64,
+    pub i2: i64,
+    pub x0: f64,
+    pub y0: f64,
+    pub z0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub z1: f64,
+    pub x2: f64,
+    pub y2: f64,
+    pub z2: f64,
+}
+
 /// Full GUI state snapshot sent to the frontend after each operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiState {
@@ -170,6 +201,90 @@ pub struct GuiState {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_wires: Vec<TensegrityWireData>,
+    /// Tensegrity surface facet descriptors extracted from the current module's value cells.
+    ///
+    /// Populated by `build_tensegrity_surfaces` from cells that evaluate to a
+    /// `List<TensegritySurface>` or a standalone `TensegritySurface` (as emitted by
+    /// the `tensegrity_surfaces()` builtin, α/task 4412).  Empty on preview snapshots,
+    /// early-return (no compile), and modules without any tensegrity surfaces.
+    ///
+    /// `#[serde(default)]` ensures existing payloads without this field deserialize
+    /// as an empty vec (forward-compat for older backend → newer frontend).
+    #[serde(default)]
+    pub tensegrity_surfaces: Vec<TensegritySurfaceData>,
+    /// Passive selective-demand measurement for the most recent edit (task 4532).
+    ///
+    /// `Some` only on the post-edit success build path (`set_parameter` →
+    /// `build_gui_state`); `None` on cold-start / preview / empty snapshots.
+    /// Mirrors `reify_eval::DemandPruneMeasurement` — a PURELY OBSERVATIONAL
+    /// record of how much of the production eval-set a selective-demand
+    /// scheduler WOULD prune, given the GUI's observed-demand sources (see
+    /// `EngineSession::sync_observed_demand`). Production evaluation is never
+    /// affected by populating or reading this field.
+    ///
+    /// `#[serde(default)]` keeps older payloads (without this field) deserializable.
+    #[serde(default)]
+    pub demand_prune_measurement: Option<DemandPruneMeasurementDto>,
+}
+
+/// GUI-facing mirror of `reify_eval::DemandPruneMeasurement` (selective-demand
+/// precondition, task 4532).
+///
+/// A passive, per-edit measurement: given the GUI's observed-demand sources
+/// (viewport-visible realizations, displayed property cells, panel
+/// constraints), how much of the production eval-set WOULD a selective-demand
+/// scheduler prune? Surfaced on [`GuiState`] so the frontend can inspect the
+/// would-prune distribution. Production evaluation is never affected.
+///
+/// Invariant (inherited from the engine measurement):
+/// `observed_retained + would_prune.total() == eval_set_size`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DemandPruneMeasurementDto {
+    /// Total size of the production eval-set for the edit.
+    pub eval_set_size: usize,
+    /// Eval-set nodes that ARE in the observed cone — a selective-demand
+    /// scheduler would still evaluate these.
+    pub observed_retained: usize,
+    /// Eval-set nodes NOT in the observed cone, broken down by node kind.
+    pub would_prune: WouldPruneByKindDto,
+}
+
+/// GUI-facing mirror of `reify_eval::WouldPruneByKind` (task 4532): would-prune
+/// counts split by `NodeId` kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WouldPruneByKindDto {
+    /// `Value`-kind nodes that would be pruned.
+    pub value: usize,
+    /// `Constraint`-kind nodes that would be pruned.
+    pub constraint: usize,
+    /// `Realization`-kind nodes that would be pruned.
+    pub realization: usize,
+    /// `Resolution`-kind nodes that would be pruned.
+    pub resolution: usize,
+    /// `Compute`-kind nodes that would be pruned.
+    pub compute: usize,
+}
+
+impl From<&reify_eval::DemandPruneMeasurement> for DemandPruneMeasurementDto {
+    fn from(m: &reify_eval::DemandPruneMeasurement) -> Self {
+        Self {
+            eval_set_size: m.eval_set_size,
+            observed_retained: m.observed_retained,
+            would_prune: WouldPruneByKindDto::from(&m.would_prune),
+        }
+    }
+}
+
+impl From<&reify_eval::WouldPruneByKind> for WouldPruneByKindDto {
+    fn from(w: &reify_eval::WouldPruneByKind) -> Self {
+        Self {
+            value: w.value,
+            constraint: w.constraint,
+            realization: w.realization,
+            resolution: w.resolution,
+            compute: w.compute,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

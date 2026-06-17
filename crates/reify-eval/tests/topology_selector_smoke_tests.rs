@@ -307,7 +307,7 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
         "expected non-empty geometry_output after a successful Fillet op"
     );
 
-    // TODO(prereq-a, no current task ID): once 3-arg fillet binding lands and
+    // TODO(prereq-a, no current task ID): once 3-arg fillet binding lands and // ptodo:allow no task assigned — prereq fillet binding not yet scheduled
     // extends `GeometryOp::Fillet` with an `edges: Vec<GeometryHandleId>` field,
     // deepen (b) to also assert `!edges.is_empty()` so that a regression where
     // the topology walk delivers an empty edge list (the kernel is invoked but

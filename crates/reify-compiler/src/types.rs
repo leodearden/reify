@@ -36,6 +36,29 @@ pub struct CompiledTrait {
     pub pragmas: Vec<reify_ast::Pragma>,
 }
 
+impl CompiledTrait {
+    /// Return the (name, Type) pairs for all value-bearing required members.
+    ///
+    /// Only `RequirementKind::Param(ty)` and `RequirementKind::Let(ty)` entries
+    /// are returned; `Sub`, `Fn`, and `AssocType` requirements are excluded
+    /// because they do not produce a scalar/dimensional value that a constraint
+    /// expression can reference.
+    ///
+    /// Used by `compile_entity` to populate `CompilationScope::trait_member_types`
+    /// so the `Type::TypeParam` member-access branch in `expr.rs` (task 4596)
+    /// can resolve the member's declared type from the bound trait's contract.
+    pub(crate) fn value_bearing_members(&self) -> impl Iterator<Item = (&str, &Type)> {
+        self.required_members.iter().filter_map(|req| match &req.kind {
+            RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
+                Some((req.name.as_str(), ty))
+            }
+            RequirementKind::Sub(_)
+            | RequirementKind::Fn(_)
+            | RequirementKind::AssocType(_) => None,
+        })
+    }
+}
+
 /// A required member in a trait — conforming structures must provide this.
 #[derive(Debug, Clone)]
 pub struct TraitRequirement {
@@ -120,7 +143,7 @@ pub struct CompiledAssocFnSig {
     pub has_self: bool,
     /// Resolved types of the non-self parameters, in declaration order.
     pub params: Vec<Type>,
-    /// Resolved return type (defaults to `Type::Real` when unannotated).
+    /// Resolved return type (defaults to `Type::dimensionless_scalar()` when unannotated).
     pub return_type: Type,
 }
 
@@ -781,6 +804,31 @@ impl TopologyTemplate {
     }
 }
 
+/// Compute the monomorphized template name for a generic instantiation.
+///
+/// Joins the generic name with each resolved candidate in type-parameter
+/// **position order**, separated by `$`. The `$` character is illegal in
+/// `.ri` source identifiers (grammar.js:1490), so the resulting name is
+/// guaranteed to be collision-free with any user-declared template.
+///
+/// # Examples
+/// ```text
+/// mangle_monomorph_name("Bearing", &["GasketSeal"])   → "Bearing$GasketSeal"
+/// mangle_monomorph_name("Pair",    &["FooA", "BarB"]) → "Pair$FooA$BarB"
+/// ```
+///
+/// Callers are responsible for supplying `candidates` in position order
+/// (sorted ascending by the corresponding `type_params` index) so that the
+/// name is a deterministic pure function of `(generic, ordered_candidates)`.
+pub fn mangle_monomorph_name(generic: &str, candidates: &[String]) -> String {
+    let mut name = String::from(generic);
+    for c in candidates {
+        name.push('$');
+        name.push_str(c);
+    }
+    name
+}
+
 /// Look up a topology template by name in a slice of compiled templates.
 ///
 /// Returns `Some(&template)` for the first match, or `None` if no template has
@@ -791,6 +839,38 @@ pub fn find_template<'a>(
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
     templates.iter().find(|t| t.name == name)
+}
+
+/// Return `true` iff synthesizing a monomorph named `mono` would collide with a
+/// pre-existing template that was **not** created by α's current monomorphization
+/// pass.
+///
+/// The predicate is `true` when both conditions hold:
+/// 1. A template named `mono` already exists in `templates`.
+/// 2. `mono` is **not** in `created_monomorphs` (the phase-local set of names α
+///    has already synthesized in this pass).
+///
+/// # Why this is impossible from source
+///
+/// `$` is illegal in `.ri` source identifiers (grammar.js:1490), so a
+/// user-declared template can never have a name like `Bearing$GasketSeal`.  The
+/// guard exists solely as a defensive regression fence: if a future compiler
+/// change inadvertently introduces a template with such a name (e.g., via a
+/// separate code-generation pass), this guard converts the silent overwrite into
+/// a build-error diagnostic.
+///
+/// # Usage in the monomorphization pass
+///
+/// In `phase_auto_type_param_resolution` (pass-1), call this **before**
+/// inserting the new monomorph name into `created_monomorphs` and before pushing
+/// the cloned template.  If it returns `true`, push an Error diagnostic and skip
+/// the use-site; do not proceed with the clone or the `structure_name` rewrite.
+pub fn monomorph_name_would_collide(
+    templates: &[TopologyTemplate],
+    created_monomorphs: &std::collections::HashSet<String>,
+    mono: &str,
+) -> bool {
+    find_template(templates, mono).is_some() && !created_monomorphs.contains(mono)
 }
 
 /// A compiled connection between ports — compiled from a ConnectDecl or desugared from a ChainDecl.
@@ -1064,6 +1144,26 @@ pub struct CompiledConstraint {
     /// this field. A follow-up will extend the solver seam to route through
     /// an `OptimizedImpl` as well.
     pub optimized_target: Option<String>,
+    /// Explicit call-site argument bindings captured at constraint
+    /// instantiation (η/4480). Each entry is `(param_name,
+    /// compiled_arg_expr)` for an argument that was EXPLICITLY passed at the
+    /// `constraint Foo(a: x, ...)` call site. Params that fell back to their
+    /// declared default are NOT recorded.
+    ///
+    /// This is the seam the GD&T conformance pass
+    /// (`Engine::measure_gdt_conformance`) uses to detect a *geometric*
+    /// `Conforms` instance: `Conforms`'s predicate body never references its
+    /// `actual` param, so an explicit `actual` binding cannot be recovered by
+    /// walking the compiled predicate — unlike `RepresentationWithin`, whose
+    /// args ARE its predicate. The presence of `"actual"` here is the signal,
+    /// and the bound `CompiledExpr` is how the pass resolves the geometry to
+    /// measure.
+    ///
+    /// Populated only by `expand_constraint_inst` (the `constraint Foo(...)`
+    /// instantiation path); every other construction site defaults this to an
+    /// empty `Vec`. It is purely additive — the compiled predicate `expr` is
+    /// unchanged whether or not an unused param is explicitly bound (B4).
+    pub arg_bindings: Vec<(String, CompiledExpr)>,
 }
 
 /// A realization declaration — specifies geometry to produce.
@@ -1171,6 +1271,9 @@ pub enum PrimitiveKind {
     /// Bbox corner at origin; top_width=0 degenerates to a triangular prism.
     /// Implemented via `BRepPrimAPI_MakeWedge(dx=width, dy=depth, dz=height, ltx=top_width)`.
     Wedge,
+    /// Torus (ring): `torus(major_radius, minor_radius)`. Built at the kernel
+    /// layer via `BRepPrimAPI_MakeTorus`. The first non-convex primitive.
+    Torus,
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1182,6 +1285,7 @@ impl std::fmt::Display for PrimitiveKind {
             PrimitiveKind::Tube => f.write_str("tube"),
             PrimitiveKind::Cone => f.write_str("cone"),
             PrimitiveKind::Wedge => f.write_str("wedge"),
+            PrimitiveKind::Torus => f.write_str("torus"),
         }
     }
 }
@@ -1209,9 +1313,22 @@ impl std::fmt::Display for BooleanOp {
 pub enum ModifyKind {
     Fillet,
     Chamfer,
+    /// Per-edge two-distance chamfer `chamfer_asymmetric(solid, edges, d1, d2)`
+    /// (β, task 4185). Distinct from `Chamfer` because it carries two setbacks
+    /// (`d1`/`d2`) and a per-edge reference-face requirement at the kernel.
+    /// Collapses to `Operation::ModifyChamfer` (same BRep kernel capability).
+    ChamferAsymmetric,
     Shell,
     Draft,
     Thicken,
+    ZoneSlab,
+    OffsetSolid,
+    /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
+    /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
+    /// `distance`. The optional 3rd arg — a reference Surface or a direction
+    /// Vector3 — is disambiguated at eval time on its `Value` variant. Collapses
+    /// to `Operation::ModifyOffsetCurve` (BRep kernel capability).
+    OffsetCurve,
 }
 
 impl ModifyKind {
@@ -1228,12 +1345,16 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 9] = [
         Self::Fillet,
         Self::Chamfer,
+        Self::ChamferAsymmetric,
         Self::Shell,
         Self::Draft,
         Self::Thicken,
+        Self::ZoneSlab,
+        Self::OffsetSolid,
+        Self::OffsetCurve,
     ];
 
     /// Count of variants — derived from `ALL.len()`, not hand-maintained.
@@ -1249,9 +1370,13 @@ impl std::fmt::Display for ModifyKind {
         match self {
             ModifyKind::Fillet => f.write_str("fillet"),
             ModifyKind::Chamfer => f.write_str("chamfer"),
+            ModifyKind::ChamferAsymmetric => f.write_str("chamfer_asymmetric"),
             ModifyKind::Shell => f.write_str("shell"),
             ModifyKind::Draft => f.write_str("draft"),
             ModifyKind::Thicken => f.write_str("thicken"),
+            ModifyKind::ZoneSlab => f.write_str("zone_slab"),
+            ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
 }
@@ -1263,6 +1388,7 @@ pub enum TransformKind {
     Rotate,
     Scale,
     RotateAround,
+    ApplyTransform,
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1272,6 +1398,7 @@ impl std::fmt::Display for TransformKind {
             TransformKind::Rotate => f.write_str("rotate"),
             TransformKind::Scale => f.write_str("scale"),
             TransformKind::RotateAround => f.write_str("rotate_around"),
+            TransformKind::ApplyTransform => f.write_str("apply_transform"),
         }
     }
 }
@@ -1368,6 +1495,10 @@ pub enum ProfileKind {
     Rectangle,
     /// Circle in the XY plane: `circle(radius)`.
     Circle,
+    /// Closed planar polygon from flat coordinate pairs: `polygon(x1,y1, x2,y2, ...)`.
+    Polygon,
+    /// Ellipse in the XY plane: `ellipse(semi_major, semi_minor)`.
+    Ellipse,
 }
 
 impl std::fmt::Display for ProfileKind {
@@ -1375,6 +1506,8 @@ impl std::fmt::Display for ProfileKind {
         match self {
             ProfileKind::Rectangle => f.write_str("rectangle"),
             ProfileKind::Circle => f.write_str("circle"),
+            ProfileKind::Polygon => f.write_str("polygon"),
+            ProfileKind::Ellipse => f.write_str("ellipse"),
         }
     }
 }
@@ -1427,6 +1560,14 @@ pub struct CompiledConstraintParam {
     /// calling entity's scope at instantiation time.
     pub default: Option<reify_ast::Expr>,
     pub span: SourceSpan,
+    /// Resolved declared parameter type, populated by `compile_constraint_def`
+    /// via `resolve_type_expr_with_aliases`. `None` when the parameter has no
+    /// type annotation or when type resolution fails (typo already diagnosed).
+    /// `Type::Error` is NEVER stored here — use `None` instead, so
+    /// `constraint_arg_type_conforms`'s anti-cascade guard (which checks for
+    /// `is_error()`) is not triggered unnecessarily, and
+    /// `type_compatible`'s `debug_assert!(!param_ty.is_error())` cannot fire.
+    pub ty: Option<Type>,
 }
 
 /// A compiled constraint definition — produced once per `constraint def` declaration.
@@ -1491,7 +1632,7 @@ impl CompiledConstraintDef {
 /// | Velocity (L·T⁻¹) | 0=1, 2=-1       | `false` |
 /// | Angle·T⁻¹        | 2=-1, 7=1       | `false` |
 /// | Dimensionless    | all zero         | `false` |
-/// | `Type::Real`     | not a Scalar     | `false` |
+/// | `Type::dimensionless_scalar()`     | not a Scalar     | `false` |
 pub fn is_geometric_param_type(ty: &Type) -> bool {
     if let Type::Scalar { dimension } = ty {
         // At least one of Length (slot 0) or Angle (slot 7) must be nonzero.
@@ -1558,6 +1699,7 @@ mod kind_display_tests {
             (PrimitiveKind::Tube, "tube"),
             (PrimitiveKind::Cone, "cone"),
             (PrimitiveKind::Wedge, "wedge"),
+            (PrimitiveKind::Torus, "torus"),
         ]);
     }
 
@@ -1575,9 +1717,13 @@ mod kind_display_tests {
         check(&[
             (ModifyKind::Fillet, "fillet"),
             (ModifyKind::Chamfer, "chamfer"),
+            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric"),
             (ModifyKind::Shell, "shell"),
             (ModifyKind::Draft, "draft"),
             (ModifyKind::Thicken, "thicken"),
+            (ModifyKind::ZoneSlab, "zone_slab"),
+            (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
 
@@ -1588,6 +1734,7 @@ mod kind_display_tests {
             (TransformKind::Rotate, "rotate"),
             (TransformKind::Scale, "scale"),
             (TransformKind::RotateAround, "rotate_around"),
+            (TransformKind::ApplyTransform, "apply_transform"),
         ]);
     }
 
@@ -1678,10 +1825,10 @@ mod reflective_param_type_predicate_tests {
         );
     }
 
-    /// `Type::Real` and a dimensionless `Type::Scalar` must be excluded.
+    /// `Type::dimensionless_scalar()` and a dimensionless `Type::Scalar` must be excluded.
     #[test]
     fn geometric_excludes_dimensionless_and_real() {
-        assert!(!is_geometric_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_geometric_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
             "Dimensionless Scalar must be excluded"
@@ -1729,7 +1876,7 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
             "TraitObject(\"Rigid\") must be excluded"
         );
-        assert!(!is_material_param_type(&Type::Real), "Type::Real must be excluded");
+        assert!(!is_material_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
             !is_material_param_type(&Type::length()),
             "Length must be excluded"
@@ -1831,5 +1978,85 @@ mod auto_type_substitution_tests {
         let sub = AutoTypeSubstitution::new(pairs.clone());
         let inner = sub.into_inner();
         assert_eq!(inner, pairs);
+    }
+}
+
+#[cfg(test)]
+mod monomorph_collision_tests {
+    //! Unit tests for `monomorph_name_would_collide` (M-013 α, task 4431 step-9).
+    //!
+    //! The predicate is defined in step-10; these tests will fail to compile
+    //! (RED) until the function is added.
+    use super::{EntityKind, TopologyTemplate, Visibility, monomorph_name_would_collide};
+    use reify_core::ContentHash;
+    use std::collections::{HashMap, HashSet};
+
+    /// Construct a minimal `TopologyTemplate` with the given name and all
+    /// other fields empty / default.  The test only exercises name-based
+    /// predicates, so a full-fidelity template is not required.
+    fn minimal_template(name: &str) -> TopologyTemplate {
+        TopologyTemplate {
+            name: name.to_string(),
+            doc: None,
+            entity_kind: EntityKind::Structure,
+            visibility: Visibility::Private,
+            type_params: vec![],
+            trait_bounds: vec![],
+            value_cells: vec![],
+            constraints: vec![],
+            realizations: vec![],
+            sub_components: vec![],
+            ports: vec![],
+            connections: vec![],
+            guarded_groups: vec![],
+            structure_controlling: HashSet::new(),
+            objective: None,
+            meta: HashMap::new(),
+            content_hash: ContentHash(0),
+            is_recursive: false,
+            annotations: vec![],
+            pragmas: vec![],
+            match_arm_groups: vec![],
+            forall_templates: vec![],
+            assoc_fns: vec![],
+            assoc_types: vec![],
+        }
+    }
+
+    /// Pins the defensive collision-guard predicate added in step-10:
+    ///
+    /// Case 1 — a template named `Bearing$GasketSeal` exists in the slice but
+    /// is NOT in the `created` set → guard returns `true` (collision detected:
+    /// a pre-existing non-α template would be overwritten).
+    ///
+    /// Case 2 — same name IS in the `created` set → returns `false` (it is one
+    /// of α's own monomorphs, so no collision).
+    ///
+    /// Case 3 — the name does not exist in the slice at all → returns `false`
+    /// (nothing to collide with).
+    #[test]
+    fn monomorph_name_collision_is_detected() {
+        let templates = vec![minimal_template("Bearing$GasketSeal")];
+        let empty: HashSet<String> = HashSet::new();
+
+        // Case 1: template exists, NOT created by α → collision.
+        assert!(
+            monomorph_name_would_collide(&templates, &empty, "Bearing$GasketSeal"),
+            "should detect collision when template exists and was not created by α"
+        );
+
+        // Case 2: template exists AND was created by α → no collision.
+        let mut created = HashSet::new();
+        created.insert("Bearing$GasketSeal".to_string());
+        assert!(
+            !monomorph_name_would_collide(&templates, &created, "Bearing$GasketSeal"),
+            "should not report collision when template was created by α"
+        );
+
+        // Case 3: name does not appear in templates at all → no collision.
+        assert!(
+            !monomorph_name_would_collide(&templates, &empty, "Bearing$ORingSeal"),
+            "should not report collision for a name absent from the template list"
+        );
     }
 }

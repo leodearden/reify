@@ -389,7 +389,7 @@ mod tests {
         use crate::value::Value;
         CompiledExpr {
             kind: crate::expr::CompiledExprKind::Literal(Value::Real(1.0)),
-            result_type: Type::Real,
+            result_type: Type::dimensionless_scalar(),
             content_hash: ContentHash::of(b"test"),
         }
     }

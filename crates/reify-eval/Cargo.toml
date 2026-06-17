@@ -45,6 +45,13 @@ reify-build-utils.workspace = true
 
 [features]
 test-instrumentation = []
+# unified-dag (task 4357 δ): gates ONLY the production activation of the
+# `run_unified_pass` Kahn/Tarjan driver inside `Engine::build()` (via
+# `BuildScheduler::from_env`). The `engine_fixpoint` module and
+# `run_unified_pass` compile unconditionally so the cycle contract stays
+# unit-testable without the flag; this empty feature flips the env gate from
+# "always Legacy" to "UnifiedDag selectable via REIFY_BUILD_SCHEDULER".
+unified-dag = []
 
 [dev-dependencies]
 reify-ast.workspace = true
@@ -91,3 +98,21 @@ strum.workspace = true
 # NOT on reify-eval.
 reify-doc.workspace = true
 reify-doc-build.workspace = true
+# Task 3437 (ζ): engine integration test for the Manifold execute arm.
+# Links the REAL Manifold kernel (its unconditional `inventory::submit!` fires
+# in the new test binary) and exposes the `test-fixtures` `unit_cube_manifold`
+# helper for the item-3 probe B non-degeneracy assertion. No dependency cycle:
+# reify-kernel-manifold depends on reify-ir/reify-core, NOT on reify-eval.
+#
+# DEAD-STRIP INVARIANT: the Manifold rlib is only linked into test binaries
+# that contain an explicit linker anchor referencing a manifold symbol (see
+# `manifold_cross_kernel_real.rs` — it calls
+# `reify_kernel_manifold::register::manifold_capability_descriptor()`).
+# Binaries that reference no manifold symbol have the rlib dead-stripped by
+# the linker, so their `kernel_registry::registry()` stays occt-only and
+# BRep-fallback assertions in other tests are unaffected.  DO NOT reference
+# any `reify_kernel_manifold::*` symbol in other reify-eval unit or
+# integration tests — doing so would silently pull in the Manifold
+# `inventory::submit!` and break registry-size or default-kernel assertions
+# that currently rely on only OCCT being registered.
+reify-kernel-manifold = { workspace = true, features = ["test-fixtures"] }

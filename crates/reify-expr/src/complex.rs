@@ -128,9 +128,9 @@ mod tests {
             re,
             im,
             DimensionVector::DIMENSIONLESS,
-            Type::Real,
+            Type::dimensionless_scalar(),
             method,
-            Type::Real,
+            Type::dimensionless_scalar(),
         )
     }
 
@@ -408,10 +408,10 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
+            lit(complex_val, Type::complex(Type::dimensionless_scalar())),
             "magnitude".to_string(),
             vec![],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
@@ -429,10 +429,10 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
+            lit(complex_val, Type::complex(Type::dimensionless_scalar())),
             "re".to_string(),
             vec![],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
@@ -450,10 +450,10 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
+            lit(complex_val, Type::complex(Type::dimensionless_scalar())),
             "im".to_string(),
             vec![],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let values = ValueMap::new();
         match eval_expr(&expr, &EvalContext::simple(&values)) {
@@ -504,7 +504,7 @@ mod tests {
                 f64::NAN,
                 1.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -522,7 +522,7 @@ mod tests {
                 1.0,
                 f64::NAN,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -541,7 +541,7 @@ mod tests {
                 f64::INFINITY,
                 1.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -560,7 +560,7 @@ mod tests {
                 1.0,
                 f64::INFINITY,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -582,7 +582,7 @@ mod tests {
                 1.0,
                 f64::NEG_INFINITY,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -605,7 +605,7 @@ mod tests {
                 f64::NEG_INFINITY,
                 1.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -681,7 +681,7 @@ mod tests {
                 0.0,
                 0.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -710,7 +710,7 @@ mod tests {
                 -0.0,
                 -0.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -723,7 +723,7 @@ mod tests {
                 0.0,
                 -0.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -736,7 +736,7 @@ mod tests {
                 -0.0,
                 0.0,
                 DimensionVector::DIMENSIONLESS,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "phase",
                 Type::angle()
             )
@@ -781,7 +781,7 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
+            lit(complex_val, Type::complex(Type::dimensionless_scalar())),
             "phase".to_string(),
             vec![],
             Type::angle(),
@@ -815,7 +815,7 @@ mod tests {
             dimension: DimensionVector::DIMENSIONLESS,
         };
         let expr = CompiledExpr::method_call(
-            lit(complex_val, Type::complex(Type::Real)),
+            lit(complex_val, Type::complex(Type::dimensionless_scalar())),
             "phase".to_string(),
             vec![],
             Type::angle(),

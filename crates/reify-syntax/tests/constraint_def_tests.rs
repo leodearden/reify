@@ -88,7 +88,7 @@ fn parse_constraint_def_with_params() {
 #[test]
 fn parse_constraint_def_multiple_predicates() {
     let source = "constraint def Multi {
-        param x : Scalar
+        param x : Length
         x > 0
         x < 100
         x != 50

@@ -267,7 +267,7 @@ structure def LargeAssembly {
 // (`1 > 0`, `1 >= 0`) exercise purpose activation and constraint injection into
 // the engine graph without requiring subject member access (`subject.volume`,
 // `subject.density`), which is not yet implemented in the compiler.
-// TODO: Replace with real Physical property constraints once subject member
+// TODO: Replace with real Physical property constraints once subject member // ptodo:allow placeholder until Physical property constraint syntax is implemented
 //       access is supported (see crates/reify-compiler/src/expr.rs).
 
 purpose simulation_ready(subject : Physical) {

@@ -51,12 +51,33 @@ trait Physical {
 // ── Rigidity ────────────────────────────────────────────────────────────────
 
 // Rigid refines Physical — a body that does not deform under load.
-// moment_of_inertia is the mass moment of inertia (kg·m², MomentOfInertia alias
-// — tightened from Real by task α; RHS dimensioned so eval_cmp dim-equality
-// succeeds at runtime, per esc-3115-112 rationale).
+//
+// task 4229 (Option A, RATIFIED 2026-06-10): moment_of_inertia is now a
+// geometry-derived `let` (tensor<2,3,MomentOfInertia>) rather than a user
+// scalar param.  Three auto-derive lets are injected:
+//
+//   - `body_density` — intermediate binding so `resolve_density_arg`
+//     (geometry_ops.rs:4664, Contract A / task 4486 γ) receives a ValueRef
+//     rather than an IndexAccess expr (pre-type-hygiene-ε constraint; see
+//     design decision in plan.json).
+//   - `moment_of_inertia` — the 3×3 centroidal inertia tensor, auto-derived
+//     from the body's solid geometry and material density.
+//   - `moi_principal` — eigenvalues of moment_of_inertia, sorted ascending.
+//     Used only for the positive-definiteness constraint.
+//
+// The PD constraint `moi_principal[0] > 0.0 * 1kg * 1m * 1m` replaces the
+// former scalar `moment_of_inertia > 0` (which would be type-invalid against
+// a tensor member).  The dimensioned RHS `0.0*1kg*1m*1m` (= Scalar<MomentOfInertia>(0))
+// avoids relying on the polymorphic-zero coercion for an IndexAccess operand.
+//
+// Conformers no longer declare `param moment_of_inertia`; the tensor is
+// INDETERMINATE without OCCT (same status as Physical.mass) — compile-only
+// runners see Undef, which is intentional (PRD §1 Phase 1 contract).
 trait Rigid : Physical {
-    param moment_of_inertia : MomentOfInertia
-    constraint moment_of_inertia > 0.0 * 1kg * 1m * 1m
+    let body_density = material.density
+    let moment_of_inertia = moment_of_inertia(geometry, body_density)
+    let moi_principal = eigenvalues(moment_of_inertia)
+    constraint moi_principal[0] > 0.0 * 1kg * 1m * 1m
 }
 
 // ── Flexibility ─────────────────────────────────────────────────────────────
@@ -71,11 +92,11 @@ trait Rigid : Physical {
 trait Flexible {
     param stiffness : Stiffness
     param max_deflection : Length
-    // RHS dimensioned (N/m = Stiffness; m = Length) so `eval_cmp` dim-equality
-    // succeeds at runtime; a bare `0` would yield Indeterminate per task #3115
-    // esc-3115-112 (compile-time accepted bare-numeric, runtime rejected it).
-    constraint stiffness > 0.0 * 1N / 1m
-    constraint max_deflection > 0.0 * 1m
+    // Bare `0` coerced to Scalar<Stiffness> / Scalar<Length> at compile time
+    // by task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved — the old
+    // multiplication boilerplate `0.0 * 1N/1m` / `0.0 * 1m` is no longer needed).
+    constraint stiffness > 0
+    constraint max_deflection > 0
 }
 
 // ── Elastic deformation ─────────────────────────────────────────────────────
@@ -107,11 +128,11 @@ trait ElasticallyDeformable : Flexible {
 // Note: hardening_modulus > 0 is strictly positive — a zero modulus would mean
 // perfectly-plastic behaviour (no strain hardening), which is outside the scope
 // of this trait. Use a separate trait if perfectly-plastic models are required.
-// RHS dimensioned (Pa = Pressure) per esc-3115-112 rationale.
+// Bare `0` coerced to Scalar<Pressure> by task-4485/β (esc-3115-112 resolved).
 trait Plastic : Flexible {
     param plastic_strain : Real // dimensionless
     param hardening_modulus : Pressure
-    constraint hardening_modulus > 0.0 * 1Pa
+    constraint hardening_modulus > 0
     constraint plastic_strain >= 0
 }
 
@@ -121,14 +142,13 @@ trait Plastic : Flexible {
 // physical body, inheriting volume, centroid, and mass.
 // thermal_conductivity (W/(m·K), ThermalConductivity alias — tightened by #3115),
 // max_service_temp (K, Temperature alias — tightened from Real by task α).
-// RHS dimensioned (W/(m·K) = ThermalConductivity; K = Temperature) per esc-3115-112.
+// Bare `0` coerced by task-4485/β (esc-3115-112 resolved for Temperature /
+// ThermalConductivity); thermal_conductivity keeps its 0W/(m*K) quantity form.
 trait ThermallyConductive : Physical {
     param thermal_conductivity : ThermalConductivity
     param max_service_temp : Temperature
-    // RHS dimensioned (W/(m·K) = ThermalConductivity) — see Flexible above for
-    // rationale (esc-3115-112).
     constraint thermal_conductivity > 0W/(m*K)
-    constraint max_service_temp > 0.0 * 1K
+    constraint max_service_temp > 0
 }
 
 // ── Electrical conductivity ─────────────────────────────────────────────────
@@ -140,17 +160,17 @@ trait ThermallyConductive : Physical {
 trait ElectricallyConductive : Physical {
     param electrical_conductivity : ElectricalConductivity
     param resistivity : ElectricResistivity
-    // RHS dimensioned (S/m = ElectricalConductivity) — see Flexible above for
-    // rationale (esc-3115-112).
-    constraint electrical_conductivity > 0.0 * 1S / 1m
+    // Bare `0` coerced to Scalar<ElectricalConductivity> by task-4485/β
+    // (esc-3115-112 resolved).
+    constraint electrical_conductivity > 0
 }
 
 // ── Sealing ─────────────────────────────────────────────────────────────────
 
 // A sealed body that prevents fluid/gas passage.
 // seal_pressure_rating (Pa, Pressure alias — tightened from Real by task α).
-// RHS dimensioned (Pa = Pressure) per esc-3115-112 rationale.
+// Bare `0` coerced to Scalar<Pressure> by task-4485/β (esc-3115-112 resolved).
 trait Sealed {
     param seal_pressure_rating : Pressure
-    constraint seal_pressure_rating > 0.0 * 1Pa
+    constraint seal_pressure_rating > 0
 }

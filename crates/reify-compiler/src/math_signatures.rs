@@ -27,7 +27,8 @@ use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 /// Case-sensitive: Reify function names are snake_case. (The §3 operation /
 /// function names live in the sibling [`MATH_OPERATION_NAMES`] slice — task
 /// 4182 δ — NOT in this construction-only slice.)
-pub const MATH_CONSTRUCTION_NAMES: &[&str] = &["vec", "matrix", "diag", "identity"];
+pub const MATH_CONSTRUCTION_NAMES: &[&str] =
+    &["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
@@ -78,13 +79,39 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
     "arg",
 ];
 
+/// The complete set of §1.2 trig/transcendental builtin names recognised by
+/// the compiler (task 4352). Sibling to [`MATH_CONSTRUCTION_NAMES`] and
+/// [`MATH_OPERATION_NAMES`] — kept as a SEPARATE slice so the construction
+/// exact-set contract (`math_construction_names_are_exactly_the_four`) and the
+/// operation exact-set contract (`math_operation_names_are_exactly_the_frozen_set`)
+/// both stay valid; [`is_math_typed_fn`] ORs all three. Single source of truth
+/// — imported into the `units.rs` test module to pin disjointness from every
+/// other name family.
+///
+/// Frozen at EXACTLY the 9 task-4352 §1.2 names. log10/sinh/cosh/tanh also
+/// drift to the first-arg default but are out of scope (deferred), mirroring
+/// how task-4182 froze its 26 §3 names and left trig out.
+///
+/// Case-sensitive snake_case, mirroring the sibling slices.
+pub const MATH_TRANSCENDENTAL_NAMES: &[&str] = &[
+    // forward trig (accept ANGLE-or-Real, return dimensionless Scalar ratio)
+    "sin", "cos", "tan",
+    // inverse trig (accept dimensionless Real, return Angle Scalar)
+    "asin", "acos", "atan", "atan2",
+    // exponential / logarithm (accept dimensionless Real, return dimensionless)
+    "exp", "log",
+];
+
 /// Is `name` a math-linalg builtin the compiler types via [`math_fn_result_type`]?
 /// Name-only classification, mirroring `units::is_geometry_query` (a `.contains`
-/// over the single-source-of-truth slices). Recognises BOTH the construction
-/// family ([`MATH_CONSTRUCTION_NAMES`]) and the operation family
-/// ([`MATH_OPERATION_NAMES`], task 4182 δ). Case-sensitive.
+/// over the single-source-of-truth slices). Recognises the construction family
+/// ([`MATH_CONSTRUCTION_NAMES`]), the operation family ([`MATH_OPERATION_NAMES`],
+/// task 4182 δ), and the trig/transcendental family ([`MATH_TRANSCENDENTAL_NAMES`],
+/// task 4352). Case-sensitive.
 pub(crate) fn is_math_typed_fn(name: &str) -> bool {
-    MATH_CONSTRUCTION_NAMES.contains(&name) || MATH_OPERATION_NAMES.contains(&name)
+    MATH_CONSTRUCTION_NAMES.contains(&name)
+        || MATH_OPERATION_NAMES.contains(&name)
+        || MATH_TRANSCENDENTAL_NAMES.contains(&name)
 }
 
 /// Result type for a math-linalg construction builtin, derived from the
@@ -94,7 +121,7 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
 /// not from the arg's `result_type` (which, being a `Type::List`, carries no
 /// length): list length from a `CompiledExprKind::ListLiteral`, the literal
 /// value from `CompiledExprKind::Literal(Value::Int)`. The quantity slot is the
-/// element's `result_type` (or `Type::Real` for the dimensionless `identity`).
+/// element's `result_type` (or `Type::dimensionless_scalar()` for the dimensionless `identity`).
 ///
 /// **CRITICAL (D7)**: when the shape is not statically determinable (a
 /// non-literal arg — e.g. a `ValueRef`), this degrades to the correct `Vector`
@@ -106,21 +133,41 @@ pub(crate) fn is_math_typed_fn(name: &str) -> bool {
 ///
 /// Only reached for the four construction names (the caller gates on
 /// [`is_math_typed_fn`]); the `_` arm is therefore unreachable in practice and
-/// returns a harmless `Type::Real`.
+/// returns a harmless `Type::dimensionless_scalar()`.
 pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
     let first = args.first();
     match name {
         // `vec(list)` → Vector{n, quantity}.
         "vec" => {
-            let (n, quantity) = first.map_or((0, Type::Real), list_shape);
+            let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), list_shape);
             Type::Vector {
                 n,
                 quantity: Box::new(quantity),
             }
         }
+        // `vec3(x,y,z)` → Vector{n:3, quantity} — quantity from first variadic
+        // scalar component (mirrors eval construct_point_or_vector(args, 3, false)
+        // in reify-stdlib/src/geometry.rs:936). n is fixed from the name.
+        "vec3" => Type::Vector {
+            n: 3,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
+        // `vec2(x,y)` → Vector{n:2, quantity} — same pattern as vec3.
+        "vec2" => Type::Vector {
+            n: 2,
+            quantity: Box::new(
+                first
+                    .map(|a| a.result_type.clone())
+                    .unwrap_or_else(Type::dimensionless_scalar),
+            ),
+        },
         // `diag(list)` → N×N Tensor (same N/quantity recovery as `vec`).
         "diag" => {
-            let (n, quantity) = first.map_or((0, Type::Real), list_shape);
+            let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), list_shape);
             Type::Tensor {
                 rank: 2,
                 n,
@@ -132,7 +179,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // intentionally DISCARDED (`Type::Tensor` carries a single `n`). Future
         // consumers reading `Type::Tensor.n` must NOT assume a square N×N matrix.
         "matrix" => {
-            let (n, quantity) = first.map_or((0, Type::Real), matrix_shape);
+            let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), matrix_shape);
             Type::Tensor {
                 rank: 2,
                 n,
@@ -150,7 +197,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
             Type::Tensor {
                 rank: 2,
                 n,
-                quantity: Box::new(Type::Real),
+                quantity: Box::new(Type::dimensionless_scalar()),
             }
         }
 
@@ -158,7 +205,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // Scalar / element-wise fns.
 
         // `sqrt` halves the dimension exponents (`Q.root(2)`); a dimensionless
-        // result routes back to `Type::Real` (not `Scalar{DIMENSIONLESS}`) so the
+        // result routes back to `Type::dimensionless_scalar()` (not `Scalar{DIMENSIONLESS}`) so the
         // cell type matches the eval `Value::Real`.
         "sqrt" => {
             let dim = first.map_or(DimensionVector::DIMENSIONLESS, |a| {
@@ -171,16 +218,16 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         "abs" => match first.map(|a| &a.result_type) {
             Some(Type::Complex(inner)) => (**inner).clone(),
             Some(t) => t.clone(),
-            None => Type::Real,
+            None => Type::dimensionless_scalar(),
         },
         // `sign` is dimensionless (±1); `pow` is pinned to Real (PRD §3 footnote).
-        "sign" | "pow" => Type::Real,
+        "sign" | "pow" => Type::dimensionless_scalar(),
         // `min` / `max` / `clamp` / `lerp` are identity over the first arg's type,
         // PRESERVING its kind (Real stays Real, Scalar stays Scalar) — cloning the
         // type rather than rebuilding a Scalar avoids the Real→Scalar{DIMENSIONLESS}
         // kind drift that would diverge from eval.
         "min" | "max" | "clamp" | "lerp" => {
-            first.map(|a| a.result_type.clone()).unwrap_or(Type::Real)
+            first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar())
         }
 
         // Vector ops.
@@ -198,7 +245,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // but STILL a Vector variant — never the first-arg type, D7).
         "normalize" => Type::Vector {
             n: first.map_or(0, |a| vector_n(&a.result_type)),
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         },
         // `magnitude` collapses a vector to its quantity scalar.
         "magnitude" => scalar_or_real(arg_vector_quantity(args, 0)),
@@ -225,7 +272,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // known (`arg_matrix_n` degrades to 0 — a non-Tensor/Matrix arg or a
         // shape-erased `Tensor{n:0}` from `matrix(non_literal_rows)`) but the
         // quantity IS dimensioned, `Q.pow(0)` collapses to DIMENSIONLESS and
-        // `scalar_or_real` would route to `Type::Real` — a KIND flip, since eval
+        // `scalar_or_real` would route to `Type::dimensionless_scalar()` — a KIND flip, since eval
         // operates on the concrete matrix and yields a dimensioned
         // `Value::Scalar<Q^N>` (risking a runtime `TypeKindMismatch`). Unlike the
         // other dim-changing arms (dot / magnitude / inverse), determinant's
@@ -281,7 +328,7 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         // Real operands — arg0's type is cloned verbatim, preserving the
         // Real-vs-Scalar kind).
         "complex" => Type::Complex(Box::new(
-            first.map(|a| a.result_type.clone()).unwrap_or(Type::Real),
+            first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar()),
         )),
         // `real` / `imag` / `complex_magnitude` collapse a Complex to its inner
         // quantity scalar (degrade to a scalar carrying the arg's dimension when
@@ -289,19 +336,39 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
         "real" | "imag" | "complex_magnitude" => complex_inner_or_scalar(first),
         // `conjugate` is identity over the operand type (conj of a Complex is a
         // Complex; conj of a real is itself) — clone verbatim, preserving kind.
-        "conjugate" => first.map(|a| a.result_type.clone()).unwrap_or(Type::Real),
+        "conjugate" => first.map(|a| a.result_type.clone()).unwrap_or(Type::dimensionless_scalar()),
         // `phase` / `arg` return an Angle (Scalar{ANGLE}) regardless of operand.
         "phase" | "arg" => Type::angle(),
 
-        _ => Type::Real,
+        // ── §1.2 trig / transcendental family (task 4352) ────────────────────
+        // All returns are arg-INDEPENDENT — matching eval exactly:
+        //   sin/cos/tan: accept ANGLE-or-Real, always return a dimensionless
+        //     Scalar ratio (trig.rs:9-17; eval `Value::Real`). Defensive-only
+        //     arm: it equals the `_ => dimensionless_scalar()` fallback below, so
+        //     no test can distinguish removal — like the `sign | pow` arm, it
+        //     states the intent and pins the contract against a future change to
+        //     `_`.
+        //   exp/log: accept dimensionless Real, return dimensionless
+        //     (numeric.rs:41-43). Same defensive-only note as sin/cos/tan.
+        //   asin/acos/atan/atan2: accept dimensionless Real, return Scalar{ANGLE}
+        //     (trig.rs:20-35). LOAD-BEARING: without this arm they hit
+        //     `_ => dimensionless_scalar()`, which is wrong (ANGLE ≠ DIMENSIONLESS).
+        // Mirrors the existing fixed arms `sign | pow => dimensionless_scalar()`
+        // (line ~203) and `phase | arg => angle()` (above) in design and rationale.
+        "sin" | "cos" | "tan" | "exp" | "log" => Type::dimensionless_scalar(),
+        "asin" | "acos" | "atan" | "atan2" => Type::angle(),
+
+        _ => Type::dimensionless_scalar(),
     }
 }
 
-/// The quantity dimension of a `Vector` operand (its `quantity` Scalar's
-/// dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or a non-Vector).
+/// The quantity dimension of a `Vector` or `Point` operand (its `quantity`
+/// Scalar's dimension, or `DIMENSIONLESS` for a `Real`/unknown quantity or
+/// a non-Vector/non-Point type).
 fn vector_quantity_dimension(t: &Type) -> DimensionVector {
     match t {
         Type::Vector { quantity, .. } => arg_dimension(quantity),
+        Type::Point { quantity, .. } => arg_dimension(quantity),
         _ => DimensionVector::DIMENSIONLESS,
     }
 }
@@ -373,7 +440,7 @@ fn complex_inner_or_scalar(arg: Option<&CompiledExpr>) -> Type {
     match arg.map(|a| &a.result_type) {
         Some(Type::Complex(inner)) => (**inner).clone(),
         Some(t) => scalar_or_real(arg_dimension(t)),
-        None => Type::Real,
+        None => Type::dimensionless_scalar(),
     }
 }
 
@@ -389,16 +456,16 @@ fn arg_dimension(t: &Type) -> DimensionVector {
 }
 
 /// Build a dimensioned-scalar result, routing the dimensionless case back to
-/// `Type::Real` (NOT `Scalar{DIMENSIONLESS}`).
+/// `Type::dimensionless_scalar()` (NOT `Scalar{DIMENSIONLESS}`).
 ///
 /// This is the load-bearing Scalar-vs-Real boundary: eval yields `Value::Real`
 /// for a dimensionless result and `Value::Scalar` for a dimensioned one, and
 /// `value_type_kind_matches(Value::Real, Scalar{DIMENSIONLESS})` is false — so a
-/// dimensionless arm MUST return `Type::Real` to keep the two-way boundary
+/// dimensionless arm MUST return `Type::dimensionless_scalar()` to keep the two-way boundary
 /// agreeing (task 4182 δ).
 fn scalar_or_real(dim: DimensionVector) -> Type {
     if dim.is_dimensionless() {
-        Type::Real
+        Type::dimensionless_scalar()
     } else {
         Type::Scalar { dimension: dim }
     }
@@ -409,13 +476,13 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
 /// - `ListLiteral(elems)` → `(elems.len(), elems[0].result_type)` — exact.
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
-///   possible, defaulting to `Type::Real`.
+///   possible, defaulting to `Type::dimensionless_scalar()`.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
         let quantity = elems
             .first()
             .map(|e| e.result_type.clone())
-            .unwrap_or(Type::Real);
+            .unwrap_or(Type::dimensionless_scalar());
         (elems.len(), quantity)
     } else {
         (0, innermost_list_element(&arg.result_type))
@@ -435,7 +502,7 @@ fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
         let quantity = cells
             .first()
             .map(|c| c.result_type.clone())
-            .unwrap_or(Type::Real);
+            .unwrap_or(Type::dimensionless_scalar());
         return (cells.len(), quantity);
     }
     (0, innermost_list_element(&arg.result_type))
@@ -457,10 +524,10 @@ fn innermost_list_element(t: &Type) -> Type {
 mod tests {
     use super::*;
 
-    /// The four construction-builtin names, frozen by the §3 contract. Local
-    /// fixture so a drift in `MATH_CONSTRUCTION_NAMES` is caught against an
-    /// independent list rather than against itself.
-    const EXPECTED_NAMES: [&str; 4] = ["vec", "matrix", "diag", "identity"];
+    /// The six construction-builtin names, frozen by the §3 contract (task 4622
+    /// adds vec3/vec2). Local fixture so a drift in `MATH_CONSTRUCTION_NAMES` is
+    /// caught against an independent list rather than against itself.
+    const EXPECTED_NAMES: [&str; 6] = ["vec", "matrix", "diag", "identity", "vec3", "vec2"];
 
     // ── Name-family contract (step-9 RED / step-10 GREEN) ────────────────────
 
@@ -516,13 +583,17 @@ mod tests {
         assert!(!is_math_typed_fn("Matrix"));
         assert!(!is_math_typed_fn("Diag"));
         assert!(!is_math_typed_fn("Identity"));
+        // task 4622 additions — PascalCase must not match.
+        assert!(!is_math_typed_fn("Vec3"));
+        assert!(!is_math_typed_fn("Vec2"));
     }
 
-    /// `MATH_CONSTRUCTION_NAMES` is exactly the four construction names —
-    /// membership both ways plus an exact count (so neither a missing nor an
-    /// extra name slips through).
+    /// `MATH_CONSTRUCTION_NAMES` is exactly the six construction names (vec,
+    /// matrix, diag, identity, vec3, vec2) — membership both ways plus an exact
+    /// count (so neither a missing nor an extra name slips through).
+    /// Task 4622 extends the original four-name set by adding vec3/vec2.
     #[test]
-    fn math_construction_names_are_exactly_the_four() {
+    fn math_construction_names_are_exactly_the_six() {
         assert_eq!(
             MATH_CONSTRUCTION_NAMES.len(),
             EXPECTED_NAMES.len(),
@@ -628,15 +699,92 @@ mod tests {
         assert!(!is_math_typed_fn("Complex"));
     }
 
+    // ── Transcendental name-family contract (task 4352) ──────────────────────
+
+    /// The §1.2 trig/transcendental builtin names frozen by the task-4352 probe.
+    /// Mirrors `EXPECTED_OPERATION_NAMES` for convention parity. Note: asserting
+    /// `MATH_TRANSCENDENTAL_NAMES == EXPECTED_TRANSCENDENTAL_NAMES` catches
+    /// accidental additions/deletions; substantive protection against a wrong
+    /// name in the slice comes from the recognition and disjointness tests.
+    const EXPECTED_TRANSCENDENTAL_NAMES: [&str; 9] = [
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log",
+    ];
+
+    /// `is_math_typed_fn` recognises every §1.2 trig/transcendental name.
+    #[test]
+    fn is_math_typed_fn_recognises_all_transcendental_names() {
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "is_math_typed_fn({name:?}) must be true (§1.2 trig/transcendental family, task 4352)"
+            );
+        }
+    }
+
+    /// Case-sensitivity invariant for the trig/transcendental family.
+    #[test]
+    fn is_math_typed_fn_transcendental_names_are_case_sensitive() {
+        assert!(!is_math_typed_fn("Sin"));
+        assert!(!is_math_typed_fn("Cos"));
+        assert!(!is_math_typed_fn("Exp"));
+        assert!(!is_math_typed_fn("Log"));
+        assert!(!is_math_typed_fn("Atan2"));
+    }
+
+    /// `MATH_TRANSCENDENTAL_NAMES` is exactly the 9 frozen §1.2 names —
+    /// membership both ways plus an exact count (convention parity with
+    /// `math_operation_names_are_exactly_the_frozen_set`; substantive
+    /// protection comes from the recognition and disjointness tests).
+    #[test]
+    fn math_transcendental_names_are_exactly_the_frozen_set() {
+        assert_eq!(
+            MATH_TRANSCENDENTAL_NAMES.len(),
+            EXPECTED_TRANSCENDENTAL_NAMES.len(),
+            "MATH_TRANSCENDENTAL_NAMES must hold exactly {} names, got {:?}",
+            EXPECTED_TRANSCENDENTAL_NAMES.len(),
+            MATH_TRANSCENDENTAL_NAMES
+        );
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                MATH_TRANSCENDENTAL_NAMES.contains(&name),
+                "MATH_TRANSCENDENTAL_NAMES must contain {name:?}"
+            );
+        }
+        for name in MATH_TRANSCENDENTAL_NAMES {
+            assert!(
+                EXPECTED_TRANSCENDENTAL_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES has unexpected entry {name:?} not in the frozen set"
+            );
+        }
+    }
+
+    /// All three families are recognised by `is_math_typed_fn` — construction,
+    /// operation, and trig/transcendental — as distinct sibling slices.
+    #[test]
+    fn is_math_typed_fn_recognises_construction_operation_and_transcendental_alike() {
+        for name in EXPECTED_NAMES {
+            assert!(is_math_typed_fn(name), "construction name {name:?} must resolve");
+        }
+        for name in EXPECTED_OPERATION_NAMES {
+            assert!(is_math_typed_fn(name), "operation name {name:?} must resolve");
+        }
+        for name in EXPECTED_TRANSCENDENTAL_NAMES {
+            assert!(
+                is_math_typed_fn(name),
+                "transcendental name {name:?} must resolve (task 4352)"
+            );
+        }
+    }
+
     // ── Result-type resolution (step-11 RED / step-12 GREEN) ─────────────────
 
     use reify_core::DimensionVector;
     use reify_core::identity::ValueCellId;
     use reify_ir::Value;
 
-    /// A dimensionless `Real` element expression (`result_type = Type::Real`).
+    /// A dimensionless `Real` element expression (`result_type = Type::dimensionless_scalar()`).
     fn real_elem(v: f64) -> CompiledExpr {
-        CompiledExpr::literal(Value::Real(v), Type::Real)
+        CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
     }
 
     /// A `Scalar<Length>` element expression.
@@ -664,12 +812,12 @@ mod tests {
     /// `Vector{n:3, quantity:Real}`.
     #[test]
     fn vec_result_type_dimensionless_is_vector_n3_real() {
-        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)], Type::Real);
+        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)], Type::dimensionless_scalar());
         assert_eq!(
             math_fn_result_type("vec", &[arg]),
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -690,18 +838,57 @@ mod tests {
         );
     }
 
+    // ── vec3/vec2 result-type tests (task 4622 S1 RED) ───────────────────────
+
+    /// (c-4622a) `vec3` over 3 dimensionless Real args →
+    /// `Vector{n:3, quantity:Real}` (n fixed from name, quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec3"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec3_result_type_dimensionless_is_vector_n3_real() {
+        let args = vec![real_elem(0.0), real_elem(0.0), real_elem(1.0)];
+        assert_eq!(
+            math_fn_result_type("vec3", &args),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar())
+            },
+            "vec3(0,0,1) must type as Vector{{n:3, quantity:Real}}"
+        );
+    }
+
+    /// (c-4622b) `vec2` over 2 `Scalar<Length>` args →
+    /// `Vector{n:2, quantity:Scalar<Length>}` (quantity from first arg).
+    ///
+    /// RED until S2 adds the `"vec2"` arm to `math_fn_result_type`.
+    #[test]
+    fn vec2_result_type_length_is_vector_n2_length() {
+        let len_ty = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        let args = vec![length_elem(1.0), length_elem(2.0)];
+        assert_eq!(
+            math_fn_result_type("vec2", &args),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(len_ty)
+            },
+            "vec2(1m, 2m) must type as Vector{{n:2, quantity:Scalar<Length>}}"
+        );
+    }
+
     /// (c) `matrix` over a depth-2 2×2 `ListLiteral` → `Tensor{rank:2, n:2, quantity:Real}`.
     #[test]
     fn matrix_result_type_2x2_is_tensor_rank2_n2_real() {
-        let row0 = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::Real);
-        let row1 = list_lit(vec![real_elem(3.0), real_elem(4.0)], Type::Real);
-        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::Real)));
+        let row0 = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::dimensionless_scalar());
+        let row1 = list_lit(vec![real_elem(3.0), real_elem(4.0)], Type::dimensionless_scalar());
+        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::dimensionless_scalar())));
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
                 rank: 2,
                 n: 2,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -709,13 +896,13 @@ mod tests {
     /// (d) `diag` over a 3-element `ListLiteral` → `Tensor{rank:2, n:3, quantity:Real}`.
     #[test]
     fn diag_result_type_is_tensor_rank2_n3_real() {
-        let arg = list_lit(vec![real_elem(3.0), real_elem(5.0), real_elem(7.0)], Type::Real);
+        let arg = list_lit(vec![real_elem(3.0), real_elem(5.0), real_elem(7.0)], Type::dimensionless_scalar());
         assert_eq!(
             math_fn_result_type("diag", &[arg]),
             Type::Tensor {
                 rank: 2,
                 n: 3,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -730,7 +917,7 @@ mod tests {
             Type::Tensor {
                 rank: 2,
                 n: 4,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -744,7 +931,7 @@ mod tests {
     fn vec_result_type_non_literal_arg_degrades_to_vector_not_list() {
         let arg = CompiledExpr::value_ref(
             ValueCellId::new("S", "x"),
-            Type::List(Box::new(Type::Real)),
+            Type::List(Box::new(Type::dimensionless_scalar())),
         );
         let result = math_fn_result_type("vec", &[arg]);
         assert!(
@@ -754,7 +941,7 @@ mod tests {
         match result {
             Type::Vector { quantity, .. } => assert_eq!(
                 *quantity,
-                Type::Real,
+                Type::dimensionless_scalar(),
                 "degraded Vector quantity should be recovered from the List element"
             ),
             other => panic!("expected a Type::Vector variant, got {other:?}"),
@@ -776,7 +963,7 @@ mod tests {
     fn matrix_result_type_non_literal_arg_degrades_to_tensor_not_list() {
         let arg = CompiledExpr::value_ref(
             ValueCellId::new("S", "m"),
-            Type::List(Box::new(Type::List(Box::new(Type::Real)))),
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
         );
         let result = math_fn_result_type("matrix", &[arg]);
         assert!(
@@ -794,7 +981,7 @@ mod tests {
     /// must STILL resolve to a rank-2 `Type::Tensor` variant, never `Type::List`.
     #[test]
     fn matrix_result_type_non_list_first_row_degrades_to_tensor_not_list() {
-        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::Real);
+        let arg = list_lit(vec![real_elem(1.0), real_elem(2.0)], Type::dimensionless_scalar());
         let result = math_fn_result_type("matrix", &[arg]);
         assert!(
             !matches!(result, Type::List(_)),
@@ -811,7 +998,7 @@ mod tests {
     #[test]
     fn diag_result_type_non_literal_arg_degrades_to_tensor_not_list() {
         let arg =
-            CompiledExpr::value_ref(ValueCellId::new("S", "d"), Type::List(Box::new(Type::Real)));
+            CompiledExpr::value_ref(ValueCellId::new("S", "d"), Type::List(Box::new(Type::dimensionless_scalar())));
         let result = math_fn_result_type("diag", &[arg]);
         assert!(
             !matches!(result, Type::List(_)),
@@ -840,7 +1027,7 @@ mod tests {
             ),
             (
                 "non-Int Literal(Real)",
-                CompiledExpr::literal(Value::Real(4.0), Type::Real),
+                CompiledExpr::literal(Value::Real(4.0), Type::dimensionless_scalar()),
             ),
         ];
         for (label, arg) in cases {
@@ -868,19 +1055,19 @@ mod tests {
         // 2 rows, 3 columns.
         let row0 = list_lit(
             vec![real_elem(1.0), real_elem(2.0), real_elem(3.0)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
         let row1 = list_lit(
             vec![real_elem(4.0), real_elem(5.0), real_elem(6.0)],
-            Type::Real,
+            Type::dimensionless_scalar(),
         );
-        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::Real)));
+        let arg = list_lit(vec![row0, row1], Type::List(Box::new(Type::dimensionless_scalar())));
         assert_eq!(
             math_fn_result_type("matrix", &[arg]),
             Type::Tensor {
                 rank: 2,
                 n: 3, // column count (3), NOT row count (2) — D5
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             },
             "non-square 2x3 matrix must project to n = column count = 3 (D5)"
         );
@@ -911,11 +1098,11 @@ mod tests {
         );
     }
 
-    /// sqrt of a dimensionless arg stays `Type::Real` (NOT Scalar{DIMENSIONLESS})
+    /// sqrt of a dimensionless arg stays `Type::dimensionless_scalar()` (NOT Scalar{DIMENSIONLESS})
     /// so the cell type matches the eval `Value::Real` under `value_type_kind_matches`.
     #[test]
     fn sqrt_of_real_is_real() {
-        assert_eq!(math_fn_result_type("sqrt", &[real_elem(4.0)]), Type::Real);
+        assert_eq!(math_fn_result_type("sqrt", &[real_elem(4.0)]), Type::dimensionless_scalar());
     }
 
     /// abs preserves a Scalar's dimension verbatim.
@@ -937,19 +1124,19 @@ mod tests {
         );
     }
 
-    /// sign is dimensionless regardless of arg → `Type::Real`.
+    /// sign is dimensionless regardless of arg → `Type::dimensionless_scalar()`.
     #[test]
     fn sign_is_real() {
-        assert_eq!(math_fn_result_type("sign", &[length_elem(1.0)]), Type::Real);
+        assert_eq!(math_fn_result_type("sign", &[length_elem(1.0)]), Type::dimensionless_scalar());
     }
 
-    /// pow is pinned to `Type::Real` (PRD §3 footnote — prevents the
+    /// pow is pinned to `Type::dimensionless_scalar()` (PRD §3 footnote — prevents the
     /// dimensioned-arg misread).
     #[test]
     fn pow_is_real() {
         assert_eq!(
             math_fn_result_type("pow", &[length_elem(1.0), real_elem(2.0)]),
-            Type::Real
+            Type::dimensionless_scalar()
         );
     }
 
@@ -968,7 +1155,7 @@ mod tests {
         );
         assert_eq!(
             math_fn_result_type("max", &[real_elem(1.0), real_elem(2.0)]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             "max(Real,Real) must stay Real (kind-preserving identity), not Scalar"
         );
     }
@@ -1036,7 +1223,7 @@ mod tests {
             math_fn_result_type("normalize", &[v]),
             Type::Vector {
                 n: 4,
-                quantity: Box::new(Type::Real)
+                quantity: Box::new(Type::dimensionless_scalar())
             }
         );
     }
@@ -1048,6 +1235,35 @@ mod tests {
         assert_eq!(
             math_fn_result_type("magnitude", &[v]),
             sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// magnitude of a Point3<Length> must return Scalar<Length>, not Real.
+    /// (vector_quantity_dimension must handle Type::Point in addition to Type::Vector.)
+    #[test]
+    fn magnitude_of_point3_is_quantity_scalar() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("magnitude", &[p]),
+            sca(DimensionVector::LENGTH)
+        );
+    }
+
+    /// dot/cross/outer pass through vector_quantity_dimension (via arg_vector_quantity),
+    /// so Point operands now yield the correct quantity dimension rather than DIMENSIONLESS.
+    /// dot(Point3<L>, Point3<L>) → Scalar<L²> — documents the widened scope of the helper.
+    #[test]
+    fn dot_of_point3_uses_point_quantity_dimension() {
+        let p = typed(Type::Point {
+            n: 3,
+            quantity: Box::new(sca(DimensionVector::LENGTH)),
+        });
+        assert_eq!(
+            math_fn_result_type("dot", &[p.clone(), p]),
+            sca(DimensionVector::LENGTH.mul(&DimensionVector::LENGTH))
         );
     }
 
@@ -1118,7 +1334,7 @@ mod tests {
     /// When the matrix shape N is NOT statically known (`arg_matrix_n` → 0, e.g.
     /// a shape-erased `Tensor{n:0}` from `matrix(non_literal_rows)`) but the
     /// quantity IS dimensioned, the result must stay a `Type::Scalar` variant —
-    /// NEVER collapse to `Type::Real` via `Q.pow(0)` = DIMENSIONLESS. Eval
+    /// NEVER collapse to `Type::dimensionless_scalar()` via `Q.pow(0)` = DIMENSIONLESS. Eval
     /// operates on the concrete matrix and yields a dimensioned
     /// `Value::Scalar<Q^N>`, so a `Real` cell type would kind-flip and risk a
     /// runtime `TypeKindMismatch` (the D7 hazard). The exponent is unrecoverable
@@ -1140,7 +1356,7 @@ mod tests {
     }
 
     /// The dimensionless companion to the degrade case: unknown N AND a
-    /// dimensionless matrix must stay `Type::Real` (eval yields `Value::Real` for
+    /// dimensionless matrix must stay `Type::dimensionless_scalar()` (eval yields `Value::Real` for
     /// a dimensionless determinant), so the degrade must NOT over-correct EVERY
     /// unknown-N case to Scalar — only the dimensioned one.
     #[test]
@@ -1148,7 +1364,7 @@ mod tests {
         let m = typed(ten_real(0));
         assert_eq!(
             math_fn_result_type("determinant", &[m]),
-            Type::Real,
+            Type::dimensionless_scalar(),
             "determinant with unknown N and dimensionless Q must stay Real"
         );
     }
@@ -1201,7 +1417,7 @@ mod tests {
         Type::Tensor {
             rank: 2,
             n,
-            quantity: Box::new(Type::Real),
+            quantity: Box::new(Type::dimensionless_scalar()),
         }
     }
 
@@ -1223,7 +1439,7 @@ mod tests {
     fn eigenvalues_of_dimensionless_matrix_is_list_of_real() {
         assert_eq!(
             math_fn_result_type("eigenvalues", &[typed(ten_real(3))]),
-            Type::List(Box::new(Type::Real))
+            Type::List(Box::new(Type::dimensionless_scalar()))
         );
     }
 
@@ -1243,7 +1459,7 @@ mod tests {
     fn complex_eigenvalues_of_dimensionless_matrix_is_list_of_complex_real() {
         assert_eq!(
             math_fn_result_type("complex_eigenvalues", &[typed(ten_real(3))]),
-            Type::List(Box::new(Type::Complex(Box::new(Type::Real))))
+            Type::List(Box::new(Type::Complex(Box::new(Type::dimensionless_scalar()))))
         );
     }
 
@@ -1290,7 +1506,7 @@ mod tests {
     fn complex_of_reals_is_complex_real() {
         assert_eq!(
             math_fn_result_type("complex", &[real_elem(1.0), real_elem(2.0)]),
-            Type::Complex(Box::new(Type::Real))
+            Type::Complex(Box::new(Type::dimensionless_scalar()))
         );
     }
 
@@ -1342,5 +1558,74 @@ mod tests {
         let z = typed(Type::Complex(Box::new(sca(DimensionVector::LENGTH))));
         assert_eq!(math_fn_result_type("phase", std::slice::from_ref(&z)), Type::angle());
         assert_eq!(math_fn_result_type("arg", &[z]), Type::angle());
+    }
+
+    // ── Transcendental result-type contract (task 4352) ──────────────────────
+
+    /// `asin`/`acos`/`atan`/`atan2` return `Type::angle()` regardless of the
+    /// argument dimension. LOAD-BEARING: without the step-4 arm these hit the
+    /// `_ => dimensionless_scalar()` fallback, which is wrong (ANGLE ≠ DIMENSIONLESS).
+    #[test]
+    fn asin_acos_atan_atan2_are_angle() {
+        let r = real_elem(0.5);
+        assert_eq!(
+            math_fn_result_type("asin", std::slice::from_ref(&r)),
+            Type::angle(),
+            "asin must return Type::angle()"
+        );
+        assert_eq!(
+            math_fn_result_type("acos", std::slice::from_ref(&r)),
+            Type::angle(),
+            "acos must return Type::angle()"
+        );
+        assert_eq!(
+            math_fn_result_type("atan", std::slice::from_ref(&r)),
+            Type::angle(),
+            "atan must return Type::angle()"
+        );
+        // atan2 takes two args
+        assert_eq!(
+            math_fn_result_type("atan2", &[real_elem(1.0), real_elem(1.0)]),
+            Type::angle(),
+            "atan2 must return Type::angle()"
+        );
+    }
+
+    /// `sin`/`cos`/`tan`/`exp`/`log` return a dimensionless Scalar. The contract
+    /// is arg-INDEPENDENT: sin/cos/tan are passed an ANGLE arg (proof of
+    /// dimension-independence — a first-arg fallback would give Scalar<ANGLE>).
+    /// exp/log use a Real arg (contract pin; they Undef on a dimensioned arg in
+    /// eval, so dimensionless is the correct call-site). GREEN-stable via the
+    /// `_ => dimensionless_scalar()` fallback; the step-4 explicit arms are
+    /// defensive-only — no test can distinguish them from the fallback (both
+    /// yield `Type::dimensionless_scalar()`), but they state the intent explicitly.
+    #[test]
+    fn sin_cos_tan_exp_log_are_real() {
+        let angle_arg = typed(sca(DimensionVector::ANGLE));
+        assert_eq!(
+            math_fn_result_type("sin", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "sin(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("cos", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "cos(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("tan", std::slice::from_ref(&angle_arg)),
+            Type::dimensionless_scalar(),
+            "tan(Angle) must return a dimensionless Scalar (not Scalar<ANGLE>)"
+        );
+        assert_eq!(
+            math_fn_result_type("exp", &[real_elem(2.0)]),
+            Type::dimensionless_scalar(),
+            "exp must return a dimensionless Scalar"
+        );
+        assert_eq!(
+            math_fn_result_type("log", &[real_elem(std::f64::consts::E)]),
+            Type::dimensionless_scalar(),
+            "log must return a dimensionless Scalar"
+        );
     }
 }

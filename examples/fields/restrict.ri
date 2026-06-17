@@ -1,0 +1,47 @@
+// Fixture: restrict(Field<Point3<Length>,Real>, Solid) -> Field<Point3<Length>,Real>
+// (task 4222, std.fields δ, PRD docs/prds/v0_6/std-fields-api.md §5.3 / B5)
+//
+// User-observable signals (B5):
+//   sample(restricted, point3(0mm,0mm,0mm))   == 42.0  (centre, inside [-5,5]^3)
+//   sample(restricted, point3(20mm,0mm,0mm))  == Undef (outside, far from box)
+//
+// Box geometry: 10 mm × 10 mm × 10 mm centred at origin → faces at ±5 mm.
+//
+// Arg-shape contract (mirrors contains_box.ri §4 invariant):
+//   The region arg to restrict() must be a ValueRef (let-bound cell) so the
+//   GeometryHandle is hydrated into the value map before sample-time containment.
+//   Inline geometry args do not hydrate and yield Undef from the containment check.
+//
+// Unit-qualification contract:
+//   Sample points must carry LENGTH dimensions (0mm, 20mm), not bare dimensionless
+//   0 — matching the resolve_point3_length_arg contract in engine_eval.rs.
+//
+// Pinning test:
+//   crates/reify-eval/tests/fields_restrict_e2e.rs::
+//     restrict_field_b5_integration
+
+// ── Analytical field (Point3<Length> -> Real) ─────────────────────────────────
+
+// A constant field returning 42.0 everywhere in 3-D space.
+// The lambda ignores its Point3 argument — any inside point evaluates to 42.0.
+field def base_field : Point3 -> Real { source = analytical { |p| 42.0 } }
+
+// ── Structure exercising restrict() ───────────────────────────────────────────
+
+structure def RestrictField {
+    // Let-bind the region so it hydrates as a GeometryHandle value before
+    // sample-time containment. Inline box() args do not hydrate (arg-shape
+    // contract above); let-binding is mandatory for restrict() to work.
+    let region = box(10mm, 10mm, 10mm)
+
+    // Restricted field: samples base_field inside the box, Undef outside.
+    let restricted = restrict(base_field, region)
+
+    // Query points — let-bound so the point Value is available at sample time.
+    let inside_pt  = point3(0mm, 0mm, 0mm)   // centre, strictly inside → 42.0
+    let outside_pt = point3(20mm, 0mm, 0mm)  // far outside             → Undef
+
+    // Sample the restricted field at each point.
+    let v_in  = sample(restricted, inside_pt)   // expected: 42.0
+    let v_out = sample(restricted, outside_pt)  // expected: Undef
+}

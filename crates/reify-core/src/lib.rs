@@ -20,6 +20,7 @@
 
 pub mod diagnostics;
 pub mod dimension;
+pub mod field_calculus;
 pub mod kernel;
 pub mod hash;
 pub mod identity;
@@ -39,6 +40,7 @@ pub use diagnostics::{
     SourceSpan,
 };
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
+pub use field_calculus::{DifferentialOp, differential_codomain};
 pub use hash::ContentHash;
 pub use identity::{
     ComputeNodeId, ConstraintNodeId, EntityPath, FIELD_ENTITY_PREFIX, LOCATED_PORT_TRAIT,

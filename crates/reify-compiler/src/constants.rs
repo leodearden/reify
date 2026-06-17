@@ -44,16 +44,16 @@ pub(crate) fn resolve_builtin_constant(name: &str) -> Option<CompiledExpr> {
     match name {
         "pi" => Some(CompiledExpr::literal(
             Value::Real(std::f64::consts::PI),
-            Type::Real,
+            Type::dimensionless_scalar(),
         )),
         "tau" => Some(CompiledExpr::literal(
             Value::Real(std::f64::consts::TAU),
-            Type::Real,
+            Type::dimensionless_scalar(),
         )),
         // e = Euler's number, dimensionless Real
         "e" => Some(CompiledExpr::literal(
             Value::Real(std::f64::consts::E),
-            Type::Real,
+            Type::dimensionless_scalar(),
         )),
         _ => None,
     }

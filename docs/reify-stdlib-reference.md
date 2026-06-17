@@ -127,6 +127,12 @@ fn tanh(x: Real) -> Real
 
 Trig functions take `Angle` (not `Real`), enforcing the 8th-dimension distinction.
 
+**`Real` vs `Dimensionless` — style guide:** `Real` and `Dimensionless` are the same type (`Scalar<Dimensionless>` at the type layer); both spellings are interchangeable everywhere. The project convention is connotation-only:
+- Use `Real` for plain numbers — trig results (`sin` → `Real`), math-constant returns, and quantities that are conceptually just numbers with no physical-ratio meaning.
+- Use `Dimensionless` for physical/derived ratios — strain (`ΔL/L`), unit-vector components (`Length/Length`), efficiency (`Power_out/Power_in`), and similar quantities where the "dimensionless" origin is meaningful.
+
+Neither spelling is wrong. The distinction is documentation intent, not type enforcement.
+
 ### 1.3 `std.math.linalg`
 
 ```
@@ -346,7 +352,13 @@ fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
 fn sphere(radius: Length) -> Solid
 fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
-fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+
+// Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
+// fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
+
+// Planned — not yet implemented (Bounded=false producer, tracked by task 3466);
+// see PRD docs/prds/geometry-primitive-constructors.md §"Out of scope"
+// fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
 ```
 
 **2D shapes:**
@@ -367,7 +379,9 @@ fn helix(radius: Length, pitch: Length, height: Length) -> Curve
 fn interp<N: Nat>(points: List<Point<N,Length>>) -> Curve
 fn bezier<N: Nat>(control_points: List<Point<N,Length>>) -> Curve
 fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, knots: List<Real>, degree: Int) -> Curve
-fn nurbs_surface(/* NURBS surface parameters */) -> Surface
+
+// Planned — not yet implemented; standalone feature; see PRD docs/prds/geometry-primitive-constructors.md
+// fn nurbs_surface(/* NURBS surface parameters */) -> Surface
 ```
 
 ### 3.3 `std.geometry.compound`
@@ -638,8 +652,15 @@ trait Port {
 
 enum Directionality { In, Out, Bidi }
 
+structure def Frame3 {
+    param origin : Vector3<Length>
+    param x_axis : Vector3<Length>
+    param y_axis : Vector3<Length>
+    param z_axis : Vector3<Length>
+}
+
 trait LocatedPort : Port {
-    param frame : Frame<3>
+    param frame : Frame3
 }
 
 trait RegionPort : LocatedPort {
@@ -653,27 +674,14 @@ Compatibility rules: `In` <-> `Out` (valid), `Bidi` <-> anything (valid), `In` <
 
 ```
 trait MechanicalPort : LocatedPort {
-    param max_load : Force = undef
-    param max_torque : Torque = undef
+    param max_load : Option<Force> = none
+    param max_torque : Option<Torque> = none
 }
 
-trait MatingFace : MechanicalPort {
-    param contact_area : Area
-    param surface_finish : Length
-    param flatness : Length
-}
-
-trait Bore : MechanicalPort {
-    param diameter : Length
-    param depth : Length
-    param fit : FitType
-}
-
-trait Shaft : MechanicalPort {
-    param diameter : Length
-    param length : Length
-    param fit : FitType
-}
+// MatingFace + parameterized Bore/Shaft (diameter/depth/fit:FitType) not yet shipped — bare markers today
+trait Bore : MechanicalPort {}
+trait Shaft : MechanicalPort {}
+trait StructurePort : MechanicalPort {}
 
 trait ThreadedPort : MechanicalPort {
     param thread_spec : ThreadSpec
@@ -683,13 +691,14 @@ structure def ThreadSpec {
     param system : ThreadSystem
     param nominal_diameter : Length
     param pitch : Length
-    param class : ThreadClass
-    param direction : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
-    let clearance_hole = ...    // from standards tables
-    let tap_drill = ...
-    let minor_diameter = ...
-    let pitch_diameter = ...
-    param thread_form : Geometry = undef
+    param thread_class : ThreadClass
+    param tightening : ThreadTighteningDirection = ThreadTighteningDirection.Clockwise
+    param thread_form : Option<Geometry> = none
+
+    let minor_diameter = nominal_diameter - pitch * 1.0825
+    let pitch_diameter = nominal_diameter - pitch * 0.6495
+    let tap_drill = nominal_diameter - pitch
+    let clearance_hole = nominal_diameter + pitch * 0.5
 }
 
 enum ThreadSystem { ISO_Metric, ISO_Metric_Fine, UNC, UNF }
@@ -700,13 +709,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Axis
+    param axis : Vector3<Length>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Axis
+    param axis : Vector3<Length>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int
@@ -732,10 +741,10 @@ trait PowerPort : ElectricalPort {
     param power_rating : Power
 }
 trait SignalPort : ElectricalPort {
-    param signal_type : SignalType
-    param impedance : Resistance = undef
+    param signal_kind : SignalKind
+    param impedance : Option<Resistance> = none
 }
-enum SignalType { Analog, Digital, PWM, Differential }
+enum SignalKind { Analog, Digital, PWM, Differential }
 trait PinPort : ElectricalPort + LocatedPort {
     param pin_id : String
 }
@@ -744,26 +753,34 @@ trait PinPort : ElectricalPort + LocatedPort {
 ### 5.4 `std.ports.thermal`
 
 ```
+pub type HeatFlux = Power / Area
+pub type ThermalResistance = Temperature / Power
+
 trait ThermalPort : Port {
-    param temperature : Temperature = undef
-    param heat_flux : HeatFlux = undef
-    param thermal_resistance : Resistance = undef   // thermal resistance (dimension: Temperature*Time^3/(Mass*Length^2))
+    param temperature : Option<Temperature> = none
+    param heat_flow : Power
+    param heat_flux : Option<HeatFlux> = none
+    param thermal_resistance : Option<ThermalResistance> = none
 }
 trait ThermalContactPort : ThermalPort + RegionPort {
     param contact_area : Area
-    param contact_conductance : ThermalConductivity = undef
+    param contact_conductance : Option<ThermalConductivity> = none
 }
 ```
 
 ### 5.5 `std.ports.fluid`
 
 ```
+pub type VolumetricFlowRate = Volume / Time
+
 trait FluidPort : Port {
-    param pressure_range : Range<Pressure>
-    param flow_rate_range : Range<Scalar<Volume/Time>>
+    param pressure : Pressure
+    param flow_rate : VolumetricFlowRate
+    param medium : String
     param fluid_type : FluidType
 }
 enum FluidType { Liquid, Gas, TwoPhase }
+enum FittingStandard { NPT, BSP, JIC, ORFS }
 trait PipedFluidPort : FluidPort + LocatedPort {
     param inner_diameter : Length
     param connection_type : PipeConnectionType
@@ -1057,7 +1074,7 @@ trait Process {
 
 ```
 trait Subtracting : Process {
-    param tool_access : Geometry
+    param tool_access : Solid
     param min_feature_size : Length
     param achievable_finish : Length
 }
@@ -1065,6 +1082,7 @@ trait Adding : Process {
     param layer_thickness : Length
     param min_feature_size : Length
     param build_volume : Solid
+    param max_overhang_angle : Angle
 }
 trait Forming : Process {
     param min_bend_radius : Length
@@ -1092,11 +1110,91 @@ trait HeatTreating : Process {
 **DFM framework:**
 
 ```
+enum DFMSeverity { Info, Warning, Error }
+
 trait DFMRule {
-    param subject : Structure
-    param process : Process
+    param rule_name  : String
+    param severity   : DFMSeverity
+    param applies_to : Process
+    param subject    : Solid
 }
 ```
+
+At `reify check` time (with a geometry kernel), the engine realizes each
+`DFMRule.subject : Solid` and auto-measures it against the bound process
+capability — no hand-declared measured feature:
+
+- **`Adding.max_overhang_angle`** → emits `{I,W,E}_DFM_OVERHANG` at the
+  rule's declared `severity` when the solid has unsupported faces dipping
+  beyond the threshold. Default build direction: +Z.
+- **`Forming.draft_angle`** → emits `{I,W,E}_DFM_DRAFT` at the rule's
+  declared `severity` when wall-face draft is insufficient. Also emits
+  `E_DFM_UNDERCUT` (always `Error`, regardless of rule severity) when a
+  re-entrant wall is detected. Default pull direction: +Z.
+
+When no geometry kernel is present, the pass is a safe no-op — Indeterminate,
+never a false violation.
+
+See `examples/process/std_process_dfm_metrology.ri` for a complete worked
+example covering overhang, draft, undercut, and a conforming rule that emits
+nothing.
+
+**DFM constraint defs:**
+
+Alongside the auto-measurement pass above, `std.process` ships a **declarative
+DFM engine**: `pub constraint def`s over declared process-capability params and
+cheaply-measured design values, backed by the `fits_build_volume` bbox
+comparator (§3.10).
+
+```
+// Universal scalar manufacturability check: measured >= capability.
+pub constraint def Manufacturable {
+    param measured   : Length
+    param capability : Length
+    measured >= capability
+}
+
+// Subtracting — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FeatureManufacturable {
+    param proc    : Subtracting
+    param feature : Length
+    feature >= proc.min_feature_size
+}
+
+// Forming — pure-scalar; evaluates to Satisfied/Violated without a kernel.
+pub constraint def BendManufacturable {
+    param proc        : Forming
+    param bend_radius : Length
+    bend_radius >= proc.min_bend_radius
+}
+pub constraint def DrawManufacturable {
+    param proc       : Forming
+    param draw_depth : Length
+    draw_depth <= proc.max_draw_depth
+}
+pub constraint def DraftManufacturable {
+    param proc  : Forming
+    param draft : Angle
+    draft >= proc.draft_angle
+}
+
+// Adding — geometry-backed (requires OCCT kernel for bounding_box).
+pub constraint def FitsBuildVolume {
+    param proc : Adding
+    param part : Solid
+    fits_build_volume(bounding_box(part), bounding_box(proc.build_volume))
+}
+```
+
+The scalar defs (`Manufacturable`, `BendManufacturable`, `DrawManufacturable`,
+`DraftManufacturable`) evaluate to definite Satisfied/Violated under plain
+`reify check` (no geometry kernel required). The geometry-backed defs
+(`FeatureManufacturable`, `FitsBuildVolume`) require the OCCT kernel to resolve
+`bounding_box(solid)`; without one they are Indeterminate. `fits_build_volume`
+emits a build-volume DFM diagnostic (`{I,W,E}_DFM_BUILD_VOLUME`) at the severity
+named by its optional third `DFMSeverity` argument (default `Warning`).
+See `examples/process/std_process_dfm.ri` for a worked example of the
+declarative scalar + build-volume surface.
 
 ---
 
@@ -1236,7 +1334,9 @@ fn max_shear(stress: Field<Point3<Length>, Tensor<2, 3, Pressure>>) -> Field<Poi
 **Interpolation (`std.fields.interpolation`):**
 
 ```
-enum InterpolationMethod { Linear, Bilinear, Trilinear, NearestNeighbor, RBF, Kriging }
+enum InterpolationMethod { Linear, NearestNeighbor, Cubic, RBF, Kriging }
+// Linear, NearestNeighbor, and Cubic are supported by from_samples.
+// RBF and Kriging emit E_INTERP_METHOD_UNSUPPORTED (hard error at eval time).
 
 fn constant_field<D, C>(value: C) -> Field<D, C>
 fn fn_field<D, C>(f: fn(D) -> C) -> Field<D, C>
@@ -1246,7 +1346,8 @@ fn from_samples<D, C>(points: List<D>, values: List<C>, method: InterpolationMet
 **Spatial operations (`std.fields.spatial`):**
 
 ```
-fn compose<A, B, C>(f: Field<A, B>, g: Field<B, C>) -> Field<A, C>
+fn compose<A, B, C>(f: Field<B, C>, g: Field<A, B>) -> Field<A, C>
+// compose(f, g)(p) = f(g(p))  — applies g first, then f.
 fn sample<D, C>(field: Field<D, C>, at: D) -> C
 fn restrict<D, C, G: Geometry>(field: Field<D, C>, region: G) -> Field<D, C>
 fn clamp_field<D, Q: Dimension>(field: Field<D, Scalar<Q>>, lo: Scalar<Q>, hi: Scalar<Q>) -> Field<D, Scalar<Q>>
@@ -1280,12 +1381,49 @@ fn undetermined(param_ref) -> Bool
 fn partially_determined(param_ref) -> Bool    // constrained && !determined
 ```
 
-**Utility constraints:**
+**Purpose-body intrinsics (compiler-recognized, valid ONLY inside a `purpose` body):**
 
 ```
-constraint def AllParamsDetermined { ... }      // Compiler intrinsic -- walks all params
-constraint def AllGeometryDetermined { ... }     // Compiler intrinsic -- walks all Geometry-typed params
-constraint def RepresentationWithin { ... }      // Asserts geometry realizations within tolerance
+AllParamsDetermined(subject : Structure)
+// Compiler intrinsic — desugars at compile time to:
+//   forall __p in subject.params: determined(__p)
+// Valid ONLY inside a purpose body; used elsewhere → E_DETERMINACY_INTRINSIC_SCOPE.
+
+AllGeometryDetermined(subject : Structure)
+// Compiler intrinsic — desugars at compile time to:
+//   forall __p in subject.geometric_params: determined(__p)
+// Valid ONLY inside a purpose body; used elsewhere → E_DETERMINACY_INTRINSIC_SCOPE.
+```
+
+Both intrinsics are recognized by the compiler and transformed into reflective `forall`
+quantifiers over the subject's param set at compile time (PRD §8.1).  They are **not**
+ordinary `constraint def` declarations — a `constraint def` cannot take a `Structure`
+entity-ref, and `.params` / `.geometric_params` reflective queries are valid only in
+purpose bodies.
+
+**`RepresentationWithin` — post-realization assertion:**
+
+`RepresentationWithin(subject, bound)` is a structural constraint placed directly in a
+structure body.  It asserts that the **sampled facet-chord deviation** of the realized
+mesh for `subject` does not exceed `bound` (a `Length` value).
+
+Semantics (three-valued, evaluated after `tessellate_realizations`):
+
+- **Satisfied** — maximum sampled facet-chord deviation ≤ `bound`.
+- **Violated** — at least one sampled facet-chord deviation > `bound`.
+- **Indeterminate** — `subject` was not realized (stub build without OCCT, or
+  realization not requested) → never a false `Violated` (C1 graceful degradation).
+
+> **PRD §8.3 caveat — sampled lower bound:** the metric is a sampled lower bound on the
+> true Hausdorff chord error (4 interior sample points per facet).  `Satisfied` means
+> "no sampled point exceeded the bound" — it is **not** an everywhere-within-tolerance
+> guarantee.  Use a finer `#precision` directive to reduce the measurement gap.
+
+```
+structure CheckSpec {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 1mm)  // Violated if sampled deviation > 1mm
+}
 ```
 
 **Example purposes (`std.determinacy.purposes`):**

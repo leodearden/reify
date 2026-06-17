@@ -15,7 +15,7 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticLabel};
+use reify_core::{Diagnostic, DiagnosticLabel, Type};
 
 use crate::CompiledModule;
 use crate::annotations::{
@@ -74,28 +74,40 @@ fn compile_constraint_def(
     let type_param_names: std::collections::HashSet<String> =
         type_params.iter().map(|tp| tp.name.clone()).collect();
 
-    // Compile each param: resolve the cell type for its diagnostic side-effect (catches
-    // typoed param types at def-compile time), then keep only the name/default/span.
-    // The resolved type is not stored because entity.rs only reads `param.name` and
-    // `param.default` at instantiation time; storing it would be dead weight.
+    // Compile each param: resolve the declared type for two purposes:
+    // 1. Diagnostic side-effect: catch typoed param types at def-compile time
+    //    (so users see the error early, not at the instantiation site).
+    // 2. Store the resolved type on `CompiledConstraintParam.ty` so that
+    //    `expand_constraint_inst` can check arg types at instantiation time
+    //    (task 4546 — previously the resolved type was discarded as dead weight,
+    //    per the former comment at lines 77-80, but instantiation-site type
+    //    checking now needs it).
+    // `None` (never `Type::Error`) is stored when the param is unannotated or
+    // resolution fails; type resolution failure is already diagnosed below.
     let params: Vec<CompiledConstraintParam> = c
         .params
         .iter()
         .map(|param| {
+            // Hoist the resolve call: bind the result so we can (a) check it for
+            // the typo diagnostic and (b) store it on CompiledConstraintParam.ty.
+            let resolved_ty: Option<Type> =
+                param.type_expr.as_ref().and_then(|te| {
+                    resolve_type_expr_with_aliases(
+                        te,
+                        &type_param_names,
+                        alias_registry,
+                        diagnostics,
+                        structure_names,
+                        trait_names,
+                    )
+                });
+
             // Resolve the param type: if resolution returns None for a Named type that is
             // neither a builtin nor a declared type parameter, the name is unknown — emit
             // an error so the user sees the typo at def-compile time rather than silently
             // accepting it and getting a confusing error at the instantiation site.
             if let Some(te) = &param.type_expr
-                && resolve_type_expr_with_aliases(
-                    te,
-                    &type_param_names,
-                    alias_registry,
-                    diagnostics,
-                    structure_names,
-                    trait_names,
-                )
-                .is_none()
+                && resolved_ty.is_none()
                 && let reify_ast::TypeExprKind::Named { name, .. } = &te.kind
                 && resolve_enum_type(name, enum_defs).is_none()
                 && !structure_names.contains(name.as_str())
@@ -110,10 +122,16 @@ fn compile_constraint_def(
                     .with_label(DiagnosticLabel::new(te.span, "unknown type")),
                 );
             }
+            // Store resolved_ty as None if Type::Error (should not happen in
+            // practice — resolve_type_expr_with_aliases returns None on failure,
+            // not Type::Error — but guard defensively so type_compatible's
+            // debug_assert!(!param_ty.is_error()) can never fire via this path).
+            let ty = resolved_ty.filter(|t| !t.is_error());
             CompiledConstraintParam {
                 name: param.name.clone(),
                 default: param.default.clone(),
                 span: param.span,
+                ty,
             }
         })
         .collect();

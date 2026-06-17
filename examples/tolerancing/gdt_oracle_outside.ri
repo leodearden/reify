@@ -1,0 +1,55 @@
+// gdt_oracle_outside.ri — B5 query-vs-boolean oracle cross-check: OUTSIDE case
+//   (task 4481 θ, GD&T geometric-zones PRD §9 B5)
+//
+// Validates that max_deviation (query oracle) and volume(difference) (boolean
+// oracle) AGREE on an "outside" verdict: actual translated d=0.5mm in X,
+// zone grown by t=0.1mm on every side → d > t → both oracles = OUTSIDE.
+//
+// Geometry setup (identical to gdt_oracle_inside.ri except d=0.5mm):
+//   nominal  = box(10mm, 10mm, 10mm)     — centered at origin, ±5mm per axis
+//   actual   = translate(nominal, 0.5mm, 0mm, 0mm) — shifted 0.5mm in X
+//   zone     = box(10.2mm, 10.2mm, 10.2mm) — centered at origin, ±5.1mm per axis
+//
+// Oracle derivations (analytic):
+//   Query oracle: dev = max_deviation(actual, nominal)
+//     Planar-face translate → max deviation = |d| = 0.5mm = 5e-4 m
+//     Verdict: dev ≥ t = 0.1mm = 1e-4 m  → OUTSIDE ✓
+//
+//   Boolean oracle: diff = difference(actual, zone); pokeout = volume(diff)
+//     actual X range: −4.5mm..5.5mm; zone X range: −5.1mm..5.1mm
+//     Poke-out: the strip from 5.1mm to 5.5mm (= 0.4mm = d − t) in X
+//     Volume = (d − t) · face_area = 0.4mm · (10mm)² = 0.4e-3 · 1e-4 m³ ≈ 4e-8 m³
+//     Verdict: pokeout ≥ FLOOR = 1e-9 m³ → OUTSIDE ✓
+//     FLOOR derivation: 4e-8 m³ / 1e-9 m³ ≈ 40× margin (G6: floor-bounded, not tuned).
+//
+//   Agreement: both oracles say OUTSIDE BY CONSTRUCTION.
+//   Near-coincident booleans (d ≈ t) excluded by design (PRD §4 fragile case).
+//
+// `reify eval` output (under OCCT):
+//   GdtOracleOutside.dev    ≈ 5e-04 m   (max_deviation = d exactly)
+//   GdtOracleOutside.pokeout ≈ 4e-08 m^3 (poke-out strip volume)
+//
+// Kernel-free: `dev` and `pokeout` resolve to `undef`; eval still exits 0.
+
+structure GdtOracleOutside {
+    // ── Nominal feature and as-built actual ──────────────────────────────────
+    // nominal: 10mm cube centered at origin (box() is centered: corner at −w/2,−h/2,−d/2).
+    let nominal = box(10mm, 10mm, 10mm)
+    // actual: same cube shifted 0.5mm in X (d = 0.5mm > t = 0.1mm → OUTSIDE).
+    let actual  = translate(nominal, 0.5mm, 0mm, 0mm)
+
+    // ── Containment zone (SOLID outer boundary) ───────────────────────────────
+    // zone = nominal grown by t=0.1mm on every side.
+    // Identical to gdt_oracle_inside.ri — the zone does not change between tests.
+    let zone = box(10.2mm, 10.2mm, 10.2mm)
+
+    // ── Query oracle: max_deviation(actual, nominal) → Scalar<Length> ─────────
+    // For an axis-aligned planar-face translate of d=0.5mm: deviation = d exactly.
+    let dev = max_deviation(actual, nominal)
+
+    // ── Boolean oracle: volume(difference(actual, zone)) → Scalar<Volume> ─────
+    // diff = actual − zone = the poke-out strip (5.1mm..5.5mm in X, full Y/Z).
+    // Volume = 0.4mm · 10mm · 10mm = 4e-8 m³ ≫ FLOOR = 1e-9 m³ → OUTSIDE.
+    let diff    = difference(actual, zone)
+    let pokeout = volume(diff)
+}

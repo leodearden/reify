@@ -21,7 +21,7 @@ impl UnresolvedKind {
     }
 }
 
-/// Emit a pass-2 "unresolved name" ICE diagnostic and return `Type::Real` as
+/// Emit a pass-2 "unresolved name" ICE diagnostic and return `Type::dimensionless_scalar()` as
 /// the established fallback.
 ///
 /// This centralises the three structurally identical ICE patterns in `entity.rs` and
@@ -54,7 +54,7 @@ pub(crate) fn emit_ice_unresolved(
             "ICE: name should have been registered in pass 1",
         )),
     );
-    Type::Real
+    Type::dimensionless_scalar()
 }
 
 #[cfg(test)]
@@ -127,7 +127,7 @@ mod tests {
     fn emit_ice_unresolved_returns_type_real() {
         let mut diags: Vec<Diagnostic> = vec![];
         let ty = emit_ice_unresolved(UnresolvedKind::Name, "x", SourceSpan::empty(0), &mut diags);
-        assert_eq!(ty, Type::Real);
+        assert_eq!(ty, Type::dimensionless_scalar());
     }
 
     #[test]

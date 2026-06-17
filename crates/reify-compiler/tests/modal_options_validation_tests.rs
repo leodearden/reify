@@ -30,7 +30,7 @@
 use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
-use reify_test_support::collect_value_ref_members;
+use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
-    let expected: &[(&str, Type)] = &[("alpha", Type::Real), ("beta", Type::Real)];
+    let expected: &[(&str, Type)] = &[("alpha", Type::dimensionless_scalar()), ("beta", Type::dimensionless_scalar())];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
         assert_eq!(
@@ -313,8 +313,8 @@ fn rayleigh_damping_param_shape() {
 /// Mode; see plan.json design-decision-6) must declare exactly the four
 /// PRD §4.1 params with the canonical types:
 ///
-///   - `frequency          : Real`                 (placeholder for Scalar<Frequency>;
-///                                                  encoded as Real per plan design-decision-3)
+///   - `frequency          : Frequency`            (natural frequency, = s⁻¹;
+///                                                  tightened from the Real placeholder in task 4548)
 ///   - `shape              : List<Vector3<Dimensionless>>`  (mass-normalized eigenvector;
 ///                                                  dimensionless under Φᵀ·M·Φ = I — NOT a placeholder)
 ///   - `participation_mass : Real`                 (effective modal mass along reference direction)
@@ -340,13 +340,23 @@ fn mode_struct_has_correct_param_shape() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("frequency", Type::Real),
+        // `Mode.frequency` tightened from the `Real` PLACEHOLDER to the
+        // registered `Frequency` named dimension (= s⁻¹) — task 4548.
+        (
+            "frequency",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
         (
             "shape",
             Type::List(Box::new(Type::vec3(Type::dimensionless_scalar()))),
         ),
-        ("participation_mass", Type::Real),
-        ("damping_ratio", Type::Real),
+        // participation_mass / damping_ratio remain dimensionless-scalar
+        // placeholders (out of scope for task 4548's Mode.frequency tightening;
+        // adopt main's Type::Real → dimensionless_scalar() sweep).
+        ("participation_mass", Type::dimensionless_scalar()),
+        ("damping_ratio", Type::dimensionless_scalar()),
     ];
 
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
@@ -412,12 +422,7 @@ fn mode_struct_has_no_constraints_or_defaults() {
 /// exactly the six PRD §4.1 params with the canonical types, in declaration
 /// order:
 ///
-///   - `part                  : String`                  (PLACEHOLDER for the
-///                                                        future `Part`
-///                                                        structure_def from
-///                                                        the v0.3 solver-
-///                                                        elastic PRD — see
-///                                                        plan design-decision-2)
+///   - `part                  : Part`                    (StructureRef — task 4578)
 ///   - `modes                 : List<Mode>`              (computed eigenpairs;
 ///                                                        `Mode` is module-local
 ///                                                        → `Type::StructureRef`)
@@ -464,7 +469,7 @@ fn modal_result_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "modes",
             Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
@@ -477,8 +482,8 @@ fn modal_result_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("mass_matrix_norm", Type::Real),
-        ("stiffness_matrix_norm", Type::Real),
+        ("mass_matrix_norm", Type::dimensionless_scalar()),
+        ("stiffness_matrix_norm", Type::dimensionless_scalar()),
     ];
 
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
@@ -599,8 +604,8 @@ fn modal_options_struct_has_correct_param_shape() {
             "damping",
             Type::TraitObject("DampingDescriptor".to_string()),
         ),
-        ("sigma", Type::Real),
-        ("tol", Type::Real),
+        ("sigma", Type::dimensionless_scalar()),
+        ("tol", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         (
             "reference_direction",
@@ -948,13 +953,14 @@ fn step_force_struct_has_correct_param_shape() {
 ///
 ///   - `at        : String`                   (PLACEHOLDER for LocationId)
 ///   - `direction : Vector3<Dimensionless>`   (unit excitation vector)
-///   - `impulse   : Real`                     (PLACEHOLDER for ImpulseDim = N·s)
+///   - `impulse   : Impulse`                  (N·s = momentum = kg·m·s⁻¹)
 ///   - `time      : Time`                     (delta-application time)
 ///
 /// Must refine `ForcingFunction` via `trait_bounds`. No defaults.
-/// `impulse : Real` is a PLACEHOLDER for the unrepresentable `ImpulseDim`
-/// (= N·s = momentum = MASS·LENGTH·TIME⁻¹; not in NAMED_DIMENSIONS).
-/// Constraint lands in step-10.
+/// `impulse` is now tightened from the `Real` PLACEHOLDER to the registered
+/// `Impulse` named dimension (= N·s = momentum = MASS·LENGTH·TIME⁻¹; task 4548
+/// added it to NAMED_DIMENSIONS). The positivity constraint is verified
+/// separately.
 #[test]
 fn impulse_force_struct_has_correct_param_shape() {
     let template = find_structure("ImpulseForce");
@@ -974,7 +980,14 @@ fn impulse_force_struct_has_correct_param_shape() {
     let expected: &[(&str, Type)] = &[
         ("at", Type::String),
         ("direction", Type::vec3(Type::dimensionless_scalar())),
-        ("impulse", Type::Real), // PLACEHOLDER for ImpulseDim (design-decision-3)
+        (
+            "impulse",
+            // Tightened from the `Real` PLACEHOLDER to the registered Impulse
+            // dimension (N·s = momentum = kg·m·s⁻¹) — task 4548.
+            Type::Scalar {
+                dimension: DimensionVector::IMPULSE,
+            },
+        ),
         (
             "time",
             Type::Scalar {
@@ -1345,10 +1358,12 @@ fn harmonic_force_constrains_amplitude_and_frequency_positive() {
 
 // ─── step-9 (η): ImpulseForce impulse positivity constraint ──────────────────
 
-/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0`.
+/// `ImpulseForce` must declare exactly 1 constraint: `impulse > 0 * 1N * 1s`.
 ///
-/// `impulse : Real` (PLACEHOLDER for ImpulseDim) uses bare `0` (not `0unit`)
-/// because the field is Real-typed — same shape as `n_modes > 0` on Int.
+/// `impulse : Impulse` (tightened from the `Real` PLACEHOLDER by task 4548) uses
+/// the dimensioned-zero form `0 * 1N * 1s` (N·s = kg·m·s⁻¹ = Impulse), since
+/// polymorphic-zero has not landed — same convention as `frequency > 0Hz` on the
+/// `Frequency`-typed HarmonicForce.frequency and `magnitude > 0N` on StepForce.
 /// Direction carries the sign; impulse is the positive scalar size.
 /// Mirrors `step_force_constrains_magnitude_positive` discipline (tight count==1).
 #[test]
@@ -1358,7 +1373,7 @@ fn impulse_force_constrains_impulse_positive() {
     assert_eq!(
         template.constraints.len(),
         1,
-        "ImpulseForce should declare exactly 1 constraint (impulse > 0); \
+        "ImpulseForce should declare exactly 1 constraint (impulse > 0 * 1N * 1s); \
          got {} constraints: {:?}",
         template.constraints.len(),
         template
@@ -1368,25 +1383,54 @@ fn impulse_force_constrains_impulse_positive() {
             .collect::<Vec<_>>()
     );
 
+    // `0 * 1N * 1s` does NOT constant-fold to a single Scalar literal. Unlike
+    // the single-token unit literal `0N` (which lowers to one
+    // `Literal(Scalar { si_value: 0.0, FORCE })`), the dimensioned-zero
+    // *product* `0 * 1N * 1s` lowers to a left-nested `Mul`-chain
+    // `(0 * 1N) * 1s` whose overall `result_type` is `Scalar<Impulse>`
+    // (N·s = kg·m·s⁻¹). The matcher therefore accepts EITHER the unfolded
+    // zero-valued Impulse-dimensioned product OR a future folded single
+    // `Literal(Scalar { 0.0, IMPULSE })` (forward-compatible if a constant-fold
+    // pass lands later).
+    fn is_zero_valued(expr: &CompiledExpr) -> bool {
+        match &expr.kind {
+            CompiledExprKind::Literal(Value::Int(0)) => true,
+            CompiledExprKind::Literal(Value::Real(v)) => *v == 0.0,
+            CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value == 0.0,
+            // `0 * x` (or `x * 0`) is zero — recurse through the Mul-chain.
+            CompiledExprKind::BinOp {
+                op: BinOp::Mul,
+                left,
+                right,
+            } => is_zero_valued(left) || is_zero_valued(right),
+            _ => false,
+        }
+    }
+
+    let impulse_dim_ty = Type::Scalar {
+        dimension: DimensionVector::IMPULSE,
+    };
     let matched = template.constraints.iter().any(|c| {
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "impulse") {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "impulse")
+                {
                     return false;
                 }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+                // RHS must be a zero-valued expression of dimension Impulse:
+                // the `0 * 1N * 1s` dimensioned-zero positivity bound.
+                right.result_type == impulse_dim_ty && is_zero_valued(right)
             }
             _ => false,
         }
     });
     assert!(
         matched,
-        "ImpulseForce should declare `constraint impulse > 0`; \
-         got constraints: {:?}",
+        "ImpulseForce should declare `constraint impulse > 0 * 1N * 1s` \
+         (dimensioned-zero of dimension Impulse); got constraints: {:?}",
         template
             .constraints
             .iter()
@@ -1503,8 +1547,7 @@ fn forcing_function_trait_declared() {
 /// forcing sources at the per-Part layer. Must declare exactly 2 params in
 /// declaration order:
 ///
-///   - `part    : String`                      (PLACEHOLDER for future `Part` type;
-///                                              mirrors `ModalResult.part : String`)
+///   - `part    : Part`                        (StructureRef — task 4578)
 ///   - `sources : List<ForcingFunction>`       (List of trait-object conformers;
 ///                                              resolves to
 ///                                              `Type::List(Box::new(Type::TraitObject("ForcingFunction")))`)
@@ -1530,7 +1573,7 @@ fn forcing_time_history_struct_has_correct_param_shape() {
 
     // (b) param names + types in declaration order
     let expected: &[(&str, Type)] = &[
-        ("part", Type::String),
+        ("part", Type::StructureRef("Part".to_string())),
         (
             "sources",
             Type::List(Box::new(Type::TraitObject("ForcingFunction".to_string()))),
@@ -1736,5 +1779,302 @@ fn modal_options_element_order_resolves_to_shared_stdlib_enum() {
         "std/solver/elastic ElementOrder variants should be [P1, P2] in canonical order; \
          modal trampoline reads `variant == \"P2\"` against this set. Got: {:?}",
         enum_def.variants
+    );
+}
+
+// ─── task-4578: Part structure_def (step-1 RED) ───────────────────────────────
+
+/// `Part` must be declared as a zero-field opaque marker structure in
+/// `std/modal/analysis` (PRD §12 open-question-3: "minimal opaque
+/// structure_def first, then grow").
+///
+/// Mirrors `no_damping_marker_structure` (above) but asserts `trait_bounds`
+/// is EMPTY — `Part` refines no trait (unlike `NoDamping : DampingDescriptor`).
+///
+/// RED before step-2 (Part is not yet declared in modal_analysis.ri).
+/// GREEN once `structure def Part { }` lands before `ModalResult`.
+#[test]
+fn part_structure_def_declared() {
+    let template = find_structure("Part");
+
+    // (a) zero param cells — opaque marker, no fields
+    let params = param_cells(template);
+    assert_eq!(
+        params.len(),
+        0,
+        "Part should be a zero-field opaque marker structure, but got params: {:?}",
+        params.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+    );
+
+    // (b) no constraints — nothing to constrain on a zero-field structure
+    assert!(
+        template.constraints.is_empty(),
+        "Part should declare no constraints (zero-field opaque marker); got: {:?}",
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) no trait refinements — Part refines no trait in this phase
+    assert!(
+        template.trait_bounds.is_empty(),
+        "Part should have no trait_bounds (it refines no trait in the opaque-marker phase); \
+         got: {:?}",
+        template.trait_bounds
+    );
+}
+
+/// POSITIVE boundary test: compiling `ForcingTimeHistory(part: Part(), sources: [StepForce(...)])`
+/// via the stdlib must produce zero Error-severity diagnostics once `Part` is declared.
+///
+/// Reuses the `StepForce` construction from examples/modal/transient_step_response.ri:90-96.
+/// The `sources.count > 0` constraint is satisfied by the single StepForce.
+///
+/// RED before step-2: `Part()` is an unknown symbol (no `structure def Part` yet).
+/// GREEN once step-2 declares `structure def Part { }` in std/modal/analysis.
+#[test]
+fn part_value_accepted_where_part_param_declared() {
+    let source = r#"
+structure PartBoundarySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: Part(), sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected zero Error-severity diagnostics for ForcingTimeHistory(part: Part(), ...); \
+         RED until `structure def Part {{ }}` lands in std/modal/analysis (step-2). \
+         Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+// ─── task-4578: Part param shape (step-3 RED) ────────────────────────────────
+
+/// `DisplacementTimeHistory` (PRD §5.2) must declare exactly 4 params in order:
+///   - `part         : Part`              (StructureRef — task 4578)
+///   - `modal_result : ModalResult`       (StructureRef)
+///   - `t_samples    : List<Time>`        (List<Scalar<Time>>)
+///   - `mode_coords  : List<List<Real>>`  (List<List<dimensionless>>)
+///
+/// No existing compiler test pinned DisplacementTimeHistory's param shape;
+/// this test adds the missing coverage (per plan design decision).
+///
+/// RED before step-4 (DisplacementTimeHistory.part is still `: String` in .ri).
+/// GREEN once step-4 replaces `param part : String` with `param part : Part`.
+#[test]
+fn displacement_time_history_part_is_part_type() {
+    let template = find_structure("DisplacementTimeHistory");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    // (a) tight count — exactly 4 params
+    assert_eq!(
+        params.len(),
+        4,
+        "DisplacementTimeHistory should have exactly 4 params \
+         (part, modal_result, t_samples, mode_coords), got: {:?}",
+        names
+    );
+
+    // (b) param names + types in declaration order
+    let expected: &[(&str, Type)] = &[
+        ("part", Type::StructureRef("Part".to_string())),
+        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "t_samples",
+            Type::List(Box::new(Type::Scalar {
+                dimension: DimensionVector::TIME,
+            })),
+        ),
+        (
+            "mode_coords",
+            Type::List(Box::new(Type::List(Box::new(Type::dimensionless_scalar())))),
+        ),
+    ];
+
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "DisplacementTimeHistory params must be in canonical order \
+         (part, modal_result, t_samples, mode_coords); got: {:?}",
+        names
+    );
+
+    for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
+        let cell = &params[i];
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "DisplacementTimeHistory.{} should be {:?}, got {:?}",
+            expected_name, expected_ty, cell.cell_type
+        );
+    }
+
+    // (c) no defaults — solver-populated output container
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "DisplacementTimeHistory.{} should have no default_expr \
+             (solver-only-produced output container), but got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
+
+/// BOUNDARY test (rehomed from 4578 leniency pin-down — task 4584 flip):
+/// a string arg to `part : Part` must produce exactly one Error-severity
+/// diagnostic with code `TypeNotConformingToStructureRef`.
+///
+/// Previously pinned as `string_arg_to_part_param_silently_accepted` with an
+/// `errors.is_empty()` assertion; flipped intentionally as required by that
+/// test's own contract ("update intentionally when task 4584 lands nominal
+/// StructureRef arg-rejection"). Task 4584 is the deliberate owner of this
+/// behaviour change.
+///
+/// RED until step-4 (entities_phase): `check_expr_struct_ctor_args` still
+/// `continue`-skips every param that is not `List<TraitObject>`, so the walker
+/// arm added in step-2 is never reached for the bare StructureRef `part` param.
+/// GREEN once step-4 broadens the gate to admit `Type::StructureRef(_)` params.
+#[test]
+fn string_arg_to_part_param_rejected() {
+    let source = r#"
+structure PartLeniencySmoke {
+    let step = StepForce(
+        at: "tip",
+        direction: vec3(0.0, 0.0, 1.0),
+        magnitude: 10N,
+        start_time: 0s
+    )
+    let forcing = ForcingTimeHistory(part: "beam", sources: [step])
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+         for ForcingTimeHistory(part: \"beam\", ...) where part : Part; \
+         got {}: {:#?}",
+        errors.len(),
+        errors,
+    );
+    let d = &errors[0];
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        d.code,
+    );
+}
+
+// ─── task-4584 step-5/step-6: StructureRef param default rejection ────────────
+
+/// RED until step-6 (impl): a structure declaring `param part : Part = "x"`
+/// (StructureRef param with a non-conforming String default) must produce
+/// exactly one Error-severity `TypeNotConformingToStructureRef` diagnostic.
+///
+/// Fails today: param defaults are not checked against their declared cell_type
+/// for structure params (only function params are, via fn_param_default_compatible).
+/// GREEN once step-6 adds check_param_default_conformance and wires it into
+/// phase_fn_arg_conformance.
+#[test]
+fn structureref_param_with_string_default_rejected() {
+    let source = r#"
+structure PartDefaultSmoke {
+    param part : Part = "x"
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 Error-severity diagnostic (TypeNotConformingToStructureRef) \
+         for `param part : Part = \"x\"`; got {}: {:#?}",
+        errors.len(),
+        errors,
+    );
+    let d = &errors[0];
+    assert_eq!(d.severity, reify_core::Severity::Error);
+    assert_eq!(
+        d.code,
+        Some(DiagnosticCode::TypeNotConformingToStructureRef),
+        "expected TypeNotConformingToStructureRef, got {:?}",
+        d.code,
+    );
+}
+
+// ─── task-4584 step-9: no-false-positive guard tests ─────────────────────────
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// `param part : Part = Part()` — a StructureRef param with a valid StructureRef
+/// default — must produce ZERO Error-severity diagnostics after task 4584 lands.
+///
+/// The `check_param_default_conformance` StructureRef branch calls
+/// `walk_param_against_arg`, which promotes `Part()` (FunctionCall with scalar
+/// placeholder type) to `StructureRef("Part")` and then validates via
+/// `type_compatible(StructureRef("Part"), StructureRef("Part"))` → true → no emit.
+///
+/// Explicitly green-from-add: documents the "reject only genuine nominal mismatches;
+/// NO false positives" acceptance criterion. Fails if the StructureRef check
+/// incorrectly rejects a `Part()` default at a `Part`-typed param.
+#[test]
+fn structureref_param_with_valid_structureref_default_no_error() {
+    let source = r#"
+structure PartDefaultValid {
+    param part : Part = Part()
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "NO-FALSE-POSITIVE: `param part : Part = Part()` should produce ZERO Error-severity \
+         diagnostics (StructureRef identity is valid). Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+}
+
+/// NO-FALSE-POSITIVE GUARD (task 4584 step-9).
+///
+/// A structure with non-StructureRef and non-Geometry param defaults must produce
+/// ZERO Error-severity diagnostics. The `check_param_default_conformance` function
+/// has a `_ => continue` guard for all cell_types other than StructureRef and
+/// Geometry; this test documents that scalar/Int/Bool params are not affected.
+///
+/// Explicitly green-from-add: confirms the StructureRef and Geometry rejection checks
+/// do NOT broaden to other param types.
+#[test]
+fn non_structureref_param_defaults_not_rejected() {
+    let source = r#"
+structure ScalarParamDefaults {
+    param n : Real = 42.0
+    param count : Int = 10
+    param enabled : Bool = true
+}
+"#;
+    let module = compile_source_with_stdlib(source);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "NO-FALSE-POSITIVE: scalar/Int/Bool param defaults should produce ZERO Error-severity \
+         diagnostics (check_param_default_conformance `_ => continue` guard). \
+         Got {}: {:#?}",
+        errors.len(),
+        errors
     );
 }

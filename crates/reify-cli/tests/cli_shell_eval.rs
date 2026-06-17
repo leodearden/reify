@@ -49,9 +49,7 @@ fn eval_thin_walled_bracket_exits_zero_with_in_band_max_von_mises() {
         .next()
         .expect("RHS must have at least one token");
     let mvm: f64 = numeric_token.parse().unwrap_or_else(|_| {
-        panic!(
-            "leading RHS token {numeric_token:?} must parse as f64; line: {mvm_line:?}"
-        )
+        panic!("leading RHS token {numeric_token:?} must parse as f64; line: {mvm_line:?}")
     });
     assert!(
         (1.5e7..=1.5e9).contains(&mvm),

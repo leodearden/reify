@@ -29,12 +29,14 @@ if [ "$branch" != "main" ]; then
     exit 0
 fi
 
-# Run the full merge gate. On success, mark the main-gate sentinel so
-# hooks/reference-transaction records the merge commit's refs/heads/main update
-# as SANCTIONED. The old `exec` is replaced by a foreground call + `|| exit $?`
-# so this post-success mark can run; an `exec` would never reach it. Exit code is
-# preserved: a non-zero from verify.sh aborts the merge before any mark.
-"$ROOT/scripts/verify.sh" all --profile both --scope all || exit $?
+# Run the full merge gate. role=merge so the held test-run slot (and PSI gate)
+# exempt this local merge path from queuing behind task slots (PRD §5 D5).
+# On success, mark the main-gate sentinel so hooks/reference-transaction records
+# the merge commit's refs/heads/main update as SANCTIONED. The old `exec` is
+# replaced by a foreground call + `|| exit $?` so this post-success mark can run;
+# an `exec` would never reach it. Exit code is preserved: a non-zero from
+# verify.sh aborts the merge before any mark.
+DF_VERIFY_ROLE=merge "$ROOT/scripts/verify.sh" all --profile both --scope all || exit $?
 
 # shellcheck source=hooks/main-gate-lib.sh
 . "$ROOT/hooks/main-gate-lib.sh"

@@ -8,7 +8,7 @@
 //!   step-17/18 — simply-supported first-mode + higher-mode band (release-gated)
 //!   task μ     — printer-gantry dogfood: 5-mode structural gate (release-gated)
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::ComputeFn;
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -228,6 +228,106 @@ fn e2e_cantilever_first_mode_within_two_percent() {
         rel_err * 100.0,
         CANTILEVER_P2_REL_TOL * 100.0
     );
+}
+
+// ── step-5 (task 4548): Mode.frequency is a dimensioned Scalar<Frequency> ─────
+//
+// `Mode.frequency` tightens from the `Real` PLACEHOLDER to `Frequency`
+// (modal_analysis.ri:189; task 4548). This e2e gate matches the PRODUCED
+// `frequency` field variant EXPLICITLY — deliberately NOT through the tolerant
+// `read_frequency` / `as_f64` helpers (which accept Real OR Scalar) — so it
+// pins the modal producer to construct a dimensioned `Value::Scalar`, not a
+// bare `Value::Real`.
+//
+// RED (step-5): modal_ops.rs builds `("frequency", Value::Real(f))` for each
+// mode, so the explicit `Value::Scalar { FREQUENCY }` match FAILS.
+// GREEN (step-6): the producer builds `Value::Scalar { si_value: f,
+// dimension: FREQUENCY }`, and this assertion passes. The runtime assertion
+// also transitively pins first_frequency / mode_frequency to flow a
+// Frequency-typed value.
+//
+// Heavy modal solve (assembles K + M, generalized eigensolve) — release-gated
+// like the cantilever / simply-supported e2e tests.
+
+/// Each produced `Mode.frequency` must be a dimensioned `Value::Scalar` of
+/// dimension `FREQUENCY` (Hz = s⁻¹), pinning the modal producer to the
+/// tightened `Mode.frequency : Frequency` surface type (task 4548).
+#[cfg_attr(debug_assertions, ignore = "heavy modal solve; release-only")]
+#[test]
+fn e2e_mode_frequency_is_dimensioned_scalar() {
+    let source = cantilever_source();
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_simple_engine();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    let eval_result = engine.eval(&compiled);
+
+    // The run must succeed (no Error diagnostics) to produce modes.
+    let errors: Vec<_> = eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics, got: {:?}",
+        errors
+    );
+
+    // The `result` cell holds the ModalResult (StructureInstance/Map) with a
+    // `modes` list of Mode structure-instances.
+    let result_cell = ValueCellId::new("CantileverBeamModes", "result");
+    let result_val = eval_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell CantileverBeamModes.result not found in eval result"));
+
+    let modes = match result_val {
+        Value::StructureInstance(d) => d.fields.get(&"modes".to_string()).cloned(),
+        Value::Map(m) => m.get(&Value::String("modes".to_string())).cloned(),
+        other => panic!("expected ModalResult StructureInstance/Map, got: {:?}", other),
+    }
+    .expect("ModalResult must expose a `modes` field");
+
+    let mode_list = match modes {
+        Value::List(items) => items,
+        other => panic!("expected `modes` to be a List, got: {:?}", other),
+    };
+    assert!(
+        !mode_list.is_empty(),
+        "modal run must produce at least one mode"
+    );
+
+    // Read the first mode's `frequency` field and match its variant EXPLICITLY.
+    // The tolerant `read_frequency` / `as_f64` helpers are intentionally avoided
+    // here so the test fails while the producer still emits `Value::Real`.
+    let freq = match &mode_list[0] {
+        Value::StructureInstance(d) => d.fields.get(&"frequency".to_string()).cloned(),
+        Value::Map(m) => m.get(&Value::String("frequency".to_string())).cloned(),
+        other => panic!("expected a Mode StructureInstance/Map, got: {:?}", other),
+    }
+    .expect("Mode must expose a `frequency` field");
+
+    match &freq {
+        Value::Scalar { si_value, dimension } => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::FREQUENCY,
+                "Mode.frequency must carry dimension FREQUENCY (Hz = s⁻¹), got {:?}",
+                dimension
+            );
+            assert!(
+                si_value.is_finite() && *si_value > 0.0,
+                "Mode.frequency si_value must be finite and positive, got {}",
+                si_value
+            );
+        }
+        other => panic!(
+            "Mode.frequency must be a dimensioned `Value::Scalar {{ FREQUENCY }}` \
+             (tightened from the `Real` PLACEHOLDER; task 4548), got: {:?}",
+            other
+        ),
+    }
 }
 
 // ── step-17 / step-11: simply-supported first-mode + higher modes (P2 2%) ─────

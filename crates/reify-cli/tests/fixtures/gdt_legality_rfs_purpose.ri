@@ -1,0 +1,38 @@
+// gdt_legality_rfs_purpose.ri — GD&T β + purpose combined fixture: all-legal callouts.
+//
+// Contains three GD&T callouts that are all legal under the β rule table plus a
+// purpose with a deliberately satisfiable constraint. Used by task 4589 CLI e2e
+// tests as an over-escalation guard: `reify check --purpose` must exit 0 when
+// all GD&T callouts are legal.
+//  - Flatness(RFS)                     — Form, RFS: silent.
+//  - Position(MMC, Cylindrical)        — Location FOS, Cylindrical zone: MMC-eligible.
+//  - StraightnessOfAxis(MMC)           — FormAxis FOS variant: MMC-eligible.
+//
+// Compiles CLEAN.
+
+structure AllLegalGdtPurpose {
+    param width : Length = 80mm
+
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        feature: box(1mm, 1mm, 1mm)
+    )
+
+    let pos = Position(
+        tolerance_value: 0.05mm,
+        material_condition: MaterialCondition.MMC,
+        zone_shape: ZoneShape.Cylindrical,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm)
+    )
+
+    let soa = StraightnessOfAxis(
+        tolerance_value: 0.02mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}

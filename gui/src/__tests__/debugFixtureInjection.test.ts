@@ -252,6 +252,35 @@ describe('inject_diagnostics: bridge handler', () => {
     expect(vi.mocked(stores.engine.setCompileDiagnostics)).not.toHaveBeenCalled();
     expect(vi.mocked(stores.engine.setTessellationDiagnostics)).not.toHaveBeenCalled();
   });
+
+  // ── has_location passthrough (step-1, task-4404) ───────────────────────────
+  // inject_diagnostics normalizer must preserve has_location:false so that
+  // β (span-less inert rows, task-4402) can be driven through inject_diagnostics.
+  // Previously the normalizer only copied positional fields and dropped has_location
+  // entirely, making every injected diagnostic appear line-tied regardless of input.
+
+  it('has_location:false is preserved in the normalized entry (β span-less driveability)', async () => {
+    await dispatchAndGetResult(capturedHandler!, 7, 'inject_diagnostics', {
+      diagnostics: [{ severity: 'Error', message: 'x', has_location: false }],
+      source: 'compile',
+    });
+
+    const [normalized] = vi.mocked(stores.engine.setCompileDiagnostics).mock.calls[0][0];
+    // has_location must be false — NOT undefined, NOT true.
+    expect(normalized.has_location).toBe(false);
+  });
+
+  it('has_location absent: normalized entry has has_location===undefined (back-compat line-tied)', async () => {
+    await dispatchAndGetResult(capturedHandler!, 8, 'inject_diagnostics', {
+      diagnostics: [{ severity: 'Warning', message: 'y' }],
+      source: 'compile',
+    });
+
+    const [normalized] = vi.mocked(stores.engine.setCompileDiagnostics).mock.calls[0][0];
+    // Omitting has_location must leave the field absent/undefined in the normalized
+    // object — backward-compatible signal that the diagnostic is line-tied.
+    expect(normalized.has_location).toBeUndefined();
+  });
 });
 
 // ─── reset_app_state ──────────────────────────────────────────────────────────

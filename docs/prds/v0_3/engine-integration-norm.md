@@ -56,7 +56,7 @@ If the seam catalog (§3) lacks an entry the PRD needs, the PRD's resolution add
 
 ## §3 — Engine seam catalog (the contract)
 
-Seven seams in the v0.3 engine, plus one deprecated entry. Each row cites the dispatch-point file:line; the registration mechanism; the kinds of mechanism that plug in; and the contract-owning PRD (if any).
+Eight seams in the v0.3 engine, plus one deprecated entry. Each row cites the dispatch-point file:line; the registration mechanism; the kinds of mechanism that plug in; and the contract-owning PRD (if any).
 
 ### §3.1 — Operation-execute seam (geometry kernel call)
 
@@ -131,7 +131,18 @@ Included in the catalog because it's a Type-A producer-orphan that fits the clus
 | **Plug-ins** | Per-kernel attribute-propagation implementations. Manifold's `propagate_attributes` body is currently a `Discarded`+WARN stub (audit multi-kernel M-018 / persistent-naming-v2 task 9). |
 | **Contract owner** | **Contested** between `persistent-naming-v2.md` and `multi-kernel-phase-3.md` per `docs/architecture-audit/phase-3-breadcrumb-map.md` §3 reciprocal-ownership pair #2. Unresolved at norm-authoring time; this PRD lists the seam but does not assign the owner. |
 
-### §3.8 — Legacy: OptimizedImpl seam (deprecated)
+### §3.8 — Check-time DFM measurement walk seam
+
+| | |
+|---|---|
+| **Call site** | `Engine::measure_dfm_rules` — `crates/reify-eval/src/engine_constraints.rs:811`, invoked from `Engine::check` (`engine_constraints.rs:1346`) after `check_constraints_against_templates`. |
+| **Invoked from** | `Engine::check` — a check-time walk over the module's `DFMRule` structure-instances. Realizes each rule's `subject : Solid` to a kernel handle from the engine's realized state, runs the matching metrology selector (overhang / draft), compares the result against the process capability, and routes the result + the rule's `DFMSeverity` through `dfm::diagnose`, emitting a DFMSeverity-tagged `{W,E}_DFM_OVERHANG` / `_DRAFT` / `E_DFM_UNDERCUT` diagnostic. Structurally a sibling of the `RepresentationWithin` interception in `dispatch_constraints`. |
+| **Registration** | None — this is a walk, not a registry (sibling of §3.6); the plug-in is a call edge (whether `Engine::check` calls `measure_dfm_rules`). |
+| **Plug-ins / selectors** | The overhang/draft measurement selectors (`unsupported_overhang_faces` / `min_draft_angle`) ride the **existing §3.1 op-execute / `GeometryKernel` query path** (`FaceNormal` / `tessellate` against the realized kernel handle, exactly as `fits_build_volume` rides `BoundingBox`) — no norm change for the selectors; only the pass (the walk) is the new seam. |
+| **Contract owner** | `process-dfm-overhang-draft.md` (this PRD introduces the seam). Sibling: the GD&T conformance walk (`measure_gdt_conformance`, `gdt-geometric-zones-and-containment.md`) is the same seam shape — whichever lands second cross-references the first. |
+| **Consumer policy** | No default kernel → no realized subject handle → the pass degrades to Indeterminate / no-op, **never** a false `Violated` (C1 invariant; guard at `engine_constraints.rs:812`, mirroring the `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path). |
+
+### §3.9 — Legacy: OptimizedImpl seam (deprecated)
 
 | | |
 |---|---|
@@ -139,7 +150,7 @@ Included in the catalog because it's a Type-A producer-orphan that fits the clus
 | **Registration** | `Engine::register_optimized_impl(target, Box<dyn OptimizedImpl>)` — `engine_admin.rs:415`. |
 | **Status** | **Deprecated** by CN-contract §2. Existing registrations are grandfathered; new producers MUST use §3.4 ComputeNode dispatch. Migration on touch. |
 
-### §3.9 — Seams excluded from this catalog
+### §3.10 — Seams excluded from this catalog
 
 These seam-shaped surfaces are real but outside the in-engine norm:
 
@@ -149,6 +160,17 @@ These seam-shaped surfaces are real but outside the in-engine norm:
 - **CLI subcommand wiring** (`reify-cli`). User-surface, but not an engine seam — a sibling category that `/prd` G2 already covers via user-observable signal.
 
 Catalog churn: new seams added by the PRD that introduces them, in the same commit as that PRD's resolution. See §13 question 2 for the governance question (Leo-owned).
+
+### §3.11 — Check-time GD&T conformance measurement walk seam
+
+| | |
+|---|---|
+| **Call site** | `Engine::measure_gdt_conformance` — `crates/reify-eval/src/engine_constraints.rs:1003`, invoked from `Engine::check` (`engine_constraints.rs:1335`) beside `check_constraints_against_templates`. |
+| **Invoked from** | `Engine::check` — a check-time walk over the module's active `Conforms` constraints that carry an **explicit `actual`** binding (the η detection signal, C3). For each such constraint the pass resolves the `actual` geometry handle from the realized state, runs `GeometryQuery::MaxDeviation` of `actual` against the tolerance callout's nominal `feature`, and overrides the matching scalar `ConstraintCheckEntry` in the results vector with a geometric verdict (`Satisfied` / `Violated` / `Indeterminate`). Structurally a sibling of `measure_dfm_rules` (§3.8), which lands its DFM-rule walk at the same call-site level in `check()`. |
+| **Registration** | None — this is a walk, not a registry (same shape as §3.6 and §3.8); the plug-in is a call edge (whether `Engine::check` invokes `measure_gdt_conformance`). |
+| **Plug-ins / selectors** | The deviation measurement rides the **existing §3.1 op-execute / `GeometryKernel` query path** via `GeometryQuery::MaxDeviation` (ζ/task 4479) against the realized `actual` + nominal `feature` handles — no norm change for the query primitive; only the walk (this pass) is the new seam. |
+| **Contract owner** | `gdt-geometric-zones-and-containment.md` (PRD v0_6, task θ/4481 introduces this seam entry). Sibling: `measure_dfm_rules` (§3.8, `process-dfm-overhang-draft.md`, task 4408) is the same seam shape and landed first — cross-reference per PRD §7 "whichever lands second cites the first". |
+| **Consumer policy** | No default kernel → no realized geometry handle → the pass degrades to `Indeterminate` / no-op, **never** a false `Violated` (C1 invariant; mirrors the `RepresentationWithin` empty-`achieved_repr_tol` → Indeterminate path and the DFM walk guard at `engine_constraints.rs:812`). |
 
 ## §4 — Per-seam consumer policy
 
@@ -163,7 +185,7 @@ A mechanism-kind-to-seam matrix. When authoring a PRD that introduces a kernel m
 | Kinematic constraint solver | §3.5 ConstraintSolver | Named slot in per-Engine registry |
 | Cross-kernel attribute carry-through (selectors across booleans/fillets through different kernels) | §3.7 KernelAttributeHook | Trait implemented per kernel adapter |
 | Edit-driven freshness propagation without value change | §3.6 `propagate_freshness_only` | Call edge from edit handlers; no registry |
-| Legacy `@optimized` impl pre-dating CN-contract | §3.8 (grandfathered) | Migrate to §3.4 when the surface is touched |
+| Legacy `@optimized` impl pre-dating CN-contract | §3.9 (grandfathered) | Migrate to §3.4 when the surface is touched |
 
 A mechanism that plausibly fits multiple seams gets a PRD-time decision. Mesh-morph is the worked example (§7): it plugs into §3.2 (realization-kind dispatcher for VolumeMesh) **and** the call is wrapped at §3.4 (ComputeNode dispatch) for cache / warm-state / cancellation discipline. The two are orthogonal axes per CN-contract §6 (axis-1 = ComputeNode-wrapped; axis-2 = internal composition).
 
@@ -171,7 +193,7 @@ A mechanism that plausibly fits multiple seams gets a PRD-time decision. Mesh-mo
 
 When `/prd`'s G1 (consumer named) is walked during PRD-authoring for any PRD that introduces a kernel-module mechanism, also walk this checklist. Concretely:
 
-1. **Name the seam.** Pick from §3.1–§3.7. If none fit, escalate to add a new §3 entry (see §13 question 2).
+1. **Name the seam.** Pick from §3.1–§3.11. If none fit, escalate to add a new §3 entry (see §13 question 2).
 2. **Name the consumer call site.** File:line (or function name) in `reify-eval` where the seam will invoke this PRD's producer. If the call site doesn't exist yet (the seam itself is in-flight), reference the seam-owning PRD as a prereq and recognize this PRD blocks until that PRD lands the call site.
 3. **Name the user-observable signal.** Same artifact `/prd` G2 demands — CLI difference, viewport state, LSP behavior, diagnostic, or stdlib `.ri` example that runs in CI.
 4. **Confirm the seam's owner.** If the seam is owned by another PRD's contract (CN-contract for §3.4; multi-kernel-phase-3 for §3.1/§3.3; persistent-naming-v2 *or* multi-kernel for §3.7 — contested), reference that contract as a hard prereq.
@@ -207,7 +229,7 @@ CN-contract owns §3.4 normatively. This PRD's §3.4 is a listing entry that def
 
 The relationship is hierarchical:
 - **CN-contract** = single-seam contract (the gold-standard exemplar of B+H for one seam).
-- **engine-integration-norm** = cross-seam meta-policy (the umbrella that lists CN as one entry among seven).
+- **engine-integration-norm** = cross-seam meta-policy (the umbrella that lists CN as one entry among the §3 seams).
 
 This PRD does **not** redefine ComputeNode dispatch rules; it cross-references them. Same shape as multi-kernel-phase-3 §6 (which clarifies its relationship to CN-contract).
 
@@ -237,7 +259,7 @@ The GR-021 PRD (in-flight, session prompt at `docs/architecture-audit/gr021-shel
 
 - **Engine bridge**: §3.2 realization-kind dispatch for a mid-surface-mesh output kind (likely new realization-kind dispatcher, parallel to `dispatch_volume_mesh`). May be wrapped in §3.4 ComputeNode dispatch per the geometry-expensive heuristic in CN-contract §6.
 - **Solver bridge**: `reify-solver-elastic::ElasticResult` consumer of mid-surface mesh; not a new seam — direct fn call inside the FEA solve path, gated by the realization-kind dispatch producing the mid-surface mesh first.
-- **GUI bridge**: §3.9 — owned by `gui-event-channel-inventory.md` (GR-016), not this norm.
+- **GUI bridge**: §3.10 — owned by `gui-event-channel-inventory.md` (GR-016), not this norm.
 
 GR-021's PRD will declare its plug-in seams and pre-condition on this norm.
 
@@ -258,7 +280,7 @@ The norm's two-way boundary: facing PRD authors (does the catalog drive correct 
 | Scenario | Preconditions | Postconditions |
 |---|---|---|
 | **Next kernel-module PRD passes G1 via §5 checklist.** | `/prd` skill `gates.md` references this PRD (§12 task β). | At PRD-resolve for a kernel-module PRD, the conversational walk includes the seam-naming step and surfaces a §3 entry. The PRD's prose names the seam, the call site, the signal. |
-| **PRD introducing a new seam triggers catalog addition.** | A PRD's mechanism doesn't fit §3.1–§3.7. | `/prd` G1 escalates to "add a §3 entry as part of this PRD's resolution"; the PRD's commit pairs the new seam with the catalog update. |
+| **PRD introducing a new seam triggers catalog addition.** | A PRD's mechanism doesn't fit §3.1–§3.8. | `/prd` G1 escalates to "add a §3 entry as part of this PRD's resolution"; the PRD's commit pairs the new seam with the catalog update. |
 | **Grandfather case is recordable.** | A PRD touches existing code that ships an orphan producer. | The PRD's task or follow-up adds `// G-allow:` marker citing §3.N and the future consumer task, instead of being unable to express "deferred but accountable." |
 
 These boundary tests are evaluated at PRD-author time by reading the produced PRD; no automated harness. F-infra (when it lands) will run §8.1 row 1 automatically.
@@ -295,6 +317,7 @@ The G-tool baseline at `docs/architecture-audit/g-tool-baseline-report.md` is th
 | `docs/prds/v0_3/mesh-morphing.md` | consumes (§7 worked example) | §3.2 + §3.4 application | mesh-morph PRD + CN-contract task κ | §12 task δ adds cross-ref |
 | `docs/architecture-audit/gr021-shell-extract-engine-bridge-session-prompt.md` (PRD pending) | consumes (§7.2 mention) | §3.2 (likely) + §3.4 (likely) | future GR-021 PRD | future — referenced for visibility |
 | `docs/prds/freshness-4-variant.md` | this PRD lists; freshness-4-variant resolves the orphan call | §3.6 propagate_freshness_only | freshness-4-variant | listed; production caller fix belongs to that PRD |
+| `docs/prds/v0_6/gdt-geometric-zones-and-containment.md` | this PRD lists, gdt-geometric-zones owns | §3.11 GD&T conformance walk | gdt-geometric-zones-and-containment | wired (task θ/4481 — the §3.11 sibling of §3.8 DFM) |
 | `docs/prds/persistent-naming-v2.md` | listed; ownership of §3.7 is contested | §3.7 KernelAttributeHook | contested with multi-kernel-phase-3 | unresolved per breadcrumb-map §3 #2 — flagged for future PRD-resolve |
 | `docs/prds/v0_3/gui-event-channel-inventory.md` | sibling norm | (out of scope per §10) | gui-event-channel-inventory | sibling — GR-016 owns frontend↔backend IPC norm |
 | `.claude/skills/prd/references/gates.md` | consumes (§5 G1 checklist) | gate G1 reference | `/prd` skill | wired upon §12 task β |

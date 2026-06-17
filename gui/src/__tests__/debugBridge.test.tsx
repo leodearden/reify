@@ -3419,3 +3419,217 @@ describe('debug bridge scroll', () => {
     expect(typeof result.error).toBe('string');
   });
 });
+
+// ---------------------------------------------------------------------------
+// debug bridge apply_gui_state (task-3026 step-24 RED → step-25 GREEN)
+//
+// The Rust `handle_set_fea_case` pushes a rebuilt GuiState to the frontend
+// via `query_frontend("apply_gui_state", { guiState, case })`.  This handler
+// applies the GuiState WITHOUT resetting the view (geometry is shared across
+// cases; only the contour changes), so the camera stays fixed and per-case
+// screenshots differ only in the scalar-channel colours.
+// ---------------------------------------------------------------------------
+describe('debug bridge apply_gui_state', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatch(handler: DebugRequestHandler, id: number, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await handler({ payload: { id, command: 'apply_gui_state', params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /** Minimal RawGuiState fixture with one mesh carrying a known vonMises channel. */
+  const rawGuiStateWithVonMises = {
+    meshes: [
+      {
+        entity_path: 'body/bracket',
+        vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+        indices: [0, 1, 2],
+        normals: null,
+        scalar_channels: { vonMises: [200.0, 200.0, 200.0] },
+      },
+    ],
+    values: [],
+    constraints: [],
+    files: [],
+    tessellation_diagnostics: [],
+    compile_diagnostics: [],
+  };
+
+  it('(a) returns { ok: true, case: "overload" } on success', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+
+    const result = await dispatch(capturedHandler!, 6000, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(result).toEqual({ ok: true, case: 'overload' });
+  });
+
+  it('(b) calls initFromState exactly once with converted GuiState carrying the vonMises channel', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 6001, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(stores.engine.initFromState).toHaveBeenCalledTimes(1);
+    const passed = vi.mocked(stores.engine.initFromState).mock.calls[0][0];
+    // Mesh must be present and carry the vonMises channel converted to Float32Array
+    expect(passed.meshes).toHaveLength(1);
+    expect(passed.meshes[0].scalar_channels).toBeDefined();
+    expect(passed.meshes[0].scalar_channels!['vonMises']).toEqual(new Float32Array([200.0, 200.0, 200.0]));
+  });
+
+  it('(c) does NOT call resetToDefaultView — camera must be preserved across case switches', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    await dispatch(capturedHandler!, 6002, {
+      guiState: rawGuiStateWithVonMises,
+      case: 'overload',
+    });
+
+    expect(stores.viewState.resetToDefaultView).not.toHaveBeenCalled();
+  });
+
+  it('(d) omitting guiState returns { error } and does not call initFromState', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatch(capturedHandler!, 6003, { case: 'overload' });
+
+    expect(result).toHaveProperty('error');
+    expect(stores.engine.initFromState).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge resize_panes problemsHeight + get_local_storage (task-4404 step-3 RED)
+// RED: (a) problemsHeight is not in resize_panes DIMS so setProblemsHeight is never called;
+//      (b-d) get_local_storage has no handler (returns "unknown command").
+// ---------------------------------------------------------------------------
+
+describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    window.localStorage.clear();
+  });
+
+  /** makeStores extended with problems-panel layout fields (task-4404).
+   *  Setters update state so that the layout-echo in resize_panes reflects the new value. */
+  function makeStoresWithProblems() {
+    const s = makeStores();
+    (s.layout.state as any).problemsHeight = 160;
+    (s.layout.state as any).problemsCollapsed = true;
+    (s.layout as any).setProblemsHeight = vi.fn((v: number) => {
+      (s.layout.state as any).problemsHeight = v;
+    });
+    (s.layout as any).setProblemsCollapsed = vi.fn((v: boolean) => {
+      (s.layout.state as any).problemsCollapsed = v;
+    });
+    return s;
+  }
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  // (a) resize_panes({problemsHeight:240}) must call setProblemsHeight(240) and return
+  //     a layout echo that includes problemsHeight:240.
+  //     RED: not in DIMS → handler returns {error:"no pane dimensions provided"},
+  //     setProblemsHeight never called, result.layout undefined.
+  it('resize_panes({problemsHeight:240}) calls setProblemsHeight(240) and layout echo includes problemsHeight:240', async () => {
+    const stores = makeStoresWithProblems();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(9000, 'resize_panes', { problemsHeight: 240 });
+
+    expect(result.ok).toBe(true);
+    expect((stores.layout as any).setProblemsHeight).toHaveBeenCalledWith(240);
+    expect(result.layout.problemsHeight).toBe(240);
+  });
+
+  // (b) get_local_storage: present key returns {key, value (string), present:true}.
+  //     RED: unknown command → result has no key/present fields.
+  it('get_local_storage: seeded key returns {key, value, present:true}', async () => {
+    window.localStorage.setItem(
+      'reify-panel-layout',
+      JSON.stringify({ problemsHeight: 200, problemsCollapsed: false }),
+    );
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(9001, 'get_local_storage', { key: 'reify-panel-layout' });
+
+    expect(result.key).toBe('reify-panel-layout');
+    expect(result.present).toBe(true);
+    expect(typeof result.value).toBe('string');
+    const parsed = JSON.parse(result.value as string);
+    expect(parsed.problemsHeight).toBe(200);
+    expect(parsed.problemsCollapsed).toBe(false);
+  });
+
+  // (c) get_local_storage: absent key returns {key, value:null, present:false}.
+  //     RED: unknown command → result has no key/present fields.
+  it('get_local_storage: absent key returns {key, value:null, present:false}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(9002, 'get_local_storage', { key: 'absent-key-xyz-4404' });
+
+    expect(result.key).toBe('absent-key-xyz-4404');
+    expect(result.present).toBe(false);
+    expect(result.value).toBeNull();
+  });
+
+  // (d) get_local_storage: missing key arg returns {error: "key is required"}.
+  //     RED: unknown command → error is "unknown command: get_local_storage", not "key is required".
+  it('get_local_storage: missing key arg returns {error: "key is required"}', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(9003, 'get_local_storage', {});
+
+    expect(result.error).toBe('key is required');
+  });
+});

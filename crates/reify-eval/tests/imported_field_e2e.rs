@@ -57,7 +57,7 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 #[test]
 fn imported_field_compiles_without_errors() {
     let source = r#"
-field def pressure_map : Point3 -> Scalar {
+field def pressure_map : Point3 -> Length {
     source = imported {
         path = "fea_results.vdb"
         format = OpenVDB
@@ -117,7 +117,7 @@ field def pressure_map : Point3 -> Scalar {
 #[test]
 fn imported_field_with_bad_path_returns_undef_and_emits_field_import_failed() {
     let source = r#"
-field def phantom : Point3 -> Scalar {
+field def phantom : Point3 -> Length {
     source = imported {
         path = "/nonexistent/path/that/does/not/exist.vdb"
         format = OpenVDB
@@ -265,10 +265,10 @@ fn imported_field_e2e_vdb_cube_sdf() {
     // ---------------------------------------------------------------------------
     // G2#1: Compile the embedded .ri source (path interpolated from tempfile).
     // ---------------------------------------------------------------------------
-    let codomain_type = Type::Real;
+    let codomain_type = Type::dimensionless_scalar();
     let source = format!(
         r#"
-field def cube_sdf : Point3 -> Scalar {{
+field def cube_sdf : Point3 -> Length {{
     source = imported {{
         path = "{path}"
         format = OpenVDB
@@ -450,7 +450,7 @@ fn imported_field_cache_hash_records_and_updates_on_content_change() {
     // Build an imported-field source with the tempfile path.
     let source = format!(
         r#"
-field def hash_test : Point3 -> Scalar {{
+field def hash_test : Point3 -> Length {{
     source = imported {{
         path = "{path}"
         format = OpenVDB
@@ -563,7 +563,7 @@ fn imported_field_cache_hash_triggers_reingest_on_content_change() {
 
     let source = format!(
         r#"
-field def cache_test : Point3 -> Scalar {{
+field def cache_test : Point3 -> Length {{
     source = imported {{
         path = "{path}"
         format = OpenVDB

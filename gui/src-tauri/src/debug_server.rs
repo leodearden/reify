@@ -374,6 +374,24 @@ fn tool_defs() -> Vec<ToolDef> {
                 }
             }),
         },
+        ToolDef {
+            name: "set_fea_case",
+            description: "Select the active FEA load case for multi-case results. \
+                          Updates the engine's active_fea_case field and rebuilds the \
+                          GuiState so the re-sourced contour is reflected immediately. \
+                          Used by the visual-regression harness to select a case before \
+                          taking a screenshot. Returns { ok: true, case: <selected_name> }.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "case": {
+                        "type": "string",
+                        "description": "Name of the load case to activate (e.g. 'operating', 'overload', 'transport')."
+                    }
+                },
+                "required": ["case"]
+            }),
+        },
         // --- DOM/style/layout/window inspection tools (R1) ---
         ToolDef {
             name: "query_selector",
@@ -551,7 +569,7 @@ fn tool_defs() -> Vec<ToolDef> {
         ToolDef {
             name: "resize_panes",
             description: "Resize one or more layout panes by setting their pixel dimensions. \
-                          All five dimensions are optional; omit any to leave them unchanged. \
+                          All dimensions are optional; omit any to leave them unchanged. \
                           Accepts non-negative finite numbers. Returns { ok, layout } on success.",
             input_schema: json!({
                 "type": "object",
@@ -560,8 +578,25 @@ fn tool_defs() -> Vec<ToolDef> {
                     "sideWidth":         { "type": "number", "description": "Width of the side panel in pixels." },
                     "designTreeHeight":  { "type": "number", "description": "Height of the design tree panel in pixels." },
                     "propertyHeight":    { "type": "number", "description": "Height of the property panel in pixels." },
-                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." }
+                    "constraintHeight":  { "type": "number", "description": "Height of the constraint panel in pixels." },
+                    "problemsHeight":    { "type": "number", "description": "Height of the diagnostics/problems panel in pixels (task-4404 ε)." }
                 }
+            }),
+        },
+        // --- C2+: read-only localStorage accessor (task-4404 ε, persistence scenario 5) ---
+        ToolDef {
+            name: "get_local_storage",
+            description: "Read a localStorage key from the frontend. \
+                          Returns { key, value, present } where value is the raw stored string \
+                          (or null when absent) and present is a boolean. \
+                          Used to verify that layout changes survived the debounced persistence \
+                          write (e.g. 'reify-panel-layout') without requiring a webview reload.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "The localStorage key to read." }
+                },
+                "required": ["key"]
             }),
         },
         ToolDef {
@@ -754,6 +789,21 @@ fn tool_defs() -> Vec<ToolDef> {
                     }
                 },
                 "required": ["testId"]
+            }),
+        },
+        // task-4202: focus the CodeMirror editor view directly (bypasses
+        // focus-requires-trusted-event limitation of click_at).  Used by
+        // smoke_find_uses.mjs after open_file to enable Shift+F12 dispatch.
+        ToolDef {
+            name: "focus_editor",
+            description: "Focus the CodeMirror editor view directly by calling editorView.focus(). \
+                          This bypasses the trusted-event limitation of click_at and is the \
+                          recommended way to give the editor keyboard focus in smoke tests. \
+                          Returns {ok: true} or {error: 'editor view not ready'} if the view \
+                          is not yet initialised.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
         ToolDef {
@@ -974,6 +1024,7 @@ async fn dispatch_tool(
         "wait_for_idle" => handle_wait_for_idle(state, params).await,
         "wait_for" => handle_wait_for(state, params).await,
         "wait_for_selector" => handle_wait_for_selector(state, params).await,
+        "set_fea_case" => handle_set_fea_case(state, params).await,
         _ => {
             // Frontend-mediated: delegate to DebugBridge.
             // list_console_errors falls through here — it returns instantly so
@@ -1239,6 +1290,60 @@ async fn handle_load_fixture(state: &DebugServerState, params: Value) -> Result<
     let relpath = fixture_relpath(name)
         .ok_or_else(|| format!("unknown fixture: {name}"))?;
     open_path_into_engine(state, &relpath).await
+}
+
+/// Pure serializer: packs a `GuiState` and a case name into the JSON object
+/// sent to `query_frontend("apply_gui_state", ...)`.
+///
+/// Returns `Ok(json!({ "guiState": <serialized>, "case": case }))`.
+/// Tested headlessly by `set_fea_case_pushes_gui_state_payload_to_frontend`
+/// (step-22), which round-trips `payload["guiState"]` to verify the
+/// `vonMises` channel survives serde intact.
+///
+/// Pure/deterministic: no kernel, no Tauri handle, no I/O.
+pub fn fea_case_frontend_payload(
+    case: &str,
+    gui_state: &crate::types::GuiState,
+) -> Result<Value, String> {
+    let gs = serde_json::to_value(gui_state)
+        .map_err(|e| format!("serialize gui_state failed: {e}"))?;
+    Ok(json!({ "guiState": gs, "case": case }))
+}
+
+/// Run `EngineSession::set_active_fea_case` on an OS thread (avoids the
+/// tokio-panic from OCCT's `blocking_send`) and return the rebuilt `GuiState`.
+///
+/// Tested via `handle_set_fea_case_routes_to_engine` (step-23 retarget).
+pub async fn set_fea_case_on_engine(
+    engine: &Arc<Mutex<EngineSession>>,
+    case: &str,
+) -> Result<crate::types::GuiState, String> {
+    let case = case.to_owned();
+    run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
+}
+
+/// Select the active FEA load case on the engine, push the rebuilt `GuiState`
+/// to the frontend via `apply_gui_state`, and return an echo response.
+///
+/// Flow (mirrors `open_path_into_engine`):
+///  1. `set_fea_case_on_engine` — re-sources scalar_channels for the new case.
+///  2. `fea_case_frontend_payload` — serializes GuiState + case name into JSON.
+///  3. `query_frontend("apply_gui_state", ...)` — frontend applies the GuiState
+///     WITHOUT a view reset so the camera stays fixed across case switches.
+///  4. Returns `{"ok": true, "case": <name>}` so the visual-regression harness
+///     can confirm the switch and proceed to screenshot.
+async fn handle_set_fea_case(
+    state: &DebugServerState,
+    params: Value,
+) -> Result<Value, String> {
+    let case = params["case"]
+        .as_str()
+        .ok_or_else(|| "`case` param is required".to_string())?
+        .to_owned();
+    let gs = set_fea_case_on_engine(&state.engine, &case).await?;
+    let fp = fea_case_frontend_payload(&case, &gs)?;
+    state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
+    Ok(json!({ "ok": true, "case": case }))
 }
 
 // --- MCP Streamable HTTP handler ---
@@ -2757,6 +2862,170 @@ mod tests {
             !has_nonempty_required,
             "reset_app_state: required must be absent or empty; got {:?}",
             reset_schema["required"]
+        );
+    }
+
+    // ── Task 3026 step-17: RED — set_fea_case debug-MCP tool registration ──
+    //
+    // (a) tool_defs() must include set_fea_case with object schema, required
+    //     `case` string param, and a non-empty description.
+    // (b) handle_set_fea_case must exist and route to the engine
+    //     set_active_fea_case path.
+    //
+    // Both tests FAIL until step-18 adds the def, dispatch arm, and handler.
+
+    #[test]
+    fn tool_defs_includes_set_fea_case() {
+        let defs = tool_defs();
+
+        // FAILS until step-18 registers the set_fea_case ToolDef.
+        let entry = defs
+            .iter()
+            .find(|t| t.name == "set_fea_case")
+            .expect("set_fea_case must be present in tool_defs()");
+
+        // Non-empty description
+        assert!(
+            !entry.description.is_empty(),
+            "set_fea_case: description must be non-empty"
+        );
+
+        let schema = &entry.input_schema;
+
+        // Object schema
+        assert_eq!(
+            schema["type"].as_str(),
+            Some("object"),
+            "set_fea_case: input_schema.type must be 'object'"
+        );
+
+        // `case` must be a string property
+        assert_eq!(
+            schema["properties"]["case"]["type"].as_str(),
+            Some("string"),
+            "set_fea_case: properties.case.type must be 'string'"
+        );
+
+        // `case` must be required
+        let required = schema["required"]
+            .as_array()
+            .expect("set_fea_case: input_schema.required must be an array");
+        assert!(
+            required.iter().any(|v| v.as_str() == Some("case")),
+            "'case' must be listed in set_fea_case required"
+        );
+    }
+
+    /// Verify that `set_fea_case_on_engine` routes to the engine's
+    /// `set_active_fea_case` path by loading the multi-case fixture and
+    /// switching to the "overload" case.  Mirrors the approach used by
+    /// `run_on_engine_does_not_poison_mutex_when_closure_panics`.
+    ///
+    /// Retargeted from `handle_set_fea_case` in step-23: the full handler now
+    /// needs a `DebugServerState`/AppHandle that cannot be built headlessly, so
+    /// the engine-routing contract is covered by the extracted helper instead.
+    #[tokio::test]
+    async fn handle_set_fea_case_routes_to_engine() {
+        let engine = crate::tests::make_test_engine();
+
+        // Load the three-case fixture so the engine has a compiled module.
+        {
+            let mut locked = engine.lock().unwrap();
+            locked
+                .load_from_source(
+                    include_str!("../../../examples/fea_multi_case_bracket.ri"),
+                    "FeaMultiCaseBracket",
+                )
+                .expect("load_from_source must succeed for fea_multi_case_bracket.ri");
+        }
+
+        let result = set_fea_case_on_engine(&engine, "overload").await;
+
+        assert!(
+            result.is_ok(),
+            "set_fea_case_on_engine('overload') must return Ok; got: {:?}",
+            result.err()
+        );
+        let gui_state = result.unwrap();
+        assert!(
+            !gui_state.meshes.is_empty(),
+            "set_fea_case_on_engine must return GuiState with >= 1 mesh"
+        );
+    }
+
+    // ── Task 3026 step-22: RED — fea_case_frontend_payload carries GuiState ──
+    //
+    // Pure helper test: assert that `fea_case_frontend_payload` serializes a
+    // GuiState's scalar_channels into a JSON object whose `guiState` field
+    // survives a `serde_json::from_value::<GuiState>` round-trip with vonMises
+    // values intact.  No kernel, no Tauri AppHandle, no fixture.
+    //
+    // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.
+    #[test]
+    fn set_fea_case_pushes_gui_state_payload_to_frontend() {
+        use crate::types::{GuiState, MeshData};
+        use std::collections::HashMap;
+
+        // Build a minimal GuiState with one mesh carrying a known vonMises channel.
+        // vertex_count = 3, so scalar_channels["vonMises"] must have length 3.
+        let von_mises = vec![200.0_f32, 200.0, 200.0];
+        let mut channels = HashMap::new();
+        channels.insert("vonMises".to_string(), von_mises.clone());
+
+        let mesh = MeshData {
+            entity_path: "test/mesh".to_string(),
+            // 3 vertices (9 floats) → vertex_count = 3
+            vertices: vec![0.0_f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.5, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+            scalar_channels: channels,
+            displaced_positions: None,
+            element_kind: None,
+            region_tags: None,
+            vector_channels: HashMap::new(),
+        };
+        let gui_state = GuiState {
+            meshes: vec![mesh],
+            values: vec![],
+            constraints: vec![],
+            files: vec![],
+            tessellation_diagnostics: vec![],
+            compile_diagnostics: vec![],
+            tensegrity_wires: vec![],
+            tensegrity_surfaces: vec![],
+            demand_prune_measurement: None,
+        };
+
+        // FAILS TO COMPILE until step-23 adds `fea_case_frontend_payload`.
+        let payload = fea_case_frontend_payload("overload", &gui_state)
+            .expect("fea_case_frontend_payload must return Ok");
+
+        // (a) must return a JSON object
+        assert!(
+            payload.is_object(),
+            "fea_case_frontend_payload must return a JSON object"
+        );
+
+        // (b) payload["case"] must be "overload"
+        assert_eq!(
+            payload["case"].as_str(),
+            Some("overload"),
+            "payload[\"case\"] must be \"overload\""
+        );
+
+        // (c) round-trip payload["guiState"] through serde_json::from_value to
+        // verify the vonMises channel survives the serialization path intact.
+        let round_tripped: crate::types::GuiState =
+            serde_json::from_value(payload["guiState"].clone())
+                .expect("GuiState round-trip must succeed");
+        let vm = round_tripped.meshes[0]
+            .scalar_channels
+            .get("vonMises")
+            .expect("vonMises channel must be present after round-trip");
+        assert_eq!(
+            vm,
+            &von_mises,
+            "vonMises values must survive the serde round-trip byte-identical"
         );
     }
 }

@@ -132,7 +132,22 @@ mod tests {
         );
         for f in &findings {
             assert_eq!(f.pattern, Pattern::P2ConsumerStub, "wrong pattern: {:?}", f);
-            assert_eq!(f.severity, Severity::Medium, "benign title should → Medium: {:?}", f);
+            // Family-i (crates/x/i.rs — `// fixme`) is Severity::Low after the
+            // step-10 FIXME-downgrade impl; all other families remain Medium.
+            let expected_severity = if f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == "crates/x/i.rs",
+                _ => false,
+            }) {
+                Severity::Low
+            } else {
+                Severity::Medium
+            };
+            assert_eq!(
+                f.severity,
+                expected_severity,
+                "family-i should be Low, others Medium: {:?}",
+                f
+            );
         }
         // Each finding's evidence must reference the correct file path.
         for path in &paths {
@@ -1592,6 +1607,283 @@ mod tests {
             f.summary.contains("line 2"),
             "summary must reference the pre-existing stub at line 2; got: {}",
             f.summary
+        );
+    }
+
+    /// Step-9 RED — P2 FIXME downgrade: a (task_id, path) group whose all
+    /// matches have the `// fixme` label must be emitted at Severity::Low
+    /// (maintenance marker, not a stub). Models reify-geometry:46.
+    ///
+    /// Three sub-cases:
+    ///   (a) only `// fixme` lines → Severity::Low
+    ///   (b) mixing `// fixme` + `unimplemented!()` code line → Severity::Medium
+    ///   (c) `// stub: wire later` → Severity::Medium (unchanged)
+    ///
+    /// Fails on current code (fixme → Medium).
+    #[test]
+    fn fixme_label_downgrades_to_low() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "FX1";
+        let task_branch = format!("task/{}", task_id);
+
+        // (a) Only fixme lines → Low
+        let path_a = "crates/x/fixme_only.rs";
+        // (b) fixme + unimplemented!() code line → Medium (mixed group stays Medium)
+        let path_b = "crates/x/fixme_mixed.rs";
+        // (c) // stub: wire later → Medium
+        let path_c = "crates/x/stub_label.rs";
+
+        let mut git = MockGitOps::new();
+        // (a) only `// fixme`
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_a,
+            vec![
+                (46, "    // FIXME: permanent maintenance trap".to_string()),
+            ],
+        );
+        // (b) fixme + unimplemented!() code line
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_b,
+            vec![
+                (10, "    // fixme".to_string()),
+                (11, "    unimplemented!()".to_string()),
+            ],
+        );
+        // (c) stub label
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_c,
+            vec![(5, "    // stub: wire later".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![
+                path_a.to_string(),
+                path_b.to_string(),
+                path_c.to_string(),
+            ]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // Expect 3 findings — one per path.
+        assert_eq!(findings.len(), 3, "expected 3 findings; got {:?}", findings);
+
+        let find_for = |path: &str| -> Option<&reify_audit::Finding> {
+            findings.iter().find(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path: p } => p == path,
+                _ => false,
+            }))
+        };
+
+        // (a) fixme-only → Low
+        let fa = find_for(path_a).expect("finding for path_a must exist");
+        assert_eq!(
+            fa.severity, Severity::Low,
+            "fixme-only group must be Severity::Low; got {:?}", fa.severity
+        );
+
+        // (b) fixme + unimplemented!() → Medium
+        let fb = find_for(path_b).expect("finding for path_b must exist");
+        assert_eq!(
+            fb.severity, Severity::Medium,
+            "mixed fixme+unimplemented group must be Severity::Medium; got {:?}", fb.severity
+        );
+
+        // (c) stub label → Medium
+        let fc = find_for(path_c).expect("finding for path_c must exist");
+        assert_eq!(
+            fc.severity, Severity::Medium,
+            "// stub label must remain Severity::Medium; got {:?}", fc.severity
+        );
+    }
+
+    /// Family-1 canonical hash-cite form: `TODO(#N)` inside `todo(...)` parens.
+    ///
+    /// After task δ migrated bare-cite markers to `TODO(#NNNN):` form, done-task
+    /// commits may introduce lines like `// TODO(#4593): perf, see anchor`.
+    /// The paren-scoped sub-check inside Family 1 must recognise `#`+digit and
+    /// return the label `TODO(#N)` so these cites stay visible to P2 (§6.5).
+    ///
+    /// Additive: does not change the 11-family count in
+    /// `detects_canonical_stub_patterns_on_added_lines`.
+    ///
+    /// Fails before step-4 because `line_matches_stub`'s paren sub-checks only
+    /// recognise pending / post- / later / task_N — not the `#`+digit form.
+    #[test]
+    fn family1_recognizes_canonical_hash_cite_form() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "9300";
+        let path = "crates/x/canon.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{}", task_id),
+            path,
+            vec![(7, "    // TODO(#4593): perf, see anchor".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![path.to_string()]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "TODO(#N) canonical cite must produce exactly 1 P2 finding; got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::P2ConsumerStub, "wrong pattern: {:?}", f);
+        assert_eq!(f.severity, Severity::Medium, "canonical cite must be Medium; got {:?}", f.severity);
+        // The summary must carry the [TODO(#N)] label segment.
+        assert!(
+            f.summary.contains("[TODO(#N)]"),
+            "summary must contain '[TODO(#N)]' label; got: {}",
+            f.summary
+        );
+    }
+
+    /// Step-7 RED — P2 comment-prose suppression: executable-code-token families
+    /// (2 unimplemented!, 3 panic!(not yet), 4 tracing::warn!, 5 Value::Undef)
+    /// must NOT fire when the matched line is a pure `//` comment.
+    ///
+    /// Three sub-cases:
+    ///   (1) pure `//` comment containing "Value::Undef" + "stub" text
+    ///       (models reify-expr:2011 / fea.rs:52) → no finding for that path
+    ///   (2) genuine code line `Value::Undef => { /* pending */ }` → still flagged
+    ///   (3) pure `//` comment containing `unimplemented!()` → no finding
+    ///
+    /// Fails on current code (Families 2/5 fire on the comment lines).
+    #[test]
+    fn code_token_families_skip_pure_comment_lines() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let task_id = "CP1";
+        let task_branch = format!("task/{}", task_id);
+
+        // Path A: pure `//` comment with Value::Undef + stub → must NOT flag
+        let path_a = "crates/x/comment_prose.rs";
+        // Path B: genuine code line with Value::Undef + pending → MUST flag
+        let path_b = "crates/x/code_line.rs";
+        // Path C: pure `//` comment with unimplemented!() → must NOT flag
+        let path_c = "crates/x/comment_unimpl.rs";
+
+        let mut git = MockGitOps::new();
+        // Path A: prose comment about Value::Undef (models reify-expr:2011)
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_a,
+            vec![(2011, "        // solve would appear as a stub ElasticResult rather than Value::Undef.".to_string())],
+        );
+        // Path B: real code line — must still flag
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_b,
+            vec![(42, "    Value::Undef => { /* pending */ }".to_string())],
+        );
+        // Path C: comment containing unimplemented!() as prose
+        git.set_diff_added_lines(
+            "main",
+            &task_branch,
+            path_c,
+            vec![(10, "    // this arm calls unimplemented!() for now".to_string())],
+        );
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            task_id.to_string(),
+            benign_meta(task_id, vec![
+                path_a.to_string(),
+                path_b.to_string(),
+                path_c.to_string(),
+            ]),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p2_consumer_stub::check(&ctx);
+        // Only path_b should produce a finding.
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly 1 finding (only code-line path_b); got {:?}",
+            findings
+        );
+        let f = &findings[0];
+        // The finding must reference path_b (the real code line).
+        assert!(
+            f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_b,
+                _ => false,
+            }),
+            "finding must reference path_b ({path_b}); got {:?}",
+            f.evidence
+        );
+        // path_a and path_c must NOT appear in findings.
+        assert!(
+            !findings.iter().any(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_a,
+                _ => false,
+            })),
+            "pure-comment path_a must NOT be flagged; got {:?}",
+            findings
+        );
+        assert!(
+            !findings.iter().any(|f| f.evidence.iter().any(|e| match e {
+                EvidenceRef::File { path } => path == path_c,
+                _ => false,
+            })),
+            "pure-comment path_c must NOT be flagged; got {:?}",
+            findings
         );
     }
 

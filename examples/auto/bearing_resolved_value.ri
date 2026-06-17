@@ -1,0 +1,59 @@
+// bearing_resolved_value.ri — fixture for task 4435 (δ: auto-type-param
+// value population — auto-construct resolved param from candidate defaults →
+// Value::StructureInstance).
+//
+// A SINGLE GasketSeal candidate guarantees deterministic resolution
+// (1 feasible → Selected) under the compile-time stub checker, so the
+// file compiles with ZERO Error diagnostics and needs NO examples_smoke.rs
+// SKIP_SET entry.
+//
+// The `auto(free): Seal` form is used (not strict `auto: Seal`) to
+// guarantee Selected under the stub — free-mode tiebreaks lex-first when
+// ≥2 candidates are feasible, so adding future candidates won't change
+// the outcome to Ambiguous.
+//
+// PRD reference: docs/prds/v0_3/auto-type-param-resolution-completion.md §δ.
+
+// ── Bound trait ──────────────────────────────────────────────────────────────
+
+trait Seal {}
+
+// ── Single Seal candidate with a defaulted thickness param ───────────────────
+//
+// Having exactly ONE candidate guarantees a `Selected("GasketSeal")`
+// outcome under either the stub or the real checker.
+
+structure def GasketSeal : Seal {
+    param thickness : Length = 2mm
+}
+
+// ── Parameterized template with a free type-param ────────────────────────────
+//
+// `param seal : T` has no explicit default; δ synthesizes a zero-arg
+// GasketSeal() ctor as the monomorphized clone cell's `default_expr`
+// so eval produces Value::StructureInstance(GasketSeal{thickness:2mm}).
+
+structure def Bearing<T: Seal> {
+    param seal : T
+}
+
+// ── Assembly exercising `auto(free): Seal` ───────────────────────────────────
+//
+// `auto(free): Seal` → single feasible candidate → Selected("GasketSeal").
+// δ synthesis: the monomorphized Bearing$GasketSeal's `seal` param receives a
+// synthesized zero-arg GasketSeal() ctor as default_expr, so eval produces
+// Value::StructureInstance(GasketSeal{thickness:2mm}) rather than Value::Undef.
+//
+// NOTE: `let seal_thickness = self.b.seal.thickness` is intentionally omitted
+// here. The three-level chain (self.b.seal.thickness) compiles with
+// "member access not yet supported: .thickness" because `.thickness` is applied
+// to the `TypeParam("T")`-typed result of `self.b.seal`, and the expression
+// compiler does not yet permit member access on TypeParam-typed values.
+// That fix belongs in reify-compiler/src/expr.rs (out of scope for δ).
+// The primary δ observable — that `BearingResolved.b.seal` evaluates to
+// Value::StructureInstance(GasketSeal{thickness:2mm}) — is verified by the
+// auto_type_param_value_population_e2e test.
+
+structure def BearingResolved {
+    sub b = Bearing<auto(free): Seal>()
+}

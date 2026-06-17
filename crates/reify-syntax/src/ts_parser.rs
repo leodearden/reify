@@ -297,12 +297,16 @@ impl<'a> Lowering<'a> {
         // Second pass: lower all declarations.
         // Annotations immediately before a declaration are accumulated in
         // `pending_annotations` and drained into the declaration's `annotations` field.
+        // `#cfg(...)` pragmas immediately before an import are accumulated in
+        // `pending_cfg` and drained into the import's `cfg_predicates` field.
         let mut pending_annotations: Vec<Annotation> = Vec::new();
+        let mut pending_cfg: Vec<Pragma> = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             match child.kind() {
                 "structure_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_structure(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Structure(decl));
@@ -310,6 +314,7 @@ impl<'a> Lowering<'a> {
                 }
                 "occurrence_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_occurrence(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Occurrence(decl));
@@ -317,13 +322,16 @@ impl<'a> Lowering<'a> {
                 }
                 "import_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let cfg_predicates = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_import(child) {
                         decl.annotations = annotations;
+                        decl.cfg_predicates = cfg_predicates;
                         self.declarations.push(Declaration::Import(decl));
                     }
                 }
                 "enum_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_enum(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Enum(decl));
@@ -331,6 +339,7 @@ impl<'a> Lowering<'a> {
                 }
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_function(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
@@ -338,6 +347,7 @@ impl<'a> Lowering<'a> {
                 }
                 "trait_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_trait(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Trait(decl));
@@ -345,6 +355,7 @@ impl<'a> Lowering<'a> {
                 }
                 "field_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_field(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Field(decl));
@@ -352,6 +363,7 @@ impl<'a> Lowering<'a> {
                 }
                 "purpose_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_purpose(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Purpose(decl));
@@ -359,6 +371,7 @@ impl<'a> Lowering<'a> {
                 }
                 "constraint_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_constraint_def(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Constraint(decl));
@@ -366,6 +379,7 @@ impl<'a> Lowering<'a> {
                 }
                 "unit_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_unit(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Unit(decl));
@@ -373,9 +387,48 @@ impl<'a> Lowering<'a> {
                 }
                 "type_alias_declaration" => {
                     let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(mut decl) = self.lower_type_alias(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::TypeAlias(decl));
+                    }
+                }
+                "joint_definition" => {
+                    let annotations = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
+                    if let Some(mut decl) = self.lower_joint(child) {
+                        decl.annotations = annotations;
+                        self.declarations.push(Declaration::Joint(decl));
+                    }
+                }
+                "default_declaration" => {
+                    // Defaults are not annotatable in v1. Emit a diagnostic for each
+                    // annotation/cfg that preceded this declaration so it is not
+                    // silently dropped — the author can see the annotation was ignored.
+                    let dropped_annotations = std::mem::take(&mut pending_annotations);
+                    let dropped_cfg = std::mem::take(&mut pending_cfg);
+                    for ann in &dropped_annotations {
+                        self.push_error(
+                            format!(
+                                "annotation '@{}' on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                ann.name
+                            ),
+                            ann.span,
+                        );
+                    }
+                    for cfg in &dropped_cfg {
+                        self.push_error(
+                            format!(
+                                "'#[{}]' attribute on a default declaration is not supported; \
+                                 defaults are not annotatable in v1",
+                                cfg.name
+                            ),
+                            cfg.span,
+                        );
+                    }
+                    if let Some(decl) = self.lower_default_decl(child) {
+                        self.declarations.push(Declaration::Default(decl));
                     }
                 }
                 "annotation" => {
@@ -385,6 +438,9 @@ impl<'a> Lowering<'a> {
                 }
                 "pragma" => {
                     if let Some(pragma) = self.lower_pragma(child) {
+                        if pragma.name == "cfg" {
+                            pending_cfg.push(pragma.clone());
+                        }
                         self.module_pragmas.push(pragma);
                     }
                 }
@@ -393,6 +449,7 @@ impl<'a> Lowering<'a> {
                     // Extract the dotted path by collecting `identifier` children
                     // of the `path` (import_path) field — mirrors lower_import's
                     // segment-collection loop.
+                    let _ = std::mem::take(&mut pending_cfg);
                     if let Some(path_node) = child.child_by_field_name("path") {
                         let mut segments = Vec::new();
                         let mut seg_cursor = path_node.walk();
@@ -432,9 +489,10 @@ impl<'a> Lowering<'a> {
                     }
                 }
                 "ERROR" => {
-                    // Consume any pending annotations so they don't leak past a
-                    // syntax error to the next successfully-parsed declaration.
+                    // Consume any pending annotations and pending cfg so they don't
+                    // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
+                    let _ = std::mem::take(&mut pending_cfg);
                     self.push_error(
                         format!("syntax error: {}", self.node_text(child)),
                         self.span(child),
@@ -521,6 +579,7 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+            cfg_predicates: vec![],
         })
     }
 
@@ -577,7 +636,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_field_decl" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): tree-sitter error-recovery may produce a
+                    // TODO(#3942): tree-sitter error-recovery may produce a
                     // `variant_field_decl` without the expected 'field' child.
                     // Silently elide the affected field rather than panic; a
                     // Named variant whose fields all elide collapses to Unit —
@@ -586,7 +645,7 @@ impl<'a> Lowering<'a> {
                 };
                 let type_node = match child.child_by_field_name("type") {
                     Some(n) => n,
-                    // TODO(δ/3942): same — missing 'type' child from error recovery.
+                    // TODO(#3942): same — missing 'type' child from error recovery.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
@@ -707,8 +766,11 @@ impl<'a> Lowering<'a> {
     /// and qualified associated-type paths (`Beam::Material`, `Beam::(HasMaterial::Material)`).
     fn lower_type_expr_node(&self, node: tree_sitter::Node) -> TypeExpr {
         if node.kind() == "type_expr" {
-            // type_expr is choice(parameterized_type, qualified_type, identifier)
+            // type_expr is choice(function_type, parameterized_type, qualified_type, identifier)
             let child = node.child(0).unwrap_or(node);
+            if child.kind() == "function_type" {
+                return self.lower_function_type(child);
+            }
             if child.kind() == "parameterized_type" {
                 return self.lower_parameterized_type(child);
             }
@@ -723,6 +785,8 @@ impl<'a> Lowering<'a> {
                 },
                 span: self.span(child),
             }
+        } else if node.kind() == "function_type" {
+            self.lower_function_type(node)
         } else if node.kind() == "parameterized_type" {
             self.lower_parameterized_type(node)
         } else if node.kind() == "qualified_type" {
@@ -739,24 +803,67 @@ impl<'a> Lowering<'a> {
         }
     }
 
+    /// Bounded error-recovery fallback for a baseless `qualified_type` node.
+    ///
+    /// Returns a flat `Named` over the whole-node text with empty `type_args`.
+    /// This intentionally does NOT call `lower_type_expr_node`: a baseless
+    /// `qualified_type` node has `kind == "qualified_type"`, which would dispatch
+    /// back to `lower_qualified_type`, find no base again, and recurse without
+    /// bound — causing a stack overflow in release builds (where `debug_assert!`
+    /// is compiled out).  The bounded whole-node-text placeholder is structurally
+    /// wrong but safe; it restores the pre-4601 fallback shape.
+    ///
+    /// Empirically unreachable from well-formed source: a missing base before `::`
+    /// causes tree-sitter to emit an `(ERROR …)` node, and a recoverable-missing
+    /// base is inserted as a zero-width `identifier` (so `child_by_field_name("base")`
+    /// returns `Some(missing)` and the `Some` arm fires instead).  This helper
+    /// exists as a defensive guard aligned with the file's no-stack-overflow norm
+    /// (see the iterative `first_error_or_missing_descendant` walk, ts_parser.rs:84-133).
+    fn qualified_type_recovery_base(&self, node: tree_sitter::Node) -> TypeExpr {
+        TypeExpr {
+            kind: TypeExprKind::Named {
+                name: self.node_text(node).to_string(),
+                type_args: vec![],
+            },
+            span: self.span(node),
+        }
+    }
+
     /// Lower a `qualified_type` CST node to a `TypeExpr`.
     ///
-    /// Handles two grammar forms (FORK-G):
-    /// - Bare:           `Beam::Material`           → `QualifiedAssoc { base: Named("Beam"), trait_name: None,               member: "Material" }`
-    /// - Disambiguated:  `Beam::(HasMaterial::Material)` → `QualifiedAssoc { base: Named("Beam"), trait_name: Some("HasMaterial"), member: "Material" }`
+    /// Handles four grammar forms (task 4601 α widened the base to
+    /// `choice($.identifier, $.parameterized_type)`):
+    /// - Bare:           `Beam::Material`
+    ///   → `QualifiedAssoc { base: Named("Beam"), trait_name: None, member: "Material" }`
+    /// - Type-param:     `T::Material`
+    ///   → `QualifiedAssoc { base: Named("T"),    trait_name: None, member: "Material" }`
+    /// - Applied-base:   `Coupling<Prismatic>::MotionValue`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: None, member: "MotionValue" }`
+    /// - FORK-G applied: `Coupling<Prismatic>::(HasMotion::MotionValue)`
+    ///   → `QualifiedAssoc { base: Named("Coupling", [Named("Prismatic")]), trait_name: Some("HasMotion"), member: "MotionValue" }`
     ///
-    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function emits the
-    /// unresolved AST node only.
+    /// The base is lowered via `lower_type_expr_node` in the `Some` arm only
+    /// (i.e., only when the `base` field is actually present), which dispatches
+    /// `parameterized_type → lower_parameterized_type` (carrying `type_args`) and
+    /// falls through `identifier → Named { name, type_args: [] }` — so bare/type-param
+    /// bases are byte-identical to the pre-4601 output.
+    ///
+    /// The `None` arm (tree-sitter error-recovery; empirically unreachable from
+    /// well-formed source) calls `qualified_type_recovery_base` — a bounded
+    /// whole-node-text placeholder — instead of `lower_type_expr_node`, which
+    /// would dispatch back to this function and recurse without bound.
+    ///
+    /// Resolution to a concrete `Type` is deferred to task ιₑ — this function
+    /// emits the unresolved AST node only.
     fn lower_qualified_type(&self, node: tree_sitter::Node) -> TypeExpr {
-        // `base` field: the leading identifier (e.g. "Beam" or a type-param "T").
+        // `base` field: either a bare identifier (e.g. "Beam", "T") or a
+        // parameterized_type (e.g. `Coupling<Prismatic>`).
         //
-        // Under well-formed input the `base` field is always present.  Under
-        // tree-sitter error recovery it may be absent; rather than silently
-        // substituting the whole-node text (which would produce a structurally-
-        // valid but semantically wrong QualifiedAssoc), we log a debug warning so
-        // the malformed input is visible in debug builds.
-        let base_node = match node.child_by_field_name("base") {
-            Some(n) => n,
+        // `lower_type_expr_node` is called ONLY in the `Some` arm (base field
+        // actually present) — calling it in the `None` arm would re-dispatch
+        // this `qualified_type` node and recurse infinitely in release builds.
+        let base = match node.child_by_field_name("base") {
+            Some(base_node) => Box::new(self.lower_type_expr_node(base_node)),
             None => {
                 debug_assert!(
                     false,
@@ -765,16 +872,9 @@ impl<'a> Lowering<'a> {
                     node.kind(),
                     node.range(),
                 );
-                node
+                Box::new(self.qualified_type_recovery_base(node))
             }
         };
-        let base = Box::new(TypeExpr {
-            kind: TypeExprKind::Named {
-                name: self.node_text(base_node).to_string(),
-                type_args: vec![],
-            },
-            span: self.span(base_node),
-        });
 
         // `trait` field: present only for the disambiguated form `(Trait::Member)`.
         let trait_name = node
@@ -801,6 +901,57 @@ impl<'a> Lowering<'a> {
 
         TypeExpr {
             kind: TypeExprKind::QualifiedAssoc { base, trait_name, member },
+            span: self.span(node),
+        }
+    }
+
+    /// Lower a `function_type` CST node (`(T) -> U`, `(A, B) -> C`, `() -> U`)
+    /// to `TypeExprKind::Function` (task 4595).
+    ///
+    /// The grammar rule is
+    ///   `seq('(', commaSep($.type_expr), ')', '->', field('return_type', $.type_expr))`
+    /// so the return type is the only named field (`return_type`) and the
+    /// parameter types are the positional `type_expr` children preceding it.
+    /// We read the return node via `child_by_field_name`, then collect every
+    /// other `type_expr` child (distinguished by node id) as a positional
+    /// param — mirroring `lower_qualified_type`'s field-driven discipline.
+    ///
+    /// The `None` (missing return) arm is tree-sitter error-recovery output,
+    /// empirically unreachable from well-formed source; it substitutes a
+    /// bounded whole-node-text placeholder (same guard as
+    /// `lower_qualified_type`'s missing-base arm) rather than recursing.
+    fn lower_function_type(&self, node: tree_sitter::Node) -> TypeExpr {
+        let return_node = node.child_by_field_name("return_type");
+        let return_type = match return_node {
+            Some(n) => Box::new(self.lower_type_expr_node(n)),
+            None => {
+                debug_assert!(
+                    false,
+                    "lower_function_type: missing `return_type` field in node '{}' at {:?} — \
+                     likely tree-sitter error-recovery output; substituting whole-node text",
+                    node.kind(),
+                    node.range(),
+                );
+                Box::new(self.qualified_type_recovery_base(node))
+            }
+        };
+
+        // Positional param types: every direct `type_expr` child that is NOT
+        // the `return_type` field node (compared by stable node id).
+        let return_id = return_node.map(|n| n.id());
+        let mut params = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if child.kind() == "type_expr" && Some(child.id()) != return_id {
+                params.push(self.lower_type_expr_node(child));
+            }
+        }
+
+        TypeExpr {
+            kind: TypeExprKind::Function {
+                params,
+                return_type,
+            },
             span: self.span(node),
         }
     }
@@ -1017,6 +1168,130 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    // ── Joint lowering ─────────────────────────────────────────
+
+    /// Lower a `joint_definition` CST node into a `JointDef`.
+    ///
+    /// Grammar (task α 4395):
+    ///   `joint NAME(params) with <dof> = <body>`
+    ///
+    /// Strategy:
+    /// - Reuses `lower_function`'s param-walk, `lower_type_parameters`,
+    ///   `has_pub_keyword`, and `extract_doc_comment` for the common prefix.
+    /// - `dof`: walks the `dof` (joint_dof) field node and collects every
+    ///   `joint_dof_field` child into `JointDofField`. Uniform for single/record:
+    ///   the single-form produces a joint_dof wrapping one field; the record-form
+    ///   wraps N fields; the lowering collects all children identically.
+    /// - `body`: inspects the `body` (joint_body) field node:
+    ///   - If it has `relation_member` children → block form → call
+    ///     `lower_relation_members` to produce Vec<Expr> (same as RelateDecl).
+    ///   - Otherwise → single-expr form → lower the `result` field into a
+    ///     1-element Vec<Expr>.
+    ///
+    /// Scope boundary (α): no DOF self-check, no validate_range, no
+    /// Type::Relation enforcement on the body — all deferred to β.
+    fn lower_joint(&self, node: tree_sitter::Node) -> Option<JointDef> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let doc = self.extract_doc_comment(node);
+        let is_pub = self.has_pub_keyword(node);
+        let type_params = self.lower_type_parameters(node);
+
+        // Collect datum params from fn_param_list (mirrors lower_function's
+        // param-walk; no `self` receiver in joint params).
+        let params = {
+            let mut cursor = node.walk();
+            let mut params = Vec::new();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "fn_param_list" {
+                    let mut param_cursor = child.walk();
+                    for param_child in child.children(&mut param_cursor) {
+                        if param_child.kind() == "fn_param"
+                            && let Some(p) = self.lower_fn_param(param_child) {
+                                params.push(p);
+                            }
+                    }
+                    break;
+                }
+            }
+            params
+        };
+
+        // Lower the DOF fields from the `dof` (joint_dof) field node.
+        // Both single-form (joint_dof = joint_dof_field) and record-form
+        // (joint_dof = '{' joint_dof_field* '}') produce joint_dof_field
+        // children; we collect them all uniformly.
+        let dof = if let Some(dof_node) = node.child_by_field_name("dof") {
+            let mut fields = Vec::new();
+            let mut cursor = dof_node.walk();
+            for child in dof_node.children(&mut cursor) {
+                if child.kind() == "joint_dof_field"
+                    && let Some(f) = self.lower_joint_dof_field(child) {
+                        fields.push(f);
+                    }
+            }
+            fields
+        } else {
+            vec![]
+        };
+
+        // Lower the body from the `body` (joint_body) field node.
+        let body = if let Some(body_node) = node.child_by_field_name("body") {
+            // Check if the body node has `relation_member` children (block form).
+            let has_relation_members = {
+                let mut cursor = body_node.walk();
+                body_node.children(&mut cursor).any(|c| c.kind() == "relation_member")
+            };
+            if has_relation_members {
+                // Block form: reuse lower_relation_members (same as RelateDecl).
+                self.lower_relation_members(body_node)
+            } else if let Some(result_node) = body_node.child_by_field_name("result") {
+                // Single-expr form: lower the `result` field into a 1-element Vec.
+                self.lower_expr(result_node).map(|e| vec![e]).unwrap_or_default()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        Some(JointDef {
+            name,
+            doc,
+            is_pub,
+            type_params,
+            params,
+            dof,
+            body,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+            annotations: vec![],
+        })
+    }
+
+    /// Lower a `joint_dof_field` CST node into a `JointDofField`.
+    ///
+    /// Grammar: `field('name', id) ':' field('type', type_expr) optional(seq('in', field('range', _expression)))`
+    fn lower_joint_dof_field(&self, node: tree_sitter::Node) -> Option<JointDofField> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text(name_node).to_string();
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_type_expr_node(type_node);
+
+        let range = node
+            .child_by_field_name("range")
+            .and_then(|r| self.lower_expr(r));
+
+        Some(JointDofField {
+            name,
+            type_expr,
+            range,
+            span: self.span(node),
+        })
+    }
+
     // ── Trait lowering ────────────────────────────────────────
 
     fn lower_trait(&mut self, node: tree_sitter::Node) -> Option<TraitDecl> {
@@ -1164,7 +1439,7 @@ impl<'a> Lowering<'a> {
         let is_pub = self.has_pub_keyword(node);
         let type_params = self.lower_type_parameters(node);
         let params = self.lower_purpose_params(node);
-        let (members, pragmas) = self.lower_purpose_members(node);
+        let (members, pragmas, defaults) = self.lower_purpose_members(node);
 
         Some(PurposeDef {
             name,
@@ -1172,6 +1447,7 @@ impl<'a> Lowering<'a> {
             type_params,
             params,
             members,
+            defaults,
             span: self.span(node),
             content_hash: self.content_hash(node),
             pragmas,
@@ -1294,6 +1570,28 @@ impl<'a> Lowering<'a> {
             span: self.span(node),
             content_hash: self.content_hash(node),
             annotations: vec![],
+        })
+    }
+
+    /// Lower a `default_declaration` node: `default TypeName = expr`
+    ///
+    /// Note: unlike `lower_unit`, the `type` field here is a plain `type_expr`
+    /// (not a `dimensional_type_expr`), and the `value` is a full `_expression`
+    /// (not a binding value). Reads the `type` field via `lower_type_expr_node`
+    /// and the `value` field via `lower_expr`. Returns `None` only if either
+    /// field is absent (malformed/error-recovery CST).
+    fn lower_default_decl(&mut self, node: tree_sitter::Node) -> Option<DefaultDecl> {
+        let type_node = node.child_by_field_name("type")?;
+        let type_expr = self.lower_type_expr_node(type_node);
+
+        let value_node = node.child_by_field_name("value")?;
+        let value = self.lower_expr(value_node)?;
+
+        Some(DefaultDecl {
+            type_expr,
+            value,
+            span: self.span(node),
+            content_hash: self.content_hash(node),
         })
     }
 
@@ -1479,17 +1777,26 @@ impl<'a> Lowering<'a> {
         })
     }
 
-    fn lower_purpose_members(&mut self, node: tree_sitter::Node) -> (Vec<MemberDecl>, Vec<Pragma>) {
+    fn lower_purpose_members(
+        &mut self,
+        node: tree_sitter::Node,
+    ) -> (Vec<MemberDecl>, Vec<Pragma>, Vec<DefaultDecl>) {
         let mut members = Vec::new();
         let mut pragmas = Vec::new();
+        let mut defaults = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "purpose_member" {
-                // purpose_member is a choice node wrapping the actual member or pragma
+                // purpose_member is a choice node wrapping the actual member, pragma,
+                // or default_declaration.
                 if let Some(inner) = child.named_child(0) {
                     if inner.kind() == "pragma" {
                         if let Some(pragma) = self.lower_pragma(inner) {
                             pragmas.push(pragma);
+                        }
+                    } else if inner.kind() == "default_declaration" {
+                        if let Some(decl) = self.lower_default_decl(inner) {
+                            defaults.push(decl);
                         }
                     } else if let Some(member) = self.lower_member(inner) {
                         members.push(member);
@@ -1497,7 +1804,7 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
-        (members, pragmas)
+        (members, pragmas, defaults)
     }
 
     fn lower_fn_param(&self, node: tree_sitter::Node) -> Option<FnParam> {
@@ -1689,6 +1996,12 @@ impl<'a> Lowering<'a> {
                 child,
                 "guarded block",
                 self.lower_guarded_block(child)
+            ),
+            "relate_block" => check_and_lower!(
+                self,
+                child,
+                "relate block",
+                self.lower_relate_block(child).map(MemberDecl::Relate)
             ),
             "associated_type" => self
                 .lower_associated_type(child)
@@ -1965,13 +2278,44 @@ impl<'a> Lowering<'a> {
     fn lower_binding_value(&self, node: tree_sitter::Node) -> Option<Expr> {
         if node.kind() == "auto_keyword" {
             let free = node.child_by_field_name("modifier").is_some();
+            let params = self.lower_auto_params(node);
             Some(Expr {
-                kind: ExprKind::Auto { free },
+                kind: ExprKind::Auto { free, params },
                 span: self.span(node),
             })
         } else {
             self.lower_expr(node)
         }
+    }
+
+    /// Collect the ordered `name = value` params of a parameterized `auto(...)`
+    /// CST node (geometric-relations δ, task 4384).
+    ///
+    /// The grammar (`auto_keyword`, grammar.js:635) has a parameterized arm
+    /// `seq($._auto_token, '(', $.auto_param_list, ')')` whose `auto_param_list`
+    /// holds `auto_param` children, each `field('name', identifier) '='
+    /// field('value', _expression)`. Returns an empty Vec for bare `auto` and
+    /// `auto(free)` (neither carries an `auto_param_list` child). δ only
+    /// PRESERVES these params in the AST; consuming them is ζ.
+    fn lower_auto_params(&self, auto_node: tree_sitter::Node) -> Vec<(String, Expr)> {
+        let mut params = Vec::new();
+        let mut cursor = auto_node.walk();
+        for child in auto_node.children(&mut cursor) {
+            if child.kind() != "auto_param_list" {
+                continue;
+            }
+            let mut inner = child.walk();
+            for param in child.children(&mut inner) {
+                if param.kind() == "auto_param"
+                    && let Some(name_node) = param.child_by_field_name("name")
+                    && let Some(value_node) = param.child_by_field_name("value")
+                    && let Some(value) = self.lower_expr(value_node)
+                {
+                    params.push((self.node_text(name_node).to_string(), value));
+                }
+            }
+        }
+        params
     }
 
     fn lower_param(&self, node: tree_sitter::Node) -> Option<ParamDecl> {
@@ -2223,11 +2567,25 @@ impl<'a> Lowering<'a> {
         let is_aux = self.has_aux_keyword(node);
         // Lower the optional `at <pose>` clause. The grammar exposes the pose
         // expression as a named field "pose" on the sub_declaration node
-        // (grammar.js task 3899 step-2). Pattern mirrors other optional-expr
-        // members (e.g. lower_port frame_expr, lower_param default).
+        // (grammar.js task 3899 step-2). δ (task 4384) widened the pose field
+        // to `choice($._expression, $.auto_keyword)`, making `at` a new auto
+        // binding-site; lowering therefore goes through `lower_binding_value`
+        // (not `lower_expr`) so `at auto` / `at auto(seed = …)` lower to
+        // `ExprKind::Auto { free, params }`. Ordinary pose expressions still
+        // fall through to `lower_expr` inside the helper.
         let pose_expr = node
             .child_by_field_name("pose")
-            .and_then(|n| self.lower_expr(n));
+            .and_then(|n| self.lower_binding_value(n));
+
+        // Lower the optional inline relate-block from the trailing
+        // `at <pose> where { … }` form (geometric-relations δ, task 4384). The
+        // grammar attaches it as field "relations" → a `sub_relate_block` node
+        // whose `relation_member` children each hold a relation expression.
+        // Empty unless the inline `where { }` block is present.
+        let relate_relations = node
+            .child_by_field_name("relations")
+            .map(|n| self.lower_relation_members(n))
+            .unwrap_or_default();
 
         Some(SubDecl {
             name,
@@ -2242,9 +2600,40 @@ impl<'a> Lowering<'a> {
             is_aux,
             is_priv: self.has_priv_keyword(node),
             pose_expr,
+            relate_relations,
             span: self.span(node),
             content_hash: self.content_hash(node),
         })
+    }
+
+    /// Lower a `relate_block` CST member (`relate { … }`) into a `RelateDecl`
+    /// (geometric-relations δ, task 4384). The body is `repeat(relation_member)`;
+    /// an empty `relate { }` lowers to a `RelateDecl` with no relations.
+    fn lower_relate_block(&self, node: tree_sitter::Node) -> Option<RelateDecl> {
+        Some(RelateDecl {
+            relations: self.lower_relation_members(node),
+            span: self.span(node),
+            content_hash: self.content_hash(node),
+        })
+    }
+
+    /// Lower the `relation_member` children of a `relate_block` or
+    /// `sub_relate_block` CST node into their relation expressions, in source
+    /// order (task δ 4384). Each `relation_member` is `field('expr',
+    /// $._expression)`; anonymous and non-lowerable children are skipped. Shared
+    /// by both relate homes so the member-level and inline forms stay identical.
+    fn lower_relation_members(&self, block_node: tree_sitter::Node) -> Vec<Expr> {
+        let mut relations = Vec::new();
+        let mut cursor = block_node.walk();
+        for child in block_node.children(&mut cursor) {
+            if child.kind() == "relation_member"
+                && let Some(expr_node) = child.child_by_field_name("expr")
+                && let Some(expr) = self.lower_expr(expr_node)
+            {
+                relations.push(expr);
+            }
+        }
+        relations
     }
 
     /// Lower a `specialization_body` CST node (`{ repeat(param_assignment | _member) }`)
@@ -3153,6 +3542,7 @@ impl<'a> Lowering<'a> {
             is_aux: false,
             is_priv: false,
             pose_expr: None,
+            relate_relations: Vec::new(),
             span: self.span(member_node),
             content_hash: self.content_hash(member_node),
         };
@@ -3392,6 +3782,7 @@ impl<'a> Lowering<'a> {
             kind: ExprKind::FunctionCall {
                 name: "complex".to_string(),
                 args: vec![re_expr, im_expr],
+                arg_names: vec![None, None],
             },
             span: self.span(node),
         })
@@ -3500,12 +3891,14 @@ impl<'a> Lowering<'a> {
         let name = self.node_text(name_node).to_string();
 
         let mut args = Vec::new();
+        let mut arg_names = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((arg_name, expr)) = self.lower_call_argument(arg_child) {
+                        arg_names.push(arg_name);
                         args.push(expr);
                     }
                 }
@@ -3513,30 +3906,33 @@ impl<'a> Lowering<'a> {
         }
 
         Some(Expr {
-            kind: ExprKind::FunctionCall { name, args },
+            kind: ExprKind::FunctionCall { name, args, arg_names },
             span: self.span(node),
         })
     }
 
     /// Lower a single child of `argument_list`, which may be either a bare
-    /// `_expression` or a `named_argument`. For named arguments, the name is
-    /// stripped and only the value is kept as a positional arg — matching the
-    /// positional-only shape of `ExprKind::FunctionCall`.
+    /// `_expression` or a `named_argument`. Returns `(label, value)` where
+    /// `label` is `None` for positional arguments and `Some(name)` for named
+    /// arguments like `foo(a: 1.0)`.
     ///
     /// The `named_argument` branch delegates to `lower_binding_value` (not
     /// `lower_expr`), making this the **second AST-observable caller** of grammar
     /// slot 5 (`named_argument.value`). The first caller is `lower_named_arg`
     /// (via `named_argument_list` for `sub` instantiations). See
     /// `lower_binding_value`'s doc-comment for the full two-caller enumeration.
-    fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<Expr> {
+    fn lower_call_argument(&self, node: tree_sitter::Node) -> Option<(Option<String>, Expr)> {
         if !node.is_named() {
             return None;
         }
         if node.kind() == "named_argument" {
+            let name_node = node.child_by_field_name("name")?;
+            let arg_name = self.node_text(name_node).to_string();
             let value_node = node.child_by_field_name("value")?;
-            return self.lower_binding_value(value_node);
+            let expr = self.lower_binding_value(value_node)?;
+            return Some((Some(arg_name), expr));
         }
-        self.lower_expr(node)
+        Some((None, self.lower_expr(node)?))
     }
 
     fn lower_list_literal(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -3607,7 +4003,7 @@ impl<'a> Lowering<'a> {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
@@ -3701,13 +4097,17 @@ impl<'a> Lowering<'a> {
 
         // Collect positional args from the `argument_list` child (same logic as
         // `lower_function_call`, reusing the existing `lower_call_argument` helper).
+        // Trait method calls don't use named-arg binding, so any named-arg label is
+        // silently dropped — only the value expression is retained.  Named-arg syntax
+        // is grammatically permitted at call sites (e.g. `Trait::method(x: value)`),
+        // so dropping the label here is correct and expected.
         let mut args = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "argument_list" {
                 let mut arg_cursor = child.walk();
                 for arg_child in child.children(&mut arg_cursor) {
-                    if let Some(expr) = self.lower_call_argument(arg_child) {
+                    if let Some((_arg_name, expr)) = self.lower_call_argument(arg_child) {
                         args.push(expr);
                     }
                 }
@@ -3794,18 +4194,18 @@ impl<'a> Lowering<'a> {
             if child.kind() == "variant_construction_field" {
                 let field_name_node = match child.child_by_field_name("field") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'field' child — elide.
+                    // TODO(#3942): error-recovery node missing 'field' child — elide.
                     None => continue,
                 };
                 let value_node = match child.child_by_field_name("value") {
                     Some(n) => n,
-                    // TODO(δ/3942): error-recovery node missing 'value' child — elide.
+                    // TODO(#3942): error-recovery node missing 'value' child — elide.
                     None => continue,
                 };
                 let field_name = self.node_text(field_name_node).to_string();
                 let value_expr = match self.lower_expr(value_node) {
                     Some(e) => e,
-                    // TODO(δ/3942): lower_expr returned None for the field value
+                    // TODO(#3942): lower_expr returned None for the field value
                     // (unsupported or error-recovery expression kind) — elide rather
                     // than panic; task δ adds a diagnostic once VariantConstruct is
                     // fully resolved.
@@ -3986,6 +4386,7 @@ mod tests {
                 MemberDecl::ForallConstraint(_) => "forall_constraint".into(),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => "match_arm_decl_group".into(),
+                MemberDecl::Relate(_) => "relate".into(),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => format!("fn:{}", f.name),
             })
@@ -4072,7 +4473,7 @@ mod tests {
         };
         assert_eq!(body.name, "body");
         match &body.value.kind {
-            ExprKind::FunctionCall { name, args } => {
+            ExprKind::FunctionCall { name, args, .. } => {
                 assert_eq!(name, "box");
                 assert_eq!(args.len(), 3);
                 assert!(matches!(&args[0].kind, ExprKind::Ident(n) if n == "width"));
@@ -4174,6 +4575,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => f.span,
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => g.span,
+                MemberDecl::Relate(r) => r.span,
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => f.span,
             };
@@ -4308,6 +4710,7 @@ mod tests {
                 }
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(_) => {}
+                MemberDecl::Relate(_) => {}
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => {
                     assert!(
@@ -4329,7 +4732,7 @@ mod tests {
 
             let ty_span = p.type_expr.as_ref().unwrap().span;
             let ty_text = &source[ty_span.start as usize..ty_span.end as usize];
-            assert_eq!(ty_text, "Scalar", "width type text");
+            assert_eq!(ty_text, "Length", "width type text");
         }
     }
 
@@ -4377,6 +4780,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.span, f.content_hash),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.span, g.content_hash),
+                MemberDecl::Relate(r) => (r.span, r.content_hash),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.span, f.content_hash),
             };
@@ -4410,9 +4814,9 @@ mod tests {
     #[test]
     fn error_recovery_partial_parse() {
         let source = r#"structure Broken {
-    param width: Scalar = 80mm
+    param width: Length = 80mm
     param !!!invalid!!!
-    param height: Scalar = 100mm
+    param height: Length = 100mm
 }"#;
         let module = parse(source, ModulePath::single("broken"));
 
@@ -4492,6 +4896,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                MemberDecl::Relate(r) => (r.content_hash, r.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -4513,6 +4918,7 @@ mod tests {
                 MemberDecl::ForallConstraint(f) => (f.content_hash, f.span),
                 // Produced by the tree-sitter parser via lower_match_arm_decl_group (task 3564).
                 MemberDecl::MatchArmDeclGroup(g) => (g.content_hash, g.span),
+                MemberDecl::Relate(r) => (r.content_hash, r.span),
                 // Produced by lower_function (task 3937).
                 MemberDecl::Fn(f) => (f.content_hash, f.span),
             };
@@ -4524,7 +4930,7 @@ mod tests {
     #[test]
     fn parse_minimize_declaration() {
         let source = r#"structure S {
-    param volume: Scalar = 100mm
+    param volume: Length = 100mm
     minimize volume
 }"#;
         let module = parse(source, ModulePath::single("test_min"));
@@ -4553,7 +4959,7 @@ mod tests {
     #[test]
     fn parse_maximize_declaration() {
         let source = r#"structure S {
-    param thickness: Scalar = 5mm
+    param thickness: Length = 5mm
     maximize thickness
 }"#;
         let module = parse(source, ModulePath::single("test_max"));
@@ -4581,8 +4987,8 @@ mod tests {
     #[test]
     fn parse_minimize_complex_expression() {
         let source = r#"structure S {
-    param width: Scalar = 80mm
-    param height: Scalar = 100mm
+    param width: Length = 80mm
+    param height: Length = 100mm
     minimize width * height
 }"#;
         let module = parse(source, ModulePath::single("test_min_complex"));
@@ -4609,8 +5015,8 @@ mod tests {
     #[test]
     fn parse_minimize_with_other_members() {
         let source = r#"structure S {
-    param w: Scalar = 80mm
-    param h: Scalar = 100mm
+    param w: Length = 80mm
+    param h: Length = 100mm
     let vol = w * h
     constraint w > 0mm
     minimize w
@@ -4650,7 +5056,7 @@ mod tests {
     #[test]
     fn minimize_span_and_hash() {
         let source = r#"structure S {
-    param x: Scalar = 5mm
+    param x: Length = 5mm
     minimize x
 }"#;
         let module = parse(source, ModulePath::single("test_min_span"));
@@ -4689,7 +5095,7 @@ mod tests {
 
     #[test]
     fn parse_enum_declaration() {
-        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Scalar = 5mm }";
+        let source = "enum Direction { In, Out, Bidi }\nstructure S { param x: Length = 5mm }";
         let module = parse(source, ModulePath::single("test_enum"));
         assert!(
             module.errors.is_empty(),
@@ -5243,7 +5649,7 @@ mod tests {
 
     #[test]
     fn parse_simple_function_definition() {
-        let source = "fn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let source = "fn area(w: Length, h: Length) -> Length { w * h }";
         let module = parse(source, ModulePath::single("test_fn"));
         assert!(
             module.errors.is_empty(),
@@ -5261,15 +5667,15 @@ mod tests {
         assert_eq!(f.params.len(), 2);
         assert_eq!(f.params[0].name, "w");
         assert!(
-            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.params[0].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert_eq!(f.params[1].name, "h");
         assert!(
-            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.params[1].type_expr.kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert!(f.return_type.is_some());
         assert!(
-            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Scalar")
+            matches!(&f.return_type.as_ref().unwrap().kind, TypeExprKind::Named { name, .. } if name == "Length")
         );
         assert!(f.body.as_ref().unwrap().let_bindings.is_empty());
         assert!(matches!(&f.body.as_ref().unwrap().result_expr.kind, ExprKind::BinOp { op, .. } if op == "*"));
@@ -5632,7 +6038,7 @@ mod tests {
     /// which match any connect_body arm — so the catch-all should fire for each.
     #[test]
     fn lower_connect_body_catch_all_emits_for_unexpected_named_children() {
-        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let source = "constraint def Eq { param x: Length  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5706,7 +6112,7 @@ mod tests {
         // Pass a constraint_definition node to lower_port_body. Its named
         // children (identifier, param_declaration, constraint_def_predicate)
         // don't match any port_body arm and should hit the catch-all.
-        let source = "constraint def Eq { param x: Scalar  x > 0 }";
+        let source = "constraint def Eq { param x: Length  x > 0 }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5746,7 +6152,7 @@ mod tests {
         // diagnostic. The source is syntactically valid, so zero errors is the
         // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_port_body_directly(
-            "structure S { port a : in T { /* comment */ param x: Scalar = 1 } }",
+            "structure S { port a : in T { /* comment */ param x: Length = 1 } }",
         );
         assert!(
             errors.is_empty(),
@@ -5772,7 +6178,7 @@ mod tests {
         // don't match constraint_def arms and should hit the catch-all.
         // We use structure_definition because it has a "name" field (required
         // by lower_constraint_def) and body children outside constraint scope.
-        let source = "structure S { port a : in T { param x: Scalar = 1 }  sub b = T() }";
+        let source = "structure S { port a : in T { param x: Length = 1 }  sub b = T() }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5812,7 +6218,7 @@ mod tests {
         // diagnostic. The source is syntactically valid, so zero errors is the
         // correct assertion (not just "no 'unexpected' errors").
         let errors = lower_constraint_def_directly(
-            "constraint def Eq { /* comment */ param x: Scalar  x > 0 }",
+            "constraint def Eq { /* comment */ param x: Length  x > 0 }",
         );
         assert!(
             errors.is_empty(),
@@ -5828,7 +6234,7 @@ mod tests {
         // Pass a structure_definition node to lower_source_file. Its named
         // children (identifier, param_declaration, port_declaration, etc.)
         // don't match any top-level declaration kind and should hit the catch-all.
-        let source = "structure S { param x: Scalar = 1  port a : in T { param y: Scalar = 2 } }";
+        let source = "structure S { param x: Length = 1  port a : in T { param y: Length = 2 } }";
         let mut ts_parser = tree_sitter::Parser::new();
         ts_parser
             .set_language(&tree_sitter_reify::language().into())
@@ -5858,7 +6264,7 @@ mod tests {
         // Comments are tree-sitter extras — they must NOT trigger the catch-all
         // diagnostic. Verify that a source file with a block comment before a
         // valid structure produces no errors mentioning "unexpected".
-        let source = "/* comment */\nstructure S { param x: Scalar = 1 }";
+        let source = "/* comment */\nstructure S { param x: Length = 1 }";
         let module = parse(source, ModulePath::single("test"));
         assert!(
             !module
@@ -5874,7 +6280,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_structure_is_extracted() {
-        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Scalar = 1\n}";
+        let src = "/// A bracket for mounting.\nstructure Bracket {\n  param w: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5885,7 +6291,7 @@ mod tests {
 
     #[test]
     fn multi_line_doc_comment_joined() {
-        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Scalar = 1\n}";
+        let src = "/// Line one.\n/// Line two.\nstructure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5896,7 +6302,7 @@ mod tests {
 
     #[test]
     fn no_doc_comment_yields_none() {
-        let src = "structure S {\n  param x: Scalar = 1\n}";
+        let src = "structure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5907,7 +6313,7 @@ mod tests {
 
     #[test]
     fn regular_comment_not_treated_as_doc() {
-        let src = "// Just a comment\nstructure S {\n  param x: Scalar = 1\n}";
+        let src = "// Just a comment\nstructure S {\n  param x: Length = 1\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Structure(s) => s,
@@ -5921,7 +6327,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_fn_is_extracted() {
-        let src = "/// Compute area.\nfn area(w: Scalar, h: Scalar) -> Scalar { w * h }";
+        let src = "/// Compute area.\nfn area(w: Length, h: Length) -> Length { w * h }";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Function(f) => f,
@@ -5943,7 +6349,7 @@ mod tests {
 
     #[test]
     fn doc_comment_on_trait_is_extracted() {
-        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Scalar\n}";
+        let src = "/// A rigid body.\ntrait Rigid {\n  param mass: Length\n}";
         let module = parse(src, ModulePath::single("test"));
         let decl = match &module.declarations[0] {
             Declaration::Trait(t) => t,
@@ -6194,6 +6600,61 @@ mod tests {
                 );
             }
             other => panic!("expected InterpolatedString, got {:?}", other),
+        }
+    }
+
+    /// Robustness guard: `qualified_type_recovery_base` must return a flat,
+    /// bounded `Named` over the whole-node text — NOT dispatch back through
+    /// `lower_type_expr_node` — so that the error-recovery (`None`) arm of
+    /// `lower_qualified_type` does not recurse into itself and overflow the
+    /// stack in release builds.
+    ///
+    /// The source is valid (the `qualified_type` node is real); we pass that
+    /// real node to `qualified_type_recovery_base` to exercise the helper on
+    /// a concrete CST node without needing an unreachable baseless node.
+    #[test]
+    fn qualified_type_recovery_base_is_bounded_named() {
+        let source = "structure def S { param m : Coupling<Prismatic>::MotionValue }";
+
+        // Parse with the raw tree-sitter API to get the CST directly.
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("set_language failed");
+        let tree = ts_parser
+            .parse(source, None)
+            .expect("parse returned None");
+        let root = tree.root_node();
+
+        // Walk the CST to locate the qualified_type node (reuses the helper
+        // already defined in this test module at line 5764).
+        let qnode = find_node_by_kind(root, "qualified_type")
+            .expect("expected a qualified_type node in the CST");
+
+        // Build the lowering context.
+        let lowering = Lowering::new(source);
+
+        // Call the recovery helper directly.  Asserting a flat Named over the
+        // whole-node text (not a QualifiedAssoc) is the discriminating signal
+        // that the helper does NOT re-dispatch through lower_type_expr_node.
+        let result = lowering.qualified_type_recovery_base(qnode);
+
+        match result.kind {
+            TypeExprKind::Named { name, type_args } => {
+                assert_eq!(
+                    name, "Coupling<Prismatic>::MotionValue",
+                    "recovery base must be the raw whole-node text"
+                );
+                assert!(
+                    type_args.is_empty(),
+                    "recovery base must have empty type_args (no parsing), got: {:?}",
+                    type_args
+                );
+            }
+            other => panic!(
+                "expected TypeExprKind::Named (bounded flat recovery), got {:?}",
+                other
+            ),
         }
     }
 }

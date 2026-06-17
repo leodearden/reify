@@ -3,7 +3,7 @@
 // This hash captures the semantic version of the FEA engine: any change to a
 // contributor source file will produce a new hash, causing all persistent cache
 // entries to miss and be recomputed from scratch. Wire-format changes are
-// tracked separately by `ELASTIC_RESULT_FORMAT_VERSION` in `persistent_cache.rs`.
+// versioned separately by `ELASTIC_RESULT_FORMAT_VERSION` in `persistent_cache.rs`.
 //
 // # Algorithm and contributor-walk logic
 //

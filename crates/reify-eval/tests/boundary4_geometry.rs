@@ -255,6 +255,7 @@ mod occt_tests {
         let filleted = kernel
             .execute(&GeometryOp::Fillet {
                 target: handle.id,
+                edges: vec![],
                 radius: mm(2.0),
             })
             .unwrap();
@@ -287,6 +288,7 @@ mod occt_tests {
         let chamfered = kernel
             .execute(&GeometryOp::Chamfer {
                 target: handle.id,
+                edges: vec![],
                 distance: mm(2.0),
             })
             .unwrap();

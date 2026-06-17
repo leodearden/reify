@@ -17,11 +17,13 @@ import {
   ViewManageModal,
   MechanismPanel,
   DiagnosticsPanel,
+  FindUsesPanel,
   AutoResolvePanel,
   SolverProgressOverlay,
   BucklingPanel,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
+import type { ReferenceResult } from './editor/references';
 import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { Splitter } from './components/Splitter';
 import { KeyboardHelp } from './components/KeyboardHelp';
@@ -86,7 +88,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from './editor/messages';
-import { clampPanelHeightsToFit } from './hooks/useLayoutPersistence';
+import { clampPanelHeightsToFit, clampProblemsHeight } from './hooks/useLayoutPersistence';
 import { createSerializationErrorCoalescer } from './hooks/useSerializationErrorCoalescer';
 import { loadSidecar, saveSidecar } from './stores/sidecarPersistence';
 import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from './stores/viewPersistence';
@@ -95,6 +97,78 @@ import type { PersistentViewState } from './types';
 import styles from './App.module.css';
 
 export const NEW_FILE_TEMPLATE = '// New design\n';
+
+/** Minimal structural interface required by {@link navigateToDiagnostic}.
+ *  Using a structural interface keeps the function testable without depending
+ *  on the concrete createEditorStore return type. */
+export interface NavigateToDiagnosticStore {
+  state: {
+    activeFile: string | null;
+    openFiles: Pick<FileData, 'path'>[];
+  };
+  setActiveFile: (path: string) => void;
+  openFile: (file: FileData) => void;
+}
+
+/**
+ * Navigate the editor to a diagnostic location.
+ *
+ * Extracted from handleNavigateToDiagnostic so it is dependency-injected and
+ * unit-testable without rendering App. Follows the precedent of
+ * gotoDefinitionCommand / resolveAndNavigate (task 4206).
+ *
+ * Logic (implemented incrementally across γ steps):
+ *  (1) Refuse span-less diagnostics (has_location === false) — strict === false
+ *      so absent/undefined or true keep navigating (α's default-true contract).
+ *  (2) Same-file: call setScrollToLocation only.
+ *  (3) Already-open cross-file: setActiveFile then setScrollToLocation (step-4).
+ *  (4) Not-open cross-file: openFile from disk then setScrollToLocation (step-6).
+ *  (5) Open failure: error toast; no scroll (step-8).
+ */
+export async function navigateToDiagnostic(
+  d: DiagnosticEntry,
+  deps: {
+    store: NavigateToDiagnosticStore;
+    openFile: (path: string) => Promise<FileData>;
+    setScrollToLocation: (loc: SourceLocation) => void;
+    showToast: (message: string, type: ToastMessage['type']) => void;
+  },
+): Promise<void> {
+  // (1) Refuse synthetic span-less diagnostics.
+  if (d.has_location === false) return;
+
+  const loc: SourceLocation = {
+    file_path: d.file_path,
+    line: d.line,
+    column: d.column,
+    end_line: d.end_line,
+    end_column: d.end_column,
+  };
+
+  const active = deps.store.state.activeFile;
+  if (!(active && isSameFile(d.file_path, active))) {
+    // (3) Cross-file: file is already open in a tab → switch to it.
+    const open = deps.store.state.openFiles.find((f) => isSameFile(f.path, d.file_path));
+    if (open) {
+      // (3) Already-open cross-file: just activate.
+      deps.store.setActiveFile(open.path);
+    } else {
+      // (4) Not yet open: read from disk and load into the store.
+      try {
+        const fileData = await deps.openFile(d.file_path);
+        deps.store.openFile(fileData);
+      } catch (err) {
+        deps.showToast(`Could not open ${d.file_path}: ${errorMessage(err)}`, 'error');
+        return;
+      }
+    }
+  }
+
+  // All non-error paths fall through here so the scroll fires AFTER any
+  // file-switch, guaranteeing the Editor sees the swapped doc first.
+  deps.setScrollToLocation(loc);
+}
+
 const MIN_PANEL_WIDTH = 150;
 const MIN_PANEL_HEIGHT = 80;
 const CHAT_MIN_HEIGHT = 160;
@@ -435,6 +509,29 @@ const App: Component = () => {
     return viewStateStore.getAllEffective();
   });
 
+  // Selective-demand precondition (task 4532): passively register the GUI's
+  // observed-demand sources with the backend whenever they change — viewport-
+  // visible realizations (effective visibility), the displayed property cells,
+  // and the constraint-panel constraints.
+  //
+  // OBSERVATIONAL ONLY: the backend records a would-prune measurement (surfaced
+  // on the next set_parameter response's GuiState.demand_prune_measurement) and
+  // NEVER changes evaluation. The sync is best-effort (engineStore swallows IPC
+  // errors) and gated to the idle phase so mid-evaluation mesh streaming does not
+  // fire a burst of redundant observational syncs; the post-eval idle transition
+  // pushes the finalized realization/cell/constraint sets.
+  createEffect(() => {
+    // Track the reactive dependencies synchronously (reads inside the async
+    // syncObservedDemand call are NOT tracked by this effect).
+    const phase = engineStore.state.evalStatus.phase;
+    void effectiveVisibility(); // visibility toggles
+    void Object.keys(engineStore.state.meshes); // realization set (property/viewport)
+    void Object.keys(engineStore.state.values); // property-panel cells
+    void Object.keys(engineStore.state.constraints); // constraint-panel ids
+    if (phase !== 'idle') return;
+    void engineStore.syncObservedDemand(viewStateStore.getEffectiveVisibility);
+  });
+
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the
   // initial phase) never triggers a fetch — only genuine non-idle→idle transitions
@@ -479,8 +576,12 @@ const App: Component = () => {
   // View manage modal state
   const [viewManageOpen, setViewManageOpen] = createSignal(false);
 
-  // Diagnostics panel state
-  const [diagnosticsOpen, setDiagnosticsOpen] = createSignal(false);
+  // Diagnostics panel state lives in layoutStore (problemsCollapsed / problemsHeight).
+  // Find-uses panel state (Shift+F12 references provider, task 4202 β). Results
+  // are held in native LSP (0-based) coordinates; onNavigate converts to the
+  // 1-based SourceLocation when driving setScrollToLocation.
+  const [findUsesOpen, setFindUsesOpen] = createSignal(false);
+  const [findUsesResults, setFindUsesResults] = createSignal<ReferenceResult[]>([]);
   // Both compile and tessellation diagnostics share the DiagnosticInfo schema, so the
   // panel renders them as a single merged list — no schema change or extra state needed.
   // The two pipelines are disjoint by construction: compile errors come from the static
@@ -529,24 +630,33 @@ const App: Component = () => {
   // snapshot.  Mirrors the flyToEntityRef/fitToViewRef child→parent handle pattern.
   let getLiveEditorContent: (() => string | null) | undefined;
 
-  // Both the compile badge and the tessellation badge call this handler — both are
-  // toggles. Clicking either badge while the panel is already open will close it rather
-  // than forcing it open. This matches the "one shared overlay" design; if a force-open
-  // affordance is wanted in the future, split into onShowDiagnostics (setDiagnosticsOpen(true))
-  // vs a dedicated keyboard-shortcut toggle.
+  // Both the compile badge and the tessellation badge call this handler — toggle
+  // problemsCollapsed. Clicking while expanded collapses; clicking while collapsed expands.
   function handleToggleDiagnostics() {
-    setDiagnosticsOpen((v) => !v);
+    layoutStore.setProblemsCollapsed((c) => !c);
   }
 
   function handleNavigateToDiagnostic(d: DiagnosticEntry) {
-    setScrollToLocation({ file_path: d.file_path, line: d.line, column: d.column, end_line: d.end_line, end_column: d.end_column });
-    setDiagnosticsOpen(false);
+    // Delegate to the exported, dependency-injected function (γ task-4403).
+    // Panel stays open after navigation (docked design — no modal to dismiss).
+    // .catch handles unexpected synchronous throws from store/signal calls that
+    // bypass the internal try/catch (which only wraps the disk-read path).
+    void navigateToDiagnostic(d, {
+      store: editorStore,
+      openFile: bridgeOpenFile,
+      setScrollToLocation,
+      showToast,
+    }).catch((err: unknown) => {
+      showToast(`Navigation error: ${errorMessage(err)}`, 'error');
+    });
   }
 
   // Refs for splitter max-width clamping
   let mainRef: HTMLDivElement | undefined;
   let sidePanelRef: HTMLDivElement | undefined;
   let sidePanelObserver: ResizeObserver | undefined;
+  let editorPanelRef: HTMLDivElement | undefined;
+  let editorPanelObserver: ResizeObserver | undefined;
 
   // Reactively update window title based on active file and eval status
   createEffect(() => {
@@ -737,7 +847,7 @@ const App: Component = () => {
   // We check ALL dirty files rather than just the active tab because loadPathIntoStores
   // replaces the full engine state (initFromState), view state, and current path — any
   // open buffer with unsaved edits is effectively unreachable after the switch.
-  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom
+  // TODO(ux): replace window.confirm with a Tauri async dialog (bridge.ask / custom // ptodo:allow UX improvement, no live task
   //   modal) once the rest of the confirmation UI migrates away from native prompts.
   function confirmDiscardIfDirty(): boolean {
     if (editorStore.state.dirtyFiles.length === 0) return true;
@@ -862,6 +972,7 @@ const App: Component = () => {
       setPaletteMode('symbol');
       setShowPalette(true);
     },
+    onToggleDiagnostics: handleToggleDiagnostics,
   };
   useKeyboardShortcuts(shortcutCallbacks);
 
@@ -1146,6 +1257,36 @@ const App: Component = () => {
     initApp();
   });
 
+  // Editor-panel container clamp: clamp the problems panel height when the
+  // editor column is resized or on first paint with an oversized persisted value.
+  // problemsHeight reads are wrapped in untrack() so this function does not
+  // create a reactive dependency on problemsHeight — the effect that calls it
+  // should only re-subscribe to initPhase(), not to the height it is clamping.
+  function clampEditorPanel(): void {
+    if (!editorPanelRef) return;
+    const ch = editorPanelRef.clientHeight;
+    if (ch <= 0) return;
+    const currentHeight = untrack(() => layoutStore.state.problemsHeight);
+    const clamped = clampProblemsHeight(currentHeight, ch, {
+      minPanelHeight: MIN_PANEL_HEIGHT,
+      editorMinHeight: MIN_PANEL_HEIGHT,
+      splitterThickness: SPLITTER_THICKNESS,
+    });
+    if (clamped !== currentHeight) {
+      layoutStore.setProblemsHeight(clamped);
+    }
+  }
+
+  createEffect(() => {
+    if (initPhase() !== 'ready') return;
+    if (!editorPanelRef || editorPanelObserver) return;
+    clampEditorPanel();
+    if (typeof ResizeObserver !== 'undefined') {
+      editorPanelObserver = new ResizeObserver(() => clampEditorPanel());
+      editorPanelObserver.observe(editorPanelRef);
+    }
+  });
+
   // Side-panel container clamp: once initPhase reaches 'ready' the side panel
   // is rendered and `sidePanelRef` is bound, so we run an initial clamp and
   // attach a ResizeObserver to re-clamp on window/container resize. The ref
@@ -1175,6 +1316,7 @@ const App: Component = () => {
     kernelStatusUnsub?.();
     bucklingFrameUnsub?.();
     sidePanelObserver?.disconnect();
+    editorPanelObserver?.disconnect();
     delete window.__REIFY_DEBUG__;
   });
 
@@ -1383,6 +1525,18 @@ const App: Component = () => {
     layoutStore.setConstraintHeight((h) => Math.min(maxHeight, Math.max(MIN_PANEL_HEIGHT, h + delta)));
   }
 
+  // Problems panel is BELOW its splitter, so dragging down shrinks it: h - delta.
+  function handleProblemsResize(delta: number) {
+    const ch = editorPanelRef?.clientHeight ?? 0;
+    layoutStore.setProblemsHeight((h) =>
+      clampProblemsHeight(h - delta, ch, {
+        minPanelHeight: MIN_PANEL_HEIGHT,
+        editorMinHeight: MIN_PANEL_HEIGHT,
+        splitterThickness: SPLITTER_THICKNESS,
+      }),
+    );
+  }
+
   function handleViewportSelect(entityPath: string | null, modifiers?: { ctrl: boolean; shift: boolean }) {
     if (!entityPath) {
       selectionStore.selectEntity(null);
@@ -1504,14 +1658,26 @@ const App: Component = () => {
             class={styles.main}
             style={{ 'grid-template-columns': `${layoutStore.state.editorWidth}px 4px 1fr 4px ${layoutStore.state.sideWidth}px` }}
           >
-            <div data-testid="editor-panel" class={styles.editorPanel}>
+            <div ref={editorPanelRef} data-testid="editor-panel" class={styles.editorPanel}>
               <FileBrowser
                 files={editorStore.state.openFiles}
                 activeFile={editorStore.state.activeFile}
                 onFileClick={handleFileClick}
               />
               <FileTabs store={editorStore} />
-              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} />
+              <Editor store={editorStore} scrollToLocation={scrollToLocation} onOpen={handleOpen} onError={(msg) => showToast(msg, 'error')} onSaveConflict={(file) => showSaveConflictPrompt(file)} compileDiagnostics={engineStore.state.compileDiagnostics} liveContentRef={(fn) => { getLiveEditorContent = fn; }} onShowReferences={(results) => { setFindUsesResults(results); setFindUsesOpen(true); }} />
+              {/* Horizontal splitter — shown only when diagnostics panel is expanded */}
+              <Show when={!layoutStore.state.problemsCollapsed}>
+                <Splitter orientation="horizontal" data-testid="splitter-problems" onResize={handleProblemsResize} />
+              </Show>
+              {/* Docked diagnostics panel — always mounted, collapsed by default */}
+              <DiagnosticsPanel
+                collapsed={layoutStore.state.problemsCollapsed}
+                height={layoutStore.state.problemsHeight}
+                diagnostics={allDiagnostics()}
+                onToggleCollapsed={handleToggleDiagnostics}
+                onNavigate={handleNavigateToDiagnostic}
+              />
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
@@ -1640,6 +1806,7 @@ const App: Component = () => {
             tessellationDiagnostics={engineStore.state.tessellationDiagnostics}
             compileDiagnostics={engineStore.state.compileDiagnostics}
             onToggleDiagnostics={handleToggleDiagnostics}
+            diagnosticsCollapsed={layoutStore.state.problemsCollapsed}
           />
           <ExportDialog
             open={showExportDialog()}
@@ -1647,11 +1814,25 @@ const App: Component = () => {
             onExport={handleDoExport}
             onClose={() => setShowExportDialog(false)}
           />
-          <DiagnosticsPanel
-            open={diagnosticsOpen()}
-            diagnostics={allDiagnostics()}
-            onClose={() => setDiagnosticsOpen(false)}
-            onNavigate={handleNavigateToDiagnostic}
+          {/* DiagnosticsPanel relocated to .editorPanel (docked) — see below */}
+          <FindUsesPanel
+            open={findUsesOpen()}
+            results={findUsesResults()}
+            onClose={() => setFindUsesOpen(false)}
+            onNavigate={(r) => {
+              // LSP positions are 0-based; SourceLocation/cursor is 1-based (+1).
+              // Reuses the diagnostics setScrollToLocation path, which moves the
+              // cursor AND records the ζ same-file nav-history entry (Editor.tsx
+              // scrollToLocation effect) — so nav-history needs zero new plumbing.
+              setScrollToLocation({
+                file_path: r.uri,
+                line: r.line + 1,
+                column: r.character + 1,
+                end_line: r.endLine + 1,
+                end_column: r.endCharacter + 1,
+              });
+              setFindUsesOpen(false);
+            }}
           />
           <ViewManageModal
             open={viewManageOpen()}

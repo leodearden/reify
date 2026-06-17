@@ -1,0 +1,70 @@
+// vc_boundary_solid.ri — Virtual/Resultant Condition scalars + VC boundary solid
+// (task 4478 ε, GD&T geometric-zones PRD docs/prds/v0_6/gdt-geometric-zones-and-containment.md).
+//
+// Demonstrates the EXTERNAL-feature-of-size GD&T VC/RC workflow:
+//   virtual_condition(size, tol)   = size.upper_limit + tol   (MMC + Tg)
+//   resultant_condition(size, tol) = size.lower_limit - tol   (LMC - Tg)
+//
+// For symmetric_tolerance(10mm, 0.05mm) + 0.1mm position tolerance:
+//   upper_limit = 10mm + 0.05mm = 10.05mm  (MMC, external FOS)
+//   lower_limit = 10mm - 0.05mm =  9.95mm  (LMC, external FOS)
+//   VC = 10.05mm + 0.1mm = 10.15mm
+//   RC =  9.95mm - 0.1mm =  9.85mm
+//
+// The VC boundary solid is a zone_cylinder at the VC diameter along the feature axis.
+// It represents the functional-gauge boundary that no conformant part may violate.
+//
+// `reify eval` must: exit 0, emit no Error diagnostics, and print:
+//   vc_positive = true  (Bool anchor, kernel-free: vc > 0mm → true)
+//   vc            (Length scalar: 10.15mm = 0.01015 m)
+//   rc            (Length scalar:  9.85mm = 0.00985 m)
+//   vc_boundary   (Geometry: zone_cylinder at VC diameter)
+//
+// Exact VC/RC scalars are pinned in tolerancing_tests.rs (ε unit tests).
+// The bolt-pattern clearance e2e (B8) is in vc_bolt_pattern_clearance.ri /
+// vc_bolt_pattern_interference.ri.
+//
+// OCCT-independent: vc/rc are pure Length arithmetic; zone_cylinder produces a
+// Geometry cell that `reify eval` prints by cell name.
+
+structure def VcBoundaryExample {
+    // ── Dimensional tolerance for the pin/bolt (external FOS) ───────────────
+    // symmetric_tolerance(10mm, 0.05mm): upper=10.05mm, lower=9.95mm
+    let pin_size = symmetric_tolerance(10mm, 0.05mm)
+
+    // ── Geometric tolerance callout (position, MMC modifier) ─────────────────
+    // material_condition: MaterialCondition.MMC is explicit per esc-4474-102:
+    // reading .nominal_zone / .material_condition off a callout relying on the
+    // RFS default can be Undef under the simple eval engine.
+    let pos = Position(
+        tolerance_value: 0.1mm,
+        feature: box(1mm, 1mm, 1mm),
+        datum_refs: box(1mm, 1mm, 1mm),
+        material_condition: MaterialCondition.MMC
+    )
+
+    // ── Virtual Condition: VC = MMC + Tg = upper_limit + tolerance_value ─────
+    // Passes pos.tolerance_value (a direct param) to avoid the trait-typed-param
+    // dimension-loss (esc-4474 substrate finding #2).
+    // VC = 10.05mm + 0.1mm = 10.15mm
+    let vc = virtual_condition(pin_size, pos.tolerance_value)
+
+    // ── Resultant Condition: RC = LMC - Tg = lower_limit - tolerance_value ───
+    // RC = 9.95mm - 0.1mm = 9.85mm
+    let rc = resultant_condition(pin_size, pos.tolerance_value)
+
+    // ── Feature axis wire (30mm length centred on Z) ─────────────────────────
+    let axis = line_segment(0mm, 0mm, -15mm, 0mm, 0mm, 15mm)
+
+    // ── VC boundary solid: zone_cylinder at VC diameter ──────────────────────
+    // zone_cylinder(axis, width) → Sweep{Pipe(axis, radius = width/2)}
+    // width = vc = 10.15mm → radius = 5.075mm
+    // This cylinder is the functional-gauge boundary: any point of the feature's
+    // axis must lie within this zone for the part to be conformant at MMC.
+    let vc_boundary = zone_cylinder(axis, vc)
+
+    // ── Observable Bool anchor (kernel-free) ─────────────────────────────────
+    // Asserted by cli_vc_clearance.rs: vc_positive = true (vc > 0mm, always true
+    // for a positive virtual condition — exercises the scalar arithmetic path).
+    let vc_positive = vc > 0mm
+}

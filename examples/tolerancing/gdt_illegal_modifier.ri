@@ -1,0 +1,16 @@
+// gdt_illegal_modifier.ri — GD&T β fixture: illegal material condition modifier.
+//
+// Flatness is an RFS-only Form tolerance; applying MMC is illegal per ASME Y14.5.
+// `reify check` must emit a GdtIllegalModifier error diagnostic on stderr and
+// exit non-zero. (Task 4475 β, step-10 — B7 end-to-end oracle.)
+//
+// Compiles CLEAN (legality is a check-time lint, not a compile error), so
+// cmd_check reaches the engine check pass where check_gdt_legality fires.
+
+structure def FlatnessMmc {
+    let flatness = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: box(1mm, 1mm, 1mm)
+    )
+}

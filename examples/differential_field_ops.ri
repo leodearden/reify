@@ -1,0 +1,130 @@
+// Differential field operators end-to-end example.
+//
+// PRD reference: docs/prds/v0_6/differential-field-operators.md task θ
+//
+// This is the G2-bearing integration gate for the differential-field-ops batch
+// (tasks α–η). It exercises:
+//
+//   Phase 1 — FEA-native differential quantities on an ElasticResult
+//     • result.divergence  (task α: nodal-gradient → sampled divergence field)
+//     • result.gradient    (task β: nodal-gradient → stride-9 Tensor sampled field)
+//     • result.curl        (task β: nodal-gradient → stride-3 Vector3 sampled field)
+//     • max(result.divergence), min(result.divergence)
+//     • max(result.gradient)   (task γ: tensor Frobenius-magnitude reduction)
+//
+//   Phase 2 — Generic FD construction-gap closure on sampled scalar fields
+//     • laplacian(quadratic): ∇²(x²) = 2 everywhere (exact, proven by task δ)
+//     • gradient(linear):    ∂(3x+2)/∂x = 3 everywhere (exact, proven by task δ)
+//     • max(laplacian(quadratic))  (task ε: eager-lower + max reduction)
+//     • max(gradient(linear))      (task ε: eager-lower + max reduction)
+//
+// Numeric premises (all validated, none guessed — PRD §θ G6):
+//   Phase 1: tight divergence identity div[k]=(1-2ν)/E·tr(σ)[k] is asserted in
+//     the Rust gate (differential_field_ops_e2e.rs) which reads both buffers;
+//     the .ri constraints assert only physically-guaranteed small-strain bounds.
+//   Phase 2: central AND one-sided 3-pt 2nd-difference are EXACT on quadratics
+//     (max(laplacian(x²))=2.0) and 1st-difference is EXACT on linears
+//     (max(gradient(3x+2))=3.0) on any uniform Regular1D grid.
+//
+// The integration test (crates/reify-eval/tests/differential_field_ops_e2e.rs)
+// include_str!s this file, exercising the full parse→compile→eval→ComputeNode
+// pipeline and asserting the tight engineering identity in Rust.
+
+// ── Phase-2 sampled scalar fields ─────────────────────────────────────────────
+//
+// 5-node Regular1D grid: x = {0, 1, 2, 3, 4} m (spacing = 1.0 m).
+// Mirrors the proven fixture shape from task δ (sampled_fd.rs:make_1d_scalar(5,1.0,..)).
+//
+// quadratic: f(x) = x²  → data = [0, 1, 4, 9, 16]
+//   laplacian(f) = 2 at every node (exact — proven by laplacian_1d_quadratic_exact).
+//
+// linear:    g(x) = 3x+2 → data = [2, 5, 8, 11, 14]
+//   gradient(g) = 3 at every node (exact — proven by gradient_1d_affine_exact).
+
+field def quadratic : Length -> Real {
+    source = sampled {
+        grid          = "RegularGrid1"
+        bounds        = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m))
+        spacing       = 1.0m
+        interpolation = "Linear"
+        data          = [0.0, 1.0, 4.0, 9.0, 16.0]
+    }
+}
+
+field def linear : Length -> Real {
+    source = sampled {
+        grid          = "RegularGrid1"
+        bounds        = bbox(point3(0.0m, 0.0m, 0.0m), point3(4.0m, 0.0m, 0.0m))
+        spacing       = 1.0m
+        interpolation = "Linear"
+        data          = [2.0, 5.0, 8.0, 11.0, 14.0]
+    }
+}
+
+// ── Integration structure ─────────────────────────────────────────────────────
+
+structure DifferentialFieldOps {
+
+    // ── Phase 1: FEA cantilever setup ──────────────────────────────────────
+    //
+    // Reuses fea_cantilever_smoke.ri geometry/material/loads verbatim so the
+    // divergence/gradient/curl channels are populated by the proven trampoline
+    // path (task α recovery → task β gradient/curl → task γ magnitude reduction).
+    //
+    // Steel_AISI_1045: E = 205 GPa, ν = 0.29.
+    // 1 m × 100 mm × 100 mm cantilever; 1000 N point load at the beam tip.
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    // Phase-1 differential quantities from FEA result.
+    // The tight engineering-quantity identity (div[k] = (1−2ν)/E · tr(σ)[k])
+    // is asserted in differential_field_ops_e2e.rs, which reads both the
+    // divergence and stress SampledField buffers. The .ri constraints below
+    // assert only physically-guaranteed small-strain bounds (|dilatation| < 1).
+    let dmax  = max(result.divergence)
+    let dmin  = min(result.divergence)
+    let g_mag = max(result.gradient)   // γ tensor Frobenius-magnitude reduction
+    let cr    = result.curl            // β curl channel (bound to touch the field)
+
+    // ── Phase 2: generic sampled-field differential operators ───────────────
+    //
+    // Eager-lowered via compute_laplacian / compute_gradient (task ε), both of
+    // which call sampled_differential and return a source:Sampled output field
+    // indistinguishable to sample() / max() from any other Sampled scalar field.
+    let lap_max  = max(laplacian(quadratic))   // ε laplacian eager-lower + max
+    let grad_max = max(gradient(linear))       // ε gradient eager-lower + max
+
+    // ── Constraints ────────────────────────────────────────────────────────
+
+    // Phase 1: small-strain dilatation bounds.
+    // NOT a tuned tight value — constructing a clean uniaxial uniform-strain .ri
+    // risks Poisson-restraint/bending-lock hazards (PRD §6). The tight identity
+    // lives in the Rust gate where both stress and divergence buffers are readable.
+    constraint dmax < 1.0
+    constraint dmin > -1.0
+
+    // Phase 1: gradient Frobenius-magnitude bounds.
+    // Reachable (non-trivial loading) and within the small-strain engineering
+    // limit (|strain tensor components| << 1 for a steel beam at these loads).
+    constraint g_mag > 0.0
+    constraint g_mag < 1.0
+
+    // Phase 2: exact polynomial values (G6 numeric-premise discipline).
+    // Central AND one-sided 3-pt 2nd-difference are EXACT on quadratics on any
+    // uniform grid → max(laplacian(x²)) = 2.0.
+    // 1st-difference is EXACT on linears → max(gradient(3x+2)) = 3.0.
+    // Bands are ±0.001 (generous relative to the proven 1e-12 exactness).
+    constraint lap_max > 1.999
+    constraint lap_max < 2.001
+    constraint grad_max > 2.999
+    constraint grad_max < 3.001
+}

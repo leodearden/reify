@@ -1,0 +1,11 @@
+// output_driver_multi.ri — multiple Output occurrences drive multiple exports.
+//
+// Backs the io-export δ CLI integration test (B6 multi-output). Run with NO
+// `-o`: each Output occurrence drives one file in declaration order —
+// STLOutput → "o.stl" (STL), STEPOutput → "o2.step" (STEP).
+structure def D {
+    let part = box(10mm, 20mm, 5mm)
+
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+    sub s = STEPOutput(subject: part, path: "o2.step")
+}

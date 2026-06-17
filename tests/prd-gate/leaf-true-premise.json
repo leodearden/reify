@@ -1,0 +1,14 @@
+{
+    "leaf": "ir_clean_eval clean eval baseline (all premises hold)",
+    "premises": [
+        {
+            "text": "ir_clean_eval.ri evals without EvalError — reify eval exits 0, no panic, no error signature in stderr",
+            "assertion_kind": "ir",
+            "fixture": "tests/prd-gate/fixtures/ir_clean_eval.ri",
+            "match": {
+                "stderr_contains": "EvalError"
+            },
+            "capability": "eval-error proxy clean baseline"
+        }
+    ]
+}

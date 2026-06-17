@@ -10,7 +10,7 @@
 //!
 //! End-to-end negative ("Unbounded source rejected at a `Bounded` slot") is
 //! deferred until a `half_space` / `extrude_infinite` primitive lands — see
-//! the `TODO(geometry-traits-task-4-or-later)` block in
+//! the `TODO(geometry-traits-task-4-or-later)` block in // ptodo:allow — prose xref, no current owner task
 //! `geometry_traits_inference.rs`.
 //!
 //! The trait-decl behaviour (refinements, `required_members`, defaults) is
@@ -170,7 +170,7 @@ fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
         let t = try_infer_traits_for_function_call(name, &[box_g(), box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
-    for name in ["fillet", "shell"] {
+    for name in ["fillet", "shell", "chamfer", "draft", "thicken", "offset_solid"] {
         let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
@@ -328,7 +328,7 @@ fn op_array_assigns_curve_to_curve_op_and_preserves_through_transform() {
 /// Bounded+Connected+Convex. When an Unbounded primitive lands (e.g.
 /// `half_space`, `extrude_infinite`), this test must be updated to
 /// expect `InferredTraits::none()` (or the appropriate subset) for those
-/// variants — see `TODO(geometry-traits-task-4-or-later)` in the inference
+/// variants — see `TODO(geometry-traits-task-4-or-later)` in the inference // ptodo:allow — prose xref
 /// module.
 #[test]
 fn infer_primitive_kind_yields_all_three_traits() {
@@ -351,6 +351,41 @@ fn infer_primitive_kind_yields_all_three_traits() {
             kind
         );
     }
+}
+
+/// Torus is the first non-convex primitive: bounded + connected + Solid, but
+/// `convex == false` (a ring has a hole). Both inference entry points must
+/// agree — the name-keyed `try_infer_traits_for_function_call("torus", ..)` and
+/// the kind-keyed `infer_primitive(PrimitiveKind::Torus)`.
+///
+/// RED until step-6: the name-keyed dispatch has no `"torus"` arm yet and falls
+/// through to `None`, so the `.expect(...)` below panics. The `infer_primitive`
+/// half is already wired in step-4, so the two-entry-point agreement is what
+/// pins the name-keyed arm into existence.
+#[test]
+fn torus_infers_bounded_connected_nonconvex() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    // Name-keyed dispatch (RED until step-6 adds the `"torus"` arm).
+    let by_name = try_infer_traits_for_function_call("torus", &[])
+        .expect("torus must be dispatched by name to a trait set");
+    assert!(by_name.bounded, "torus is bounded");
+    assert!(by_name.connected, "torus is connected");
+    assert!(!by_name.convex, "torus is NOT convex (a ring has a hole)");
+    assert_eq!(by_name.dimension, GeomDim::Solid, "torus is a Solid");
+
+    // Kind-keyed lookup (already wired in step-4) must agree field-for-field.
+    let by_kind = infer_primitive(PrimitiveKind::Torus);
+    assert!(by_kind.bounded, "infer_primitive(Torus) is bounded");
+    assert!(by_kind.connected, "infer_primitive(Torus) is connected");
+    assert!(!by_kind.convex, "infer_primitive(Torus) is NOT convex");
+    assert_eq!(by_kind.dimension, GeomDim::Solid, "infer_primitive(Torus) is a Solid");
+
+    // The two entry points must produce the identical flag set.
+    assert_eq!(
+        by_name, by_kind,
+        "name- and kind-keyed inference must agree for torus"
+    );
 }
 
 // ─── combine_union — bounded if both, connected/convex always dropped ────────
@@ -650,7 +685,7 @@ fn infer_traits_for_expr_handles_variadic_intersection_all() {
 ///
 /// The negative end-to-end (an Unbounded primitive rejected at this slot)
 /// is deferred until `half_space` / `extrude_infinite` lands — see the
-/// `TODO(geometry-traits-task-4-or-later)` block in
+/// `TODO(geometry-traits-task-4-or-later)` block in // ptodo:allow — prose xref
 /// `geometry_traits_inference.rs`.
 #[test]
 fn bounded_param_accepting_box_geometry_emits_no_diagnostic() {
@@ -1544,4 +1579,59 @@ fn circle_infers_surface_dimension_with_full_face_traits() {
     assert!(t.bounded, "circle face must be bounded");
     assert!(t.connected, "circle face must be connected");
     assert!(t.convex, "circle face must be convex");
+}
+
+// ─── task-4161: polygon + ellipse Surface inference ──────────────────────────
+
+/// `polygon(&[])` → Surface, planar, closed, bounded, connected, convex=FALSE.
+///
+/// A general polygon may be concave, so `surface_nonconvex()` (convex=false) must
+/// be returned instead of `surface()` (convex=true).
+///
+/// RED until step-6 adds `InferredTraits::surface_nonconvex()` and the
+/// `"polygon"` arm in the name-based dispatch.
+#[test]
+fn polygon_infers_surface_dimension_with_nonconvex_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("polygon", &[])
+        .expect("polygon must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "polygon must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "polygon face must be planar");
+    assert!(t.closed, "polygon face must be closed");
+    assert!(t.bounded, "polygon face must be bounded");
+    assert!(t.connected, "polygon face must be connected");
+    assert!(
+        !t.convex,
+        "polygon face must NOT be convex (general polygon may be concave)"
+    );
+}
+
+/// `ellipse(&[])` → Surface, planar, closed, bounded, connected, convex=TRUE.
+///
+/// An ellipse is always convex, so `surface()` (convex=true) must be returned.
+///
+/// RED until step-6 adds the `"ellipse"` arm in the name-based dispatch.
+#[test]
+fn ellipse_infers_surface_dimension_with_full_face_traits() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+
+    let t = try_infer_traits_for_function_call("ellipse", &[])
+        .expect("ellipse must have an explicit dispatch arm");
+    assert_eq!(
+        t.dimension,
+        GeomDim::Surface,
+        "ellipse must infer GeomDim::Surface, got {:?}",
+        t.dimension
+    );
+    assert!(t.planar, "ellipse face must be planar");
+    assert!(t.closed, "ellipse face must be closed");
+    assert!(t.bounded, "ellipse face must be bounded");
+    assert!(t.connected, "ellipse face must be connected");
+    assert!(t.convex, "ellipse face must be convex");
 }

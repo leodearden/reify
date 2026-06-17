@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isSameFile, normalizePath, canonicalizeKey, pathToUri } from '../utils/pathUtils';
+import { isSameFile, normalizePath, canonicalizeKey, pathToUri, workspaceRootUriForFile } from '../utils/pathUtils';
 
 describe('normalizePath', () => {
   it('strips file:// prefix from a URI', () => {
@@ -124,5 +124,47 @@ describe('pathToUri', () => {
   it('inserts a leading slash for a path without one', () => {
     // 'b.ri' → 'file:///b.ri' (mirrors Editor.tsx private closure semantics)
     expect(pathToUri('b.ri')).toBe('file:///b.ri');
+  });
+});
+
+describe('workspaceRootUriForFile', () => {
+  // (a) bare absolute path: returns directory as file:// URI
+  it('returns the parent directory as a file:// URI for a bare absolute path', () => {
+    expect(workspaceRootUriForFile('/proj/sub/main.ri')).toBe('file:///proj/sub');
+  });
+
+  // (b) nested path
+  it('returns the correct parent directory for a deeply nested file', () => {
+    expect(workspaceRootUriForFile('/a/b/c/file.ri')).toBe('file:///a/b/c');
+  });
+
+  // (c) already file://-prefixed input: strips scheme, derives parent, re-encodes
+  it('handles an already-file://-prefixed input', () => {
+    expect(workspaceRootUriForFile('file:///proj/sub/main.ri')).toBe('file:///proj/sub');
+  });
+
+  // (d) percent-encoded URI: decodes first, derives parent, returns clean URI
+  it('handles a percent-encoded file:// URI', () => {
+    expect(workspaceRootUriForFile('file:///proj/hello%20world/main.ri')).toBe('file:///proj/hello%20world');
+  });
+
+  // (e) null → undefined (single-file fallback preserved)
+  it('returns undefined for null (single-file fallback)', () => {
+    expect(workspaceRootUriForFile(null)).toBeUndefined();
+  });
+
+  // (f) empty string → undefined
+  it('returns undefined for an empty string', () => {
+    expect(workspaceRootUriForFile('')).toBeUndefined();
+  });
+
+  // (g) file directly in root: parent is '/'
+  it('returns the root URI for a file directly under root', () => {
+    expect(workspaceRootUriForFile('/main.ri')).toBe('file:///');
+  });
+
+  // (h) consistent with canonicalizeKey: ..-segments are resolved before parent extraction
+  it('resolves dot-dot segments before extracting the parent', () => {
+    expect(workspaceRootUriForFile('/a/b/../main.ri')).toBe('file:///a');
   });
 });

@@ -116,6 +116,57 @@ fn solver_progress_sink_receives_cg_iterations_on_cantilever() {
             kind
         );
     }
+
+    // ── Cadence hardening (task 4366 step-5) ─────────────────────────────────
+
+    // Reference the real PROGRESS_STRIDE constant from reify-eval (re-exported
+    // via #[doc(hidden)] pub use in lib.rs for test use) so this value has a
+    // single source of truth and cannot silently drift.
+    const STRIDE: u32 = reify_eval::PROGRESS_STRIDE as u32;
+
+    // (1) Cadence: every emitted iter must be 1 or a multiple of STRIDE.
+    for (_kind, iter, _residual) in recorded.iter() {
+        assert!(
+            *iter == 1 || *iter % STRIDE == 0,
+            "emitted iter {iter} is not in {{1}} ∪ multiples of STRIDE ({STRIDE}); \
+             progress throttle may be broken"
+        );
+    }
+
+    // (2) Stride exercised: the ~2520-DOF cantilever solve runs hundreds of CG
+    // iterations, so iter==10 (first stride emit) must occur — len ≥ 2 ⟺ a
+    // stride emit happened.  Failing here means the fixture shrank below STRIDE
+    // iterations, making the cadence check vacuous.
+    assert!(
+        recorded.len() >= 2,
+        "expected ≥2 progress updates (iter=1 + at least one stride emit at iter={}), \
+         got {}; either the fixture runs <{} CG iters or the stride throttle is broken",
+        STRIDE,
+        recorded.len(),
+        STRIDE
+    );
+
+    // (3) Net residual decrease (guarded on len ≥ 2 above).
+    // CG's unpreconditioned ‖r‖₂ is provably monotonic only in the A-norm of
+    // the error, not in ‖r‖₂, so strict pairwise non-increasing is not
+    // asserted.  Net decrease (first > last) still catches an emit wired to a
+    // stale/constant/garbage residual.
+    let first_residual = recorded.first().unwrap().2;
+    let last_residual = recorded.last().unwrap().2;
+    assert!(
+        first_residual >= 0.0,
+        "first residual must be ≥ 0, got {first_residual}"
+    );
+    assert!(
+        last_residual >= 0.0,
+        "last residual must be ≥ 0, got {last_residual}"
+    );
+    assert!(
+        first_residual > last_residual,
+        "first emitted residual ({first_residual:.3e}) must be strictly greater than \
+         last ({last_residual:.3e}); an emit wired to a stale/constant/garbage residual \
+         would fail this check"
+    );
 }
 
 // ── Test B: cancel interruption ───────────────────────────────────────────────

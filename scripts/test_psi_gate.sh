@@ -305,4 +305,116 @@ _cargo_count=$(printf "%s\n" "$PLAN_TEST" | grep -cE "(^| )cargo " || true)
 assert "wiring: test plan still contains >= 2 cargo lines (no regression)" \
     test "$_cargo_count" -ge 2
 
+# ---------------------------------------------------------------------------
+# Cycle 7: compile-gate behavioral tests (task #4618)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 7: compile-gate ---"
+
+# run_compile_gate <proc_path> [VAR=val ...]
+# Invokes `verify.sh compile-gate` with the given PSI proc path and any
+# additional env overrides.  After returning:
+#   GATE_RC     — exit code of the invocation
+#   GATE_STDERR — captured stderr text
+# No dispatch file arg: compile_gate has no WINDOW/coordination flock.
+run_compile_gate() {
+    local proc="$1"
+    shift
+    local _stderr_file
+    _stderr_file="$(mktemp -p "$WORKDIR" cg-stderr.XXXXXX)"
+    GATE_RC=0
+    GATE_STDERR=""
+    env "$@" \
+        REIFY_COMPILE_GATE_PROC_PATH="$proc" \
+        bash "$VERIFY" compile-gate \
+        2>"$_stderr_file" \
+        || GATE_RC=$?
+    GATE_STDERR="$(cat "$_stderr_file")"
+    rm -f "$_stderr_file"
+}
+
+# (7a) avg10=40 < default threshold 85 -> exit 0, returns fast (< 2s)
+PSI_7A="$(make_psi_fixture 40)"
+T7A_0=$(date +%s)
+run_compile_gate "$PSI_7A"
+T7A_1=$(date +%s)
+ELAPSED_7A=$(( T7A_1 - T7A_0 ))
+assert "7a: avg10=40 < threshold=85 (default) → exit 0" \
+    test "$GATE_RC" -eq 0
+assert "7a: returned fast (< 2s)" \
+    test "$ELAPSED_7A" -lt 2
+
+# (7b) avg10=99 >= threshold, short MAX_WAIT -> ADMITS (exit 0), elapsed >= MAX_WAIT,
+#      stderr contains an admit/fairness message. NOT exit 75.
+PSI_7B="$(make_psi_fixture 99)"
+T7B_0=$(date +%s)
+run_compile_gate "$PSI_7B" \
+    REIFY_COMPILE_GATE_MAX_WAIT=2 REIFY_COMPILE_GATE_POLL=1
+T7B_1=$(date +%s)
+ELAPSED_7B=$(( T7B_1 - T7B_0 ))
+assert "7b: avg10=99 >= threshold, MAX_WAIT=2 → exit 0 (admit, NOT exit 75)" \
+    test "$GATE_RC" -eq 0
+assert "7b: NOT exit 75 (never requeues)" \
+    test "$GATE_RC" -ne 75
+assert "7b: elapsed >= MAX_WAIT=2s (waited before admitting)" \
+    test "$ELAPSED_7B" -ge 2
+assert "7b: stderr contains admit/fairness floor message" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "admit|fairness|proceeding under load|sustained pressure"' _ "$GATE_STDERR"
+
+# (7c) DF_VERIFY_ROLE=merge + avg10=99 → exit 0 fast (CAVEAT 1: merge never waits)
+PSI_7C="$(make_psi_fixture 99)"
+T7C_0=$(date +%s)
+run_compile_gate "$PSI_7C" \
+    DF_VERIFY_ROLE=merge REIFY_COMPILE_GATE_MAX_WAIT=5 REIFY_COMPILE_GATE_POLL=1
+T7C_1=$(date +%s)
+ELAPSED_7C=$(( T7C_1 - T7C_0 ))
+assert "7c: merge bypass: exit 0" \
+    test "$GATE_RC" -eq 0
+assert "7c: merge bypass: returned fast (< 2s)" \
+    test "$ELAPSED_7C" -lt 2
+
+# (7d) REIFY_COMPILE_GATE_DISABLE=1 + avg10=99 -> exit 0 fast
+PSI_7D="$(make_psi_fixture 99)"
+T7D_0=$(date +%s)
+run_compile_gate "$PSI_7D" \
+    REIFY_COMPILE_GATE_DISABLE=1 REIFY_COMPILE_GATE_MAX_WAIT=5 REIFY_COMPILE_GATE_POLL=1
+T7D_1=$(date +%s)
+ELAPSED_7D=$(( T7D_1 - T7D_0 ))
+assert "7d: DISABLE=1 + avg10=99 → exit 0 fast" \
+    test "$GATE_RC" -eq 0
+assert "7d: DISABLE: returned fast (< 2s)" \
+    test "$ELAPSED_7D" -lt 2
+
+# (7e) missing PROC_PATH -> exit 0 + fail-open warning
+NONEXISTENT_PSI_7E="$WORKDIR/nope/compile-pressure-cpu"  # guaranteed absent
+run_compile_gate "$NONEXISTENT_PSI_7E"
+assert "7e: missing PROC_PATH → exit 0 (fail-open)" \
+    test "$GATE_RC" -eq 0
+assert "7e: fail-open warning in stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "PSI|pressure|missing|warn|fail.open|kernel lacks"' _ "$GATE_STDERR"
+
+# (7f) Leniency cross-check at avg10=70 (between compile-threshold=85 and test-threshold=50):
+#   - compile-gate (threshold 85) admits fast (exit 0, < 2s) — 70 < 85
+#   - SAME fixture through verify.sh psi-gate (test threshold 50) blocks → exit 75 — 70 >= 50
+#   This is a structural threshold-ordering check proving compile_gate is strictly
+#   more lenient than psi_gate (CAVEAT 2: a single merge's pressure level won't trip it).
+PSI_7F="$(make_psi_fixture 70)"
+DISPATCH_7F="$(mktemp -u -p "$WORKDIR" dispatch-7f.XXXXXX)"
+
+# compile-gate with avg10=70 (default threshold 85 → 70 < 85 → admit fast)
+T7F_0=$(date +%s)
+run_compile_gate "$PSI_7F" REIFY_COMPILE_GATE_MAX_WAIT=5 REIFY_COMPILE_GATE_POLL=1
+T7F_1=$(date +%s)
+ELAPSED_7F=$(( T7F_1 - T7F_0 ))
+assert "7f-compile: avg10=70 < threshold=85 → compile-gate exits 0 fast" \
+    test "$GATE_RC" -eq 0
+assert "7f-compile: compile-gate admits fast (< 2s)" \
+    test "$ELAPSED_7F" -lt 2
+
+# psi-gate (test gate, threshold 50) with avg10=70 → 70 >= 50 → blocks → exit 75
+run_gate "$DISPATCH_7F" "$PSI_7F" \
+    REIFY_PSI_GATE_THRESHOLD=50 REIFY_PSI_GATE_MAX_WAIT=2 REIFY_PSI_GATE_POLL=1
+assert "7f-test: avg10=70 >= test-threshold=50 → psi-gate exit 75 (would block)" \
+    test "$GATE_RC" -eq 75
+
 test_summary

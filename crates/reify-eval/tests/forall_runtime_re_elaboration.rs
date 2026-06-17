@@ -551,7 +551,7 @@ fn full_lifecycle_undef_to_three_to_zero_to_two_per_element_constraints() {
 const FORALL_FIXTURE_SRC_TWO_FORALLS_SAME_TRIPLE: &str = r#"
 structure Vent {
     param mass : Mass = 10kg
-    param length : Scalar = 1m
+    param length : Length = 1m
 }
 structure S {
     sub vents : List<Vent>

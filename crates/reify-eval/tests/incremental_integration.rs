@@ -951,7 +951,7 @@ fn edit_check_wrong_value_kind() {
 
 /// edit_param Assembly.grade (Type::Enum("Grade")) with Value::Int(1)
 /// should return Err(EngineError::TypeKindMismatch { .. }) because
-/// Value::Int hits the `Value::Int(_) => matches!(ty, Type::Int | Type::Real)` arm
+/// Value::Int hits the `Value::Int(_) => matches!(ty, Type::Int | Type::dimensionless_scalar())` arm
 /// which returns false for an Enum cell — non-Scalar cell regression-lock via an
 /// existing fixture let binding (no dedicated Bool param required).
 #[test]
@@ -1037,7 +1037,7 @@ fn edit_param_undef_is_always_accepted() {
         .expect("edit_param with Value::Undef should return Ok for any typed cell");
 }
 
-/// Value::Int to a Type::Real cell and Value::Real to a Type::Int cell must both
+/// Value::Int to a Type::dimensionless_scalar() cell and Value::Real to a Type::Int cell must both
 /// pass the kind check.  Numeric coercion between Int and Real is intentional:
 /// the engine emits Warning diagnostics for runtime mismatches rather than hard errors.
 /// Both directions are documented in `value_type_kind_matches`; this test regression-locks them.
@@ -1048,7 +1048,7 @@ fn edit_param_int_real_numeric_coercion_allowed() {
     // Int → Real: Assembly.load_auto is declared as `param load_auto : Real = auto`.
     let load_auto_id = ValueCellId::new("Assembly", "load_auto");
     engine.edit_param(load_auto_id, Value::Int(5)).expect(
-        "edit_param with Value::Int to a Type::Real cell should return Ok (numeric coercion)",
+        "edit_param with Value::Int to a Type::dimensionless_scalar() cell should return Ok (numeric coercion)",
     );
 
     // Real → Int: RecursiveBeam.depth is declared as `param depth : Int = 2`.

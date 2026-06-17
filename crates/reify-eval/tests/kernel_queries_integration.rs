@@ -185,40 +185,68 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
         "Value::Scalar{ANGLE}"
     );
 
-    // 6. edges → Value::List (of GeometryHandle)
-    assert_non_undef!("AllQueriesWalk", "all_edges", Value::List(_), "Value::List");
+    // 6. edges → Value::Selector(Edge)
+    //
+    // Task 4118 (γ) re-typed the 7 predicate/all selector constructors: a
+    // top-level `let all_edges = edges(s)` cell now holds a kernel-free
+    // `Value::Selector(kind)` (typed leaf), NOT an eager `Value::List<Geometry>`.
+    // The `Selector → List<Geometry>` coercion fires only at the 3 ResolveSelector
+    // insertion sites (param-binding, single()/list-helper, IndexAccess-object),
+    // none of which a bare `let` binding hits. Handle-count fidelity is pinned by
+    // the dedicated sibling tests + the `single(faces_by_normal(...))` golden.
+    assert_non_undef!(
+        "AllQueriesWalk",
+        "all_edges",
+        Value::Selector(_),
+        "Value::Selector"
+    );
 
-    // 7. faces → Value::List (of GeometryHandle)
-    assert_non_undef!("AllQueriesWalk", "all_faces", Value::List(_), "Value::List");
+    // 7. faces → Value::Selector(Face)
+    assert_non_undef!(
+        "AllQueriesWalk",
+        "all_faces",
+        Value::Selector(_),
+        "Value::Selector"
+    );
 
-    // 8. edges_by_length → Value::List
+    // 8. edges_by_length → Value::Selector(Edge)
     assert_non_undef!(
         "AllQueriesWalk",
         "long_edges",
-        Value::List(_),
-        "Value::List"
+        Value::Selector(_),
+        "Value::Selector"
     );
 
-    // 9. faces_by_area → Value::List
-    assert_non_undef!("AllQueriesWalk", "big_faces", Value::List(_), "Value::List");
+    // 9. faces_by_area → Value::Selector(Face)
+    assert_non_undef!(
+        "AllQueriesWalk",
+        "big_faces",
+        Value::Selector(_),
+        "Value::Selector"
+    );
 
-    // 10. faces_by_normal → Value::List
-    assert_non_undef!("AllQueriesWalk", "top_faces", Value::List(_), "Value::List");
+    // 10. faces_by_normal → Value::Selector(Face)
+    assert_non_undef!(
+        "AllQueriesWalk",
+        "top_faces",
+        Value::Selector(_),
+        "Value::Selector"
+    );
 
-    // 11. edges_parallel_to → Value::List
+    // 11. edges_parallel_to → Value::Selector(Edge)
     assert_non_undef!(
         "AllQueriesWalk",
         "vert_edges",
-        Value::List(_),
-        "Value::List"
+        Value::Selector(_),
+        "Value::Selector"
     );
 
-    // 12. edges_at_height → Value::List
+    // 12. edges_at_height → Value::Selector(Edge)
     assert_non_undef!(
         "AllQueriesWalk",
         "top_edge_line",
-        Value::List(_),
-        "Value::List"
+        Value::Selector(_),
+        "Value::Selector"
     );
 
     // 13. center_of_mass → Value::Point with centroid at origin
@@ -514,7 +542,7 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
 /// filed (both acceptable per §10 "if profiling warrants"). See task 3626 for
 /// the full rationale.
 #[test]
-#[ignore]
+#[ignore = "profiling harness; run explicitly with --ignored"]
 fn profile_topology_selectors_and_sub_handle_memory() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("[profile] OCCT not available — skipping §10.3/§10.4 profiling");

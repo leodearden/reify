@@ -17,7 +17,7 @@ use reify_test_support::*;
 #[test]
 fn chamfer_compiler_rejects_one_arg() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
+    param target: Length = 5mm
     let result = chamfer(target)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch1"));
@@ -45,36 +45,41 @@ fn chamfer_compiler_rejects_one_arg() {
     );
 }
 
-/// chamfer() with 3 args should produce diagnostics (too many args).
+/// chamfer() with 3 args is the curated-edge form `chamfer(solid, edges,
+/// distance)` (task β, step-10). It is no longer an arity error: the compiler
+/// recognises it and lowers it to a `Modify(Chamfer)` op carrying the curated
+/// `edges` slot ([target, edges, distance]), mirroring fillet's 2/3-arg
+/// dispatch. (Before β the 3-arg form was rejected as "too many args".)
 #[test]
-fn chamfer_compiler_rejects_three_args() {
+fn chamfer_compiler_accepts_three_args_curated_edges() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param dist: Scalar = 2mm
+    param target: Length = 5mm
+    param dist: Length = 2mm
     let result = chamfer(target, dist, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch3"));
     let compiled = reify_compiler::compile(&parsed);
     let template = &compiled.templates[0];
     let realizations = &template.realizations;
-    let has_chamfer_op = realizations.iter().any(|r| {
-        r.operations.iter().any(|op| {
-            matches!(
-                op,
-                reify_compiler::CompiledGeometryOp::Modify {
-                    kind: reify_compiler::ModifyKind::Chamfer,
-                    ..
-                }
-            )
+    // The 3-arg form is recognised and lowered to a Modify(Chamfer) op carrying
+    // the curated-edge "edges" slot — NOT rejected with an arity diagnostic.
+    let chamfer_args = realizations.iter().find_map(|r| {
+        r.operations.iter().find_map(|op| match op {
+            reify_compiler::CompiledGeometryOp::Modify {
+                kind: reify_compiler::ModifyKind::Chamfer,
+                args,
+                ..
+            } => Some(args.clone()),
+            _ => None,
         })
     });
-    assert!(
-        !compiled.diagnostics.is_empty(),
-        "expected error diagnostic for wrong arg count (3 args)"
-    );
-    assert!(
-        !has_chamfer_op,
-        "should not produce Modify(Chamfer) op with wrong arg count (3 args)"
+    let args =
+        chamfer_args.expect("3-arg chamfer should produce a Modify(Chamfer) op (curated edges)");
+    let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["target", "edges", "distance"],
+        "3-arg chamfer must lower to the curated-edge arg shape [target, edges, distance]"
     );
 }
 
@@ -83,8 +88,8 @@ fn chamfer_compiler_rejects_three_args() {
 #[test]
 fn chamfer_compiler_accepts_two_args() {
     let source = r#"structure S {
-    param target: Scalar = 5mm
-    param dist: Scalar = 2mm
+    param target: Length = 5mm
+    param dist: Length = 2mm
     let result = chamfer(target, dist)
 }"#;
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_ch2"));
@@ -156,7 +161,9 @@ fn chamfer_through_full_eval_pipeline() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Chamfer { target, distance } => {
+        GeometryOp::Chamfer {
+            target, distance, ..
+        } => {
             assert_eq!(
                 *target, target_handle,
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
@@ -206,7 +213,9 @@ fn chamfer_modify_only_needs_distance_arg() {
 
     let target_handle = ops[0].result_handle;
     match &ops[1].op {
-        GeometryOp::Chamfer { target, distance } => {
+        GeometryOp::Chamfer {
+            target, distance, ..
+        } => {
             assert_eq!(
                 *target, target_handle,
                 "Chamfer target should be handle from op 0 ({:?}), got {:?}",
