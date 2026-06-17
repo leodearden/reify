@@ -2694,4 +2694,67 @@ mod tests {
             "orphan_dirs_removed must be 1"
         );
     }
+
+    // ── Part A debug-invariant admission-site tests (task 3754 step-1) ───────
+    //
+    // Two cfg-exclusive companions for the registry-plumbed debug panic added
+    // by step-2:
+    //
+    //  (a) debug build  — should_panic: an empty registry has no meta for the
+    //      value's type_id, which is the registry-population-bug signature;
+    //      the debug invariant must diverge.
+    //  (b) release build — no panic: the same inputs return
+    //      Err(TypeKindMismatch) gracefully so the value still flows via the
+    //      caller warning+default path.
+    //
+    // RED until step-2 adds the `registry` parameter to
+    // `validate_param_override` and wires the panic.
+
+    /// Debug-build invariant: `validate_param_override` must panic with a
+    /// message containing "StructureInstance type mismatch" when a
+    /// `Value::StructureInstance` is validated against a `Type::TraitObject`
+    /// cell and the registry has no meta for the value's `type_id`
+    /// (registry-population bug).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "StructureInstance type mismatch")]
+    fn validate_param_override_debug_panics_on_missing_registry_meta() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let empty_registry = reify_ir::StructureRegistry::new();
+        // With an empty registry type_id=0 has no meta → registry-population
+        // bug → debug build must diverge with "StructureInstance type mismatch".
+        let _ = super::validate_param_override(&v, &ty, Some(&empty_registry));
+    }
+
+    /// Release-build companion: same inputs return `Err(TypeKindMismatch)`
+    /// without panic so the value still flows via the caller warning+default
+    /// path.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn validate_param_override_release_returns_type_kind_mismatch_on_missing_registry_meta() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+        let fields: PersistentMap<String, Value> = PersistentMap::new();
+        let v = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(0),
+            type_name: "Steel_AISI_1045".to_string(),
+            version: 1,
+            fields,
+        }));
+        let ty = reify_core::Type::TraitObject("ElasticMaterial".to_string());
+        let empty_registry = reify_ir::StructureRegistry::new();
+        let result = super::validate_param_override(&v, &ty, Some(&empty_registry));
+        assert!(
+            matches!(result, Err(ParamOverrideRejection::TypeKindMismatch)),
+            "expected Err(TypeKindMismatch), got {:?}",
+            result,
+        );
+    }
 }
