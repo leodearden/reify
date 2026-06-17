@@ -366,41 +366,123 @@ else
     # active_sources for fair_share_floor: _MIX_N task + 1 merge.
     _ACTIVE_SOURCES=$(( _MIX_N + 1 ))
 
-    # ROW2_3 measurement variables — wired in step-8.
-    # Initialized to failing defaults so step-7 assertions are RED.
-    _T_BASE=1               # uncontended probe wall (seconds, int or float)
-    _T_MIX=0               # probe wall under mix (seconds)
-    _ROW23_AVG10=99        # avg10 sampled after warm-up
-    _ROW23_ALL_PROGRESSED=0  # 1 when all sources emitted done-markers
-    # ── ROW2_3 ORCHESTRATION SEAM ─────────────────────────────────────────
-    # (step-8 adds: T_base pre-measurement, stub-cargo dir, mix launcher,
-    # warm-up sleep, avg10 sample, concurrent timed probe for T_mix,
-    # progress accounting, mix cleanup)
-    # ──────────────────────────────────────────────────────────────────────
-
-    # ── Row 2 assertions ──
-    # Quiet-start precondition guard for PSI-band assert:
-    # sample avg10 BEFORE the mix (not after warm-up, since orchestration
-    # is not yet wired and the post-warmup sample won't exist).
+    # Global quiet-start precondition guard for ROW2_3 (step-8 orchestration note).
+    # When the box is too hot at start, PSI admission (cpu-admit.sh admit) blocks mix
+    # sources before they can burn CPU or write done-markers, making ROW2-2 (sources
+    # completed) and ROW3-1 (slowdown) false-fail — not a governance failure.
+    # Also, T_base measured on a hot box is inflated relative to T_mix measured after
+    # the box cools, inverting the slowdown ratio. SKIP the entire cycle on a hot box
+    # (same discipline as Row 1's quiet-box guard).  Uses the same QUIET_CEILING knob.
     _row23_pre_avg10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "unavailable")"
-    _row23_psi_guard=1
+    _ROW23_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
+    _row23_quiet_met=1
     if [ "$_row23_pre_avg10" != "unavailable" ]; then
-        if awk -v a="$_row23_pre_avg10" -v t="$_ADMIT_THRESHOLD" \
-            'BEGIN{exit !(a >= t)}'; then
-            echo "  SKIP ROW2-PSI: pre-mix avg10=${_row23_pre_avg10} already >= threshold=${_ADMIT_THRESHOLD}"
-            _row23_psi_guard=0
+        if awk -v a="$_row23_pre_avg10" -v c="$_ROW23_QUIET_CEILING" \
+                'BEGIN{exit !(a >= c)}'; then
+            echo "  SKIP ROW2_3: box not quiet at start (avg10=${_row23_pre_avg10} >= QUIET_CEILING=${_ROW23_QUIET_CEILING})"
+            _row23_quiet_met=0
         fi
     fi
-    if [ "$_row23_psi_guard" -eq 1 ]; then
-        # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
-        assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
-            python3 -c "
+
+    if [ "$_row23_quiet_met" -eq 1 ]; then
+    # Mix burn duration: must cover WARMUP_S + PROBE_S + settling.
+    _ROW23_MIX_BURN_S=$(( _ROW23_WARMUP_S + _ROW23_PROBE_S + 4 ))
+    # Marker dir: each stub-cargo source writes done_<PID> here.
+    _ROW23_MARKER_DIR="$WORK/row23_markers"
+    mkdir -p "$_ROW23_MARKER_DIR"
+    # Stub-cargo-bin: the stub "real cargo" that burns CPU + writes done-marker.
+    # PATH for mix: scripts/agent-bin (shim) first, then stub-cargo-bin (stub).
+    # The shim strips agent-bin → finds stub-cargo-bin/cargo as "real cargo".
+    _STUB_CARGO_BIN="$WORK/stub-cargo-bin"
+    mkdir -p "$_STUB_CARGO_BIN"
+    cat > "$_STUB_CARGO_BIN/cargo" << STUB_CARGO_EOF
+#!/usr/bin/env bash
+# Stub real-cargo for ROW2_3 mix (replaces real cargo after shim PATH-strip).
+# Runs a CPU-burn fixture for the mix duration and writes a done-marker.
+bash "${FIXTURE}" 1 ${_ROW23_MIX_BURN_S} >/dev/null 2>&1 || true
+touch "${_ROW23_MARKER_DIR}/done_\$\$"
+STUB_CARGO_EOF
+    chmod +x "$_STUB_CARGO_BIN/cargo"
+    # PATH for mix invocations: shim (agent-bin) first, stub second.
+    _MIX_PATH="$REPO_ROOT/scripts/agent-bin:$_STUB_CARGO_BIN:/usr/bin:/bin"
+    _SHIM="$REPO_ROOT/scripts/agent-bin/cargo"
+
+    # Work-based probe: do N iterations of float arithmetic, print elapsed seconds.
+    # This gives a FIXED WORK QUANTUM so wall time GROWS under CPU contention —
+    # unlike a time-bounded fixture (which always takes duration_s regardless of
+    # CPU share). Runs inside the governed scope for a fair T_base/T_mix comparison.
+    _PROBE_ITERS="${REIFY_CPU_GOV_TEST_PROBE_ITERS:-20000000}"
+    cat > "$WORK/row23_probe.py" << 'PROBE_PY'
+#!/usr/bin/env python3
+import sys, time
+iters = int(sys.argv[1]) if len(sys.argv) > 1 else 20_000_000
+start = time.monotonic()
+total = 0.0
+for i in range(iters):
+    total += float(i) * 1.001
+end = time.monotonic()
+# Print elapsed seconds (float) to stdout.
+print(f"{end - start:.6f}")
+PROBE_PY
+
+    # (a) Pre-measure T_base: uncontended governed probe.
+    _T_BASE="$(timeout 30 bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1")"
+    [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
+
+    # (b) Launch mix: N task-role + 1 merge-role, each through composed wrappers
+    #     (γ cpu-governed-exec → β agent-bin/cargo shim → α cpu-admit admit → stub).
+    # Record PIDs for cleanup.
+    _MIX_PIDS=""
+    _mi=0
+    while [ "$_mi" -lt "$_MIX_N" ]; do
+        PATH="$_MIX_PATH" \
+        timeout $(( _ROW23_MIX_BURN_S + 15 )) \
+            bash "$CPU_GOV_EXEC" --role task -- bash "$_SHIM" test \
+            >/dev/null 2>&1 &
+        _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
+        _mi=$(( _mi + 1 ))
+    done
+    # 1 merge-role source (DF_VERIFY_ROLE=merge bypasses cpu-admit, per C-A3).
+    PATH="$_MIX_PATH" DF_VERIFY_ROLE=merge \
+    timeout $(( _ROW23_MIX_BURN_S + 15 )) \
+        bash "$CPU_GOV_EXEC" --role merge -- bash "$_SHIM" test \
+        >/dev/null 2>&1 &
+    _MIX_PIDS="${_MIX_PIDS}${_MIX_PIDS:+ }$!"
+
+    # (c) Warm-up window then sample avg10 (Row 2 PSI measurement).
+    sleep "$_ROW23_WARMUP_S"
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 2>/dev/null || echo "99")"
+
+    # (d) Timed work-based probe under the mix → T_mix (Row 3 slowdown).
+    _T_MIX="$(timeout 60 bash "$CPU_GOV_EXEC" --role task -- \
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0")"
+    [ -z "${_T_MIX}" ] && _T_MIX="0"
+
+    # (e) Wait for mix to finish (natural completion or timeout).
+    for _mpid in $_MIX_PIDS; do
+        wait "$_mpid" 2>/dev/null || true
+    done
+    _MIX_PIDS=""
+
+    # (f) Progress accounting: count done-markers; expect ACTIVE_SOURCES.
+    _ROW23_DONE_COUNT="$(ls "$_ROW23_MARKER_DIR"/done_* 2>/dev/null | wc -l || echo 0)"
+    _ROW23_ALL_PROGRESSED=0
+    if [ "$_ROW23_DONE_COUNT" -ge "$_ACTIVE_SOURCES" ]; then
+        _ROW23_ALL_PROGRESSED=1
+    fi
+
+    # ── Row 2 assertions ──
+    # Global guard above ensures pre_avg10 < QUIET_CEILING=20 < ADMIT_THRESHOLD=50,
+    # so assert ROW2-1 unconditionally within this block.
+    # ROW2-1: after warm-up, avg10 < AGENT_THRESHOLD (PSI band).
+    assert "ROW2-1: avg10 after warm-up < AGENT_THRESHOLD=${_ADMIT_THRESHOLD} (avg10=${_ROW23_AVG10})" \
+        python3 -c "
 import sys
 v = float('${_ROW23_AVG10}')
 t = float('${_ADMIT_THRESHOLD}')
 sys.exit(0 if v < t else 1)
 "
-    fi
     # ROW2-2: all sources completed (none starved).
     assert "ROW2-2: all ${_ACTIVE_SOURCES} sources completed — none starved (progressed=${_ROW23_ALL_PROGRESSED})" \
         test "${_ROW23_ALL_PROGRESSED}" -eq 1
@@ -422,6 +504,7 @@ k = float('${_SLOWDOWN_K}')
 ok = (fl <= s <= k * fl) and s < 10.0
 sys.exit(0 if ok else 1)
 "
+    fi  # _row23_quiet_met
 fi
 
 # ============================================================================
