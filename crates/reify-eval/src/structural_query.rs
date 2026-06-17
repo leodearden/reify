@@ -176,10 +176,10 @@ pub(crate) fn contains_structural_query(expr: &CompiledExpr) -> bool {
         CompiledExprKind::RangeConstructor { lower, upper, .. } => {
             lower
                 .as_ref()
-                .map_or(false, |lo| contains_structural_query(lo))
+                .is_some_and(|lo| contains_structural_query(lo))
                 || upper
                     .as_ref()
-                    .map_or(false, |hi| contains_structural_query(hi))
+                    .is_some_and(|hi| contains_structural_query(hi))
         }
         CompiledExprKind::AdHocSelector { base, args, .. } => {
             contains_structural_query(base) || args.iter().any(contains_structural_query)
