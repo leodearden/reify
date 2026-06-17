@@ -624,6 +624,18 @@ pub(crate) fn compile_field(
             );
             Type::dimensionless_scalar()
         }
+        // A function / arrow type `(T) -> U` (task 4595) cannot be a field domain type.
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!("unresolved field type: {}", field_def.domain_type))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        field_def.domain_type.span,
+                        "function type not allowed in this position",
+                    )),
+            );
+            Type::dimensionless_scalar()
+        }
     };
     let codomain_type = match &field_def.codomain_type.kind {
         reify_ast::TypeExprKind::Named { name, .. } => resolve_field_type_name(
@@ -687,6 +699,21 @@ pub(crate) fn compile_field(
                 .with_label(DiagnosticLabel::new(
                     field_def.codomain_type.span,
                     "associated type not yet resolved in this position",
+                )),
+            );
+            Type::dimensionless_scalar()
+        }
+        // A function / arrow type `(T) -> U` (task 4595) cannot be a field codomain type.
+        reify_ast::TypeExprKind::Function { .. } => {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "unresolved field type: {}",
+                    field_def.codomain_type
+                ))
+                .with_code(DiagnosticCode::UnresolvedType)
+                .with_label(DiagnosticLabel::new(
+                    field_def.codomain_type.span,
+                    "function type not allowed in this position",
                 )),
             );
             Type::dimensionless_scalar()
