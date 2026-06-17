@@ -1531,6 +1531,18 @@ mod tests {
         assert!(is_geometry_function("thicken"));
     }
 
+    /// `offset_curve` is the curve-offset modify op (ι, task 4193) — a fresh-curve
+    /// producer that takes a curve target + scalar distance (overloads 2&3 add a
+    /// 3rd reference-Surface / direction-Vector3 arg). It must be recognised as a
+    /// geometry-handle producer so the compiler dispatches it through
+    /// `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-10 adds "offset_curve" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_curve_recognized() {
+        assert!(is_geometry_function("offset_curve"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_curve"));
+    }
+
     #[test]
     fn compile_geometry_offset_solid_recognized() {
         assert!(is_geometry_function("offset_solid"));

@@ -907,4 +907,26 @@ mod tests {
              (both are combine_transform passthroughs in the same match arm)"
         );
     }
+
+    /// `offset_curve` (ι, task 4193) produces a fresh 1-D curve, so its inferred
+    /// dimension must be `GeomDim::Curve` — NOT `Solid`. It must therefore be
+    /// dispatched via a curve arm (`InferredTraits::curve()`), NOT the
+    /// `combine_modify` arm whose `combine_modify()` hardcodes `GeomDim::Solid`.
+    ///
+    /// RED until step-10 adds a dedicated `"offset_curve" => Some(curve())` arm to
+    /// `try_infer_traits_for_function_call_in_env`.
+    #[test]
+    fn try_infer_traits_for_function_call_offset_curve_returns_curve() {
+        let result = try_infer_traits_for_function_call("offset_curve", &[]);
+        assert_eq!(
+            result,
+            Some(InferredTraits::curve()),
+            "offset_curve must infer Some(curve()) (a fresh 1-D curve producer)"
+        );
+        assert_eq!(
+            result.map(|t| t.dimension),
+            Some(GeomDim::Curve),
+            "offset_curve's inferred dimension must be Curve, not Solid"
+        );
+    }
 }

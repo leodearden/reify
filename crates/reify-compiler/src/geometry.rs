@@ -2210,6 +2210,20 @@ mod tests {
         }
     }
 
+    /// `offset_curve` (ι, task 4193) takes its curve target at position 0 and its
+    /// scalar distance (+ optional reference/direction) as plain value args, so
+    /// only index 0 is a geometry ref — exactly like the `thicken`/`shell` modify
+    /// family. RED until step-10 adds the `"offset_curve" => &[0]` arm to
+    /// `geometry_arg_indices`.
+    #[test]
+    fn geometry_arg_indices_offset_curve_target_only() {
+        assert_eq!(
+            geometry_arg_indices("offset_curve"),
+            &[0],
+            "offset_curve's only geometry-ref arg is the curve target at index 0"
+        );
+    }
+
     #[test]
     fn all_dispatch_functions_accounted_for() {
         // Ensure the two lists together with loft and the boolean ops cover every
