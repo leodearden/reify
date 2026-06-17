@@ -51,8 +51,12 @@ P_seed and P_lane are DISTINCT paths (design decision: load-bearing for a valid 
 
 ### Path stabilization (§10.2)
 
-- **Vector-a fix:** `RUSTFLAGS=--remap-path-prefix=${P_lane}=/spike-lane` (normalizes embedded debuginfo paths)
-- **Vector-b (tested):** fixed lane path `P_lane` (structural fix; this is exactly what Q1 tests — see §4)
+- **Vector-a (NOT applied — by design):** `RUSTFLAGS=--remap-path-prefix=P_lane=const` was NOT used for the seeded build.
+  Rationale: the seed build used `RUSTFLAGS=""` (no remap). Adding a path-specific remap in the lane build changes the `RUSTFLAGS`
+  string, which (a) invalidates ALL cargo fingerprints and (b) causes sccache misses for all cached entries (sccache keyed by RUSTFLAGS
+  value). This would make every lane build a full cold recompile regardless of CoW seeding — not a useful Q1 measurement. Instead,
+  this spike tests vectors b+c with consistent `RUSTFLAGS=""` for all builds. The Phase 6 design implication is noted in §9.
+- **Vector-b (tested):** fixed lane path `P_lane ≠ P_seed` (structural fix; this is exactly what Q1 tests — see §6)
 - **Vector-c fix:** `find <src> -type f -exec touch -d 2020-01-01 {} +` before each build
 
 ### Build command
@@ -141,28 +145,32 @@ filefrag -v /media/leo/data_lv_1/leo/reify-build/xfs-spike/seed/target/release/r
 **Purpose:** Apply §10.2 path-stabilization so the seeded lane build only recompiles the delta + its reverse-dep closure (not everything due to stale path embedding).
 
 ```bash
-# (a) Vector-a: RUSTFLAGS remap — set as env for all lane builds
-export RUSTFLAGS="--remap-path-prefix=/media/leo/data_lv_1/leo/reify-build/xfs-spike/lane=/spike-lane"
+# (a) Vector-a: RUSTFLAGS remap — NOT applied (see design note in §2 Path stabilization)
+# The seed was built with RUSTFLAGS="". Applying a path-specific remap in the lane build
+# changes RUSTFLAGS, invalidating all cargo fingerprints and causing sccache misses.
+# Result would be a full cold recompile — confounding Q1 (path-vector-b) with RUSTFLAGS change.
+# Decision: test vectors b+c with consistent RUSTFLAGS="" for a valid Q1 measurement.
 
 # (c) Vector-c: mtime-normalize P_lane sources OLDER than seeded artifacts
 find /media/leo/data_lv_1/leo/reify-build/xfs-spike/lane \
   -path '*/target*' -prune -o \
-  -type f -print \
-  -exec touch -d '2020-01-01' {} +
+  -path '*/.git' -prune -o \
+  -type f -print0 | xargs -0 touch -d '2020-01-01'
 ```
 
 ### Notes
 
-- **Vector-b** is addressed structurally by P_lane being a different path from P_seed; step-4 tests whether the fixed-path approach succeeded (Q1 core question).
-- P_seed seed build was built WITHOUT `--remap-path-prefix`, so there is an asymmetry between seed and lane remap; this is DOCUMENTED and acceptable — the lane remap only affects newly compiled artifacts in the lane, and the fingerprints/dep-info with embedded P_seed paths are exactly what Q1 tests.
+- **Vector-a (not applied):** RUSTFLAGS remap would require the seed to also use the same remap constant. Since the seed used `RUSTFLAGS=""`, applying a new path-specific remap in the lane would trigger a full rebuild via fingerprint+sccache invalidation — defeating the Q1 measurement. The Phase 6 implication (RUSTFLAGS must be consistent between seed and lane) is documented in §9.
+- **Vector-b** is addressed structurally by P_lane being a different path from P_seed; step-4 tests whether the fixed-path approach (with P_seed still present) allows cargo to skip the rebuild (Q1 core question).
+- **Vector-c** applied: source mtimes in P_lane stamped 2020-01-01, older than seeded artifacts.
 
 ### Applied
 
 | Item | Value |
 |---|---|
-| RUSTFLAGS (lane) | `--remap-path-prefix=/media/leo/data_lv_1/leo/reify-build/xfs-spike/lane=/spike-lane` |
+| RUSTFLAGS (lane) | `""` (same as seed — no remap applied) |
 | mtime stamp | `2020-01-01T00:00:00` |
-| Source dirs touched | `P_lane/**` (excluding `target/`) |
+| Source dirs touched | `P_lane/**` (excluding `target/` and `.git`) |
 
 ---
 
@@ -177,10 +185,9 @@ cd /media/leo/data_lv_1/leo/reify-build/xfs-spike/lane
 # [see representative delta §2]
 touch -d 'now' crates/reify-gcode/src/lib.rs  # mark as newer than seeded artifacts
 
-# Run seeded build
+# Run seeded build — RUSTFLAGS="" consistent with seed (vector-a not applied; see §2/§5)
 /usr/bin/time -v env \
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
-  RUSTFLAGS="--remap-path-prefix=/media/leo/data_lv_1/leo/reify-build/xfs-spike/lane=/spike-lane" \
   REIFY_TEST_SEMAPHORE_DISABLE=1 REIFY_COMPILE_GATE_DISABLE=1 \
   scripts/verify.sh all --profile both --scope all \
   2>&1 | tee /media/leo/data_lv_1/leo/reify-build/xfs-spike/logs/seeded-build.log
@@ -258,9 +265,8 @@ git reset --hard <next_delta_commit>
 touch -d '2020-01-01' <changed files>
 # 3. Mark changed file as newer than artifacts
 touch -d 'now' crates/reify-gcode/src/lib.rs
-# 4. Build
+# 4. Build (RUSTFLAGS="" consistent with seed — no remap applied; see §2/§5)
 /usr/bin/time -v env RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
-  RUSTFLAGS="--remap-path-prefix=..." \
   REIFY_TEST_SEMAPHORE_DISABLE=1 REIFY_COMPILE_GATE_DISABLE=1 \
   scripts/verify.sh all --profile both --scope all
 # 5. Measure fragmentation
@@ -286,12 +292,27 @@ PENDING
 
 ## 9. Verdict
 
-### Q1: Does a seeded+remapped+mtime-normalized lane SKIP the rebuild?
+### Q1: Does a seeded (mtime-normalized, fixed-path) lane SKIP the rebuild?
+
+> **Note on scope:** This spike tested vectors b+c without vector-a (RUSTFLAGS remap).
+> The seed was built with `RUSTFLAGS=""`. Applying a path-specific remap in the lane build
+> would change the RUSTFLAGS string and invalidate all cargo fingerprints+sccache, making
+> the seeded build equivalent to a full cold build regardless of CoW. To measure the actual
+> path-vector-b effect (does `P_seed ≠ P_lane` in dep-info force a rebuild?) we used
+> consistent `RUSTFLAGS=""` for seed and lane. Phase 6 RUSTFLAGS design implication: see below.
 
 **Answer:** PENDING
 
 **Warmth finding:**
 - PENDING
+
+**Phase 6 design implication (RUSTFLAGS consistency):**
+- If `seeded build` shows warmth HELD (cargo skips most crates): CoW seeding works when
+  `RUSTFLAGS` is consistent between seed and lane. Phase 6 must enforce this constraint:
+  either use `RUSTFLAGS=""` or ensure the same remap constant in both seed and lane builds.
+- If `seeded build` shows warmth LOST (cargo rebuilds broadly): path-vector-b (dep-info
+  references to P_seed path) is the blocker even with mtime normalization + fixed lane path.
+  Phase 6 would require a different approach (e.g., sccache-only speedup, or same-path build).
 
 **§10.7 gate recommendation:**
 - PENDING
