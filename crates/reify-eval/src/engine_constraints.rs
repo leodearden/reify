@@ -1148,6 +1148,11 @@ impl Engine {
 
         // Collect specs with live handles (skip None subject_handle entries).
         let mut specs: Vec<DfmRuleSpec> = Vec::new();
+        // Collect thickness specs (independent of overhang/draft, task ζ=4426).
+        // Fired for ANY rule whose `applies_to` carries a LENGTH `min_feature_size`
+        // field — so Adding gets both overhang/draft AND thickness checks while
+        // Subtracting/Parting (rejected by `dfm_rule_spec`) get thickness only.
+        let mut thickness_specs: Vec<DfmThicknessSpec> = Vec::new();
 
         // (A) Top-level templates — synthesize a StructureInstance from their
         // evaluated cell values so that dfm_rule_spec can duck-type the shape.
@@ -1195,6 +1200,9 @@ impl Engine {
                 {
                     specs.push(spec);
                 }
+                if let Some(tspec) = dfm_thickness_spec(&si) {
+                    thickness_specs.push(tspec);
+                }
             }
         }
 
@@ -1204,6 +1212,9 @@ impl Engine {
                 && spec.subject_handle.is_some()
             {
                 specs.push(spec);
+            }
+            if let Some(tspec) = dfm_thickness_spec(v) {
+                thickness_specs.push(tspec);
             }
         }
 
@@ -1223,76 +1234,113 @@ impl Engine {
             });
         }
 
-        if specs.is_empty() {
+        // Dedup thickness_specs by subject_ref.realization_ref (same subject →
+        // one pair of measurements regardless of how many DFMRule values reference it).
+        {
+            let mut seen: HashSet<reify_core::identity::RealizationNodeId> = HashSet::new();
+            thickness_specs
+                .retain(|tspec| seen.insert(tspec.subject_ref.realization_ref.clone()));
+        }
+
+        // Early-return only when there is truly nothing to measure.
+        if specs.is_empty() && thickness_specs.is_empty() {
             return Vec::new();
         }
 
-        // Now we can borrow self.geometry_kernels mutably.
-        let kernel = match self.geometry_kernels.get_mut(&kernel_name) {
-            Some(k) => k.as_mut(),
-            None => return Vec::new(),
-        };
-
         let mut diags = Vec::new();
-        for spec in specs {
-            let handle = spec.subject_handle.expect("filtered above");
-            match spec.kind {
-                DfmRuleKind::Overhang { max_angle_rad } => {
-                    match topology_selectors::unsupported_overhang_faces(
-                        kernel,
-                        handle,
-                        // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
-                        // A future rule-supplied direction would be threaded in here.
-                        [0.0, 0.0, 1.0],
-                        max_angle_rad,
-                    ) {
-                        Ok((faces, _worst_dip)) => {
-                            let verdict = Value::Bool(!faces.is_empty());
-                            diags.extend(reify_stdlib::dfm_diagnose(
-                                "unsupported_overhang_faces",
-                                &[spec.rule_value],
-                                &verdict,
-                            ));
+
+        // ── Overhang / draft pass ─────────────────────────────────────────────
+        // Scoped so the mutable geometry_kernels borrow ends before the thickness
+        // pass calls `&mut self` via measure_min_wall / measure_min_feature.
+        if !specs.is_empty() {
+            if let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name) {
+                let kernel = kernel.as_mut();
+                for spec in specs {
+                    let handle = spec.subject_handle.expect("filtered above");
+                    match spec.kind {
+                        DfmRuleKind::Overhang { max_angle_rad } => {
+                            match topology_selectors::unsupported_overhang_faces(
+                                kernel,
+                                handle,
+                                // +Z is the default build direction (PRD §4.4 / §5 / §9 Q2).
+                                // A future rule-supplied direction would be threaded in here.
+                                [0.0, 0.0, 1.0],
+                                max_angle_rad,
+                            ) {
+                                Ok((faces, _worst_dip)) => {
+                                    let verdict = Value::Bool(!faces.is_empty());
+                                    diags.extend(reify_stdlib::dfm_diagnose(
+                                        "unsupported_overhang_faces",
+                                        &[spec.rule_value],
+                                        &verdict,
+                                    ));
+                                }
+                                Err(err) => {
+                                    // Indeterminate — never a false violation (C1).
+                                    tracing::debug!(
+                                        ?handle, ?err,
+                                        "DFM overhang selector error; treating as Indeterminate"
+                                    );
+                                }
+                            }
                         }
-                        Err(err) => {
-                            // Indeterminate — never a false violation (C1).
-                            tracing::debug!(
-                                ?handle, ?err,
-                                "DFM overhang selector error; treating as Indeterminate"
-                            );
-                        }
-                    }
-                }
-                DfmRuleKind::Draft { min_draft_rad } => {
-                    match topology_selectors::min_draft_angle(
-                        kernel,
-                        handle,
-                        // +Z is the assumed pull direction (intentional default; PRD §4.4).
-                        // A future rule-supplied direction would be threaded in here.
-                        [0.0, 0.0, 1.0],
-                    ) {
-                        Ok((signed_min_draft, has_undercut)) => {
-                            let verdict = Value::List(vec![
-                                Value::Bool(signed_min_draft < min_draft_rad),
-                                Value::Bool(has_undercut),
-                            ]);
-                            diags.extend(reify_stdlib::dfm_diagnose(
-                                "min_draft_angle",
-                                &[spec.rule_value],
-                                &verdict,
-                            ));
-                        }
-                        Err(err) => {
-                            // Indeterminate — never a false violation (C1).
-                            tracing::debug!(
-                                ?handle, ?err,
-                                "DFM draft selector error; treating as Indeterminate"
-                            );
+                        DfmRuleKind::Draft { min_draft_rad } => {
+                            match topology_selectors::min_draft_angle(
+                                kernel,
+                                handle,
+                                // +Z is the assumed pull direction (intentional default; PRD §4.4).
+                                // A future rule-supplied direction would be threaded in here.
+                                [0.0, 0.0, 1.0],
+                            ) {
+                                Ok((signed_min_draft, has_undercut)) => {
+                                    let verdict = Value::List(vec![
+                                        Value::Bool(signed_min_draft < min_draft_rad),
+                                        Value::Bool(has_undercut),
+                                    ]);
+                                    diags.extend(reify_stdlib::dfm_diagnose(
+                                        "min_draft_angle",
+                                        &[spec.rule_value],
+                                        &verdict,
+                                    ));
+                                }
+                                Err(err) => {
+                                    // Indeterminate — never a false violation (C1).
+                                    tracing::debug!(
+                                        ?handle, ?err,
+                                        "DFM draft selector error; treating as Indeterminate"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
+            // If geometry_kernels does not contain the default kernel the
+            // overhang/draft measurements are silently skipped (Indeterminate).
+            // The thickness pass below is independent and always runs.
         }
+
+        // ── Thickness pass (measure_min_wall + measure_min_feature) ──────────
+        // Both methods take `&mut self` and call `realize_solid_sdf` internally;
+        // the geometry_kernels borrow above is fully released so no conflict.
+        // On every degradation path (no OpenVDB kernel / BelowResolution /
+        // NoMeasurement / None) the verdict is Value::Undef → dfm_diagnose emits
+        // nothing — the C1/D5 invariant (never a false Violated).
+        for tspec in thickness_specs {
+            let wall = self.measure_min_wall(tspec.subject_ref.clone());
+            let feat = self.measure_min_feature(tspec.subject_ref.clone());
+            diags.extend(reify_stdlib::dfm_diagnose(
+                "min_wall_thickness",
+                &[tspec.rule_value.clone()],
+                &min_wall_verdict(wall, tspec.min_feature_size_m),
+            ));
+            diags.extend(reify_stdlib::dfm_diagnose(
+                "min_feature_size_measure",
+                &[tspec.rule_value],
+                &min_feature_verdict(feat, tspec.min_feature_size_m),
+            ));
+        }
+
         diags
     }
 
