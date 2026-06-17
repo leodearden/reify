@@ -5,6 +5,12 @@
 #       canonical shape (weights.task==100, weights.merge==300,
 #       agent_admit.threshold==50, agent_admit enabled, DF_AGENT_CPU_GOVERN
 #       present).
+#   (A2) VALUE DRIFT — YAML default values MATCH the :-fallback defaults in the
+#       owning scripts, so a numeric drift (e.g. YAML says 200, script still
+#       defaults to 100) is caught.  Checked:
+#         REIFY_CPU_GOVERN_W_TASK   YAML vs scripts/lib_cgroup.sh :- default
+#         REIFY_CPU_GOVERN_W_MERGE  YAML vs scripts/lib_cgroup.sh :- default
+#         REIFY_CPU_ADMIT_AGENT_THRESHOLD YAML vs scripts/agent-bin/cargo :- default
 #   (B) KNOB-NAME CROSS-CHECK — each REIFY_* knob cited by name in
 #       orchestrator.yaml MUST also appear in its owning script, so config↔script
 #       names cannot drift silently.
@@ -15,8 +21,8 @@
 #       NOT grep-checked: DF_AGENT_CPU_GOVERN (dark-factory consumed; no reify
 #       script reads it).
 #
-# (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the tomllib SKIP
-#     idiom in test_cargo_incremental_lane_decision.sh:25).
+# (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
+#     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.
 
 set -euo pipefail
@@ -31,6 +37,7 @@ echo "=== cpu_governance config contract tests ==="
 
 ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
 CPU_GOV="$REPO_ROOT/scripts/cpu-governed-exec.sh"
+LIB_CGROUP="$REPO_ROOT/scripts/lib_cgroup.sh"      # actual home of W_TASK/W_MERGE :-fallbacks
 AGENT_CARGO="$REPO_ROOT/scripts/agent-bin/cargo"
 
 # ---------------------------------------------------------------------------
@@ -50,8 +57,8 @@ else
     cat > "$_PARSE_PY" << 'PYEOF'
 """Validate orchestrator.yaml cpu_governance block.
 Usage:
-  python3 <script> <orch_yaml> <check>
-Checks:
+  python3 <script> <orch_yaml> <check> [<script_path>]
+Checks (no <script_path>):
   parse_ok                 — file parses as valid YAML (no exception)
   has_cpu_governance       — top-level 'cpu_governance' key exists
   weights_task_100         — cpu_governance.weights.task == 100
@@ -59,9 +66,13 @@ Checks:
   agent_admit_threshold_50 — cpu_governance.agent_admit.threshold == 50
   agent_admit_enabled      — cpu_governance.agent_admit.enabled is truthy
   df_agent_cpu_govern_present — 'DF_AGENT_CPU_GOVERN' key present in block
+Checks (with <script_path> — value-drift cross-check):
+  w_task_yaml_vs_lib_cgroup       — YAML weights.task == lib_cgroup.sh :-fallback
+  w_merge_yaml_vs_lib_cgroup      — YAML weights.merge == lib_cgroup.sh :-fallback
+  threshold_yaml_vs_agent_cargo   — YAML agent_admit.threshold == agent-bin/cargo :-fallback
 Exit 0 on pass, 1 on fail.
 """
-import sys, yaml
+import sys, yaml, re
 
 orch_yaml_path = sys.argv[1]
 check = sys.argv[2]
@@ -96,6 +107,49 @@ if check == "agent_admit_enabled":
 if check == "df_agent_cpu_govern_present":
     sys.exit(0 if "DF_AGENT_CPU_GOVERN" in cg else 1)
 
+# Value-drift checks: require sys.argv[3] = path to owning bash script.
+if check == "w_task_yaml_vs_lib_cgroup":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_CPU_GOVERN_W_TASK:-(\d+)', content)
+    if not m:
+        print(f"REIFY_CPU_GOVERN_W_TASK default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = cg.get("weights", {}).get("task")
+    if yaml_val != script_val:
+        print(f"Drift: YAML weights.task={yaml_val} != lib_cgroup.sh default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "w_merge_yaml_vs_lib_cgroup":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_CPU_GOVERN_W_MERGE:-(\d+)', content)
+    if not m:
+        print(f"REIFY_CPU_GOVERN_W_MERGE default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = cg.get("weights", {}).get("merge")
+    if yaml_val != script_val:
+        print(f"Drift: YAML weights.merge={yaml_val} != lib_cgroup.sh default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "threshold_yaml_vs_agent_cargo":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_CPU_ADMIT_AGENT_THRESHOLD:-(\d+)', content)
+    if not m:
+        print(f"REIFY_CPU_ADMIT_AGENT_THRESHOLD default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = cg.get("agent_admit", {}).get("threshold")
+    if yaml_val != script_val:
+        print(f"Drift: YAML agent_admit.threshold={yaml_val} != agent-bin/cargo default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -120,6 +174,24 @@ PYEOF
 
     assert "cpu_governance block contains DF_AGENT_CPU_GOVERN key" \
         python3 "$_PARSE_PY" "$ORCH_YAML" df_agent_cpu_govern_present
+
+    # (A2) VALUE DRIFT — YAML default values MUST match the :-fallback defaults
+    # in the owning scripts.  Catches the case where YAML is updated (e.g.
+    # weights.task: 200) but the script still defaults to the old value (:-100),
+    # or vice versa — the two sources diverge silently without this cross-check.
+    #
+    # W_TASK / W_MERGE live in scripts/lib_cgroup.sh (cgroup_role_weight());
+    # REIFY_CPU_ADMIT_AGENT_THRESHOLD lives in scripts/agent-bin/cargo.
+    echo "--- (A2) value drift: YAML defaults == script :-fallbacks ---"
+
+    assert "REIFY_CPU_GOVERN_W_TASK: YAML weights.task matches lib_cgroup.sh :-fallback" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" w_task_yaml_vs_lib_cgroup "$LIB_CGROUP"
+
+    assert "REIFY_CPU_GOVERN_W_MERGE: YAML weights.merge matches lib_cgroup.sh :-fallback" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" w_merge_yaml_vs_lib_cgroup "$LIB_CGROUP"
+
+    assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD: YAML agent_admit.threshold matches agent-bin/cargo :-fallback" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" threshold_yaml_vs_agent_cargo "$AGENT_CARGO"
 fi
 
 # ---------------------------------------------------------------------------
