@@ -928,7 +928,7 @@ impl Engine {
         // `Engine::eval` and the incremental path here.  `Value::Undef` is
         // accepted as the Auto/no-value sentinel — `value_type_kind_matches`
         // inside the helper handles that.
-        match validate_param_override(&new_value, &cell_node.cell_type) {
+        match validate_param_override(&new_value, &cell_node.cell_type, &self.structure_registry) {
             Ok(()) => {}
             Err(ParamOverrideRejection::TypeKindMismatch) => {
                 return Err(EngineError::TypeKindMismatch {

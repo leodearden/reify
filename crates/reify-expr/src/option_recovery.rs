@@ -41,8 +41,12 @@
 //! `or_default` and `fallback` are aliases of `unwrap_or` (PRD fork F2-a,
 //! decision D6) — they share the same extract-or-default match arm.
 //!
-//! `map_or` is intentionally OMITTED (owned by task 4595 — needs arrow-type
-//! grammar).
+//! `map_or` is intentionally NOT handled in this pure module: it must APPLY its
+//! function argument `f`, which requires the `EvalContext` (`apply_lambda` —
+//! recursion depth, scope, captures).  It is handled by a dedicated ctx-aware
+//! branch in `eval_expr`'s `UserFunctionCall` arm in `lib.rs` (task 4595),
+//! keeping this module pure (INV-1).  `is_combinator` therefore deliberately
+//! omits `map_or`.
 //!
 //! # Invariants
 //!

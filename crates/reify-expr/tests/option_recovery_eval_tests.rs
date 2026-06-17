@@ -9,9 +9,9 @@
 //! placeholder behaviour that makes them fail today.  End-to-end cases using
 //! `compile_source_with_stdlib` appear in steps 1 and 9.
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{DimensionVector, Type, ValueCellId};
 use reify_expr::{EvalContext, eval_expr};
-use reify_ir::{CompiledExpr, Value, ValueMap};
+use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -654,6 +654,131 @@ fn get_or_undef_key_returns_undef() {
     );
 }
 
+// ── step-9: map_or (ctx-aware arrow-type intercept) ───────────────────────────
+//
+// map_or(o, dflt, f): subject=some(x) -> APPLY f to x (f(x)); subject=none -> dflt;
+// subject=undef -> Undef (Kleene INV-2).
+//
+// Unlike the 7 pure combinators (eval_combinator / is_combinator), map_or must
+// APPLY its function argument `f` and therefore needs the EvalContext (for
+// apply_lambda).  It is handled by a dedicated ctx-aware branch in
+// reify-expr/src/lib.rs's UserFunctionCall arm — NOT by is_combinator (which
+// stays pure, INV-1).
+//
+// RED today: no map_or intercept exists, so the call falls through to
+// eval_user_function_call (no functions in EvalContext::simple) → function not
+// found → Undef for the some and none cases (the discriminating signals).
+
+/// Build the lambda CompiledExpr `|x| x * 2` (Int -> Int), no captures.
+fn expr_lambda_double() -> CompiledExpr {
+    let x_id = ValueCellId::new("$lambda0.S", "x");
+    let body = CompiledExpr::binop(
+        BinOp::Mul,
+        CompiledExpr::value_ref(x_id.clone(), Type::Int),
+        CompiledExpr::literal(Value::Int(2), Type::Int),
+        Type::Int,
+    );
+    CompiledExpr::lambda(
+        vec![("x".to_string(), None)],
+        vec![x_id],
+        body,
+        vec![],
+        Type::Function {
+            params: vec![Type::Int],
+            return_type: Box::new(Type::Int),
+        },
+    )
+}
+
+fn expr_some_int(n: i64) -> CompiledExpr {
+    CompiledExpr::option_some(
+        CompiledExpr::literal(Value::Int(n), Type::Int),
+        Type::Option(Box::new(Type::Int)),
+    )
+}
+
+fn expr_none_int() -> CompiledExpr {
+    CompiledExpr::option_none(Type::Option(Box::new(Type::Int)))
+}
+
+fn expr_int(n: i64) -> CompiledExpr {
+    CompiledExpr::literal(Value::Int(n), Type::Int)
+}
+
+/// map_or(some(5), 99, |x| x * 2) == Int(10)  (lambda APPLIED to the inner value)
+///
+/// The discriminating case: the placeholder `.ri` body `{ dflt }` returns 99
+/// (or Undef under EvalContext::simple), so only a real ctx-aware intercept that
+/// applies `f` to the unwrapped Some value yields f(5)=10.
+///
+/// RED today: map_or has no intercept → falls through → function not found
+/// (simple ctx) → Undef.  After step-10 the intercept applies the lambda → 10.
+#[test]
+fn map_or_some_applies_lambda_to_inner() {
+    let call = CompiledExpr::user_function_call(
+        "map_or".to_string(),
+        vec![expr_some_int(5), expr_int(99), expr_lambda_double()],
+        Type::Int,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Int(10),
+        "map_or(some(5), 99, |x| x*2) must APPLY the lambda to the inner value → f(5)=10"
+    );
+}
+
+/// map_or(none, 99, |x| x * 2) == Int(99)  (default; lambda NOT applied)
+///
+/// RED today: map_or not intercepted → function not found (simple ctx) → Undef.
+#[test]
+fn map_or_none_returns_default() {
+    let call = CompiledExpr::user_function_call(
+        "map_or".to_string(),
+        vec![expr_none_int(), expr_int(99), expr_lambda_double()],
+        Type::Int,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Int(99),
+        "map_or(none, 99, f) must return the default 99 (f not applied)"
+    );
+}
+
+/// map_or(undef, 99, |x| x * 2) == Value::Undef  (Kleene INV-2 subject passthrough)
+///
+/// GREEN today (coincidentally): the any-arg-undef shortcircuit in
+/// eval_user_function_call fires on the undef subject and returns Undef.  Pinned
+/// here so the step-10 intercept preserves undef-subject passthrough.
+#[test]
+fn map_or_undef_subject_returns_undef() {
+    let undef_opt = CompiledExpr::literal(Value::Undef, Type::Option(Box::new(Type::Int)));
+    let call = CompiledExpr::user_function_call(
+        "map_or".to_string(),
+        vec![undef_opt, expr_int(99), expr_lambda_double()],
+        Type::Int,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "map_or(undef, 99, f) must propagate Undef — undef subject passthrough (Kleene INV-2)"
+    );
+}
+
+/// map_or(5, 99, |x| x * 2) == Value::Undef — non-Option subject degrades gracefully.
+#[test]
+fn map_or_non_option_subject_degrades_to_undef() {
+    let call = CompiledExpr::user_function_call(
+        "map_or".to_string(),
+        vec![expr_int(5), expr_int(99), expr_lambda_double()],
+        Type::Int,
+    );
+    assert_eq!(
+        eval_simple(&call),
+        Value::Undef,
+        "map_or with non-Option subject must degrade to Undef (graceful type-error)"
+    );
+}
+
 // ── type-error degradation: `_` arms ─────────────────────────────────────────
 //
 // Each combinator's `_` arm degrades gracefully to Value::Undef when the
@@ -833,6 +958,27 @@ fn sync_drift_check_all_combinators_recognized() {
             eval_simple(&call),
             val_1mm(),
             "get_or(map{{k=>1mm}}, \"k\", 0mm) must return 1mm — gate out of sync"
+        );
+    }
+
+    // map_or (arity 3, ctx-aware): some(5), 99, |x| x*2 → 10 (lambda applied).
+    //
+    // map_or is declared in option_recovery.ri but, unlike the 7 pure
+    // combinators above, is intentionally NOT in is_combinator (it must apply
+    // its function argument, which needs the EvalContext).  Its drift signal is
+    // therefore the dedicated ctx-aware branch in lib.rs's UserFunctionCall arm.
+    // If that branch is missing/out of sync, the call falls through to
+    // eval_user_function_call → Undef ≠ 10, failing here.
+    {
+        let call = CompiledExpr::user_function_call(
+            "map_or".to_string(),
+            vec![expr_some_int(5), expr_int(99), expr_lambda_double()],
+            Type::Int,
+        );
+        assert_eq!(
+            eval_simple(&call),
+            Value::Int(10),
+            "map_or(some(5), 99, |x| x*2) must return 10 — ctx-aware map_or route out of sync with option_recovery.ri"
         );
     }
 }

@@ -20,7 +20,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 fn revolute_spring_rate_some_round_trips() {
     const SOURCE: &str = r#"
 structure def Probe {
-    let r = Revolute(axis: 0.0, spring_rate: some(1N*m/rad))
+    let r = Revolute(axis: vec3(0.0, 0.0, 1.0), spring_rate: some(1N*m/rad))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);
@@ -85,7 +85,7 @@ structure def Probe {
 fn revolute_all_optional_fields_default_to_none() {
     const SOURCE: &str = r#"
 structure def Probe {
-    let r = Revolute(axis: 0.0)
+    let r = Revolute(axis: vec3(0.0, 0.0, 1.0))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);
@@ -118,7 +118,7 @@ structure def Probe {
 fn prismatic_spring_rate_some_round_trips() {
     const SOURCE: &str = r#"
 structure def Probe {
-    let p = Prismatic(axis: 0.0, spring_rate: some(1N/m))
+    let p = Prismatic(axis: vec3(0.0, 0.0, 1.0), spring_rate: some(1N/m))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);
@@ -188,7 +188,7 @@ fn prismatic_neutral_some_round_trips_as_length() {
     const SOURCE: &str = r#"
 structure def Probe {
     param ref_len : Length = 1000mm
-    let p = Prismatic(axis: 0.0, spring_rate: none, damping: none, neutral: some(ref_len))
+    let p = Prismatic(axis: vec3(0.0, 0.0, 1.0), spring_rate: none, damping: none, neutral: some(ref_len))
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(SOURCE);

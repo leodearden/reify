@@ -42,6 +42,7 @@
 // OCCT loft / offset / shell / thicken
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
 #include <TopTools_ListOfShape.hxx>
 
@@ -1726,6 +1727,126 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
     });
 }
 
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
+    const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_edges_with_history", [&]() {
+        if (!std::isfinite(distance) || distance <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: distance must be a finite positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // all-edges path is `chamfer_all_edges`, not this function.
+            throw std::runtime_error(
+                "make_chamfer_edges_with_history: edge_indices must be non-empty "
+                "(the all-edges path uses chamfer_all_edges)");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Build the canonical 1-based edge map. TopExp::MapShapes is
+            // deterministic for a given shape, so this matches both
+            // OcctShape::edge_map() (the history parent-index domain) and
+            // get_edges() (which mints the handle order the 0-based
+            // edge_indices reference via the extracted_edges cache).
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                chamfer.Add(distance, TopoDS::Edge(edge_map.FindKey(idx + 1)));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated per-edge selection)");
+            }
+            return chamfer;
+        });
+    });
+}
+
+std::unique_ptr<LocalFeatureOpHistory> make_chamfer_asymmetric_edges_with_history(
+    const OcctShape& shape, double d1, double d2,
+    const rust::Vec<uint32_t>& edge_indices) {
+    return wrap_occt_call("make_chamfer_asymmetric_edges_with_history", [&]() {
+        if (!std::isfinite(d1) || d1 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d1 must be a finite "
+                "positive value");
+        }
+        if (!std::isfinite(d2) || d2 <= 0.0) {
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: d2 must be a finite "
+                "positive value");
+        }
+        if (edge_indices.size() == 0) {
+            // A present-but-empty selection must never silently fall through to
+            // the all-edges behaviour (the anti-zero-edges contract is enforced
+            // in eval; this is defense-in-depth for direct kernel callers). The
+            // Rust wrapper enumerates all parent edge indices for the empty=all
+            // path, so this function always receives a non-empty selection.
+            throw std::runtime_error(
+                "make_chamfer_asymmetric_edges_with_history: edge_indices must be "
+                "non-empty");
+        }
+        return make_local_feature_with_history_impl(shape, [&](const TopoDS_Shape& s) {
+            // Canonical 1-based edge map (matches OcctShape::edge_map() and
+            // get_edges(), so the 0-based edge_indices line up), plus the
+            // edge→adjacent-faces ancestor map used to pick the reference face F
+            // for each MakeChamfer::Add(d1, d2, E, F): d1 lands on F, d2 on the
+            // other adjacent face.
+            TopTools_IndexedMapOfShape edge_map;
+            TopExp::MapShapes(s, TopAbs_EDGE, edge_map);
+            const uint32_t edge_count = static_cast<uint32_t>(edge_map.Extent());
+            TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+            TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+            BRepFilletAPI_MakeChamfer chamfer(s);
+            for (auto idx : edge_indices) {
+                if (idx >= edge_count) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " out of range (shape has " +
+                        std::to_string(edge_count) + " edges)");
+                }
+                // edge_indices are 0-based; the IndexedMap is 1-based.
+                const TopoDS_Shape& edge = edge_map.FindKey(idx + 1);
+                // Reference face F = first adjacent face from the edge→face
+                // incidence map. Deterministic for a given shape; the test
+                // asserts the setback pair as an unordered {d1, d2}, robust to
+                // which physical face F resolves to.
+                if (!edge_face_map.Contains(edge)) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                const TopTools_ListOfShape& adj_faces = edge_face_map.FindFromKey(edge);
+                TopTools_ListIteratorOfListOfShape face_it(adj_faces);
+                if (!face_it.More()) {
+                    throw std::runtime_error(
+                        "make_chamfer_asymmetric_edges_with_history: edge index " +
+                        std::to_string(idx) + " has no adjacent face");
+                }
+                chamfer.Add(d1, d2, TopoDS::Edge(edge), TopoDS::Face(face_it.Value()));
+            }
+            chamfer.Build();
+            if (!chamfer.IsDone()) {
+                throw std::runtime_error(
+                    "BRepFilletAPI_MakeChamfer failed (curated asymmetric per-edge "
+                    "selection)");
+            }
+            return chamfer;
+        });
+    });
+}
+
 std::unique_ptr<OcctShape> local_feature_op_history_take_result_shape(
     LocalFeatureOpHistory& history) {
     return std::move(history.result);
@@ -2231,6 +2352,116 @@ std::unique_ptr<OcctShape> shell_shape(const OcctShape& shape, double thickness,
         }
         auto result = std::make_unique<OcctShape>();
         result->shape = maker.Shape();
+        return result;
+    });
+}
+
+// --- Offset curve (offset_curve ι) ---
+
+// Self-correcting planar offset of a spine wire by `distance`: a POSITIVE
+// `distance` grows the curve outward (a radius-10mm arc becomes radius-12mm
+// when offset by 2mm).  BRepOffsetAPI_MakeOffset's positive-offset side
+// depends on the spine wire's orientation and plane normal, so rather than
+// hard-code a sign we pick whichever signed offset yields the LONGER wire
+// (outward ⇒ larger radius/perimeter for a planar arc).  `IsOpenResult=true`
+// keeps an open arc spine open (single concentric edge, no end caps) so the
+// result stays a clean curve.  Throws on a non-wire shape or a MakeOffset
+// failure; callers wrap it in `wrap_occt_call`.
+static TopoDS_Shape offset_curve_planar_wire(const OcctShape& shape, double distance) {
+    if (shape.shape.ShapeType() != TopAbs_WIRE) {
+        throw std::runtime_error("offset_curve: shape must be a wire");
+    }
+    TopoDS_Wire wire = TopoDS::Wire(shape.shape);
+
+    auto build_offset = [&](double signed_off) -> TopoDS_Shape {
+        BRepOffsetAPI_MakeOffset maker(wire, GeomAbs_Arc, Standard_True);
+        maker.Perform(signed_off);
+        if (!maker.IsDone()) {
+            throw std::runtime_error("offset_curve: BRepOffsetAPI_MakeOffset failed");
+        }
+        return maker.Shape();
+    };
+    auto length_of = [](const TopoDS_Shape& s) -> double {
+        GProp_GProps props;
+        BRepGProp::LinearProperties(s, props);
+        return props.Mass();
+    };
+
+    GProp_GProps spine_props;
+    BRepGProp::LinearProperties(wire, spine_props);
+    const double spine_len = spine_props.Mass();
+
+    TopoDS_Shape positive = build_offset(distance);
+    return (length_of(positive) >= spine_len) ? positive : build_offset(-distance);
+}
+
+// Translate `s` by the vector `v`.  Carries the planar offset along a
+// caller-supplied direction (overload 3) or a reference-surface normal
+// (overload 2) so those overloads genuinely consume their extra argument.
+static TopoDS_Shape displace_shape(const TopoDS_Shape& s, const gp_Vec& v) {
+    gp_Trsf trsf;
+    trsf.SetTranslation(v);
+    BRepBuilderAPI_Transform mover(s, trsf, Standard_True);
+    if (!mover.IsDone()) {
+        throw std::runtime_error("offset_curve: displacement transform failed");
+    }
+    return mover.Shape();
+}
+
+// Overload 1 (2D planar): offset the curve in its own plane.
+std::unique_ptr<OcctShape> make_offset_curve(const OcctShape& shape, double distance) {
+    return wrap_occt_call("make_offset_curve", [&]() {
+        auto result = std::make_unique<OcctShape>();
+        result->shape = offset_curve_planar_wire(shape, distance);
+        return result;
+    });
+}
+
+// Overload 3 (direction: Vector3): offset the curve in its plane, then carry
+// the result along the unit `(dx,dy,dz)` direction by `distance` so the offset
+// is taken "in a given direction" (PRD task ι).  Bar: non-Undef Curve.
+std::unique_ptr<OcctShape> make_offset_curve_directional(
+    const OcctShape& shape, double distance, double dx, double dy, double dz) {
+    return wrap_occt_call("make_offset_curve_directional", [&]() {
+        gp_Vec dir(dx, dy, dz);
+        if (dir.Magnitude() < Precision::Confusion()) {
+            throw std::runtime_error(
+                "make_offset_curve_directional: direction must be non-zero");
+        }
+        dir.Normalize();
+        TopoDS_Shape offset = offset_curve_planar_wire(shape, distance);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = displace_shape(offset, dir.Multiplied(distance));
+        return result;
+    });
+}
+
+// Overload 2 (reference: Surface): offset the curve in its plane, then carry
+// the result along the reference face's surface normal by `distance` so the
+// offset is taken "along the surface" (PRD task ι).  Bar: non-Undef Curve.
+std::unique_ptr<OcctShape> make_offset_curve_on_surface(
+    const OcctShape& shape, double distance, const OcctShape& reference) {
+    return wrap_occt_call("make_offset_curve_on_surface", [&]() {
+        if (reference.shape.ShapeType() != TopAbs_FACE) {
+            throw std::runtime_error(
+                "make_offset_curve_on_surface: reference must be a face");
+        }
+        TopoDS_Face face = TopoDS::Face(reference.shape);
+        BRepAdaptor_Surface surf(face);
+        const Standard_Real u = 0.5 * (surf.FirstUParameter() + surf.LastUParameter());
+        const Standard_Real v = 0.5 * (surf.FirstVParameter() + surf.LastVParameter());
+        gp_Pnt pnt;
+        gp_Vec d1u, d1v;
+        surf.D1(u, v, pnt, d1u, d1v);
+        gp_Vec normal = d1u.Crossed(d1v);
+        if (normal.Magnitude() < Precision::Confusion()) {
+            throw std::runtime_error(
+                "make_offset_curve_on_surface: reference surface normal is degenerate");
+        }
+        normal.Normalize();
+        TopoDS_Shape offset = offset_curve_planar_wire(shape, distance);
+        auto result = std::make_unique<OcctShape>();
+        result->shape = displace_shape(offset, normal.Multiplied(distance));
         return result;
     });
 }

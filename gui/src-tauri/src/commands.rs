@@ -548,3 +548,34 @@ pub fn cancel_solve_impl(state: &AppState) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Return the currently active FEA case name (None = lex-first default, not yet set).
+///
+/// Part of the case-picker Tauri command pair (task 3026).  Returns `Ok(None)`
+/// when the active case has never been set (the engine will use the lex-first
+/// BTreeMap key as the default); returns `Ok(Some(name))` after a successful
+/// `set_active_fea_case_impl` call.
+pub fn get_active_fea_case_impl(
+    engine: &Mutex<EngineSession>,
+) -> Result<Option<String>, String> {
+    crate::engine_lock::with_engine_lock(engine, |s| s.get_active_fea_case())
+}
+
+/// Switch to the named FEA case and return a rebuilt `GuiState`.
+///
+/// Delegates to `EngineSession::set_active_fea_case`, which stores the name,
+/// clones the cached tessellation snapshot, and re-applies `apply_fea_channels`
+/// for the new case — **no re-evaluation and no re-tessellation**.  Mirrors the
+/// `set_parameter_impl` command→GuiState→apply pattern.
+///
+/// An unknown `name` is stored as-is; `apply_fea_channels` falls back to the
+/// lex-first default when the name is not present in the cases map, so this
+/// call never returns `Err` for an unrecognised name.  Returns `Err` only if
+/// no module has been loaded yet.
+pub fn set_active_fea_case_impl(
+    engine: &Mutex<EngineSession>,
+    name: &str,
+) -> Result<GuiState, String> {
+    crate::engine_lock::with_engine_lock(engine, |s| s.set_active_fea_case(name))
+        .and_then(std::convert::identity)
+}

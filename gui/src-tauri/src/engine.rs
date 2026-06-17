@@ -556,6 +556,28 @@ pub struct EngineSession {
     /// Surfaced via `is_stale()` / `reload_error()` for the debug API and
     /// via `build_gui_state`'s synthetic DiagnosticInfo for the GUI channel.
     last_reload_error: Option<String>,
+    /// Explicitly selected FEA case name for multi-case results.
+    ///
+    /// `None` (the initial value) means "use the lex-first case" — the same
+    /// default that `detect_multi_case_result` and `emit_fea_case_if_any`
+    /// use for `active_case_id`.  Set by `set_active_fea_case`; read by
+    /// `apply_fea_channels` and `build_gui_state` when assembling FEA channels.
+    active_fea_case: Option<String>,
+    /// Cache of bare tessellation mesh data (vertices/indices/normals, no FEA
+    /// or shell channels).
+    ///
+    /// Populated by `build_gui_state` immediately after `tessellate_snapshot`,
+    /// before `apply_fea_channels` and `apply_shell_channels`.  `None` until
+    /// the first successful tessellation.  Used by `set_active_fea_case` to
+    /// re-source per-case FEA channels without re-tessellating — critical for
+    /// keeping case-switch latency sub-frame even with large OCCT meshes.
+    tess_mesh_cache: Option<Vec<MeshData>>,
+    /// Cache of tessellation diagnostics from the last `tessellate_snapshot`.
+    ///
+    /// Populated alongside `tess_mesh_cache` in `build_gui_state`.  Used by
+    /// `set_active_fea_case` so the returned GuiState accurately reflects the
+    /// last tessellation result (no re-tessellation → same diagnostics).
+    tess_diag_cache: Vec<DiagnosticInfo>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -1004,6 +1026,9 @@ impl EngineSession {
             solve_cancel_sink: None,
             solver_progress_sink: None,
             last_reload_error: None,
+            active_fea_case: None,
+            tess_mesh_cache: None,
+            tess_diag_cache: Vec::new(),
         }
     }
 
@@ -1043,6 +1068,103 @@ impl EngineSession {
     /// in `CheckResult.values`. Replaces any previously installed emitter.
     pub fn set_mode_shape_frame_emitter(&mut self, emitter: Arc<dyn ModeShapeFrameEmitter>) {
         self.mode_shape_frame_emitter = Some(emitter);
+    }
+
+    // ── Task 3026: active FEA case ────────────────────────────────────────────
+
+    /// Return the explicitly selected FEA case name, or `None` if none has been
+    /// set (the lex-first case is used implicitly by `apply_fea_channels`).
+    pub fn get_active_fea_case(&self) -> Option<String> {
+        self.active_fea_case.clone()
+    }
+
+    /// Switch the displayed FEA case and return a rebuilt `GuiState`.
+    ///
+    /// Stores `name` as the active case and rebuilds the GuiState mesh payload
+    /// by cloning the cached tessellation snapshot (`tess_mesh_cache`) and
+    /// re-applying `apply_fea_channels` with the new case — **no re-evaluation
+    /// and no re-tessellation** occur.  The rest of GuiState (values, constraints,
+    /// files, compile diagnostics, tensegrity wires, tessellation diagnostics) is
+    /// rebuilt from the already-committed `last_check` / `source_map`.
+    ///
+    /// Returns `Err` when no module has been loaded yet (no `compiled` or no
+    /// `last_check`).  An unknown case name falls back to the lex-first default
+    /// (same semantics as `apply_fea_channels`).
+    pub fn set_active_fea_case(&mut self, name: &str) -> Result<GuiState, String> {
+        if self.core.compiled().is_none() || self.core.last_check().is_none() {
+            return Err("Cannot switch FEA case: no module loaded".to_string());
+        }
+        self.active_fea_case = Some(name.to_string());
+
+        // Clone bare tessellation mesh geometry from cache (O(mesh bytes), no kernel call).
+        let mut meshes = self.tess_mesh_cache.clone().unwrap_or_default();
+
+        // Re-apply FEA channels for the new active case.
+        {
+            let check = self.core.last_check().unwrap();
+            apply_fea_channels(&mut meshes, &check.values, self.active_fea_case.as_deref());
+        }
+
+        // Re-apply shell channels (pure read from engine cache, no tessellation).
+        {
+            let shell_views = self.core.engine().shell_gui_mesh_data();
+            apply_shell_channels(&mut meshes, &shell_views);
+        }
+
+        // Build values, constraints, tensegrity wires + surfaces from the cached
+        // check + compiled.
+        let (values, constraints, tensegrity_wires, tensegrity_surfaces) = {
+            let compiled = self.core.compiled().unwrap();
+            let check = self.core.last_check().unwrap();
+            (
+                build_values(compiled, check, Some(self.core.engine())),
+                build_constraints(compiled, check),
+                build_tensegrity_wires(compiled, check),
+                build_tensegrity_surfaces(compiled, check),
+            )
+        };
+
+        // Build files and compile diagnostics via shared helpers so both
+        // `build_gui_state` and `set_active_fea_case` stay in sync.
+        let files = self.build_files_with_live_edit();
+        let compile_diagnostics = self.build_compile_diagnostics();
+
+        // Tessellation diagnostics from the cache (no re-tessellation → same diags).
+        let tessellation_diagnostics = self.tess_diag_cache.clone();
+
+        // Passive selective-demand measurement (task 4532): mirror build_gui_state
+        // so the case-switch path carries the same observational record. Reading
+        // it cannot affect evaluation; the immutable engine borrow is released by
+        // `.map(..)` before the GuiState literal moves the local fields.
+        let demand_prune_measurement = self
+            .core
+            .engine()
+            .last_demand_prune_measurement()
+            .map(DemandPruneMeasurementDto::from);
+
+        Ok(GuiState {
+            meshes,
+            values,
+            constraints,
+            files,
+            tessellation_diagnostics,
+            compile_diagnostics,
+            tensegrity_wires,
+            tensegrity_surfaces,
+            demand_prune_measurement,
+        })
+    }
+
+    /// Inject a `CheckResult` directly into `last_check` for testing.
+    ///
+    /// Bypasses the full parse/compile/eval cycle — useful for tests that need
+    /// to assert on FEA-channel or case-switch behavior with hand-crafted
+    /// `MultiCaseResult` values without performing a real FEA solve.
+    /// Does NOT clear `tess_mesh_cache` so tessellation geometry from a prior
+    /// `load_from_source` / `build_gui_state` call is reused.
+    #[cfg(test)]
+    pub(crate) fn inject_check_for_test(&mut self, check: reify_eval::CheckResult) {
+        self.core.commit_check(check);
     }
 
     /// Install a solve-cancellation sink on this session (task γ/4086).
@@ -2161,6 +2283,74 @@ impl EngineSession {
         self.core.compiled().is_some() && self.core.last_check().is_some()
     }
 
+    /// Build the list of source files for `GuiState`, incorporating the live-edit
+    /// splice when a `LiveEdit` failure is stored.
+    ///
+    /// Shared by `build_gui_state` and `set_active_fea_case` to ensure consistent
+    /// `files` data across initial load and case-switch paths.
+    fn build_files_with_live_edit(&self) -> Vec<FileData> {
+        let mut files: Vec<FileData> = self
+            .core
+            .source_map()
+            .iter()
+            .map(|(path, content)| FileData {
+                path: path.clone(),
+                content: content.clone(),
+            })
+            .collect();
+
+        // One-snapshot invariant: splice in any live-edit failing source so
+        // `files[].content` and `compile_diagnostics` are from the same snapshot.
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
+                entry.content = f.source.clone();
+            } else {
+                files.push(FileData {
+                    path: f.file_key.clone(),
+                    content: f.source.clone(),
+                });
+            }
+        }
+
+        files
+    }
+
+    /// Build compile diagnostics for `GuiState`, appending live-edit failures
+    /// and hot-reload errors when present.
+    ///
+    /// Shared by `build_gui_state` and `set_active_fea_case` so both paths
+    /// produce identical diagnostic data and cannot silently drift.
+    fn build_compile_diagnostics(&self) -> Vec<DiagnosticInfo> {
+        let mut compile_diagnostics = self.get_diagnostics();
+        if let Some(f) = &self.compile_failure
+            && f.kind == CompileFailureKind::LiveEdit
+        {
+            compile_diagnostics.extend(f.diags.iter().cloned());
+        }
+        if self.compile_failure.is_none()
+            && let Some(msg) = &self.last_reload_error
+        {
+            let file_path = self
+                .resolve_source()
+                .map(|(k, _)| k)
+                .unwrap_or("<unknown>");
+            compile_diagnostics.push(DiagnosticInfo {
+                file_path: file_path.to_owned(),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: "Error".to_owned(),
+                message: msg.clone(),
+                code: Some("hot-reload-error".to_owned()),
+                has_location: false,
+            });
+        }
+        compile_diagnostics
+    }
+
     /// Build the full GUI state from the current engine state.
     ///
     /// # One-snapshot invariant (task 4258)
@@ -2356,13 +2546,45 @@ impl EngineSession {
                         vector_channels: std::collections::HashMap::new(),
                     })
                     .collect();
+                // Cache bare tessellation geometry ONLY for FEA scenes: when a
+                // MultiCaseResult or single-case ElasticResult is present in the
+                // evaluated values, `set_active_fea_case` needs the cached bare-mesh
+                // buffers (vertices/indices/normals) to re-source channels without
+                // re-tessellating.  Non-FEA scenes skip the O(mesh bytes) clone so
+                // they don't pay the cost of a feature they never use.
+                // A non-FEA scene that later acquires FEA values must go through
+                // `build_gui_state` again (as always happens in production via the
+                // normal commit_state → build_gui_state path) before case-switching.
+                let has_fea = self.core.last_check()
+                    .map(|check| values_have_fea_data(&check.values))
+                    .unwrap_or(false);
+                if has_fea {
+                    self.tess_mesh_cache = Some(meshes.iter().map(|m| MeshData {
+                        entity_path: m.entity_path.clone(),
+                        vertices: m.vertices.clone(),
+                        indices: m.indices.clone(),
+                        normals: m.normals.clone(),
+                        scalar_channels: std::collections::HashMap::new(),
+                        displaced_positions: None,
+                        element_kind: None,
+                        region_tags: None,
+                        vector_channels: std::collections::HashMap::new(),
+                    }).collect());
+                } else {
+                    // Invalidate any stale cache from a prior FEA scene so a
+                    // subsequent set_active_fea_case on a non-FEA scene does not
+                    // serve geometry from the wrong model.
+                    self.tess_mesh_cache = None;
+                }
+                self.tess_diag_cache = tess_diags.clone();
                 // Populate per-vertex FEA scalar/displacement channels when an
                 // ElasticResult is present in the evaluated values.  The helper
                 // returns early when no ElasticResult is found (negligible
                 // overhead: one ValueMap scan), so non-FEA scenes pay no
-                // tessellation-path cost.
+                // tessellation-path cost.  Pass active_fea_case so multi-case
+                // results sample the correct case; None falls back to lex-first.
                 if let Some(check) = self.core.last_check() {
-                    apply_fea_channels(&mut meshes, &check.values);
+                    apply_fea_channels(&mut meshes, &check.values, self.active_fea_case.as_deref());
                 }
                 // Populate shell-extract channels (element_kind, region_tags,
                 // vonMises_top/mid/bottom, per-face normals) for shell-classified
@@ -2376,89 +2598,23 @@ impl EngineSession {
                 apply_shell_channels(&mut meshes, &shell_views);
                 (meshes, tess_diags)
             }
-            None => (Vec::new(), Vec::new()),
+            None => {
+                // No tessellation result (no compiled module or no realizations).
+                // Populate caches with empty data so set_active_fea_case can
+                // safely clone them without checking for None.
+                self.tess_mesh_cache = Some(Vec::new());
+                self.tess_diag_cache = Vec::new();
+                (Vec::new(), Vec::new())
+            },
         };
 
-        // Build files from the last-good source_map.
-        let mut files: Vec<FileData> = self
-            .core
-            .source_map()
-            .iter()
-            .map(|(path, content)| FileData {
-                path: path.clone(),
-                content: content.clone(),
-            })
-            .collect();
-
-        // One-snapshot invariant (task 4258): when a LiveEdit failure is stored,
-        // override the matching files entry's content with the failing buffer so
-        // `files[].content` and `compile_diagnostics` are computed from the same
-        // source snapshot.  meshes/values/get_source_location intentionally stay
-        // last-good (they describe the last successfully compiled module) — only
-        // the SOURCE text is retargeted to the failing buffer.
-        //
-        // The `else` branch handles the unlikely edge case where the failing file
-        // was not present in source_map (e.g. a brand-new file on first load
-        // without a prior success for that key) — push a new entry so diagnostics
-        // can always be indexed against a source.
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            if let Some(entry) = files.iter_mut().find(|fd| fd.path == f.file_key) {
-                entry.content = f.source.clone();
-            } else {
-                files.push(FileData {
-                    path: f.file_key.clone(),
-                    content: f.source.clone(),
-                });
-            }
-        }
-
-        // Collect compile diagnostics (errors, warnings, info) from the most
-        // recently compiled module. Called after tessellate_snapshot so the
-        // mutable engine borrow is already released.  Takes &self — coexists
-        // safely with the existing immutable borrows of compiled/check/files.
-        //
-        // Also append any live compile failures (from a failed live edit while a
-        // prior good compile was still in `self.compiled`).  Appending rather than
-        // replacing preserves warnings/info from the last good state; Error entries
-        // from a `LiveEdit` failure follow them, so frontends sorting by severity
-        // will surface errors first.  Only `LiveEdit` failures reach this branch
-        // (a `ColdStart` failure is stored only when `compiled` is `None`, which
-        // short-circuits above — so here `compiled` is `Some` and any stored failure
-        // is `LiveEdit`).
-        let mut compile_diagnostics = self.get_diagnostics();
-        if let Some(f) = &self.compile_failure
-            && f.kind == CompileFailureKind::LiveEdit
-        {
-            compile_diagnostics.extend(f.diags.iter().cloned());
-        }
-        // Synthesize a reload-error DiagnosticInfo when the session is stale due
-        // to a hot-reload failure that did NOT produce a structured compile_failure
-        // (i.e. the check()-panic path where compile_failure is None).  Gating on
-        // `compile_failure.is_none()` avoids double-reporting: in the compile-error
-        // path both `compile_failure` (structured diags) and `last_reload_error`
-        // (joined message) are set; the structured diags already reach the frontend
-        // via the LiveEdit append above, so adding the message again would duplicate.
-        if self.compile_failure.is_none()
-            && let Some(msg) = &self.last_reload_error
-        {
-            let file_path = self
-                .resolve_source()
-                .map(|(k, _)| k)
-                .unwrap_or("<unknown>");
-            compile_diagnostics.push(DiagnosticInfo {
-                file_path: file_path.to_owned(),
-                line: 1,
-                column: 1,
-                end_line: 1,
-                end_column: 1,
-                severity: "Error".to_owned(),
-                message: msg.clone(),
-                code: Some("hot-reload-error".to_owned()),
-                has_location: false,
-            });
-        }
+        // Build files and compile diagnostics via shared helpers.
+        // See `build_files_with_live_edit` and `build_compile_diagnostics` for
+        // the full one-snapshot invariant, live-edit splice, and hot-reload-error
+        // synthesis logic. Both helpers are also called from `set_active_fea_case`
+        // to keep the two paths consistent.
+        let files = self.build_files_with_live_edit();
+        let compile_diagnostics = self.build_compile_diagnostics();
 
         // Extract tensegrity wire and surface descriptors from value cells.
         // Single scoped borrow covers both — shared precondition made explicit.
@@ -5058,65 +5214,154 @@ pub(crate) fn displaced_sample(
 ///
 /// Returns `None` if no such result is found or either field is absent/Undef.
 /// Mirrors `extract_buckling_data` for the ElasticResult variant.
+/// Delegates to `resolve_elastic_result_sampled_fields` for per-value resolution.
 pub(crate) fn extract_elastic_result_fields(
     values: &reify_ir::ValueMap,
 ) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
-    use reify_ir::{FieldSourceKind, Value};
-
     for (_, value) in values.iter() {
-        let data = match value {
-            Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
-            _ => continue,
-        };
-
-        let resolve_sampled = |field_name: &str| -> Option<&reify_ir::SampledField> {
-            let field_val = data.fields.get(field_name)?;
-            match field_val {
-                Value::Field {
-                    source: FieldSourceKind::Sampled,
-                    lambda,
-                    ..
-                } => match lambda.as_ref() {
-                    Value::SampledField(sf) => Some(sf),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        let stress_sf = resolve_sampled("stress")?;
-        let disp_sf = resolve_sampled("displacement")?;
-        return Some((stress_sf, disp_sf));
+        if let Some(pair) = resolve_elastic_result_sampled_fields(value) {
+            return Some(pair);
+        }
     }
     None
 }
 
+/// Returns `true` if `values` contains any top-level `ElasticResult`
+/// or any `MultiCaseResult`-shaped cell — indicating a scene with FEA data
+/// that warrants caching the tessellation geometry for case-switching.
+fn values_have_fea_data(values: &reify_ir::ValueMap) -> bool {
+    extract_elastic_result_fields(values).is_some()
+        || values.iter().any(|(_, v)| {
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v).is_some()
+        })
+}
+
+/// Extract stress and displacement `SampledField` references from a single
+/// `Value::StructureInstance("ElasticResult")` value.
+///
+/// Returns `None` if the value is not an `ElasticResult` or either `"stress"`/
+/// `"displacement"` field is absent or not a `Sampled` `SampledField`.
+/// Used by both the single-case path (`extract_elastic_result_fields`) and the
+/// multi-case path (`try_extract_from_multi_case_cell`).
+fn resolve_elastic_result_sampled_fields(
+    value: &reify_ir::Value,
+) -> Option<(&reify_ir::SampledField, &reify_ir::SampledField)> {
+    use reify_ir::{FieldSourceKind, Value};
+
+    let data = match value {
+        Value::StructureInstance(d) if d.type_name == "ElasticResult" => d,
+        _ => return None,
+    };
+
+    let stress_sf = match data.fields.get("stress") {
+        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
+            match lambda.as_ref() {
+                Value::SampledField(sf) => sf,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let disp_sf = match data.fields.get("displacement") {
+        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
+            match lambda.as_ref() {
+                Value::SampledField(sf) => sf,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some((stress_sf, disp_sf))
+}
+
+/// Try to extract stress/displacement fields from a single `Value::Map` cell that
+/// carries a `MultiCaseResult` shape (`Map{"cases" -> Map{name -> ElasticResult}}`).
+///
+/// `active_case` selects which case's `ElasticResult` to use:
+/// - `Some(name)` if the name is present in the cases map, otherwise lex-first.
+/// - `None` → lex-first (matching `detect_multi_case_result`'s default).
+///
+/// Returns `None` if `cell_val` is not a `MultiCaseResult` shape, the active case
+/// has no `ElasticResult`, or either `"stress"`/`"displacement"` field is absent/Undef.
+fn try_extract_from_multi_case_cell<'a>(
+    cell_val: &'a reify_ir::Value,
+    active_case: Option<&str>,
+) -> Option<(&'a reify_ir::SampledField, &'a reify_ir::SampledField)> {
+    use reify_ir::Value;
+
+    // Must be a MultiCaseResult-shaped map.
+    let detected =
+        reify_eval::multi_load_dispatch::detect_multi_case_result(cell_val)?;
+
+    // Resolve the case name to use: the requested name if it exists, else lex-first.
+    let case_name_to_use: String = match active_case {
+        Some(name) if detected.available_cases.contains(&name.to_string()) => {
+            name.to_string()
+        }
+        _ => detected.active_case_id,
+    };
+
+    // Navigate into Map{"cases" -> Map{name -> ElasticResult}}.
+    let outer = match cell_val {
+        Value::Map(m) => m,
+        _ => return None,
+    };
+    let cases_map = match outer.get(&Value::String("cases".to_string())) {
+        Some(Value::Map(m)) => m,
+        _ => return None,
+    };
+    let case_val = cases_map.get(&Value::String(case_name_to_use))?;
+
+    // Extract SampledFields from the active case's ElasticResult.
+    resolve_elastic_result_sampled_fields(case_val)
+}
+
 /// Fill per-vertex FEA scalar/displacement channels on all meshes.
 ///
-/// If `values` contains an `ElasticResult` (detected via
-/// `extract_elastic_result_fields`), this function:
-/// - Sets `mesh.scalar_channels["vonMises"]` (length = vertex_count) by
-///   sampling the stress field at each vertex; OOB/out-of-solid vertices
-///   receive `SCALAR_CHANNEL_OOB_SENTINEL`.
-/// - Sets `mesh.displaced_positions` (length = vertices.len()) by sampling
-///   the displacement field at each vertex and adding it to the vertex
-///   position (warp = 1); OOB/out-of-solid vertices keep their original
+/// `active_case` selects which case to render for multi-case scenes:
+/// - `None` (or an unknown name) → lex-first case, matching the
+///   `detect_multi_case_result` default.
+/// - `Some(name)` → that case's `ElasticResult`, if present; falls back to
+///   lex-first when the name is absent from the cases map.
+///
+/// **Source resolution order** (first match wins):
+/// 1. A top-level `Value::StructureInstance("ElasticResult")` in `values`
+///    (the single-case path, unchanged from task 4087).
+/// 2. A `MultiCaseResult`-shaped `Value::Map` cell (`Map{"cases" -> Map{…}}`),
+///    where the active case's value is a `Value::StructureInstance("ElasticResult")`.
+///
+/// If no `ElasticResult` is found via either path, the meshes are left untouched
+/// (non-FEA meshes keep empty `scalar_channels` and `None` `displaced_positions`).
+///
+/// Per-vertex channels set when an `ElasticResult` is found:
+/// - `mesh.scalar_channels["vonMises"]` (length = vertex_count): von-Mises stress
+///   sampled at each vertex; OOB/out-of-solid vertices receive
+///   `SCALAR_CHANNEL_OOB_SENTINEL`.
+/// - `mesh.displaced_positions` (length = `vertices.len()`): vertex positions
+///   plus warp = 1 displacement; OOB/out-of-solid vertices keep their original
 ///   position.
 ///
-/// If no `ElasticResult` is present, the meshes are left untouched (non-FEA
-/// meshes keep empty scalar_channels and None displaced_positions).
-///
-/// The sampling tolerance is chosen as 1% of the minimum grid spacing
-/// (or 1e-9 if spacing cannot be determined), so that surface vertices that
-/// lie exactly on the field boundary are not incorrectly classified as OOB
-/// due to floating-point rounding.
+/// The sampling tolerance is 1% of the minimum grid spacing (or 1e-9 if spacing
+/// cannot be determined), so that surface vertices lying exactly on the field
+/// boundary are not misclassified as OOB due to floating-point rounding.
 pub(crate) fn apply_fea_channels(
     meshes: &mut [crate::types::MeshData],
     values: &reify_ir::ValueMap,
+    active_case: Option<&str>,
 ) {
-    let (stress_sf, disp_sf) = match extract_elastic_result_fields(values) {
-        Some(pair) => pair,
-        None => return,
+    // Try single-case path first (top-level ElasticResult).
+    // If not found, try multi-case path (MultiCaseResult cell).
+    let (stress_sf, disp_sf) = if let Some(pair) = extract_elastic_result_fields(values) {
+        pair
+    } else {
+        // Scan all cells for the first MultiCaseResult-shaped value.
+        let multi_pair = values
+            .iter()
+            .find_map(|(_, cell_val)| try_extract_from_multi_case_cell(cell_val, active_case));
+        match multi_pair {
+            Some(pair) => pair,
+            None => return,
+        }
     };
 
     // Tolerance: 1% of the minimum grid spacing (or a small absolute fallback).

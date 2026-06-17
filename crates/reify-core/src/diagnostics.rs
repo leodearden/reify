@@ -293,6 +293,23 @@ pub enum DiagnosticCode {
     /// parameter requires a unique solution; this code is emitted when perturbation-based
     /// uniqueness checking finds a second distinct solution.
     ConstraintNonUnique,
+    /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
+    ///          (param-level argument type check, task 4546).
+    ///
+    /// Emitted when a constraint instantiation passes an argument whose
+    /// compile-time type is incompatible with the declared parameter type —
+    /// specifically, a cross-category mismatch (e.g. `Bool` passed where a
+    /// `Length` param is declared). Numeric-to-numeric mismatches (e.g. `Int`
+    /// for `Length`) are deliberately tolerated at the binding site; dimensional
+    /// strictness within comparison predicates is enforced by task 4490's
+    /// `E_CmpOperandKind` guard.
+    ///
+    /// Canonical message form:
+    /// `"type mismatch: argument '<arg>' has type <actual> but parameter '<param>' \
+    ///   of constraint '<def>' expects <expected>"`.
+    ///
+    /// The PRD-prose mnemonic is `E_CONSTRAINT_ARG_TYPE`.
+    ConstraintArgTypeMismatch,
     /// Origin: `crates/reify-compiler/src/functions.rs::compile_field`.
     /// Emitted when a field declaration uses the `sampled { ... }` source form,
     /// which is deferred to v0.2 (v0.1 supports `analytical` and `composed` only).
@@ -652,6 +669,33 @@ pub enum DiagnosticCode {
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
+    /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
+    /// (via `diagnose_topology_correspondence_drops`).
+    ///
+    /// Emitted as `Severity::Warning` when a kernel history record reports a
+    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// local-feature operation. The following counters are covered:
+    ///
+    /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
+    ///   absent from the kernel's result correspondence map.
+    /// - `SweepOpHistoryRecords::silent_drop_count` — same for sweep ops
+    ///   (extrude / revolve / sweep).
+    /// - `SweepOpHistoryRecords::unsynthesized_profile_edge_count` — a profile
+    ///   edge produced no result-face correspondence record.
+    /// - `SweepOpHistoryRecords::duplicate_parent_subshape_index_count` — a
+    ///   generated-face correspondence record was dropped by dedup.
+    /// - `LocalFeatureOpHistoryRecords::silent_drop_count` — same for fillet /
+    ///   chamfer ops.
+    ///
+    /// All five counter kinds share this single code; the specific counter and
+    /// count are named in the diagnostic message. The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// Canonical message form:
+    /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`
+    ///
+    /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_CORRESPONDENCE_DROPPED`.
+    TopologyCorrespondenceDropped,
     /// Origin: `crates/reify-compiler/src/compile_builder/specialization_scope_check.rs`.
     ///
     /// Emitted as an `Error` when a `param`, `port`, or `sub` declaration appears
@@ -1758,26 +1802,31 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_DynamicsInertiaNotPSD`.
     /// Registered in task 3822 (RBD-α, PRD §dynamics).
     DynamicsInertiaNotPSD,
-    /// Origin: `crates/reify-eval/src/dynamics_ops.rs` (`body_mass_props`
-    /// density-resolution ladder in the RBD-β stdlib-fn dispatch pass).
+    /// Origin: `crates/reify-eval/src/dynamics_ops.rs` (`resolve_body_density`
+    /// in the RBD-β `body_mass_props` density ladder, ambient-default-material
+    /// task C).
     ///
-    /// Emitted as a `Severity::Warning` once per body when `body_mass_props`
-    /// resolves the body's mass density by falling all the way through the
-    /// priority ladder to the default 1000 kg/m³ (water) — i.e. the call site
-    /// supplied no explicit `density` argument AND the body's `Material`
-    /// carries no `density`. The warning records that the inertial computation
-    /// proceeds using the water default; the resulting `MassProperties` is
-    /// still produced (this is advisory, not an error — unlike
-    /// [`DynamicsInertiaNotPSD`](DiagnosticCode::DynamicsInertiaNotPSD) it does
-    /// NOT replace the cell with `Value::Undef`).
+    /// Emitted as a `Severity::Error` once per body when `body_mass_props`
+    /// cannot resolve any density — the call supplies no explicit `density`
+    /// argument AND the body carries no `Material` with a `density` field (incl.
+    /// no `default Material = …` in scope, which would have been injected at
+    /// compile time by the conformance checker). Unlike the former water-default
+    /// advisory warning, this is a hard error: no density is available, so no
+    /// physically meaningful mass properties can be computed. The returned
+    /// `MassProperties` instance carries `Value::Undef` for all geometric fields
+    /// (`mass`, `com`, `inertia`) — the same degrade shape as a rejected explicit
+    /// density argument.
     ///
     /// Canonical message form:
-    /// `"body_mass_props('<name>'): no explicit density and no Material density; defaulting to 1000 kg/m³ (water)"`.
+    /// `"body_mass_props('<name>'): no density resolvable — pass an explicit \
+    ///  density argument, give the body a Material with a density, or declare \
+    ///  \`default Material = …\` in scope"`.
     ///
-    /// The PRD-prose mnemonic for this code is `W_DynamicsDefaultDensity`
-    /// (severity convention: `W_*` → Warning). Registered in task 3829
-    /// (RBD-β, PRD `docs/prds/v0_3/rigid-body-dynamics.md` §5.4).
-    DynamicsDefaultDensity,
+    /// The PRD-prose mnemonic for this code is `E_DynamicsNoDensity`
+    /// (severity convention: `E_*` → Error). Registered in task 4498
+    /// (ambient-default-material C, PRD
+    /// `docs/prds/v0_6/ambient-default-material.md` §3 decision 4).
+    DynamicsNoDensity,
     /// Origin: `crates/reify-eval/src/dynamics_ops.rs`
     /// (`try_eval_body_mass_props` dispatch arity guard in the RBD-β stdlib-fn
     /// pass).
@@ -2401,6 +2450,23 @@ pub enum DiagnosticCode {
     /// One `DiagnosticCode` spans all three sub-cases per the established
     /// [`TypeNotConformingToTrait`] precedent (one code, message disambiguates).
     TypeNotConformingToStructureRef,
+    /// Origin: `crates/reify-compiler/src/conformance/mod.rs` (Vector-param
+    /// arg mismatch — task 4622).
+    ///
+    /// Emitted as a `Severity::Error` when a constructor arg passed to a
+    /// `Type::Vector`-typed param is not vector-shaped (e.g. a bare scalar
+    /// literal `1.0` passed where a `Vec3` / `Vector3<Length>` is required).
+    ///
+    /// Canonical message form:
+    /// `"argument '<a>' has type '<T>' but param '<p>' requires vector type '<V>'"`
+    ///
+    /// Conformance is SHAPE-based (accepts any `Type::Vector { .. }` or
+    /// `Type::Tensor { rank: 1, .. }`; rejects bare scalars, strings, bools,
+    /// and other non-vector kinds), NOT `type_compatible`-based — the quantity
+    /// slot on vectors is intentionally loose (see `ty.rs` Point/Vector
+    /// quantity-slot convention), so a dimensionless `vec3(0,0,1)` arg is
+    /// valid for a `Vector3<Length>` param.
+    TypeNotConformingToVector,
     /// Origin: `crates/reify-eval/src/feature_datum.rs`
     /// (`feature_datum_projection`, geometric-relations ε).
     ///
@@ -4406,6 +4472,42 @@ mod tests {
     fn diagnostic_code_type_arg_bound_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::TypeArgBound).unwrap();
         assert_eq!(s, "\"TypeArgBound\"");
+    }
+
+    // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
+    // Pairs with diagnose_topology_correspondence_drops in
+    // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
+    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
+    /// Pins the warning-severity contract and variant existence for the
+    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
+    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::warning("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// serializes as `"TopologyCorrespondenceDropped"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::TopologyCorrespondenceDropped).unwrap();
+        assert_eq!(s, "\"TopologyCorrespondenceDropped\"");
     }
 }
 

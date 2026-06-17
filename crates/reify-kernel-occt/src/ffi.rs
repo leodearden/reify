@@ -461,6 +461,39 @@ pub mod ffi {
             distance: f64,
         ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
 
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` with the given `distance`
+        /// applied to ONLY the selected edges. `edge_indices` are 0-based
+        /// positions into the canonical `TopExp::MapShapes(shape, TopAbs_EDGE)`
+        /// enumeration — the same order `extract_edges` mints edge handles in —
+        /// so a `GeometryHandleId` resolved via the `extracted_edges` cache maps
+        /// to the matching index. Eagerly captures the per-parent face/edge
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Requires a non-empty `edge_indices`; the
+        /// all-edges / empty-selection path keeps using `chamfer_all_edges`.
+        fn make_chamfer_edges_with_history(
+            shape: &OcctShape,
+            distance: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
+        /// Run `BRepFilletAPI_MakeChamfer` on `shape` applying ASYMMETRIC
+        /// setbacks (`d1` on the reference face F, `d2` on the other adjacent
+        /// face) to ONLY the selected edges via `MakeChamfer::Add(d1, d2, E, F)`,
+        /// where F is the first adjacent face from the edge→face ancestor map.
+        /// `edge_indices` are 0-based positions into the canonical
+        /// `TopExp::MapShapes(shape, TopAbs_EDGE)` enumeration — the same order
+        /// `extract_edges` mints edge handles in. Eagerly captures the per-parent
+        /// Modified/Generated/Deleted records (the curated path preserves the
+        /// persistent-naming seam). Both `d1` and `d2` must be finite positive;
+        /// requires a non-empty `edge_indices` (the Rust wrapper enumerates all
+        /// parent edges for the empty=all-edges path).
+        fn make_chamfer_asymmetric_edges_with_history(
+            shape: &OcctShape,
+            d1: f64,
+            d2: f64,
+            edge_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<LocalFeatureOpHistory>>;
+
         /// Move the result shape out of the local-feature-history wrapper for
         /// registration in the kernel's shape table.
         fn local_feature_op_history_take_result_shape(
@@ -660,6 +693,27 @@ pub mod ffi {
             shape: &OcctShape,
             thickness: f64,
             face_indices: &Vec<u32>,
+        ) -> Result<UniquePtr<OcctShape>>;
+
+        // --- Offset curve (offset_curve ι) ---
+        /// Planar offset of a curve (wire) by `distance` → fresh concentric
+        /// wire. Positive `distance` grows the curve outward (overload 1).
+        fn make_offset_curve(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a curve (wire) by `distance`, then carry the result along the
+        /// unit `(dx,dy,dz)` direction (overload 3).
+        fn make_offset_curve_directional(
+            shape: &OcctShape,
+            distance: f64,
+            dx: f64,
+            dy: f64,
+            dz: f64,
+        ) -> Result<UniquePtr<OcctShape>>;
+        /// Offset a curve (wire) by `distance` along a reference face's surface
+        /// normal (overload 2).
+        fn make_offset_curve_on_surface(
+            shape: &OcctShape,
+            distance: f64,
+            reference: &OcctShape,
         ) -> Result<UniquePtr<OcctShape>>;
 
         // --- Wire helpers / Loft ---

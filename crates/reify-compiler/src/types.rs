@@ -1313,11 +1313,22 @@ impl std::fmt::Display for BooleanOp {
 pub enum ModifyKind {
     Fillet,
     Chamfer,
+    /// Per-edge two-distance chamfer `chamfer_asymmetric(solid, edges, d1, d2)`
+    /// (β, task 4185). Distinct from `Chamfer` because it carries two setbacks
+    /// (`d1`/`d2`) and a per-edge reference-face requirement at the kernel.
+    /// Collapses to `Operation::ModifyChamfer` (same BRep kernel capability).
+    ChamferAsymmetric,
     Shell,
     Draft,
     Thicken,
     ZoneSlab,
     OffsetSolid,
+    /// Planar/spatial curve offset `offset_curve(curve, distance[, reference|direction])`
+    /// (ι, task 4193). Produces a fresh Wire offset from the target curve by
+    /// `distance`. The optional 3rd arg — a reference Surface or a direction
+    /// Vector3 — is disambiguated at eval time on its `Value` variant. Collapses
+    /// to `Operation::ModifyOffsetCurve` (BRep kernel capability).
+    OffsetCurve,
 }
 
 impl ModifyKind {
@@ -1334,14 +1345,16 @@ impl ModifyKind {
     /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
     /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
     /// matching `CASES` row to be added.
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 9] = [
         Self::Fillet,
         Self::Chamfer,
+        Self::ChamferAsymmetric,
         Self::Shell,
         Self::Draft,
         Self::Thicken,
         Self::ZoneSlab,
         Self::OffsetSolid,
+        Self::OffsetCurve,
     ];
 
     /// Count of variants — derived from `ALL.len()`, not hand-maintained.
@@ -1357,11 +1370,13 @@ impl std::fmt::Display for ModifyKind {
         match self {
             ModifyKind::Fillet => f.write_str("fillet"),
             ModifyKind::Chamfer => f.write_str("chamfer"),
+            ModifyKind::ChamferAsymmetric => f.write_str("chamfer_asymmetric"),
             ModifyKind::Shell => f.write_str("shell"),
             ModifyKind::Draft => f.write_str("draft"),
             ModifyKind::Thicken => f.write_str("thicken"),
             ModifyKind::ZoneSlab => f.write_str("zone_slab"),
             ModifyKind::OffsetSolid => f.write_str("offset_solid"),
+            ModifyKind::OffsetCurve => f.write_str("offset_curve"),
         }
     }
 }
@@ -1545,6 +1560,14 @@ pub struct CompiledConstraintParam {
     /// calling entity's scope at instantiation time.
     pub default: Option<reify_ast::Expr>,
     pub span: SourceSpan,
+    /// Resolved declared parameter type, populated by `compile_constraint_def`
+    /// via `resolve_type_expr_with_aliases`. `None` when the parameter has no
+    /// type annotation or when type resolution fails (typo already diagnosed).
+    /// `Type::Error` is NEVER stored here — use `None` instead, so
+    /// `constraint_arg_type_conforms`'s anti-cascade guard (which checks for
+    /// `is_error()`) is not triggered unnecessarily, and
+    /// `type_compatible`'s `debug_assert!(!param_ty.is_error())` cannot fire.
+    pub ty: Option<Type>,
 }
 
 /// A compiled constraint definition — produced once per `constraint def` declaration.
@@ -1694,11 +1717,13 @@ mod kind_display_tests {
         check(&[
             (ModifyKind::Fillet, "fillet"),
             (ModifyKind::Chamfer, "chamfer"),
+            (ModifyKind::ChamferAsymmetric, "chamfer_asymmetric"),
             (ModifyKind::Shell, "shell"),
             (ModifyKind::Draft, "draft"),
             (ModifyKind::Thicken, "thicken"),
             (ModifyKind::ZoneSlab, "zone_slab"),
             (ModifyKind::OffsetSolid, "offset_solid"),
+            (ModifyKind::OffsetCurve, "offset_curve"),
         ]);
     }
 

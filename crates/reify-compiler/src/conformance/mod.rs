@@ -726,6 +726,35 @@ fn emit_structure_ref_mismatch(
     );
 }
 
+/// Emit a single `Diagnostic::error` with
+/// [`DiagnosticCode::TypeNotConformingToVector`] when an arg does not conform to a
+/// `Type::Vector`-typed param (task-4622): either the arg is not vector-shaped, or it is
+/// `Type::Vector` with a mismatched arity (n).
+///
+/// Conformance rules:
+/// - A `Type::Vector { n, .. }` arg is accepted only when `n` matches the param's `n`.
+///   Arity mismatch (e.g. vec2 passed to a vec3 param) is a genuine type error.
+/// - A `Type::Tensor { rank: 1, .. }` arg is accepted regardless of element count
+///   (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
+/// - The quantity slot is intentionally loose (ty.rs Point/Vector quantity-slot convention).
+/// - Bare scalars, strings, bools, and other non-vector kinds are rejected.
+///
+/// Modelled on [`emit_structure_ref_mismatch`]: one diagnostic, one label at `ctx.span`,
+/// message names the required vector type and the offending arg type.
+fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
+    ctx.diagnostics.push(
+        Diagnostic::error(format!(
+            "argument '{}' has type '{}' but param '{}' requires vector type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        ))
+        .with_code(DiagnosticCode::TypeNotConformingToVector)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
 /// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
 ///
 /// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
@@ -831,6 +860,43 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         {
             if !type_compatible(param_type, arg_ty) {
                 emit_structure_ref_mismatch(param_type, arg_ty, ctx);
+            }
+        }
+        // Leaf: param type is a Vector (task-4622). SHAPE-BASED with arity check:
+        // accept any vector-shaped arg regardless of quantity — the quantity slot is
+        // intentionally loose (ty.rs convention). For `Type::Vector` args, additionally
+        // require matching arity (n): `vec2` is NOT a valid substitute for a `vec3` param.
+        // `Type::Tensor { rank: 1, .. }` args are accepted regardless of element count
+        // (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
+        // Reject bare scalars, strings, bools, and any other non-vector kind.
+        //
+        // Skip args that are Error (anti-cascade), TypeParam (unresolved generic —
+        // conformance decided at instantiation), Geometry (unverifiable here), or
+        // TraitObject (may resolve to a vector-producing type). For all other concrete
+        // arg types, reject unless the arg is vector-shaped with matching arity.
+        //
+        // NOT type_compatible: implicitly_converts_to has no Vector<->Vector
+        // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
+        // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
+        // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
+        (Type::Vector { .. }, arg_ty)
+            if !matches!(
+                arg_ty,
+                Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+            ) =>
+        {
+            // Accept vector-shaped args; for Type::Vector args, also require matching
+            // arity (n). A Tensor{rank:1} is accepted regardless of its element count.
+            let is_conforming = match arg_ty {
+                Type::Vector { n: arg_n, .. } => match param_type {
+                    Type::Vector { n: param_n, .. } => param_n == arg_n,
+                    _ => true, // unreachable: outer arm guards param_type as Type::Vector
+                },
+                Type::Tensor { rank: 1, .. } => true,
+                _ => false,
+            };
+            if !is_conforming {
+                emit_vector_mismatch(param_type, arg_ty, ctx);
             }
         }
         // Wrapper-shape mismatch or non-wrapper/non-trait param type.
@@ -6045,6 +6111,138 @@ mod tests {
              got {}: {:?}",
             diagnostics.len(),
             diagnostics,
+        );
+    }
+
+    // ── task-4622: walk_param_against_arg_type Vector leaf arm ───────────────
+
+    /// (a) Bare scalar arg against `Vector3<Length>` param →
+    /// exactly one `TypeNotConformingToVector` Error.
+    ///
+    /// RED until S4 adds the `Type::Vector` arm to `walk_param_against_arg_type`.
+    #[test]
+    fn vector_param_rejects_scalar_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        // Bare Real scalar: `1.0`
+        let compiled_arg = CompiledExpr::literal(
+            reify_ir::Value::Real(1.0),
+            Type::dimensionless_scalar(),
+        );
+        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToVector diagnostic for scalar arg \
+             against Vector3<Length> param, got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToVector),
+            "expected TypeNotConformingToVector, got {:?}",
+            d.code,
+        );
+    }
+
+    /// (b) A dimensionless `Vector{n:3}` arg against `Vector3<Length>` param →
+    /// ZERO diagnostics (locks the loose-quantity positive leg: a dimensionless
+    /// vec3 is accepted for a Length-quantity param).
+    ///
+    /// RED until S4 adds the arm (before S4 the `_` arm silently produces 0;
+    /// after S4 the arm explicitly accepts vector-shaped args → still 0, but now
+    /// for the right structural reason). The positive-leg stays green before AND
+    /// after S4; what changes is the REJECTION leg in test (a).
+    #[test]
+    fn vector_param_accepts_dimensionless_vector_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        // A dimensionless Vec3 arg: `vec3(0.0, 0.0, 1.0)` compiles to Vector{n:3, Real}.
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "v"),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            0,
+            "dimensionless Vector3 arg must be accepted for Vector3<Length> param \
+             (loose-quantity convention), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+    }
+
+    /// (c) A `Vector{n:2}` (vec2) arg against `Vector3<Length>` param →
+    /// exactly one `TypeNotConformingToVector` Error (arity mismatch).
+    ///
+    /// Locks the arity-check added in the amendment pass: shape-based conformance now
+    /// also requires matching `n` for `Type::Vector` args. `vec2` is a real mismatch
+    /// for a `vec3`-typed param and must be rejected at compile time.
+    #[test]
+    fn vector_param_rejects_wrong_arity_vector_arg() {
+        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
+        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
+        // A vec2 arg: Vector{n:2, dimensionless} — correct shape, wrong arity.
+        let compiled_arg = CompiledExpr::value_ref(
+            ValueCellId::new("Test", "v"),
+            Type::Vector {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        );
+        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        check_fn_arg_conformance(
+            &param_type,
+            "axis",
+            &compiled_arg,
+            SourceSpan::empty(0),
+            &template_registry,
+            &trait_registry,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected exactly 1 TypeNotConformingToVector for Vector2 arg vs \
+             Vector3<Length> param (arity mismatch), got {}: {:?}",
+            diagnostics.len(),
+            diagnostics,
+        );
+        let d = &diagnostics[0];
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TypeNotConformingToVector),
+            "expected TypeNotConformingToVector, got {:?}",
+            d.code,
         );
     }
 }

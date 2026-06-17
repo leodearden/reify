@@ -724,11 +724,13 @@ fn populate_attribute_history(
         AttributeHistory::LocalFeature(history) => {
             // Local-feature ops (fillet / chamfer): one target shape.
             let target_handle = match geom_op {
-                GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => *target,
+                GeometryOp::Fillet { target, .. }
+                | GeometryOp::Chamfer { target, .. }
+                | GeometryOp::ChamferAsymmetric { target, .. } => *target,
                 _ => {
                     return Err(reify_ir::QueryError::QueryFailed(format!(
-                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer \
-                         GeometryOp: {:?}",
+                        "AttributeHistory::LocalFeature returned for non-Fillet/Chamfer/\
+                         ChamferAsymmetric GeometryOp: {:?}",
                         geom_op
                     )));
                 }
@@ -741,6 +743,105 @@ fn populate_attribute_history(
                 result_handle,
                 history,
             )
+        }
+    }
+}
+
+/// Emit one `Severity::Warning` per non-zero topology-correspondence-loss
+/// counter found in `attribute_history`.
+///
+/// Called by `Engine::execute_realization_ops` immediately after
+/// `populate_attribute_history` — both live at the same call site where
+/// `attribute_history` and `diagnostics` are already in scope.
+///
+/// Covers all five unconsumed counters across the three op families:
+/// - `Boolean`: `silent_drop_count`
+/// - `Extrude` / `Revolve` / `Sweep`: `silent_drop_count`,
+///   `unsynthesized_profile_edge_count`, `duplicate_parent_subshape_index_count`
+/// - `LocalFeature`: `silent_drop_count`
+///
+/// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
+/// counters by design, and `None` means no history was returned.
+///
+/// Each warning carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
+/// and a message of the form:
+/// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
+///
+/// The geometry is valid; only persistent-naming correspondence tracking is
+/// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
+/// that auxiliary-metadata degradation must not regress the realization to Failed.
+fn diagnose_topology_correspondence_drops(
+    attribute_history: &AttributeHistory,
+    context: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use reify_core::DiagnosticCode;
+    // Single canonical emit path: guarantees every warning uses the same
+    // message format ("topology correspondence dropped: {op_kind}
+    // {counter}={count} context={context}") and the same code, with no risk
+    // of the five call sites drifting from each other.
+    let mut emit = |op_kind: &str, counter: &str, count: u32| {
+        if count > 0 {
+            diagnostics.push(
+                Diagnostic::warning(format!(
+                    "topology correspondence dropped: {op_kind} {counter}={count} context={context}"
+                ))
+                .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
+            );
+        }
+    };
+    match attribute_history {
+        AttributeHistory::Boolean(h) => {
+            emit("boolean", "silent_drop_count", h.silent_drop_count);
+        }
+        // Each sweep variant gets its own arm so op_kind is determined
+        // exhaustively without a nested re-match or a `_ => "sweep"` wildcard
+        // that would silently mislabel any future AttributeHistory variant
+        // sharing this arm.
+        AttributeHistory::Extrude(h) => {
+            emit("extrude", "silent_drop_count", h.silent_drop_count);
+            emit(
+                "extrude",
+                "unsynthesized_profile_edge_count",
+                h.unsynthesized_profile_edge_count,
+            );
+            emit(
+                "extrude",
+                "duplicate_parent_subshape_index_count",
+                h.duplicate_parent_subshape_index_count,
+            );
+        }
+        AttributeHistory::Revolve(h) => {
+            emit("revolve", "silent_drop_count", h.silent_drop_count);
+            emit(
+                "revolve",
+                "unsynthesized_profile_edge_count",
+                h.unsynthesized_profile_edge_count,
+            );
+            emit(
+                "revolve",
+                "duplicate_parent_subshape_index_count",
+                h.duplicate_parent_subshape_index_count,
+            );
+        }
+        AttributeHistory::Sweep(h) => {
+            emit("sweep", "silent_drop_count", h.silent_drop_count);
+            emit(
+                "sweep",
+                "unsynthesized_profile_edge_count",
+                h.unsynthesized_profile_edge_count,
+            );
+            emit(
+                "sweep",
+                "duplicate_parent_subshape_index_count",
+                h.duplicate_parent_subshape_index_count,
+            );
+        }
+        AttributeHistory::LocalFeature(h) => {
+            emit("local_feature", "silent_drop_count", h.silent_drop_count);
+        }
+        AttributeHistory::Loft(_) | AttributeHistory::None => {
+            // No counters in LoftOpHistoryRecords; None means no history returned.
         }
     }
 }
@@ -1189,6 +1290,7 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1203,6 +1305,9 @@ fn parent_handles_for_op(op: &GeometryOp) -> ParentHandles<'_> {
         // whose sub-shapes propagate — analogous to SweepGuided's guide.
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        // OffsetCurve's `reference` (a faces() sub-handle) is a constraint
+        // surface, not a propagating parent — analogous to Draft's `plane`.
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => ParentHandles::Inline([*target, z], 1),
@@ -1263,6 +1368,7 @@ fn substitute_op_parents(
         // Single-target shape-modifying ops — the target is the sole parent.
         GeometryOp::Fillet { target, .. }
         | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::ChamferAsymmetric { target, .. }
         | GeometryOp::Translate { target, .. }
         | GeometryOp::Rotate { target, .. }
         | GeometryOp::Scale { target, .. }
@@ -1275,6 +1381,7 @@ fn substitute_op_parents(
         | GeometryOp::ArbitraryPattern { target, .. }
         | GeometryOp::Draft { target, .. }
         | GeometryOp::Thicken { target, .. }
+        | GeometryOp::OffsetCurve { target, .. }
         | GeometryOp::OffsetSolid { target, .. }
         | GeometryOp::Shell { target, .. }
         | GeometryOp::ZoneSlab { target, .. } => {
@@ -1420,9 +1527,14 @@ fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
         // Modify
         GeometryOp::Fillet { .. } => Operation::ModifyFillet,
         GeometryOp::Chamfer { .. } => Operation::ModifyChamfer,
+        // Asymmetric chamfer reuses the ModifyChamfer capability — both execute
+        // via BRepFilletAPI_MakeChamfer on BRep (same kernel op + repr). See
+        // task β (#4185) design decision.
+        GeometryOp::ChamferAsymmetric { .. } => Operation::ModifyChamfer,
         GeometryOp::Shell { .. } => Operation::ModifyShell,
         GeometryOp::Draft { .. } => Operation::ModifyDraft,
         GeometryOp::Thicken { .. } => Operation::ModifyThicken,
+        GeometryOp::OffsetCurve { .. } => Operation::ModifyOffsetCurve,
         GeometryOp::ZoneSlab { .. } => Operation::ModifyZoneSlab,
         GeometryOp::OffsetSolid { .. } => Operation::ModifyOffsetSolid,
 
@@ -1513,7 +1625,7 @@ fn classify_op_input_reprs(op: &Operation) -> Option<&'static [ReprKind]> {
 
         // Modify — BRep-only consumers
         ModifyFillet | ModifyChamfer | ModifyShell | ModifyDraft | ModifyThicken
-        | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
+        | ModifyOffsetCurve | ModifyZoneSlab | ModifyOffsetSolid => Some(BREP_ONLY),
 
         // Transform — accept both reprs. `TransformApplyTransform` is the
         // post-realization rigid-isometry application (task 3901); like the
@@ -1601,11 +1713,15 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
         CompiledGeometryOp::Modify { kind, .. } => match kind {
             ModifyKind::Fillet => Operation::ModifyFillet,
             ModifyKind::Chamfer => Operation::ModifyChamfer,
+            // Asymmetric chamfer shares the symmetric chamfer's BRep kernel
+            // capability (BRepFilletAPI_MakeChamfer) — same Operation (β, task 4185).
+            ModifyKind::ChamferAsymmetric => Operation::ModifyChamfer,
             ModifyKind::Shell => Operation::ModifyShell,
             ModifyKind::Draft => Operation::ModifyDraft,
             ModifyKind::Thicken => Operation::ModifyThicken,
             ModifyKind::ZoneSlab => Operation::ModifyZoneSlab,
             ModifyKind::OffsetSolid => Operation::ModifyOffsetSolid,
+            ModifyKind::OffsetCurve => Operation::ModifyOffsetCurve,
         },
         CompiledGeometryOp::Transform { kind, .. } => match kind {
             TransformKind::Translate => Operation::TransformTranslate,
@@ -2187,6 +2303,11 @@ impl Engine {
                     &self.swept_kind_table,
                     &mut diagnostics,
                 );
+                // task 4222 δ: re-evaluate Undef Let cells with containment hook.
+                // Mirrors the identical call in `build()` — see that site for the
+                // rationale (post_process_derived_lets updates `restricted` but
+                // evaluates v_in without containment → Undef; this pass fixes it).
+                self.post_process_containment_samples(template, &mut values);
                 // Task 3441: snapshot this template's `named_steps` so a
                 // later template that subs from it can seed compound-key
                 // entries.  Placed AFTER the post-process queries so the
@@ -2798,6 +2919,15 @@ impl Engine {
                     &self.swept_kind_table,
                     &mut diagnostics,
                 );
+                // task 4222 δ: re-evaluate Undef Let cells with the live
+                // containment hook so `sample(restrict(field, region), point)`
+                // yields the inner value (or Undef for outside) after geometry
+                // hydration. `post_process_derived_lets` (inside run_post_processes
+                // above) already promoted `restricted` from Undef to
+                // `Value::Field{lambda:[inner,GeometryHandle]}`, but evaluated
+                // sample(restricted,...) without containment → Undef. This pass
+                // re-evaluates remaining Undef Let cells with `.with_containment(self)`.
+                self.post_process_containment_samples(template, &mut values);
                 // Task 3441: snapshot this template's `named_steps` so a
                 // later template that subs from it can seed compound-key
                 // entries.  Placed AFTER the post-process queries so the
@@ -5382,6 +5512,18 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                             }
+                            // task 4545: surface topology-correspondence-loss counters
+                            // from the kernel history record as structured Warnings.
+                            // Called immediately after `populate_attribute_history`
+                            // (independent of its Result) so the warning is emitted
+                            // even when population also warns. Severity::Warning only
+                            // — geometry is valid, only persistent-naming tracking
+                            // is degraded (task-2574 auxiliary-metadata convention).
+                            diagnose_topology_correspondence_drops(
+                                &attribute_history,
+                                &format!("{realization_id} op {op_idx}"),
+                                diagnostics,
+                            );
                             // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
                             // propagation for non-BRep kernels.  Runs immediately after
                             // `populate_attribute_history` (BRep-first ordering per design
@@ -6151,8 +6293,8 @@ impl Engine {
     /// `post_process_kinematic_queries`. For each `ValueCellDecl` whose
     /// `default_expr` is a recognised `body_mass_props(...)` call,
     /// [`crate::dynamics_ops::try_eval_body_mass_props`] runs the density
-    /// priority ladder (emitting `W_DynamicsDefaultDensity` on the water-default
-    /// fallback) and writes the assembled `MassProperties` `StructureInstance`
+    /// priority ladder (emitting `E_DynamicsNoDensity` when no density resolves)
+    /// and writes the assembled `MassProperties` `StructureInstance`
     /// into `values`, overwriting the `Value::Undef` left by the pure
     /// `eval_expr` path (the builtin `FunctionCall` has no pure-eval rule).
     /// Cells whose dispatch returns `None` (non-call expr, a different function
@@ -6735,6 +6877,68 @@ impl Engine {
         for (cell_id, expr) in candidates {
             let new_val = {
                 let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+                reify_expr::eval_expr(&expr, &ctx)
+            };
+            if !new_val.is_undef() {
+                values.insert(cell_id, new_val);
+            }
+        }
+    }
+
+    /// Re-evaluate remaining Undef Let cells with the live containment hook wired
+    /// in (task 4222 δ, PRD §5.3 option (b)).
+    ///
+    /// `run_post_processes` calls `post_process_derived_lets` which re-evaluates
+    /// Undef Let cells using a basic `eval_ctx_with_meta` (no containment). Cells
+    /// that sample a `restrict(field, region)` field — e.g. `v_in = sample(restricted, pt)` —
+    /// stay Undef there because the Restricted sample arm requires `ctx.containment`
+    /// to resolve geometry point-in-solid membership.
+    ///
+    /// This pass runs immediately after `run_post_processes` with the same Undef
+    /// filter but an EvalContext that includes `.with_containment(self)`, so the
+    /// kernel-backed containment hook fires and the correct inside/Undef result is
+    /// stored.
+    ///
+    /// Ordering invariant: must be called AFTER `run_post_processes` so that:
+    ///   (a) `post_process_geometry_handle_cells` has already stamped the region
+    ///       cell with a `Value::GeometryHandle`, AND
+    ///   (b) `post_process_derived_lets` has already re-evaluated `restricted`
+    ///       (Undef → `Value::Field { lambda: List[inner, GeometryHandle] }`),
+    ///       making the hydrated handle visible via the values map when this pass
+    ///       looks up `restricted` to evaluate `v_in`.
+    ///
+    /// Short-circuits to a no-op when no default kernel is registered: without a
+    /// kernel `ContainmentQuery::contains` on `Engine` always returns `None`, so
+    /// re-evaluating with containment wired in would still yield `Value::Undef`.
+    ///
+    /// Mirrors the two-phase (collect-then-write) discipline of
+    /// `post_process_derived_lets` to avoid split-borrow conflicts.
+    fn post_process_containment_samples(
+        &self,
+        template: &reify_compiler::TopologyTemplate,
+        values: &mut ValueMap,
+    ) {
+        if self.default_query_kernel().is_none() {
+            return;
+        }
+
+        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+            .value_cells
+            .iter()
+            .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
+            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter_map(|cell| {
+                cell.default_expr
+                    .as_ref()
+                    .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
+                    .map(|e| (cell.id.clone(), e.clone()))
+            })
+            .collect();
+
+        for (cell_id, expr) in candidates {
+            let new_val = {
+                let ctx = crate::eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                    .with_containment(self);
                 reify_expr::eval_expr(&expr, &ctx)
             };
             if !new_val.is_undef() {
@@ -8285,6 +8489,7 @@ mod tests {
                 (Operation::ModifyShell, ReprKind::BRep),
                 (Operation::ModifyDraft, ReprKind::BRep),
                 (Operation::ModifyThicken, ReprKind::BRep),
+                (Operation::ModifyOffsetCurve, ReprKind::BRep),
                 (Operation::ModifyZoneSlab, ReprKind::BRep),
                 (Operation::ModifyOffsetSolid, ReprKind::BRep),
                 (Operation::TransformTranslate, ReprKind::BRep),
@@ -11714,6 +11919,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: GeometryHandleId(82),
+                    edges: vec![],
                     distance: Value::Real(0.001),
                 },
                 expected: vec![GeometryHandleId(82)],
@@ -12119,6 +12325,7 @@ mod tests {
             Case {
                 op: GeometryOp::Chamfer {
                     target: h(1),
+                    edges: vec![],
                     distance: r(0.001),
                 },
                 expected: Operation::ModifyChamfer,
@@ -12166,6 +12373,16 @@ mod tests {
                 },
                 expected: Operation::ModifyOffsetSolid,
                 label: "OffsetSolid → ModifyOffsetSolid",
+            },
+            Case {
+                op: GeometryOp::OffsetCurve {
+                    target: h(1),
+                    distance: r(0.002),
+                    reference: None,
+                    direction: None,
+                },
+                expected: Operation::ModifyOffsetCurve,
+                label: "OffsetCurve → ModifyOffsetCurve",
             },
             // Transform
             Case {
@@ -13676,12 +13893,12 @@ mod tests {
             inertia[2][2]
         );
 
-        // Explicit density arg → no default-water diagnostic.
+        // Explicit density arg → no E_DynamicsNoDensity error.
         assert!(
             diagnostics.iter().all(|d| {
-                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsDefaultDensity))
+                !matches!(d.code, Some(reify_core::DiagnosticCode::DynamicsNoDensity))
             }),
-            "explicit density must suppress the default-water warning; \
+            "explicit density must not emit E_DynamicsNoDensity; \
              diagnostics: {diagnostics:?}"
         );
     }
@@ -13990,6 +14207,7 @@ mod populate_local_feature_tests {
 
         let geom_op = GeometryOp::Chamfer {
             target,
+            edges: vec![],
             distance: Value::Real(0.001),
         };
 
@@ -15472,6 +15690,237 @@ mod post_process_mechanism_mass_props_tests {
         assert!(
             diags.iter().any(|d| d.severity == Severity::Warning),
             "must emit a Warning when kernel query fails; got: {diags:?}"
+        );
+    }
+}
+
+// ── diagnose_topology_correspondence_drops unit tests (task 4545 step-3) ─────
+//
+// RED: `diagnose_topology_correspondence_drops` does not exist yet.
+// These tests drive the pure helper over hand-built AttributeHistory values
+// to verify the expected Warning diagnostics (one per non-zero counter).
+// No OCCT kernel is required — all counters are plain u32 fields.
+
+#[cfg(test)]
+mod diagnose_topology_correspondence_drops_tests {
+    use reify_core::{Diagnostic, DiagnosticCode, Severity};
+    use reify_ir::{
+        AttributeHistory, BooleanOpHistoryRecords, LocalFeatureOpHistoryRecords,
+        LoftOpHistoryRecords, SweepOpHistoryRecords,
+    };
+
+    use super::diagnose_topology_correspondence_drops;
+
+    /// Helper: call the helper and return the collected diagnostics.
+    fn run(history: &AttributeHistory) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        diagnose_topology_correspondence_drops(history, "test-context", &mut diags);
+        diags
+    }
+
+    /// Boolean silent_drop_count > 0 → exactly one Warning with
+    /// TopologyCorrespondenceDropped and the count in the message.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn boolean_silent_drop_emits_one_warning() {
+        let history = AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 3,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        assert!(
+            d.message.contains("silent_drop_count=3"),
+            "message should contain 'silent_drop_count=3'; got: {:?}",
+            d.message
+        );
+        assert!(
+            d.message.to_lowercase().contains("bool")
+                || d.message.to_lowercase().contains("boolean"),
+            "message should name the op kind; got: {:?}",
+            d.message
+        );
+    }
+
+    /// Boolean silent_drop_count == 0 → no diagnostics.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn boolean_silent_drop_zero_emits_nothing() {
+        let history = AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 0,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for zero count; got: {diags:?}"
+        );
+    }
+
+    /// Extrude with all three non-zero SweepOpHistoryRecords counters →
+    /// exactly three Warnings, each with the code and the respective count.
+    /// Also verifies the op_kind label is "extrude" and that each message
+    /// pins the counter name alongside the count (not just a bare digit).
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn extrude_three_nonzero_counters_emits_three_warnings() {
+        let history = AttributeHistory::Extrude(SweepOpHistoryRecords {
+            silent_drop_count: 1,
+            unsynthesized_profile_edge_count: 2,
+            duplicate_parent_subshape_index_count: 4,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
+        for d in &diags {
+            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        }
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        // Op-kind label must be present.
+        assert!(
+            messages.iter().any(|m| m.contains("extrude")),
+            "op_kind 'extrude' not found in any message; messages: {messages:?}"
+        );
+        // Each counter must be reported as `counter_name=count` — not just a
+        // bare digit — so the association between name and value is pinned.
+        assert!(
+            messages.iter().any(|m| m.contains("silent_drop_count=1")),
+            "silent_drop_count=1 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
+        );
+    }
+
+    /// Revolve with all three non-zero SweepOpHistoryRecords counters →
+    /// exactly three Warnings with op_kind "revolve" and counter_name=count
+    /// tokens in the messages.
+    #[test]
+    fn revolve_three_nonzero_counters_emits_three_warnings() {
+        let history = AttributeHistory::Revolve(SweepOpHistoryRecords {
+            silent_drop_count: 1,
+            unsynthesized_profile_edge_count: 2,
+            duplicate_parent_subshape_index_count: 4,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
+        for d in &diags {
+            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        }
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("revolve")),
+            "op_kind 'revolve' not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("silent_drop_count=1")),
+            "silent_drop_count=1 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
+        );
+    }
+
+    /// Sweep with all three non-zero SweepOpHistoryRecords counters →
+    /// exactly three Warnings with op_kind "sweep" and counter_name=count
+    /// tokens in the messages.
+    #[test]
+    fn sweep_three_nonzero_counters_emits_three_warnings() {
+        let history = AttributeHistory::Sweep(SweepOpHistoryRecords {
+            silent_drop_count: 1,
+            unsynthesized_profile_edge_count: 2,
+            duplicate_parent_subshape_index_count: 4,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
+        for d in &diags {
+            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        }
+        let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("sweep")),
+            "op_kind 'sweep' not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("silent_drop_count=1")),
+            "silent_drop_count=1 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("unsynthesized_profile_edge_count=2")),
+            "unsynthesized_profile_edge_count=2 not found in any message; messages: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("duplicate_parent_subshape_index_count=4")),
+            "duplicate_parent_subshape_index_count=4 not found in any message; messages: {messages:?}"
+        );
+    }
+
+    /// LocalFeature silent_drop_count > 0 → exactly one Warning with the code
+    /// and count 5.
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn local_feature_silent_drop_emits_one_warning() {
+        let history = AttributeHistory::LocalFeature(LocalFeatureOpHistoryRecords {
+            silent_drop_count: 5,
+            ..Default::default()
+        });
+        let diags = run(&history);
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic; got: {diags:?}");
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        assert!(
+            d.message.contains("silent_drop_count=5"),
+            "message should contain 'silent_drop_count=5'; got: {:?}",
+            d.message
+        );
+    }
+
+    /// Loft → no diagnostics (LoftOpHistoryRecords has no counters by design).
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn loft_emits_nothing() {
+        let history = AttributeHistory::Loft(LoftOpHistoryRecords::default());
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for Loft; got: {diags:?}"
+        );
+    }
+
+    /// AttributeHistory::None → no diagnostics (zero-cost no-op).
+    ///
+    /// RED until step-4 adds the helper.
+    #[test]
+    fn none_emits_nothing() {
+        let history = AttributeHistory::None;
+        let diags = run(&history);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for None; got: {diags:?}"
         );
     }
 }

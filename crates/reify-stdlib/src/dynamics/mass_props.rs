@@ -20,20 +20,18 @@
 /// other density: the density of water at ~4 °C.
 ///
 /// PRD `docs/prds/v0_3/rigid-body-dynamics.md` §5.4 specifies water (1000
-/// kg/m³) as the bottom rung of the density ladder so a body with neither an
-/// explicit `density` argument nor a `Material` density still yields a
-/// physically-plausible (if approximate) inertial estimate rather than zero
-/// mass or `Undef`. Falling back to this value also raises
-/// [`DensitySource::DefaultWater`], which the eval layer turns into the
-/// `W_DynamicsDefaultDensity` advisory warning.
+/// kg/m³) as the bottom rung of the density ladder used by the internal
+/// mechanism build pass (`derive_mechanism_mass_props`). The user-facing
+/// `body_mass_props` no longer falls back to this value — a missing density
+/// now emits `E_DynamicsNoDensity` (task 4498). This constant is kept for
+/// the internal mechanism build pass, which operates on `Value::Map` bodies
+/// that cannot carry a `Material`.
 pub const DEFAULT_DENSITY_KG_M3: f64 = 1000.0;
 
 /// Which rung of the [`resolve_density`] priority ladder supplied the density.
 ///
-/// Returned alongside the resolved density so the eval layer can decide whether
-/// to emit the `W_DynamicsDefaultDensity` warning (only on
-/// [`DefaultWater`](DensitySource::DefaultWater)). The pure layer itself stays
-/// diagnostic-free.
+/// Returned alongside the resolved density so the eval layer can identify the
+/// source. The pure layer itself stays diagnostic-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DensitySource {
     /// The caller passed an explicit `density` argument to `body_mass_props`.
@@ -41,7 +39,9 @@ pub enum DensitySource {
     /// No explicit argument; the body's `Material.density` was used.
     Material,
     /// Neither was available; the [`DEFAULT_DENSITY_KG_M3`] water default was
-    /// used. The eval layer emits `W_DynamicsDefaultDensity` for this case.
+    /// used. This rung is now only consumed by the internal mechanism build pass
+    /// (`derive_mechanism_mass_props`); the user-facing `body_mass_props` emits
+    /// `E_DynamicsNoDensity` instead (task 4498).
     DefaultWater,
 }
 

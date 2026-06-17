@@ -299,6 +299,8 @@ pub enum Operation {
     ModifyZoneSlab,
     /// Offset a solid outward/inward by distance.
     ModifyOffsetSolid,
+    /// Offset a planar curve by distance, producing a fresh curve.
+    ModifyOffsetCurve,
 
     // ── Transform (rigid / scale) ───────────────────────────────────────────
     /// Translate by vector.
@@ -612,9 +614,30 @@ pub enum GeometryOp {
         radius: Value,
     },
     /// Chamfer edges by distance.
+    ///
+    /// `edges` is the curated selection of edges to chamfer. An **empty** list
+    /// is the all-edges back-compat path (legacy 2-arg `chamfer(solid, distance)`);
+    /// a non-empty list names the specific edges to chamfer (3-arg
+    /// `chamfer(solid, edges, distance)`). Mirrors `Fillet`.
     Chamfer {
         target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
         distance: Value,
+    },
+    /// Chamfer edges with two distinct setbacks (asymmetric chamfer).
+    ///
+    /// `d1` is applied to the reference face of each selected edge and `d2` to
+    /// the other adjacent face (`BRepFilletAPI_MakeChamfer::Add(d1, d2, E, F)`).
+    /// `edges` is the curated selection (4-arg `chamfer_asymmetric(solid, edges,
+    /// d1, d2)`); an **empty** list is the all-edges back-compat path
+    /// (reachable only via direct IR — the .ri surface always carries an
+    /// explicit edge selection). Mirrors `Chamfer`'s edge contract but carries
+    /// distinct d1/d2 and a per-edge reference face at the kernel.
+    ChamferAsymmetric {
+        target: GeometryHandleId,
+        edges: Vec<GeometryHandleId>,
+        d1: Value,
+        d2: Value,
     },
     /// Translate by vector (dx, dy, dz in meters).
     Translate {
@@ -826,6 +849,24 @@ pub enum GeometryOp {
         target: GeometryHandleId,
         offset: Value,
     },
+    /// Offset a planar curve (wire) by `distance`, producing a fresh curve.
+    ///
+    /// Three overloads share this single variant; the optional `reference`
+    /// and `direction` are mutually exclusive and selected at eval time:
+    /// - both `None` → planar 2-D offset (BRepOffsetAPI_MakeOffset on the wire);
+    /// - `reference: Some(face)` → offset on a reference Surface (a `faces()`
+    ///   sub-handle, resolved to an OCCT face via `get_shape` at execute time);
+    /// - `direction: Some([dx,dy,dz])` → offset in the given direction Vector3.
+    ///
+    /// A positive `distance` grows the curve outward (e.g. radius 10mm → 12mm).
+    /// Produces fresh `BRepKind::Wire` geometry via the normal single-output
+    /// execute path, like [`GeometryOp::Thicken`].
+    OffsetCurve {
+        target: GeometryHandleId,
+        distance: Value,
+        reference: Option<GeometryHandleId>,
+        direction: Option<[f64; 3]>,
+    },
     /// Offset a face ±width/2 and cap into a centered slab solid (GD&T zone).
     ZoneSlab {
         target: GeometryHandleId,
@@ -918,6 +959,7 @@ impl GeometryOp {
             GeometryOp::Intersection { .. } => "Intersection",
             GeometryOp::Fillet { .. } => "Fillet",
             GeometryOp::Chamfer { .. } => "Chamfer",
+            GeometryOp::ChamferAsymmetric { .. } => "ChamferAsymmetric",
             GeometryOp::Translate { .. } => "Translate",
             GeometryOp::Rotate { .. } => "Rotate",
             GeometryOp::Scale { .. } => "Scale",
@@ -944,6 +986,7 @@ impl GeometryOp {
             GeometryOp::NurbsCurve { .. } => "NurbsCurve",
             GeometryOp::Draft { .. } => "Draft",
             GeometryOp::Thicken { .. } => "Thicken",
+            GeometryOp::OffsetCurve { .. } => "OffsetCurve",
             GeometryOp::ZoneSlab { .. } => "ZoneSlab",
             GeometryOp::OffsetSolid { .. } => "OffsetSolid",
             GeometryOp::Shell { .. } => "Shell",
@@ -3386,15 +3429,16 @@ pub struct BooleanOpHistoryRecords {
     /// the non-zero path (e.g. a stub result map missing one child) is deferred
     /// to a follow-up task.
     ///
-    /// **TODO:** wire this counter into error reporting so that a non-zero count // ptodo:allow doc design note - not tracked debt
-    /// surfaces as a warning log or `QueryError::QueryFailed` from
-    /// `propagate_attributes_via_brepalgoapi_history`, rather than being silently
-    /// recorded. Until that follow-up lands, callers must inspect this field
-    /// manually if they need to detect kernel correspondence loss. If the wiring
-    /// task requires actionable per-kind or per-operand diagnostics, split
-    /// `BooleanOpHistory.silent_drop_count` (C++ struct) into separate face/edge
-    /// or left/right counters before adding new consumers; the deferred split is
-    /// intentional pending that task's specification of required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind or per-operand counter split (face vs. edge, left vs.
+    /// right operand) remains an option if finer-grained diagnostics are needed;
+    /// the current single counter matches the C++ `BooleanOpHistory.silent_drop_count`
+    /// field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -3494,16 +3538,15 @@ pub struct SweepOpHistoryRecords {
     /// `result_map.FindIndex(child) < 1` branch) is a deferred follow-up;
     /// see design note: SweepOpHistory silent_drop_count non-zero path test.
     ///
-    /// **TODO (follow-up — tracked in project memory "SweepOpHistory // ptodo:allow wiring TODO with in-memory tracking reference
-    /// silent_drop_count error reporting"):** wire this counter into error
-    /// reporting so that a non-zero count surfaces as a warning log, rather
-    /// than being silently recorded. Until that follow-up lands, callers
-    /// must inspect this field manually if they need to detect kernel
-    /// correspondence loss. If the wiring task requires actionable per-kind
-    /// diagnostics, split `SweepOpHistory.silent_drop_count` (C++ struct)
-    /// into separate face/edge counters before adding new consumers; the
-    /// deferred split is intentional pending that task's specification of
-    /// required granularity.
+    /// **Wired (#4545):** a non-zero count surfaces as a
+    /// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+    /// emitted by `reify-eval`'s `Engine::execute_realization_ops` (via
+    /// `diagnose_topology_correspondence_drops`). The geometry is valid; only
+    /// persistent-naming correspondence tracking is degraded.
+    ///
+    /// A future per-kind counter split (face vs. edge) remains an option if
+    /// finer-grained diagnostics are needed; the current single counter matches
+    /// the C++ `SweepOpHistory.silent_drop_count` field granularity.
     pub silent_drop_count: u32,
     pub face_modified: Vec<HistoryRecord>,
     pub face_generated: Vec<HistoryRecord>,
@@ -6045,7 +6088,7 @@ mod tests {
             Operation::PrimitiveCone,
             Operation::PrimitiveWedge,
             Operation::PrimitiveTorus,
-            // Modify (7)
+            // Modify (8)
             Operation::ModifyFillet,
             Operation::ModifyChamfer,
             Operation::ModifyShell,
@@ -6053,6 +6096,7 @@ mod tests {
             Operation::ModifyThicken,
             Operation::ModifyZoneSlab,
             Operation::ModifyOffsetSolid,
+            Operation::ModifyOffsetCurve,
             // Transform (5)
             Operation::TransformTranslate,
             Operation::TransformRotate,
@@ -6157,6 +6201,7 @@ mod tests {
             Operation::ModifyThicken => {}
             Operation::ModifyZoneSlab => {}
             Operation::ModifyOffsetSolid => {}
+            Operation::ModifyOffsetCurve => {}
             Operation::TransformTranslate => {}
             Operation::TransformRotate => {}
             Operation::TransformScale => {}
@@ -6678,7 +6723,17 @@ mod tests {
                 "Chamfer",
                 GeometryOp::Chamfer {
                     target: GeometryHandleId(1),
+                    edges: vec![],
                     distance: Value::Real(0.001),
+                },
+            ),
+            (
+                "ChamferAsymmetric",
+                GeometryOp::ChamferAsymmetric {
+                    target: GeometryHandleId(1),
+                    edges: vec![],
+                    d1: Value::Real(0.001),
+                    d2: Value::Real(0.002),
                 },
             ),
             (
@@ -6893,6 +6948,15 @@ mod tests {
                 },
             ),
             (
+                "OffsetCurve",
+                GeometryOp::OffsetCurve {
+                    target: GeometryHandleId(1),
+                    distance: Value::Real(0.002),
+                    reference: None,
+                    direction: None,
+                },
+            ),
+            (
                 "ZoneSlab",
                 GeometryOp::ZoneSlab {
                     target: GeometryHandleId(1),
@@ -6954,7 +7018,7 @@ mod tests {
         // variant is added or removed from GeometryOp — compile-time
         // exhaustiveness on kind_name() guarantees correctness, this assertion
         // guarantees the token list here stays in sync.
-        const GEOMETRY_OP_VARIANT_COUNT: usize = 46;
+        const GEOMETRY_OP_VARIANT_COUNT: usize = 48;
         assert_eq!(
             cases.len(),
             GEOMETRY_OP_VARIANT_COUNT,
@@ -6986,6 +7050,49 @@ mod tests {
             "Split",
             "GeometryOp::Split must return \"Split\" from kind_name()"
         );
+    }
+
+    /// RED step-5 (task 4193): `GeometryOp::OffsetCurve` must be constructible in
+    /// all three overload shapes (2-D, +reference Surface, +direction Vector3) and
+    /// `kind_name()` must return the stable token "OffsetCurve". Also pins that the
+    /// `Operation::ModifyOffsetCurve` capability-taxonomy variant exists.
+    ///
+    /// References the not-yet-existing variant/Operation — compile-fails RED until
+    /// step-6 adds `GeometryOp::OffsetCurve { target, distance, reference, direction }`,
+    /// its "OffsetCurve" arm in `kind_name()`, and `Operation::ModifyOffsetCurve`.
+    #[test]
+    fn offset_curve_variant_constructs_and_kind_name_is_offset_curve() {
+        // Overload 1 — planar 2-D offset (no reference, no direction).
+        let plain = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: None,
+        };
+        // Overload 2 — offset on a reference Surface (a faces() sub-handle).
+        let on_surface = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: Some(GeometryHandleId(2)),
+            direction: None,
+        };
+        // Overload 3 — offset in a given direction Vector3.
+        let directional = GeometryOp::OffsetCurve {
+            target: GeometryHandleId(1),
+            distance: Value::Real(0.002),
+            reference: None,
+            direction: Some([0.0, 0.0, 1.0]),
+        };
+        for op in [&plain, &on_surface, &directional] {
+            assert_eq!(
+                op.kind_name(),
+                "OffsetCurve",
+                "GeometryOp::OffsetCurve must return \"OffsetCurve\" from kind_name()"
+            );
+        }
+
+        // The capability-taxonomy Operation variant must exist for this op.
+        let _op: Operation = Operation::ModifyOffsetCurve;
     }
 
     /// RED step-1 (task 4190): the default `execute_split` impl on
@@ -7887,6 +7994,81 @@ mod tests {
                 );
             }
             _ => panic!("expected GeometryOp::Fillet"),
+        }
+    }
+
+    /// `GeometryOp::Chamfer` records a curated `edges` selection alongside
+    /// `target`/`distance`. A non-empty list names the specific edges to chamfer;
+    /// an empty list is the all-edges back-compat path (legacy 2-arg chamfer).
+    /// β parallel of `fillet_records_curated_edges_selection` (task 4185).
+    #[test]
+    fn chamfer_records_curated_edges_selection() {
+        // Curated selection: four named edges.
+        let curated = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            distance: Value::Real(0.002),
+        };
+        match curated {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert_eq!(edges.len(), 4, "curated chamfer must record all 4 edges");
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+
+        // Back-compat: empty edges = all-edges chamfer.
+        let all_edges = GeometryOp::Chamfer {
+            target: GeometryHandleId(1),
+            edges: vec![],
+            distance: Value::Real(0.002),
+        };
+        match all_edges {
+            GeometryOp::Chamfer { edges, .. } => {
+                assert!(
+                    edges.is_empty(),
+                    "2-arg back-compat chamfer must record an empty edge selection"
+                );
+            }
+            _ => panic!("expected GeometryOp::Chamfer"),
+        }
+    }
+
+    /// `GeometryOp::ChamferAsymmetric` records all four fields: `target`, a
+    /// curated `edges` selection, and the two distinct setbacks `d1`/`d2`. The
+    /// asymmetric op always carries an explicit edge selection at the .ri
+    /// surface; an empty list is the all-edges back-compat path (direct-IR
+    /// only). β (task 4185).
+    #[test]
+    fn chamfer_asymmetric_records_fields() {
+        let op = GeometryOp::ChamferAsymmetric {
+            target: GeometryHandleId(1),
+            edges: vec![
+                GeometryHandleId(2),
+                GeometryHandleId(3),
+                GeometryHandleId(4),
+                GeometryHandleId(5),
+            ],
+            d1: Value::Real(0.001),
+            d2: Value::Real(0.002),
+        };
+        match op {
+            GeometryOp::ChamferAsymmetric {
+                target,
+                edges,
+                d1,
+                d2,
+            } => {
+                assert_eq!(target, GeometryHandleId(1), "target must round-trip");
+                assert_eq!(edges.len(), 4, "asymmetric chamfer must record all 4 edges");
+                assert_eq!(d1, Value::Real(0.001), "d1 setback must round-trip");
+                assert_eq!(d2, Value::Real(0.002), "d2 setback must round-trip");
+            }
+            _ => panic!("expected GeometryOp::ChamferAsymmetric"),
         }
     }
 

@@ -1050,9 +1050,26 @@ module.exports = grammar({
     // request a new conflict entry for it.  (Confirmed: `tree-sitter generate`
     // runs clean with no new unresolved-conflict errors after adding this rule.)
     type_expr: $ => choice(
+      $.function_type,
       $.parameterized_type,
       $.qualified_type,
       $.identifier,
+    ),
+
+    // Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U` (task 4595).
+    // The leading `(` is unique among the type forms (parameterized=`Name<`,
+    // qualified=`Name::`, bare=identifier), so this production is unambiguous
+    // and needs no precedence hacks.  Param types are positional `type_expr`
+    // children; the return is the only named field (`return_type`), mirroring
+    // qualified_type's base/member field discipline so the lowering pass can
+    // distinguish the return from the params via child_by_field_name.  The
+    // existing `commaSep` helper (grammar.js:8) cleanly supports 0+ params.
+    function_type: $ => seq(
+      '(',
+      commaSep($.type_expr),
+      ')',
+      '->',
+      field('return_type', $.type_expr),
     ),
 
     // Qualified type-expr: `Beam::Material` or `Beam::(HasMaterial::Material)`.

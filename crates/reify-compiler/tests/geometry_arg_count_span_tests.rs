@@ -285,14 +285,17 @@ fn draft_arg_count_diagnostic_has_span_label() {
 
 #[test]
 fn chamfer_arg_count_diagnostic_has_span_label() {
-    // chamfer() expects 2 arguments — passing 1 should produce a labeled diagnostic
+    // chamfer() accepts 2 args (all-edges) or 3 args (curated edges); passing 1
+    // should produce a labeled diagnostic naming both valid arities (mirrors the
+    // multi-arity message convention used by fillet() and mirror()). The 4-arg
+    // asymmetric form is the separate chamfer_asymmetric() function.
     assert_arg_count_label(
         r#"
             structure S {
                 let c = chamfer(box(10mm, 10mm, 10mm))
             }
         "#,
-        "chamfer() expects 2 arguments",
+        "chamfer() expects 2 or 3 arguments",
     );
 }
 

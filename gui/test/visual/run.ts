@@ -226,6 +226,24 @@ async function main(): Promise<HarnessExitCode> {
         continue;
       }
 
+      // Select the active FEA load case (task 3026: multi-load-case case-picker).
+      // When scenario.feaCase is set, call set_fea_case then wait for idle again
+      // so the re-sourced contour is fully rendered before we screenshot.
+      if (scenario.feaCase !== undefined) {
+        const setCaseResult = await rpc<unknown>("set_fea_case", { case: scenario.feaCase });
+        if (!setCaseResult.ok) {
+          console.error(`  FAIL set_fea_case(${scenario.feaCase}): ${setCaseResult.error}`);
+          anyFailed = true;
+          continue;
+        }
+        const idleAfterCase = await rpc<unknown>("wait_for_idle", { timeout_ms: 30_000 });
+        if (!idleAfterCase.ok) {
+          console.error(`  FAIL wait_for_idle after set_fea_case: ${idleAfterCase.error}`);
+          anyFailed = true;
+          continue;
+        }
+      }
+
       // Capture screenshot
       const shotResult = await rpc<{ data: string }>("screenshot", {});
       if (!shotResult.ok) {
@@ -238,8 +256,12 @@ async function main(): Promise<HarnessExitCode> {
       const capturedPngBuffer = Buffer.from(shotResult.value.data, "base64");
       const capturedImage = pngToImageData(capturedPngBuffer);
 
-      // Read baseline if it exists
-      const baselinePath = path.join(SCREENSHOTS_DIR, `${scenario.name}.png`);
+      // Compute the baseline path.  Scenarios with a feaCase write their
+      // baselines to gui/test/screenshots/fea-multi-load/<feaCase>.png so
+      // the subdirectory groups multi-case screenshots together.
+      const baselinePath = scenario.feaCase !== undefined
+        ? path.join(SCREENSHOTS_DIR, "fea-multi-load", `${scenario.feaCase}.png`)
+        : path.join(SCREENSHOTS_DIR, `${scenario.name}.png`);
       let baselineImage: ImageData | null = null;
       if (fs.existsSync(baselinePath)) {
         try {
@@ -273,12 +295,15 @@ async function main(): Promise<HarnessExitCode> {
 
         case "failed": {
           anyFailed = true;
-          // Write actual screenshot
-          const actualPath = path.join(SCREENSHOTS_DIR, `${scenario.name}.actual.png`);
+          // Write actual screenshot (honour subdirectory for feaCase scenarios)
+          const screenshotBase = scenario.feaCase !== undefined
+            ? path.join(SCREENSHOTS_DIR, "fea-multi-load", scenario.feaCase)
+            : path.join(SCREENSHOTS_DIR, scenario.name);
+          const actualPath = `${screenshotBase}.actual.png`;
           writeScreenshot(actualPath, capturedImage.rgba, capturedImage.width, capturedImage.height);
 
           if (outcome.reason === "tolerance-exceeded") {
-            const diffPath = path.join(SCREENSHOTS_DIR, `${scenario.name}.diff.png`);
+            const diffPath = `${screenshotBase}.diff.png`;
             writeScreenshot(diffPath, outcome.diffRgba, capturedImage.width, capturedImage.height);
             console.error(
               `  FAIL ${scenario.name} — tolerance exceeded: ${(outcome.mismatchPct * 100).toFixed(3)}% mismatched pixels`,

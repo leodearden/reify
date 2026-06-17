@@ -35,8 +35,10 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "shell",
     "thicken",
     "offset_solid",
+    "offset_curve",
     "draft",
     "chamfer",
+    "chamfer_asymmetric",
     "fillet",
     "fillet_all",
     "union",
@@ -668,8 +670,8 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
 /// eval-side `FunctionCall` dispatch reachable for every real call site, and
 /// (b) avoids the `OverloadResolution::NoMatch` default-padding path, so a
 /// 1-arg `body_mass_props(body)` call stays 1-arg and the "no explicit
-/// density" rung (and thus the `W_DynamicsDefaultDensity` warning) stays
-/// reachable. Declaring it as a `pub fn` with an optional `density` default
+/// density" rung (and thus the `E_DynamicsNoDensity` error on the no-density
+/// path) stays reachable. Declaring it as a `pub fn` with an optional `density` default
 /// would route to `UserFunctionCall` AND pad the call to 2 args — defeating
 /// both — which is why the steward decision reversed the original `pub fn`
 /// plan in favour of this builtin registration.
@@ -1530,6 +1532,18 @@ mod tests {
         assert!(is_geometry_function("thicken"));
     }
 
+    /// `offset_curve` is the curve-offset modify op (ι, task 4193) — a fresh-curve
+    /// producer that takes a curve target + scalar distance (overloads 2&3 add a
+    /// 3rd reference-Surface / direction-Vector3 arg). It must be recognised as a
+    /// geometry-handle producer so the compiler dispatches it through
+    /// `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-10 adds "offset_curve" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_curve_recognized() {
+        assert!(is_geometry_function("offset_curve"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_curve"));
+    }
+
     #[test]
     fn compile_geometry_offset_solid_recognized() {
         assert!(is_geometry_function("offset_solid"));
@@ -1543,6 +1557,16 @@ mod tests {
     #[test]
     fn compile_geometry_draft_recognized() {
         assert!(is_geometry_function("draft"));
+    }
+
+    /// `chamfer_asymmetric` is the 4-arg per-edge two-distance chamfer form
+    /// (β, task 4185). It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-12 adds "chamfer_asymmetric" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_chamfer_asymmetric_recognized() {
+        assert!(is_geometry_function("chamfer_asymmetric"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"chamfer_asymmetric"));
     }
 
     // --- Boolean function recognition tests (step-1) ---

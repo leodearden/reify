@@ -1325,7 +1325,7 @@ fn check_expr_fn_calls(
 
 /// Walk `expr` and its descendants; for every `StructureInstanceCtor` node call
 /// `check_trait_arg_conformance` on each named arg whose declared param type is
-/// `List<TraitObject(...)>` OR a bare `StructureRef(_)`.
+/// `List<TraitObject(...)>`, a bare `StructureRef(_)`, or a `Type::Vector { .. }`.
 ///
 /// This closes the gap left by `phase_pending_bound_checks`: that phase only
 /// queues `TraitArgConformance` checks for sub-component declarations (entity.rs
@@ -1334,18 +1334,26 @@ fn check_expr_fn_calls(
 /// compiled expression tree here we cover them with the same
 /// `check_trait_arg_conformance` logic that sub-components use.
 ///
-/// **Scope: `List<TraitObject>` and `StructureRef` params.**  Bare `TraitObject`
-/// params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`) are intentionally
-/// excluded — those are either already covered by the fn-call/sub-component paths,
-/// or are deliberate type-coercion escape hatches pending trait-coerce support
-/// (e.g. `ConstitutiveLawInput`, TODO(#4547): trait-coerce).  Extending
-/// to bare `TraitObject` would regress those escape-hatch call sites and is
-/// deferred to a follow-up once the coercion story is settled.
+/// **Scope: `List<TraitObject>`, `StructureRef`, and `Type::Vector` params.**
+/// Bare `TraitObject` params (e.g. `ConstitutiveLawInput.law : ConstitutiveLaw`)
+/// are intentionally excluded — those are either already covered by the
+/// fn-call/sub-component paths, or are deliberate type-coercion escape hatches
+/// pending trait-coerce support (e.g. `ConstitutiveLawInput`,
+/// TODO(#4547): trait-coerce).  Extending to bare `TraitObject` would regress
+/// those escape-hatch call sites and is deferred to a follow-up once the
+/// coercion story is settled.
 ///
 /// `StructureRef` params (task-4584): bare nominal params like `part : Part` are
 /// now also routed through `check_trait_arg_conformance` → `walk_param_against_arg`
 /// → `walk_param_against_arg_type` StructureRef arm, which emits
 /// `TypeNotConformingToStructureRef` for concrete type mismatches.
+///
+/// `Type::Vector` params (task-4622): vector params like `axis : Vector3<Length>`
+/// are routed through `check_trait_arg_conformance` → `walk_param_against_arg`
+/// → `walk_param_against_arg_type` Vector arm, which emits
+/// `TypeNotConformingToVector` for non-vector args (bare scalars).  The check
+/// is shape-based (not `type_compatible`) so a dimensionless `vec3(…)` arg is
+/// accepted for a `Vector3<Length>` param (loose-quantity rule).
 fn check_expr_struct_ctor_args(
     expr: &CompiledExpr,
     template_registry: &HashMap<String, &TopologyTemplate>,
@@ -1363,8 +1371,8 @@ fn check_expr_struct_ctor_args(
             return;
         };
         for (arg_name, compiled_arg) in ordered_args {
-            // Scope to List<TraitObject> and StructureRef params.  Bare TraitObject
-            // params are skipped — see fn doc-comment rationale.
+            // Scope to List<TraitObject>, StructureRef, and Type::Vector params.
+            // Bare TraitObject params are skipped — see fn doc-comment rationale.
             let should_check = template
                 .value_cells
                 .iter()
@@ -1373,6 +1381,7 @@ fn check_expr_struct_ctor_args(
                     matches!(&vc.cell_type,
                         Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
                     || matches!(&vc.cell_type, Type::StructureRef(_))
+                    || matches!(&vc.cell_type, Type::Vector { .. })
                 });
             if !should_check {
                 continue;
