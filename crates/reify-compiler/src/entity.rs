@@ -387,11 +387,11 @@ fn emit_outside_match_collision(
 /// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
 ///
 /// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
-/// For an untyped param the compiler assigns a `Type::Real` inference fallback
-/// (entity.rs:882-884 top-level; entity.rs:1140-1142 port-member) — NOT a
+/// For an untyped param the compiler assigns a dimensionless-scalar inference
+/// fallback (entity.rs:882-884 top-level; entity.rs:1140-1142 port-member) — NOT a
 /// user-declared type.  Cross-checking that fallback against the initializer's
 /// real type produces false positives (e.g. an untyped enum-valued port member
-/// whose cell_type falls back to Real, task 4318 review finding).  The
+/// whose cell_type falls back to a dimensionless scalar, task 4318 review finding).  The
 /// declared-vs-initializer contract exists ONLY when the user actually wrote a
 /// type annotation; for an untyped param the cell type IS conceptually the
 /// initializer's type so there is nothing to validate.
@@ -404,8 +404,8 @@ fn check_param_default_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     // Gate: only cross-check when the user wrote an explicit `: Type` annotation.
-    // For untyped params declared is only a Type::Real inference fallback (not a
-    // user contract), so checking it would produce false positives.
+    // For untyped params declared is only a dimensionless-scalar inference fallback
+    // (not a user contract), so checking it would produce false positives.
     if !has_explicit_type {
         return;
     }
@@ -418,7 +418,10 @@ fn check_param_default_type(
     // Complex declared types (Geometry, TraitObject, Vector, Tensor, StructureRef,
     // List, …) legitimately produce apparent inference mismatches through
     // compile_expr's paths and would false-positive here.
-    if !matches!(declared, Type::Real | Type::Int | Type::Scalar { .. }) {
+    // Under the real-dimensionless unification a `Real` annotation resolves to a
+    // dimensionless `Type::Scalar { dimension }`, so it is already covered by the
+    // `Type::Scalar { .. }` arm (there is no separate `Type::Real` variant).
+    if !matches!(declared, Type::Int | Type::Scalar { .. }) {
         return;
     }
     // No initializer — nothing to check.
@@ -426,22 +429,26 @@ fn check_param_default_type(
         return;
     };
     // `param x : Length = 1` or `= 0.5` — whole-number or fractional literal idiom.
-    // Both Int and dimensionless Real are accepted for any dimensioned Scalar.
-    // This mirrors the Int→Real widening that type_compatible already provides for
-    // the Real declared case, extended to the Scalar declared case:
+    // Both an `Int` and a dimensionless scalar (a bare `Real`-typed literal/expr,
+    // which under the real-dimensionless unification IS a dimensionless
+    // `Type::Scalar`) are accepted for any dimensioned Scalar param. This mirrors
+    // the Int→dimensionless-scalar widening that type_compatible already provides,
+    // extended one dimension further (any dimensionless value accepted for a
+    // dimensioned Scalar):
     //   - `param x : Length = 0`   → Int literal, accepted (whole-number idiom).
-    //   - `param x : Length = 0.5` → Real literal, accepted (fractional idiom).
+    //   - `param x : Length = 0.5` → dimensionless literal, accepted (fractional idiom).
     // Rejecting `= 0.5` while accepting `= 0` would be a surprising footgun since
     // users routinely write fractional dimensionless defaults for dimensioned params.
     //
-    // NOTE: compound expressions whose result_type happens to be Real (e.g. a
-    // reciprocal-dimension division `0.001 / 1m` that compile_expr infers as Real
-    // rather than Scalar[1/m] due to an inference gap) are also silently accepted
-    // here. This is a known limitation; when the compiler correctly infers
-    // reciprocal-dimension expressions as Scalar types this guard can be narrowed
-    // to literal-only expressions (a separate future task).
+    // NOTE: compound expressions whose result_type happens to be a dimensionless
+    // scalar (e.g. a reciprocal-dimension division `0.001 / 1m` that compile_expr
+    // infers as dimensionless rather than Scalar[1/m] due to an inference gap) are
+    // also silently accepted here. This is a known limitation; when the compiler
+    // correctly infers reciprocal-dimension expressions as dimensioned Scalar types
+    // this guard can be narrowed to literal-only expressions (tracked as #4640).
     if matches!(declared, Type::Scalar { .. })
-        && matches!(default.result_type, Type::Int | Type::Real)
+        && (matches!(default.result_type, Type::Int)
+            || matches!(&default.result_type, Type::Scalar { dimension } if dimension.is_dimensionless()))
     {
         return;
     }
@@ -1585,7 +1592,7 @@ pub(crate) fn compile_entity(
 
                     // Site 1: top-level structure-param declared-vs-initializer check.
                     // Pass `param.type_expr.is_some()` to suppress the check for
-                    // untyped params whose cell_type is only a Type::Real fallback.
+                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
                     check_param_default_type(
                         &param.name,
                         &cell_type,
@@ -2221,7 +2228,7 @@ pub(crate) fn compile_entity(
 
                                 // Site 2: port-member param declared-vs-initializer check.
                                 // Pass `param.type_expr.is_some()` to suppress the check for
-                                // untyped params whose cell_type is only a Type::Real fallback.
+                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
                                 check_param_default_type(
                                     &param.name,
                                     &cell_type,
