@@ -131,3 +131,83 @@ fn synthetic_centrality_records_provenance() {
         "synthetic_centrality should be true for CentredBar"
     );
 }
+
+/// [θ Cycle 2] For an explicit WeightedSum objective, each resolved cell records
+/// the per-term realised contribution: sense, weight, finite realized_value, and
+/// contribution = weight × σ(sense) × realized_value.
+///
+/// Fixture: objective_set_weighted.ri has 1 term with sense=Minimize, weight=1.0,
+/// expr=`0.7*mass − 0.3*stiffness` (σ(Minimize)=+1, so contribution=realized_value).
+///
+/// RED until step-4: step-2 leaves term_contributions empty, so len()==1 fails.
+#[test]
+fn term_contributions_record_realised_per_term() {
+    use reify_ir::ObjectiveSense;
+
+    let compiled = compile_source_with_stdlib(weighted_fixture_source());
+
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "fixture should compile without errors: {:#?}",
+        errors
+    );
+
+    let mass_id = ValueCellId::new("WeightedObjective", "mass");
+    let stiffness_id = ValueCellId::new("WeightedObjective", "stiffness");
+
+    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver));
+
+    let result = engine.eval(&compiled);
+
+    assert!(
+        result.diagnostics.is_empty(),
+        "unexpected diagnostics from eval: {:#?}",
+        result.diagnostics
+    );
+
+    for cell_id in [&mass_id, &stiffness_id] {
+        let prov = result
+            .objective_provenance
+            .get(cell_id)
+            .unwrap_or_else(|| panic!("no ObjectiveProvenance for {:?}", cell_id));
+
+        assert_eq!(
+            prov.term_contributions.len(),
+            1,
+            "expected 1 TermContribution (1-term WeightedSum fixture); cell={:?}",
+            cell_id
+        );
+
+        let tc = &prov.term_contributions[0];
+
+        assert_eq!(
+            tc.sense,
+            ObjectiveSense::Minimize,
+            "term sense should be Minimize; cell={:?}",
+            cell_id
+        );
+        assert_eq!(
+            tc.weight, 1.0_f64,
+            "term weight should be 1.0 (ObjectiveTerm default); cell={:?}",
+            cell_id
+        );
+        assert!(
+            tc.realized_value.is_finite(),
+            "realized_value should be finite; got {}; cell={:?}",
+            tc.realized_value,
+            cell_id
+        );
+        // σ(Minimize) = +1 → contribution = weight × 1.0 × realized_value
+        let expected_contribution = tc.weight * tc.realized_value;
+        assert!(
+            (tc.contribution - expected_contribution).abs() < 1e-12_f64,
+            "contribution should equal weight × σ(Minimize) × realized_value; \
+             got {} vs {}; cell={:?}",
+            tc.contribution,
+            expected_contribution,
+            cell_id
+        );
+    }
+}
