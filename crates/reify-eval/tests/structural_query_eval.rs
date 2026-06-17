@@ -120,7 +120,7 @@ fn children_enumeration_plain_aux_collection() {
 /// Expected:
 ///   - m == Int(6): 1 (Asm.a) + 1 (Asm.jig, aux) + 4 (Asm.bolts[0..3])
 ///   - ms == ["Asm.a", "Asm.jig", "Asm.bolts[0]", "Asm.bolts[1]",
-///    "Asm.bolts[2]", "Asm.bolts[3]"]  (declaration order, flat)
+///     "Asm.bolts[2]", "Asm.bolts[3]"]  (declaration order, flat)
 ///
 /// RED today: the members MethodCall placeholder is un-enumerated.
 #[test]
