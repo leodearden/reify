@@ -151,7 +151,7 @@ impl ReifyToolContext for TauriToolContext {
                 kind: v.kind.clone(),
                 entity_path: v.entity_path.clone(),
                 determinacy: v.determinacy.clone(),
-                reason: None, // wired in step-8
+                reason: v.reason.clone(),
             })
             .collect())
     }
