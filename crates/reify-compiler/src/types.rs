@@ -1560,6 +1560,14 @@ pub struct CompiledConstraintParam {
     /// calling entity's scope at instantiation time.
     pub default: Option<reify_ast::Expr>,
     pub span: SourceSpan,
+    /// Resolved declared parameter type, populated by `compile_constraint_def`
+    /// via `resolve_type_expr_with_aliases`. `None` when the parameter has no
+    /// type annotation or when type resolution fails (typo already diagnosed).
+    /// `Type::Error` is NEVER stored here — use `None` instead, so
+    /// `constraint_arg_type_conforms`'s anti-cascade guard (which checks for
+    /// `is_error()`) is not triggered unnecessarily, and
+    /// `type_compatible`'s `debug_assert!(!param_ty.is_error())` cannot fire.
+    pub ty: Option<Type>,
 }
 
 /// A compiled constraint definition — produced once per `constraint def` declaration.

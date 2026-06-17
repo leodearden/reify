@@ -4202,6 +4202,69 @@ pub(crate) fn expand_constraint_inst(
         }
     }
 
+    // Task 4546: param-level argument type conformance check.
+    //
+    // Run AFTER the arg_bindings block (which compiles all explicit args into
+    // CompiledExprs with result_type) and BEFORE the per-predicate loop (which
+    // std::mem::take's arg_bindings). This is the earliest point where both the
+    // compiled arg types AND the declared param types (now stored on
+    // CompiledConstraintParam.ty) are available simultaneously.
+    //
+    // Uses `constraint_arg_type_conforms` (type_compat.rs) which applies a
+    // narrow cross-category check: rejects Bool/String/Enum vs numeric mismatches
+    // while tolerating Int-for-Length and other numeric-for-dimensioned cases
+    // (dimensional strictness within predicates is task 4490's responsibility).
+    //
+    // Note: for comparison-predicate cases (e.g. `w > 0mm` with `w: true`),
+    // task 4490's emit_comparison_operand_diagnostics also fires for the
+    // substituted predicate. Both diagnostics are accepted (they fire at
+    // distinct seams — binding site vs. predicate body).
+    {
+        // Build a name→arg-expr-span map so the diagnostic label can point at
+        // the argument expression, not the whole constraint instantiation.
+        let arg_spans: HashMap<&str, SourceSpan> = ci
+            .args
+            .iter()
+            .map(|(name, expr)| (name.as_str(), expr.span))
+            .collect();
+        for (arg_name, compiled_arg) in &arg_bindings {
+            // Look up the matching declared param.
+            // Unknown arg names are already diagnosed by the validation above;
+            // skip names that have no matching param to avoid double-reporting.
+            let Some(param) = def.params.iter().find(|p| p.name == *arg_name) else {
+                continue;
+            };
+            // Skip params with no resolved type (unannotated or resolution failed).
+            let Some(ref param_ty) = param.ty else {
+                continue;
+            };
+            if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
+                let arg_span = arg_spans
+                    .get(arg_name.as_str())
+                    .copied()
+                    .unwrap_or(ci.span);
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type mismatch: argument '{}' has type {} but parameter '{}' \
+                         of constraint '{}' expects {}",
+                        arg_name,
+                        compiled_arg.result_type,
+                        arg_name,
+                        ci.name,
+                        param_ty,
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        arg_span,
+                        format!(
+                            "expected {}, got {}",
+                            param_ty, compiled_arg.result_type
+                        ),
+                    )),
+                );
+            }
+        }
+    }
+
     // For each predicate in the constraint def, substitute params with args
     // and compile the resulting expression in the calling entity's scope.
     // `annotations_optimized_target` was cached at def-compile time; clone it
