@@ -683,6 +683,117 @@ fn buckling_different_for_mode_shape_missing_displaced_positions() {
     );
 }
 
+// ── Step-7: pre_stress structural-conservatism tests ─────────────────────────
+//
+// RED until step-8 adds the pre_stress structural check.
+//
+// Before step-8, `buckling_result_significance` does NOT inspect the
+// `pre_stress` field.  Two fixtures that are otherwise Equivalent (matching
+// eigenvalues + mode_shapes) but differ in `pre_stress` structural presence
+// would return Equivalent instead of Different.
+
+/// RED driver (a): new BucklingResult omits pre_stress field → Different.
+///
+/// Both fixtures have equal eigenvalues and equal mode_shapes.  Only `new`
+/// omits the `pre_stress` field entirely.  Before step-8 the pre_stress field
+/// is ignored and the function returns Equivalent.
+#[test]
+fn buckling_different_for_missing_pre_stress_field() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0_f64];
+
+    let prev = make_buckling_result(&[ev], true, &[disp], pre);
+
+    // Build a BucklingResult without the pre_stress field.
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![make_mode(ev, disp)])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        // pre_stress intentionally omitted
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let new_no_pre = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_ne!(prev, new_no_pre, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new_no_pre, Some(tol)),
+        FilterOutcome::Different,
+        "missing pre_stress field must yield Different (RED until step-8)"
+    );
+}
+
+/// RED driver (b): new BucklingResult has pre_stress = Value::Real → Different.
+///
+/// pre_stress is present but is a Value::Real instead of a StructureInstance.
+/// Before step-8 this passes through as Equivalent.
+#[test]
+fn buckling_different_for_non_structure_instance_pre_stress() {
+    let tol = 1e-3_f64;
+    let ev = 4000.0_f64;
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0_f64];
+
+    let prev = make_buckling_result(&[ev], true, &[disp], pre);
+
+    // Build a BucklingResult where pre_stress = Value::Real (not SI).
+    let fields: PersistentMap<String, Value> = [
+        ("modes".to_string(), Value::List(vec![make_mode(ev, disp)])),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), Value::Real(0.0)), // wrong type
+        ("base_node_positions".to_string(), Value::List(vec![])),
+    ]
+    .into_iter()
+    .collect();
+    let new_wrong_pre = Value::StructureInstance(Box::new(StructureInstanceData {
+        type_id: StructureTypeId(u32::MAX),
+        type_name: "BucklingResult".to_string(),
+        version: 1,
+        fields,
+    }));
+
+    assert_ne!(prev, new_wrong_pre, "fixture: must be non-bit-equal");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new_wrong_pre, Some(tol)),
+        FilterOutcome::Different,
+        "pre_stress = Real (not StructureInstance) must yield Different (RED until step-8)"
+    );
+}
+
+/// Guard (c): both fixtures carry a well-formed pre_stress StructureInstance → Equivalent.
+///
+/// Uses a tiny eigenvalue delta (1e-9 relative) to make the fixtures non-bit-equal
+/// while staying within EIGENVALUE_REL_TOL.  Mode_shapes are identical.
+/// Both carry a valid pre_stress StructureInstance.
+/// Already GREEN after step-6 (eigenvalue + mode_shape comparison passes).
+#[test]
+fn buckling_equivalent_with_well_formed_pre_stress() {
+    let tol = 1e-3_f64;
+    let ev_a = 4000.0_f64;
+    let ev_b = 4000.0 * (1.0 + 1e-9); // relative delta 1e-9 << EIGENVALUE_REL_TOL
+    let disp: &[f64] = &[0.1, 0.2, 0.3];
+    let pre = &[0.0_f64];
+
+    let prev = make_buckling_result(&[ev_a], true, &[disp], pre);
+    let new = make_buckling_result(&[ev_b], true, &[disp], pre);
+
+    assert_ne!(prev, new, "fixture: must be non-bit-equal (eigenvalues differ at 1e-9 relative)");
+    assert_eq!(
+        significance_filter("solver::buckling", &prev, &new, Some(tol)),
+        FilterOutcome::Equivalent,
+        "within-tolerance eigenvalues + equal mode_shapes + valid pre_stress must yield Equivalent"
+    );
+}
+
 // ── Step-1: is_opted_in allowlist tests ──────────────────────────────────────
 //
 // RED until step-2 adds "solver::buckling" to the is_opted_in match.
