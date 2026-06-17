@@ -410,10 +410,10 @@ structure S {
 /// type `Scalar[kg]`, and `type_compatible(Real, Scalar[kg])` is false → a
 /// `ParamDefaultTypeMismatch` is correctly emitted as a second diagnostic.
 ///
-/// This is an **interim state**.  A follow-up task will make unknown-name resolution
-/// return `Type::Error` instead of `Type::Real`; once that lands the anti-cascade
-/// guard WILL fire and this test will need to be updated back to expect exactly ONE
-/// error (UnresolvedType only, no secondary ParamDefaultTypeMismatch).
+/// This is an **interim state**; once unknown-name resolution returns `Type::Error`
+/// instead of `Type::Real`, the anti-cascade guard WILL fire and this test will need
+/// to be updated back to expect exactly ONE error (UnresolvedType only, no secondary
+/// ParamDefaultTypeMismatch).
 #[test]
 fn param_unresolved_declared_type_anti_cascade_no_secondary_error() {
     let source = r#"
