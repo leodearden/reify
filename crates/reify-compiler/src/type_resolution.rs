@@ -789,15 +789,27 @@ fn lookup_assoc_type_binding(template: &TopologyTemplate, member: &str) -> Type 
 /// qualified-assoc base (e.g. `Prismatic` in `Coupling<Prismatic>::MotionValue`).
 ///
 /// Handles the subset valid in this position:
-/// - Bare `Named` with no type_args: type_param → `TypeParam`; known structure → `StructureRef`
+/// - Bare `Named` with no type_args: type_param → `TypeParam`; known structure → `StructureRef`;
+///   unknown name → emits `UnresolvedType` diagnostic and returns `Type::Error`.
 /// - Applied `Named` with type_args: recursive → `Applied`
 /// - All other shapes (integer literal, fn, etc.): → `Type::Error` (anti-cascade sentinel)
+///
+/// The unknown-name case now emits a diagnostic so that a typo'd structure name in a
+/// type-arg position (e.g. `Coupling<Bogus>::MotionValue` where `Bogus` is undefined) is
+/// reported rather than silently poisoning the whole projection to `Type::Error` with no
+/// user-visible message. (task 4604 δ amendment — reviewer_comprehensive
+/// robustness_missing_diagnostic)
+///
+/// `diagnostics` and `span` are threaded from `resolve_qualified_assoc_type`, which already
+/// holds both. The sole production caller is updated accordingly.
 ///
 /// (task 4604 δ)
 fn resolve_type_arg_for_projection(
     type_expr: &reify_ast::TypeExpr,
     type_param_names: &HashSet<String>,
     template_registry: &HashMap<String, &TopologyTemplate>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
 ) -> Type {
     match &type_expr.kind {
         reify_ast::TypeExprKind::Named { name, type_args } => {
@@ -807,13 +819,35 @@ fn resolve_type_arg_for_projection(
                 } else if template_registry.contains_key(name.as_str()) {
                     Type::StructureRef(name.clone())
                 } else {
+                    // Unknown name: neither a type parameter nor a known structure.
+                    // Emit a diagnostic so the user sees a clear error instead of a
+                    // silent poison cascade. (reviewer_comprehensive robustness_missing_diagnostic)
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown type `{}` in projection type argument",
+                            name
+                        ))
+                        .with_code(DiagnosticCode::UnresolvedType)
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            format!("type `{}` is not a known structure or type parameter", name),
+                        )),
+                    );
                     Type::Error
                 }
             } else {
                 // Recursively applied: e.g. `Outer<Inner<X>>::Member`
                 let args = type_args
                     .iter()
-                    .map(|a| resolve_type_arg_for_projection(a, type_param_names, template_registry))
+                    .map(|a| {
+                        resolve_type_arg_for_projection(
+                            a,
+                            type_param_names,
+                            template_registry,
+                            diagnostics,
+                            span,
+                        )
+                    })
                     .collect();
                 Type::Applied {
                     name: name.clone(),
@@ -892,7 +926,13 @@ pub(crate) fn resolve_qualified_assoc_type(
         let args: Vec<Type> = type_args
             .iter()
             .map(|arg_expr| {
-                resolve_type_arg_for_projection(arg_expr, type_param_names, template_registry)
+                resolve_type_arg_for_projection(
+                    arg_expr,
+                    type_param_names,
+                    template_registry,
+                    diagnostics,
+                    span,
+                )
             })
             .collect();
         let projection = Type::Projection {
@@ -1935,6 +1975,29 @@ fn normalize_type_guarded(
                     // {type_params[i] := args[i]}, substitute into the member binding,
                     // then recurse to reduce the result (it may itself be a Projection).
                     if let Some(template) = template_registry.get(name.as_str()) {
+                        // Arity guard: zip silently truncates on mismatch, which would
+                        // produce a partial/wrong substitution. Catch it here rather than
+                        // relying solely on γ's pre-check (γ covers the normal resolution
+                        // path, but nested type args via resolve_type_arg_for_projection
+                        // can reach here without passing γ's arity gate).
+                        // (reviewer_comprehensive robustness_arity)
+                        if args.len() != template.type_params.len() {
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "type argument count mismatch: `{}` expects {} type \
+                                     parameter(s) but {} were provided",
+                                    name,
+                                    template.type_params.len(),
+                                    args.len()
+                                ))
+                                .with_code(DiagnosticCode::UnresolvedType)
+                                .with_label(DiagnosticLabel::new(
+                                    span,
+                                    "type argument count mismatch here",
+                                )),
+                            );
+                            return Type::Error;
+                        }
                         let subst: HashMap<String, Type> = template
                             .type_params
                             .iter()

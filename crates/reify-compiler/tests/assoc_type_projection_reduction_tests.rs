@@ -207,6 +207,17 @@ structure def UseCoupling {
     );
 
     // Anti-cascade: the consumer must NOT emit a second UnresolvedType or AmbiguousAssocType.
+    // The root-cause diagnostic is TraitAssocTypeNotBound (emitted at the producer, Coupling).
+    // normalize_type's member-not-found arm returns Type::Error via lookup_assoc_type_binding
+    // SILENTLY — no UnresolvedType from the consumer. This assertion exercises that guarantee
+    // directly: if normalize_type erroneously emitted a redundant UnresolvedType, this would
+    // fire. (reviewer_comprehensive test_coverage)
+    assert!(
+        !any_diag_has_code(&all_errors, DiagnosticCode::UnresolvedType),
+        "consumer must NOT emit UnresolvedType (anti-cascade — root cause is \
+         TraitAssocTypeNotBound); got: {:?}",
+        all_errors
+    );
     assert!(
         !any_diag_has_code(&all_errors, DiagnosticCode::AmbiguousAssocType),
         "consumer must NOT emit AmbiguousAssocType (anti-cascade); got: {:?}",

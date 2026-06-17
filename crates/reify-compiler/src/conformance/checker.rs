@@ -922,9 +922,39 @@ pub(super) fn collect_structure_assoc_type_bindings(
         if let reify_ast::MemberDecl::AssociatedType(at) = m
             && let Some(type_expr) = &at.default_type
         {
+            // Shared helper: emit "unresolved type in associated type binding" and return
+            // Type::Error. Captures `type_expr` (for the message and span) and takes
+            // `diags` as a parameter so it can be reused in both the QualifiedAssoc and
+            // non-QualifiedAssoc None arms without duplicating the diagnostic block.
+            // (reviewer_comprehensive duplication)
+            let push_unresolved = |diags: &mut Vec<Diagnostic>| -> Type {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "unresolved type in associated type binding: {}",
+                        type_expr
+                    ))
+                    .with_code(DiagnosticCode::UnresolvedType)
+                    .with_label(DiagnosticLabel::new(
+                        type_expr.span,
+                        "unknown type name",
+                    )),
+                );
+                Type::Error
+            };
             let ty = if let reify_ast::TypeExprKind::QualifiedAssoc {
                 base,
                 member,
+                // trait_name (the paren-disambiguated `Base::(Trait::Member)` qualifier) is
+                // intentionally not carried into the stored Projection here. On the build side,
+                // each structure binds each associated-type name exactly once, so any valid trait
+                // qualifier would resolve to the same binding — the qualifier is
+                // disambiguation-only (FORK-G convention). Carrying it would require a new field
+                // on `Type::Projection` (out of task scope); read-time `lookup_assoc_type_binding`
+                // resolves by member name alone, which is correct while member names are unique
+                // per structure. If a future extension allows multiple bindings per member name
+                // (requiring trait disambiguation at lookup time), `Type::Projection` will need
+                // the qualifier field and this `..` will need revisiting.
+                // (reviewer_comprehensive design_coherence)
                 ..
             } = &type_expr.kind
             {
@@ -945,20 +975,7 @@ pub(super) fn collect_structure_assoc_type_bindings(
                         base: Box::new(resolved_base),
                         member: member.clone(),
                     },
-                    None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unresolved type in associated type binding: {}",
-                                type_expr
-                            ))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(
-                                type_expr.span,
-                                "unknown type name",
-                            )),
-                        );
-                        Type::Error
-                    }
+                    None => push_unresolved(diagnostics),
                 }
             } else {
                 // Non-QualifiedAssoc binding: resolve normally, with type-params in scope
@@ -972,20 +989,7 @@ pub(super) fn collect_structure_assoc_type_bindings(
                     trait_names,
                 ) {
                     Some(t) => t,
-                    None => {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "unresolved type in associated type binding: {}",
-                                type_expr
-                            ))
-                            .with_code(DiagnosticCode::UnresolvedType)
-                            .with_label(DiagnosticLabel::new(
-                                type_expr.span,
-                                "unknown type name",
-                            )),
-                        );
-                        Type::Error
-                    }
+                    None => push_unresolved(diagnostics),
                 }
             };
             bindings.insert(at.name.clone(), ty);
