@@ -1252,8 +1252,9 @@ impl Engine {
         // ── Overhang / draft pass ─────────────────────────────────────────────
         // Scoped so the mutable geometry_kernels borrow ends before the thickness
         // pass calls `&mut self` via measure_min_wall / measure_min_feature.
-        if !specs.is_empty() {
-            if let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name) {
+        if !specs.is_empty()
+            && let Some(kernel) = self.geometry_kernels.get_mut(&kernel_name)
+        {
                 let kernel = kernel.as_mut();
                 for spec in specs {
                     let handle = spec.subject_handle.expect("filtered above");
@@ -1314,7 +1315,6 @@ impl Engine {
                         }
                     }
                 }
-            }
             // If geometry_kernels does not contain the default kernel the
             // overhang/draft measurements are silently skipped (Indeterminate).
             // The thickness pass below is independent and always runs.
@@ -1331,7 +1331,7 @@ impl Engine {
             let feat = self.measure_min_feature(tspec.subject_ref.clone());
             diags.extend(reify_stdlib::dfm_diagnose(
                 "min_wall_thickness",
-                &[tspec.rule_value.clone()],
+                std::slice::from_ref(&tspec.rule_value),
                 &min_wall_verdict(wall, tspec.min_feature_size_m),
             ));
             diags.extend(reify_stdlib::dfm_diagnose(
