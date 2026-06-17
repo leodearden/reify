@@ -38,7 +38,11 @@
 #   REIFY_CPU_GOV_TEST_MIXFACTOR        oversubscription factor (default 1.5)
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
 #   REIFY_CPU_GOV_TEST_QUIET_CEILING    avg10 max for quiet-box precondition (default 20)
-#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4)
+#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
+#                                       ROW4 default warmup+measure+4 if unset)
+#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
+#   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
+#   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
 
 set -euo pipefail
 
@@ -559,7 +563,9 @@ fi
 #
 # §8 Row 4 assertion:
 #   merge_share = Δmerge / (Δmerge + Δtask)  ≥  W_merge/(W_merge+W_task) - tol
-#              = 0.75 − 0.05 = 0.70  (STATED proportional floor, not 0)
+#              = 0.75 − 0.10 = 0.65  (STATED proportional floor, not 0)
+#   Δ sampled over a steady-state window (warm-up + measure), not the whole
+#   burn, so the startup stagger does not bias the share (step-12 fix).
 #
 # Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
 #   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
@@ -572,7 +578,25 @@ echo "--- Cycle ROW4: §8 Row 4 (merge-favored share, private slices) ---"
 _ROW4_W_TASK="${REIFY_CPU_GOVERN_W_TASK:-100}"
 _ROW4_W_MERGE="${REIFY_CPU_GOVERN_W_MERGE:-300}"
 _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
-_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-4}"
+# Steady-state sampling windows (step-12 robustness fix for esc-4634-52).
+# The cpu.weight 3:1 ratio only manifests cleanly once BOTH role burns are
+# fully ramped and contending.  Sampling the usage_usec delta across the whole
+# burn (including the asymmetric startup stagger — scope creation + worker
+# spawn for each role) let one role bank uncontended CPU before its sibling's
+# scope existed, biasing merge_share DOWN (observed 0.639 vs floor 0.65 — a
+# ~0.01 false-RED).  Fix: launch both burns, wait WARMUP_S for both to ramp,
+# THEN bracket the usage_usec delta over a MEASURE_S steady-state window while
+# both are still burning.  Mirrors the ROW2_3 warm-up design + PRD §11 Q5.
+_ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
+_ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
+# Burn must outlast warm-up + measure window + a settle margin so the AFTER
+# sample lands while BOTH roles are still contending (never during teardown).
+# Clamp up if a shared BURN_S override (used by ROW1/ROW2_3 for speed) is too
+# small for ROW4's steady-state window — otherwise the AFTER sample would land
+# during teardown and re-introduce the stagger bias this fix removes.
+_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))}"
+_ROW4_BURN_MIN=$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+[ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 
 # Private test slice names (siblings under reify-govtest.slice).
 # Must differ from production slices (reify-governed-{agents,merge}.slice)
@@ -623,14 +647,8 @@ else
     _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
     _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
 
-    # (c) Sample usage_usec BEFORE the contention burns.
-    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
-    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-
-    # (d) Launch concurrent contention burns:
+    # (c) Launch concurrent contention burns FIRST (before sampling), then
+    #     bracket the usage_usec delta over a steady-state window only.
     #     W=nproc workers each role → 2W=2*nproc on nproc cores → 2× oversubscription.
     #     At ≥ 2× oversubscription all workers are always runnable, so the kernel
     #     applies cpu.weight scheduling continuously and the 3:1 ratio is observable.
@@ -650,15 +668,32 @@ else
         >/dev/null 2>&1 &
     _ROW4_MERGE_BG=$!
 
-    # (e) Wait for both burns to finish (natural or timeout).
-    wait "$_ROW4_TASK_BG" 2>/dev/null || true
-    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
+    # (d) Warm-up: let BOTH burns ramp to full contention before sampling, so
+    #     the startup stagger (scope creation + worker spawn) is OUTSIDE the
+    #     measured window and cannot bank uncontended CPU into either delta.
+    sleep "$_ROW4_WARMUP_S"
 
-    # (f) Sample usage_usec AFTER; compute deltas.
+    # (e) Sample usage_usec at the START of the steady-state window.
+    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
+    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+        2>/dev/null || echo "unavailable")"
+
+    # (f) Hold the steady-state measurement window (both still burning).
+    sleep "$_ROW4_MEASURE_S"
+
+    # (g) Sample usage_usec at the END of the steady-state window — taken WHILE
+    #     both roles are still contending (burn outlasts warmup+measure+margin),
+    #     so the delta reflects pure steady-state weight scheduling, not teardown.
     _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
     _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
+
+    # (h) Reap both burns (natural completion or timeout) before cleanup.
+    wait "$_ROW4_TASK_BG" 2>/dev/null || true
+    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
 
     _ROW4_TASK_DELTA=0
     _ROW4_MERGE_DELTA=0
