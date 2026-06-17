@@ -765,6 +765,13 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(InferredTraits::curve())
         }
 
+        // ─── Curve-offset modify → curve() (1-D result) ─────────────────
+        // offset_curve (ι, task 4193) takes a curve target and produces a fresh
+        // 1-D curve, so it infers `GeomDim::Curve` — deliberately a DEDICATED arm,
+        // NOT the `combine_modify` arm above, whose `combine_modify()` hardcodes
+        // `GeomDim::Solid` and would mis-infer the offset result as a Solid.
+        "offset_curve" => Some(InferredTraits::curve()),
+
         // ─── Profile face constructors → surface() (2-D faces) ──────────
         "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
         "polygon" => Some(InferredTraits::surface_nonconvex()),

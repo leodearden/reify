@@ -237,9 +237,9 @@ fn geometry_arg_indices(name: &str) -> &'static [usize] {
     match name {
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform"
         | "circular_pattern" | "linear_pattern" | "mirror" | "extrude" | "extrude_symmetric"
-        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "draft" | "chamfer"
-        | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab" | "zone_cylinder"
-        | "zone_annulus" | "zone_profile" => &[0],
+        | "revolve" | "revolve_full" | "shell" | "thicken" | "offset_solid" | "offset_curve"
+        | "draft" | "chamfer" | "chamfer_asymmetric" | "fillet" | "fillet_all" | "zone_slab"
+        | "zone_cylinder" | "zone_annulus" | "zone_profile" => &[0],
         "sweep" => &[0, 1],
         "sweep_guided" => &[0, 1, 2],
         "pipe" => &[0],

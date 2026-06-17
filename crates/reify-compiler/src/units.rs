@@ -35,6 +35,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "shell",
     "thicken",
     "offset_solid",
+    "offset_curve",
     "draft",
     "chamfer",
     "chamfer_asymmetric",
