@@ -1253,10 +1253,7 @@ impl Engine {
                 {
                     specs.push(spec);
                 }
-                let tspec_result = dfm_thickness_spec(&si);
-                eprintln!("[DBG-EC] template={} thickness_spec={}", match &si { Value::StructureInstance(d) => &d.type_name, _ => "?" }, tspec_result.is_some());
-                eprintln!("[DBG-EC] fields={:?}", match &si { Value::StructureInstance(d) => d.fields.keys().cloned().collect::<Vec<_>>(), _ => vec![] });
-                if let Some(tspec) = tspec_result {
+                if let Some(tspec) = dfm_thickness_spec(&si) {
                     thickness_specs.push(tspec);
                 }
             }

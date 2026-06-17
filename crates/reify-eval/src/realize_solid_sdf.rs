@@ -50,21 +50,18 @@ impl crate::Engine {
                 (subject.kernel_handle != reify_ir::GeometryHandleId::INVALID)
                     .then_some(subject.kernel_handle)
             });
-        eprintln!("[DBG-SDF] brep_id={:?} realization_ref={:?} kernel_handle={:?}", brep_id, subject.realization_ref, subject.kernel_handle);
         let brep_id = brep_id?;
 
         // ── 2. Source kernel (for tessellation) ──────────────────────────────
         // Clone to release the immutable borrow on `self` before the `get_mut`
         // calls below (mirrors the source-kernel selection pattern in measure_dfm_rules.rs).
         let source = self.default_kernel_name.clone()?;
-        eprintln!("[DBG-SDF] source={:?}", source);
 
         // ── 3. OpenVDB presence guard ─────────────────────────────────────────
         // Absence means a stub build omitted the registration (D5) or the kernel
         // was never loaded — honest None, no panic, no fabricated number.
         let openvdb_name = crate::kernel_registry::openvdb_kernel_name();
         let ovdb_present = self.geometry_kernels.get(openvdb_name);
-        eprintln!("[DBG-SDF] openvdb_present={}", ovdb_present.is_some());
         ovdb_present?;
 
         // ── 4. BRep→Mesh→Voxel→SampledField recipe (PRD §7.1 γ, §4 D1) ─────
@@ -78,19 +75,13 @@ impl crate::Engine {
         );
 
         // Tessellate BRep→Mesh
-        let tess = self.geometry_kernels.get(&source)?.tessellate(brep_id, 0.0001);
-        eprintln!("[DBG-SDF] tessellate ok={}", tess.is_ok());
-        let mesh = tess.ok()?;
+        let mesh = self.geometry_kernels.get(&source)?.tessellate(brep_id, 0.0001).ok()?;
 
         // Ingest Mesh→Voxel
-        let ingest = self.geometry_kernels.get_mut(openvdb_name)?.ingest_mesh(&mesh);
-        eprintln!("[DBG-SDF] ingest_mesh ok={}", ingest.is_ok());
-        let voxel = ingest.ok()?;
+        let voxel = self.geometry_kernels.get_mut(openvdb_name)?.ingest_mesh(&mesh).ok()?;
 
         // Densify Voxel→SampledField
-        let densify = self.geometry_kernels.get_mut(openvdb_name)?.densify_grid_to_sampled(voxel.id);
-        eprintln!("[DBG-SDF] densify ok={}", densify.is_ok());
-        let field = densify.ok()?;
+        let field = self.geometry_kernels.get_mut(openvdb_name)?.densify_grid_to_sampled(voxel.id).ok()?;
 
         Some(field)
     }
