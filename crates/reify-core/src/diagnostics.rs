@@ -1983,6 +1983,53 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_AMBIGUOUS_ASSOC_TYPE`
     /// (see task 3974; trait-assoc-type iota-ε).
     AmbiguousAssocType,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`check_applied_type_arg_bounds`, called from
+    /// `phase_pending_bound_checks` in `entities_phase.rs` after all entities
+    /// compile).
+    ///
+    /// Emitted as a `Severity::Error` when a structure type-annotation of the
+    /// form `name<args…>` supplies a number of type arguments that does not
+    /// match the declared arity of the named structure's type-param list.
+    /// Covers both too-many-args and too-few-args, as well as zero declared
+    /// type-params being given args (non-generic structure used with args).
+    ///
+    /// Canonical message form:
+    ///   `"type '<name>' expects <N> type argument(s) but <M> were supplied"`
+    /// with a label at the annotation span.
+    ///
+    /// Distinct from [`UnresolvedType`] (which fires when the name itself is
+    /// unknown) and [`AmbiguousAssocType`] (associated-type resolution
+    /// ambiguity). This code is ONLY emitted on the structure-member-annotation
+    /// path (value_cells); sub-component and fn-call paths emit code-less
+    /// diagnostics per PRD §7.3.
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_ARITY`.
+    /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
+    TypeArgArity,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`check_applied_type_arg_bounds`, called from
+    /// `phase_pending_bound_checks` in `entities_phase.rs` after all entities
+    /// compile).
+    ///
+    /// Emitted as a `Severity::Error` when a type argument supplied to a
+    /// generic structure (`name<arg>`) does not satisfy the declared bound on
+    /// the corresponding type parameter (e.g. `Coupling<NotMotion>` when
+    /// `Coupling<P: HasMotion>` requires `P` to conform to `HasMotion`).
+    ///
+    /// Canonical message form:
+    ///   `"type argument '<arg>' for '<name>' does not satisfy bound '<Trait>'"`.
+    /// with a label at the annotation span.
+    ///
+    /// Distinct from [`UnresolvedType`] / [`AmbiguousAssocType`]; those codes
+    /// address name-resolution failures rather than bound violations.
+    /// This code is ONLY emitted on the structure-member-annotation path
+    /// (value_cells); sub-component and fn-call paths keep code-less
+    /// diagnostics per PRD §7.3.
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_BOUND`.
+    /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
+    TypeArgBound,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
@@ -4371,6 +4418,60 @@ mod tests {
     fn diagnostic_code_bare_scalar_type_serde_pascal_case() {
         let s = serde_json::to_string(&DiagnosticCode::BareScalarType).unwrap();
         assert_eq!(s, "\"BareScalarType\"");
+    }
+
+    // --- TypeArgArity / TypeArgBound tests (task 4603 γ — E_TYPE_ARG_ARITY / E_TYPE_ARG_BOUND) ---
+    // Pairs with `check_applied_type_arg_bounds` in
+    // `crates/reify-compiler/src/type_resolution.rs` (called from
+    // `phase_pending_bound_checks` in entities_phase.rs).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+
+    /// `DiagnosticCode::TypeArgArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-4 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("wrong number of type arguments").with_code(DiagnosticCode::TypeArgArity);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgArity));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// `DiagnosticCode::TypeArgBound` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`.
+    ///
+    /// RED until step-4 adds the variant.
+    #[test]
+    fn diagnostic_code_type_arg_bound_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("type argument does not satisfy bound").with_code(DiagnosticCode::TypeArgBound);
+        assert_eq!(d.code, Some(DiagnosticCode::TypeArgBound));
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgArity` serializes as
+    /// `"TypeArgArity"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-4 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgArity).unwrap();
+        assert_eq!(s, "\"TypeArgArity\"");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::TypeArgBound` serializes as
+    /// `"TypeArgBound"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// RED until step-4 adds the variant.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_type_arg_bound_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::TypeArgBound).unwrap();
+        assert_eq!(s, "\"TypeArgBound\"");
     }
 
     // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---

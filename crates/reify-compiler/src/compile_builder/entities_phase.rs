@@ -43,7 +43,10 @@ use crate::entity::{
 };
 use crate::expr::compile_expr;
 use crate::scope::CompilationScope;
-use crate::type_resolution::{resolve_type_expr_with_aliases, TypeAliasRegistry};
+use crate::type_resolution::{
+    check_applied_type_arg_bounds, resolve_type_expr_with_aliases, walk_type_for_applied,
+    TypeAliasRegistry,
+};
 use reify_core::ValueCellId;
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
@@ -821,6 +824,36 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
             }
         }
     }
+
+    // Task 4603 γ: arity/bound walk for Type::Applied nodes in structure
+    // value-cell type annotations.
+    //
+    // After the pending-check drain above, iterate every locally-compiled
+    // structure template's value_cells.  For each cell_type, recursively
+    // enumerate any `Type::Applied{name, args}` nodes and call
+    // `check_applied_type_arg_bounds` — which currently (step-6) checks
+    // arity; step-8 will extend it with per-arg bound checking.
+    //
+    // The `template_registry` and `trait_registry` built above are reused;
+    // diagnostics are collected into a local vec first so that the shared
+    // borrow of ctx.templates (through template_registry) and the mutable
+    // borrow of ctx.diagnostics stay in separate regions.
+    let mut applied_type_diagnostics: Vec<Diagnostic> = Vec::new();
+    for template in &ctx.templates {
+        for vc in &template.value_cells {
+            walk_type_for_applied(&vc.cell_type, &mut |name, args| {
+                check_applied_type_arg_bounds(
+                    name,
+                    args,
+                    &template_registry,
+                    &trait_registry,
+                    &mut applied_type_diagnostics,
+                    vc.span,
+                );
+            });
+        }
+    }
+    ctx.diagnostics.extend(applied_type_diagnostics);
 }
 
 /// Post-compilation pass: drain `ctx.pending_sub_override_autos` and resolve

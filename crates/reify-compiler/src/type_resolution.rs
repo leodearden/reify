@@ -1420,6 +1420,44 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
         return Some(Type::Error);
     }
 
+    // Structure-with-args arm (task 4603 γ — un-drop fix).
+    //
+    // When `name ∈ structure_names` AND `type_args` is non-empty, the caller is
+    // writing something like `Coupling<Prismatic>`. The simple-name fallthrough
+    // below (`resolve_type_with_aliases`) would produce `Type::StructureRef("Coupling")`
+    // and **silently drop** the type args — making `Coupling<Prismatic>` and
+    // `Coupling<Revolute>` identical. This arm intercepts that case first.
+    //
+    // Each arg is resolved recursively via `resolve_type_expr_with_aliases_kinded`
+    // (the same recursion that `List<T>`, `Map<K,V>`, etc. use in
+    // `resolve_parameterized_builtin_type`). An arg that resolves to `None` becomes
+    // `Type::Error` (anti-cascade sentinel — the diagnostic was already pushed).
+    //
+    // Invariant: non-empty `type_args` + `structure_names` hit ⇒ `Type::Applied`;
+    //            empty `type_args` falls through to `resolve_type_with_aliases`
+    //            and becomes `Type::StructureRef` (unchanged).
+    if structure_names.contains(name) && !type_args.is_empty() {
+        let args: Vec<Type> = type_args
+            .iter()
+            .map(|arg_expr| {
+                resolve_type_expr_with_aliases_kinded(
+                    arg_expr,
+                    type_param_names,
+                    dim_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )
+                .unwrap_or(Type::Error)
+            })
+            .collect();
+        return Some(Type::Applied {
+            name: name.to_string(),
+            args,
+        });
+    }
+
     // Simple name resolution (builtins, type params, non-parameterized aliases,
     // structure names, trait names).
     if let Some(ty) = resolve_type_with_aliases(
@@ -2841,6 +2879,204 @@ pub(crate) fn convert_type_params(
             }
         })
         .collect()
+}
+
+// ─── task 4603 γ: applied-type-arg arity/bound checker ───────────────────────
+
+/// Walk a resolved `Type` recursively and invoke `f` for every
+/// `Type::Applied { name, args }` node encountered.
+///
+/// Descends into the element/inner types of all parametric variants so that
+/// nested applications like `List<Coupling<Prismatic>>` are captured.
+/// `f` is called for the outer `Applied` node first, then for any `Applied`
+/// nodes inside its `args` (depth-first pre-order).
+///
+/// Used by `phase_pending_bound_checks` (entities_phase.rs) to sweep each
+/// structure template's `value_cell.cell_type` for applied-structure nodes
+/// that need arity and bound validation.
+pub(crate) fn walk_type_for_applied<'a>(
+    ty: &'a Type,
+    f: &mut impl FnMut(&'a str, &'a [Type]),
+) {
+    match ty {
+        Type::Applied { name, args } => {
+            f(name, args);
+            for arg in args {
+                walk_type_for_applied(arg, f);
+            }
+        }
+        Type::List(inner) | Type::Set(inner) | Type::Option(inner) | Type::Keyed(inner)
+        | Type::Range(inner) | Type::Complex(inner) => {
+            walk_type_for_applied(inner, f);
+        }
+        Type::Map(key, val) => {
+            walk_type_for_applied(key, f);
+            walk_type_for_applied(val, f);
+        }
+        Type::Field { domain, codomain } => {
+            walk_type_for_applied(domain, f);
+            walk_type_for_applied(codomain, f);
+        }
+        Type::Point { quantity, .. }
+        | Type::Vector { quantity, .. }
+        | Type::Tensor { quantity, .. }
+        | Type::Matrix { quantity, .. } => {
+            walk_type_for_applied(quantity, f);
+        }
+        Type::Union(variants) => {
+            for v in variants {
+                walk_type_for_applied(v, f);
+            }
+        }
+        Type::Function { params, return_type } => {
+            for p in params {
+                walk_type_for_applied(p, f);
+            }
+            walk_type_for_applied(return_type, f);
+        }
+        Type::Projection { base, .. } => {
+            walk_type_for_applied(base, f);
+        }
+        // Leaf types — no inner types to recurse into.
+        Type::Bool
+        | Type::Int
+        | Type::String
+        | Type::Scalar { .. }
+        | Type::Enum(_)
+        | Type::TypeParam(_)
+        | Type::StructureRef(_)
+        | Type::TraitObject(_)
+        | Type::Geometry
+        | Type::ScalarParam(_)
+        | Type::Orientation(_)
+        | Type::Frame(_)
+        | Type::Transform(_)
+        | Type::AffineMap(_)
+        | Type::Direction
+        | Type::BoundingBox
+        | Type::Plane
+        | Type::Axis
+        | Type::Selector(_)
+        | Type::AnySelector
+        | Type::Relation
+        | Type::Error => {}
+    }
+}
+
+/// Check arity and bounds for a `Type::Applied { name, args }` node found in a
+/// structure value-cell type annotation.
+///
+/// Called from `phase_pending_bound_checks` (entities_phase.rs) after all structures
+/// are compiled and the combined `template_registry` + `trait_registry` are available.
+///
+/// ## Arity
+///
+/// Looks up `name` in `template_registry`.  If absent (external / unknown structure)
+/// returns silently — the use will have produced a diagnostic elsewhere.  If present,
+/// applies strict equality: `args.len() != type_params.len()` → pushes a
+/// `DiagnosticCode::TypeArgArity` diagnostic citing name, expected count, and actual
+/// count.
+///
+/// **No early-return on empty `type_params`**: a non-generic structure given N > 0
+/// args is an arity error (0 vs N), unlike the shared `check_type_param_bounds`
+/// which early-continues on empty type_params.
+///
+/// ## Bound check
+///
+/// After the arity check, iterates over `min(args.len(), type_params.len())` pairs
+/// so that bound checking proceeds even when arity is wrong (reporting both kinds of
+/// error independently).  For each (arg, type_param) pair:
+///
+/// - Skips `Type::TypeParam(_)` args — bounds are enforced at the concrete
+///   instantiation site (mirrors `check_type_param_bounds`, entity.rs:3897).
+/// - Skips non-named/builtin args where `as_name()` returns `None` — they cannot
+///   violate a structure-trait bound.
+/// - For each bound declared on the type parameter, calls `satisfies_trait_bound`
+///   (entity.rs:3937) with the arg structure's `trait_bounds`; a false result
+///   pushes `DiagnosticCode::TypeArgBound`.
+///
+/// PRD mnemonic: E_TYPE_ARG_ARITY / E_TYPE_ARG_BOUND.
+pub(crate) fn check_applied_type_arg_bounds(
+    name: &str,
+    args: &[Type],
+    template_registry: &HashMap<String, &TopologyTemplate>,
+    trait_registry: &HashMap<String, &CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) {
+    let target = match template_registry.get(name) {
+        Some(t) => t,
+        None => return, // External / unknown structure — skip without error.
+    };
+
+    // Strict arity: args.len() must exactly equal type_params.len().
+    //
+    // NOTE: we do NOT skip (early-continue) when type_params is empty.  A
+    // non-generic structure that receives type args is an arity violation just
+    // as much as a generic one that receives the wrong count.
+    if args.len() != target.type_params.len() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "wrong number of type arguments for '{}': expected {}, got {}",
+                name,
+                target.type_params.len(),
+                args.len(),
+            ))
+            .with_code(DiagnosticCode::TypeArgArity)
+            .with_label(DiagnosticLabel::new(
+                span,
+                format!(
+                    "'{}' has {} type parameter(s) but {} {} supplied",
+                    name,
+                    target.type_params.len(),
+                    args.len(),
+                    if args.len() == 1 { "was" } else { "were" },
+                ),
+            )),
+        );
+    }
+
+    // Per-arg bound check — runs over the overlapping prefix even when arity
+    // is wrong, so both TypeArgArity and TypeArgBound can be reported.
+    let check_len = args.len().min(target.type_params.len());
+    for i in 0..check_len {
+        let arg = &args[i];
+        let tp = &target.type_params[i];
+
+        // Skip forwarded type-param args — their bounds are enforced at the
+        // concrete instantiation site (mirrors entity.rs:3897).
+        if matches!(arg, Type::TypeParam(_)) {
+            continue;
+        }
+
+        // Skip builtin/non-named args — they cannot violate a structure bound.
+        let arg_name = match arg.as_name() {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let arg_template = template_registry.get(arg_name);
+
+        for bound in &tp.bounds {
+            let bound_name = &bound.trait_ref.name;
+            let satisfied = arg_template
+                .is_some_and(|t| satisfies_trait_bound(&t.trait_bounds, bound_name, trait_registry));
+
+            if !satisfied {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "type argument '{}' does not satisfy bound '{}' on type parameter '{}' of '{}'",
+                        arg_name, bound_name, tp.name, name,
+                    ))
+                    .with_code(DiagnosticCode::TypeArgBound)
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        format!("'{}' does not implement '{}'", arg_name, bound_name),
+                    )),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
