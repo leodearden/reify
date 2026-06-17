@@ -82,3 +82,14 @@ No grammar-fixture bindings (no novel `.ri` syntax) and no numeric-floor binding
 | Candidate corpus enumerated with counts | audit critic gap 1: "not yet implemented" 51 (incl. STUB_MSGs at reify-kernel-manifold/kernel.rs:46, reify-kernel-openvdb/kernel.rs:23, mesh-morph lib.rs:168, constraints solver.rs:580), "for now" 42, "placeholder" 973, "stub" 1472, "XXX" 232, "workaround" 68 | PASS |
 | FP-review methodology precedent | tasks 4075/4076/4141 (P5/P2 live-corpus reviews); 4115 NO-decision record pattern (PRD §10 amendment commit) | PASS |
 | producer:task-ε upstream (detector live before vocabulary extends) | DAG: θ depends_on ε | PASS (upstream) |
+
+## ι — parked-on-anchor guard (LEAF, advisory)
+
+| Capability | Evidence | Verdict |
+|---|---|---|
+| `metadata.do_not_complete` flag exists in live tasks.db | live tasks.db 2026-06-17: `SELECT id, metadata FROM tasks WHERE tag='master'` shows #4593 metadata `{"do_not_complete":true,...}` (exactly 1 non-terminal do_not_complete at decompose time; now retired) | PASS |
+| serde_json metadata-parse pattern to mirror | `crates/reify-audit/src/ptodo.rs` `resolve_inverse` `SELECT id, status, metadata FROM tasks WHERE tag='master'` + serde_json::from_str::<Value> parse | PASS (wired) |
+| `metadata` column already nullable in test schema | `tests/common/schema.rs:57-66` `TASKS_DB_SCHEMA` `metadata TEXT` (nullable); `insert_task_with_metadata` helper at line 108 | PASS (wired) |
+| Medium severity is exit-neutral | `bin/reify-audit.rs:629-647` (exit code = High count; Medium findings are advisory) | PASS (wired) |
+| Liveness-lane fail-soft degrades automatically | `resolve_liveness_keyed` is reached only when DB is open; DB-absent path skips entire liveness lane (§6.7) | PASS (wired) |
+| producer:tasks β + ε upstream (liveness machinery + integration gate) | DAG: ι depends_on β, ε | PASS (upstream) |

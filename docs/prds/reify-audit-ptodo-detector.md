@@ -83,7 +83,9 @@ PTODO` and included in the default sweep. Two lanes sharing one finding stream:
   Runs everywhere, including worktrees.
 - **Liveness lane** (task DB): resolve cited ids against
   `.taskmaster/tasks/tasks.db` (read-only); emit `orphaned` (terminal status) /
-  `unknown-id` findings. Degrades fail-soft when the DB is absent (§6.7).
+  `parked-on-anchor` (cite resolves to a non-terminal task with
+  `metadata.do_not_complete == true`) / `unknown-id` findings. Degrades
+  fail-soft when the DB is absent (§6.7).
 
 Plus a narrow **inverse lane** (§6.3): non-terminal tasks whose `metadata.files`
 entries name git-deleted paths.
@@ -241,6 +243,7 @@ one live cite suffices for tracking.
 | `unknown-id` | cite parses but id not in the task DB | liveness |
 | `orphaned` | cited task status ∈ {done, cancelled} — reported with cited id + status | liveness |
 | `task-cites-deleted-path` | non-terminal task `metadata.files` path absent from tracked set but present in git history | inverse |
+| `parked-on-anchor` | cited task is non-terminal but `metadata.do_not_complete == true` (a permanently-parked / never-completing anchor) and no other cite on the marker is genuinely live | liveness |
 
 **`#[ignore]` reason policy:** reasons containing a cite → liveness-checked; reasons
 matching blocker-prose (`pending|not yet|RED:|until |once |blocked`) without a cite →
@@ -256,6 +259,13 @@ As of task η (#4559, 2026-06-15) `untracked` / `orphaned` / `bare-ignore` emit
 `tests/infra` PTODO check hard-fails verify). `unknown-id` stays **Medium** (a
 DB-sync artifact must not hard-fail verify); `task-cites-deleted-path` stays
 advisory; `malformed-cite` / `phantom-tracking` stay **Medium**.
+
+`parked-on-anchor` emits **Medium** (advisory, exit-neutral): a `do_not_complete`
+anchor is non-terminal but never resolves the cited debt; surface it ("parked, not
+promised") without hard-failing. Keyed on the structured `metadata.do_not_complete`
+flag — NOT bare `deferred` (genuine paused/human-owned deferred tasks like #4577/#4642
+would be false positives) and NOT `do_not_dispatch` (#4642 is human-owned and will
+complete). See §15 for the full design-decision record.
 
 ## 9. Boundary-test sketch
 
@@ -278,6 +288,10 @@ Fixture-driven, both directions across the detector↔repo and detector↔DB sea
 | 11 | Inverse: deleted path | non-terminal task metadata.files names a path deleted in git history | `task-cites-deleted-path` |
 | 12 | Inverse: to-be-created path | metadata.files names a never-existed path | no finding |
 | 13 | Infra ratchet | introduce a fresh untracked `TODO:` in a tracked file | `test_reify_audit_ptodo.sh` exits non-zero |
+| 14 | Parked-on-anchor cite | `// TODO(#42): perf`, DB has 42=deferred + `{"do_not_complete":true}` | one `parked-on-anchor` Medium finding, summary carries `#42`, `deferred`, `do_not_complete` |
+| 15 | Deferred without flag (FP guard a) | `// TODO(#42):`, DB has 42=deferred, NULL metadata | no finding |
+| 15b | do_not_dispatch-only (FP guard b) | `// TODO(#42):`, DB has 42=deferred + `{"do_not_dispatch":true}` | no finding |
+| 16 | One genuinely-live co-cite (§8.2 preservation) | marker cites #42 (deferred+do_not_complete) AND #43 (pending) | no finding |
 
 ## 10. Cross-PRD relationship (G4)
 
@@ -351,8 +365,12 @@ Labels are PRD-relative; ids assigned at decompose. All signals CLI-observable.
   record NO-decisions as an amendment commit to this PRD (the 4115 pattern). **Leaf.**
   Signal: the decision record committed to this PRD + (if any cleared) new vocabulary
   live in `--pattern PTODO` with fixtures.
+- **ι — parked-on-anchor liveness guard** (dep β, ε). Detect cites resolving to a
+  non-terminal `do_not_complete` task (§8.3/§8.4); advisory Medium. **Leaf.** Dispatch
+  condition: zero live parked-on-anchor on main. Signal: scenarios 14/15/16 pass; live
+  repo reports zero above baseline. **Landed 2026-06-17 (task #4644).**
 
-Dependency DAG: α → β → {δ, ζ}; α → γ (also γ ← β); {β, γ, δ} → ε; ε → {η, θ}.
+Dependency DAG: α → β → {δ, ζ}; α → γ (also γ ← β); {β, γ, δ} → ε; ε → {η, θ}; {β, ε} → ι.
 
 ## 13. Open questions (tactical)
 
@@ -429,3 +447,68 @@ untracked debt in one of these vocabulary forms that could not be tracked via th
 `TODO(#NNNN):` convention, reopen with a fresh live-corpus sample and update this table.
 The in-code guard (`ASSESSED_REJECTED_VOCAB`) must be updated alongside any vocabulary
 addition, with a new dated row in this table.
+
+## 15. Design decisions 2026-06-17 (task ι, #4644): parked-on-anchor liveness guard
+
+### 15.1 The anchor-laundering loophole
+
+Before this task, `is_terminal_status()` was true only for {done, cancelled}. A
+permanently-parked task carrying `metadata.do_not_complete == true` was classified as
+live — so a TODO citing it passed the hard gate as genuinely tracked, silently laundering
+open debt through a "live but never-completing" anchor. This task is the recurrence guard:
+it detects cites to such tasks and emits an advisory `parked-on-anchor` finding.
+
+### 15.2 Signal decision: key on `metadata.do_not_complete == true`
+
+**DECISION: Key the signal on the structured `metadata.do_not_complete == true` flag, NOT
+on bare `status == 'deferred'` and NOT on `do_not_dispatch`.**
+
+Evidence captured at loophole-discovery / decompose (2026-06-17):
+
+| Task | Status | do_not_complete | do_not_dispatch | Verdict |
+|------|--------|-----------------|-----------------|---------|
+| #4593 | deferred | true | — | Exploited anchor; caught by the guard |
+| #4592 | done | true | — | Terminal → moot (orphaned classification applies) |
+| #4577 | deferred | false/absent | — | Genuine paused design task; resumes → FP if caught by bare-deferred |
+| #4642 | deferred | false/absent | true | Human-owned, will complete → FP if caught by bare-deferred or do_not_dispatch |
+
+Zero false positives with the `do_not_complete` signal. `do_not_complete` is the structural
+generalization — matched by flag, not by literal id — so a future v5 anchor is caught
+automatically.
+
+**CRITICAL CONSISTENCY NOTE:** #4593 has since been retired/cancelled by the sibling task
+(#4643, landed 2026-06-17, §6.1/§10). This guard is a pure RECURRENCE GUARD: there are
+zero live `parked-on-anchor` findings on main today by design. A future author who introduces
+a new `do_not_complete` anchor and cites it from a TODO will see this finding surface.
+
+### 15.3 Why Medium (advisory, exit-neutral)
+
+A `do_not_complete` anchor is non-terminal but never resolves the cited debt. Parked perf
+notes are a deliberate, accepted backlog ("parked, not promised"), NOT broken work — they
+must not hard-fail verify. Medium keeps the exit code = High count unchanged. This is
+distinct from `orphaned` (High — the cited task is dead/broken) and shares Medium with
+`unknown-id` (a DB-sync artifact). The `parked-on-anchor` finding lives in the liveness lane
+so it degrades fail-soft (§6.7) — silent in worktrees when the task DB is absent — and the
+structural lane is unaffected.
+
+### 15.4 Dispatch condition and baseline
+
+The dispatch condition (checked at dispatch, NOT a dep edge — mirrors η #4559): zero live
+`parked-on-anchor` findings on main at land. The `ptodo-baseline.txt` is empty (0 bytes) and
+stays empty — no grandfathering of residual #4593 cites (they were retired by the sibling
+before this task landed).
+
+### 15.5 Coordination with the sibling (§6.1/§10 anchor retirement, task #4643)
+
+Task #4643 retired the historical exploited anchor: removed all `// TODO(#4593):` cite
+markers from the codebase and updated §6.1/§10 of this PRD to record the retirement.
+Task ι (#4644) adds the structural guard so a future v5 anchor is caught automatically.
+The two tasks are disjoint (no shared file writes) and were coordinated by landing #4643
+first, then #4644. Coordination is now complete.
+
+### 15.6 Revisit condition
+
+If a future audit finds a flag-less `deferred` task used as a never-completing anchor and
+cited by TODOs, extend the signal to a documented allowlist or to bare-deferred-with-review;
+update this §15 record and add a guard test. Do NOT silently widen the signal without updating
+the evidence table (§15.2) and test coverage (scenarios 14/15/16).
