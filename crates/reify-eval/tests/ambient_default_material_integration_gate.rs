@@ -475,16 +475,29 @@ fn scan_dir(
         let name_str = name.to_string_lossy();
 
         if path.is_dir() {
-            // Only recurse into `src/` dirs; never into `tests/` or `benches/`.
-            let should_descend = if in_src {
-                // Already inside src/ — descend freely.
-                true
+            let (should_descend, next_in_src) = if in_src {
+                // Already inside src/ — descend freely, stay in src mode.
+                (true, true)
             } else {
-                // At the crate root or above — only descend into dirs named `src`.
-                name_str == "src"
+                // Not yet inside a src/ dir. Skip transient/test/hidden dirs.
+                let skip = name_str.starts_with('.')
+                    || name_str == "target"
+                    || name_str == "tests"
+                    || name_str == "benches";
+                if skip {
+                    // Do not recurse into this dir.
+                    (false, false)
+                } else if name_str == "src" {
+                    // Enter src mode on crossing into a dir named `src`.
+                    (true, true)
+                } else {
+                    // Any other dir (e.g. the crate dir under crates/) — descend
+                    // but stay in !in_src mode (keep looking for a `src` subdir).
+                    (true, false)
+                }
             };
             if should_descend {
-                scan_dir(&path, needles, true, matches, files_scanned);
+                scan_dir(&path, needles, next_in_src, matches, files_scanned);
             }
         } else if in_src && name_str.ends_with(".rs") {
             // Read the file and scan for needles.
