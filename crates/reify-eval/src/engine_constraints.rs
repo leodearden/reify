@@ -123,6 +123,74 @@ pub(crate) fn dfm_rule_spec(v: &Value) -> Option<DfmRuleSpec> {
     Some(DfmRuleSpec { kind, subject_handle, rule_value: v.clone() })
 }
 
+// ── DFM thickness measurement types (task 4426 ζ) ────────────────────────────
+
+/// A fully-parsed thickness DFM rule ready for the auto-measurement pass.
+///
+/// Produced by [`dfm_thickness_spec`] from a `Value::StructureInstance` that
+/// conforms (by duck-typing) to a DFMRule carrying `applies_to.min_feature_size`.
+/// Independent of [`DfmRuleSpec`]/[`DfmRuleKind`] — fires for ANY rule whose
+/// `applies_to` carries a LENGTH `min_feature_size` field, regardless of whether
+/// it also carries `max_overhang_angle` / `draft_angle` (so Adding gets both
+/// overhang/draft checks AND thickness checks; Subtracting/Parting — which
+/// `dfm_rule_spec` rejects for lack of angle fields — get thickness only).
+#[derive(Debug, Clone)]
+pub(crate) struct DfmThicknessSpec {
+    /// The geometry handle ref for the rule's `subject` Solid.
+    /// Used by `measure_min_wall`/`measure_min_feature` (both consume `GeometryHandleRef`).
+    pub subject_ref: reify_ir::value::GeometryHandleRef,
+    /// Process minimum feature size in SI metres (from `applies_to.min_feature_size`).
+    pub min_feature_size_m: f64,
+    /// The original DFM rule `Value::StructureInstance` (cloned), passed as `args[0]`
+    /// to `dfm_diagnose` so it can read the `severity` field.
+    pub rule_value: Value,
+}
+
+/// Attempt to parse a `Value` as a thickness DFM rule and extract a [`DfmThicknessSpec`].
+///
+/// Recognition (duck-typing, independent of [`dfm_rule_spec`]):
+/// - `v` must be a `Value::StructureInstance`.
+/// - Must have a `severity` field that is a `Value::Enum { type_name: "DFMSeverity", .. }`.
+/// - Must have an `applies_to` field that is itself a `StructureInstance`.
+/// - `applies_to.fields["min_feature_size"]` must be a LENGTH scalar.
+/// - Must have a `subject` field that is a `Value::GeometryHandle` (→ `from_geometry_handle`).
+///
+/// Returns `None` when any of those conditions fails.
+pub(crate) fn dfm_thickness_spec(v: &Value) -> Option<DfmThicknessSpec> {
+    let data = match v {
+        Value::StructureInstance(d) => d,
+        _ => return None,
+    };
+
+    // Require a DFMSeverity `severity` field.
+    match data.fields.get("severity") {
+        Some(Value::Enum { type_name, .. }) if type_name == "DFMSeverity" => {}
+        _ => return None,
+    }
+
+    // Require an `applies_to` StructureInstance.
+    let applies_to = match data.fields.get("applies_to") {
+        Some(Value::StructureInstance(d)) => d,
+        _ => return None,
+    };
+
+    // Read `applies_to.min_feature_size` as a LENGTH scalar.
+    let min_feature_size_m = match applies_to.fields.get("min_feature_size") {
+        Some(Value::Scalar { si_value, dimension }) if *dimension == DimensionVector::LENGTH => {
+            *si_value
+        }
+        _ => return None,
+    };
+
+    // Require `subject` to be a live `Value::GeometryHandle`.
+    let subject_ref = match data.fields.get("subject") {
+        Some(gh) => reify_ir::value::GeometryHandleRef::from_geometry_handle(gh)?,
+        None => return None,
+    };
+
+    Some(DfmThicknessSpec { subject_ref, min_feature_size_m, rule_value: v.clone() })
+}
+
 // ── GD&T callout descriptor (C1, task 4475 β) ───────────────────────────────
 
 /// A single GD&T callout instance enumerated by [`Engine::enumerate_gdt_callouts`].
