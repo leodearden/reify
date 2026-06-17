@@ -206,4 +206,50 @@ assert "E: returned fast < 2s (merge bypasses PSI wait)" \
 assert "E: stdout contains STUB_CARGO sentinel" \
     bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
 
+# ---------------------------------------------------------------------------
+# Cycle F: non-heavy subcommands UNGATED despite saturated PSI (C-S1).
+# Under high PSI (avg10=99, MAX_WAIT=3, POLL=1), --version / metadata / fmt /
+# add must return FAST (elapsed < 2s) and still reach the real cargo.
+# RED until step-4 adds subcommand classification (v1 gates everything and
+# blocks for MAX_WAIT=3s, failing the elapsed < 2s guard).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle F: non-heavy subcommands ungated under high PSI ---"
+
+PSI_F="$(make_psi_fixture 99)"
+
+for _subcmd in "--version" "metadata" "fmt" "add somecrate"; do
+    # shellcheck disable=SC2086  # intentional word-splitting for multi-token subcommands
+    run_shim "$PSI_F" \
+        REIFY_CPU_ADMIT_MAX_WAIT=3 REIFY_CPU_ADMIT_POLL=1 -- \
+        $_subcmd
+    assert "F: '$_subcmd' under avg10=99 → exit 0" \
+        test "$SHIM_RC" -eq 0
+    assert "F: '$_subcmd' returns fast < 2s (ungated — C-S1)" \
+        test "$SHIM_ELAPSED" -lt 2
+    assert "F: '$_subcmd' still reaches real cargo (STUB_CARGO sentinel present)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "STUB_CARGO"' _ "$SHIM_STDOUT"
+done
+
+# ---------------------------------------------------------------------------
+# Cycle G: heavy-set completeness regression guard (PRD §4.3 / §11 Q4).
+# All 8 heavy subcommands {build,test,nextest,check,clippy,bench,doc,build-std}
+# must be GATED under high PSI (elapsed >= 1s with MAX_WAIT=1, POLL=1).
+# Passes under both v1 (unconditional gate) and the refined shim (step-4).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle G: heavy-set completeness (all 8 subcommands gated) ---"
+
+PSI_G="$(make_psi_fixture 99)"
+
+for _heavy in build test nextest check clippy bench doc build-std; do
+    run_shim "$PSI_G" \
+        REIFY_CPU_ADMIT_MAX_WAIT=1 REIFY_CPU_ADMIT_POLL=1 -- \
+        "$_heavy"
+    assert "G: '$_heavy' gated (elapsed >= 1s)" \
+        test "$SHIM_ELAPSED" -ge 1
+    assert "G: '$_heavy' exit 0 (admit-on-timeout)" \
+        test "$SHIM_RC" -eq 0
+done
+
 test_summary
