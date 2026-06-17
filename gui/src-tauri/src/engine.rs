@@ -3246,6 +3246,20 @@ fn build_values(
                     String::from(format_freshness(&e.freshness(&node)))
                 })
                 .unwrap_or_else(|| String::from("final"));
+            // Undef-cause reconstruction: for each Undef cell, walk the
+            // dependency graph forward to reconstruct the root-cause set
+            // (PRD A3: the origins side-map records only direct origins;
+            // propagated cells are resolved by graph traversal).
+            //
+            // Performance note: `trace_undef_causes` is heavier than the
+            // adjacent O(1) `freshness` lookup — each call reconstructs the
+            // root-cause set by walking forward dependencies through undef
+            // cells against the current snapshot (roughly O(dependency walk)
+            // per cell). This is fine for typical models. For a model with
+            // many Undef cells (e.g. a freshly-loaded model with most params
+            // unbound), this becomes O(Undef cells × dependency walk) per
+            // `build_values` call. If profiling identifies this as a hotspot,
+            // consider a single-pass batch over the origins side-map + graph.
             let reason = match &val {
                 reify_ir::Value::Undef => engine.and_then(|e| {
                     reify_eval::format_undef_causes(&e.trace_undef_causes(&cell.id))

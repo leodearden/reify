@@ -13204,3 +13204,44 @@ structure UndefMcpTest {
         width.reason
     );
 }
+
+// --- Propagated undef coverage (amend: reviewer suggestion test_coverage) ---
+
+/// A cell whose Undef status is *propagated* from an unbound param must also
+/// surface the upstream root cause through `build_gui_state`.
+///
+/// This exercises the dependency-walk reconstruction path of
+/// `trace_undef_causes` (PRD A3: the origins side-map records only direct
+/// origins; propagated cells are resolved by forward-walking the dependency
+/// graph). It is distinct from the directly-unbound case tested above and
+/// ensures the GUI layer correctly surfaces causes through the full chain.
+#[test]
+fn build_gui_state_populates_reason_for_propagated_undef() {
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    // `derived_r` is a Let cell whose Undef is propagated from the unbound
+    // param `outer_d`.  PRD A3: the origins side-map has no entry for
+    // `derived_r` itself; `trace_undef_causes` resolves it by graph traversal.
+    let source = r#"
+structure UndefEpsilonPropagatedTest {
+    param outer_d: Length
+    let derived_r = outer_d + outer_d
+}
+"#;
+    let state = session
+        .load_from_source(source, "undef_epsilon_propagated_test")
+        .expect("load_from_source should succeed");
+
+    let derived = state
+        .values
+        .iter()
+        .find(|v| v.name == "derived_r")
+        .expect("should have derived_r value cell");
+    assert_eq!(
+        derived.reason,
+        Some("outer_d unbound".to_string()),
+        "propagated undef cell must surface upstream root cause 'outer_d unbound' via graph walk"
+    );
+}
