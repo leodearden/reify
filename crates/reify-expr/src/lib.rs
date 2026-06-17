@@ -26,6 +26,22 @@ use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, Determin
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
 
+/// Narrow callback for point-in-region containment used by
+/// `sample(restrict(field, region), point)`.
+///
+/// Defined in `reify-expr` (geometry-free) so `EvalContext` can carry a reference
+/// without pulling in kernel/OCCT dependencies.  `reify-eval` implements this
+/// on `Engine` (§5.3 option (b)).
+///
+/// Return semantics:
+/// - `Some(true)` — point is strictly inside the region; sample the inner field.
+/// - `Some(false)` — point is strictly outside the region; yield `Value::Undef`.
+/// - `None` — containment is indeterminate (non-geometry region, malformed point,
+///   kernel error, etc.); yield `Value::Undef`.
+pub trait ContainmentQuery {
+    fn contains(&self, region: &Value, point: &Value) -> Option<bool>;
+}
+
 /// Evaluation context: provides values, user-defined functions, and recursion tracking.
 pub struct EvalContext<'a> {
     /// Current values of all cells.
@@ -66,6 +82,15 @@ pub struct EvalContext<'a> {
     /// the post-eval re-evaluation pass; callers that want to test the sink
     /// directly can use `with_undef_cause_sink`.
     pub undef_causes: Option<&'a RefCell<Vec<UndefCause>>>,
+    /// Optional containment resolver for `sample(restrict(field, region), point)`.
+    ///
+    /// When `Some`, the `Restricted` sample arm calls `c.contains(region, point)`
+    /// and branches: `Some(true)` → sample inner field; `_ (false/None)` → Undef.
+    /// When `None`, all restricted-field samples yield `Value::Undef`.
+    ///
+    /// Wired by `Engine::cell_eval_ctx` via `.with_containment(self)` (task 4222 δ,
+    /// PRD §5.3 option (b)).  Ad-hoc test contexts use `EvalContext::simple` (None).
+    pub containment: Option<&'a dyn ContainmentQuery>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -79,6 +104,7 @@ impl<'a> EvalContext<'a> {
             determinacy: None,
             diagnostics: None,
             undef_causes: None,
+            containment: None,
         }
     }
 
@@ -92,6 +118,7 @@ impl<'a> EvalContext<'a> {
             determinacy: None,
             diagnostics: None,
             undef_causes: None,
+            containment: None,
         }
     }
 
@@ -106,6 +133,7 @@ impl<'a> EvalContext<'a> {
             determinacy: None,
             diagnostics: None,
             undef_causes: None,
+            containment: None,
         }
     }
 
@@ -148,6 +176,20 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Attach a containment resolver for `sample(restrict(field, region), point)`.
+    ///
+    /// When attached, the `Restricted` sample arm calls `c.contains(region, point)`:
+    /// - `Some(true)` → sample the inner field at `point`.
+    /// - `Some(false)` / `None` → `Value::Undef`.
+    ///
+    /// Without a resolver (the default), all restricted-field samples yield `Undef`.
+    /// `Engine::cell_eval_ctx` attaches `self` (which implements `ContainmentQuery`)
+    /// via `.with_containment(self)` (task 4222 δ, PRD §5.3 option (b)).
+    pub fn with_containment(mut self, c: &'a dyn ContainmentQuery) -> Self {
+        self.containment = Some(c);
+        self
+    }
+
     /// Create a child context with a new scope (for function body evaluation).
     fn with_scope<'b>(&self, values: &'b ValueMap) -> EvalContext<'b>
     where
@@ -161,6 +203,7 @@ impl<'a> EvalContext<'a> {
             determinacy: self.determinacy,
             diagnostics: self.diagnostics,
             undef_causes: self.undef_causes,
+            containment: self.containment,
         }
     }
 }
@@ -2664,7 +2707,7 @@ pub fn apply_lambda(lambda: &Value, args: &[Value], ctx: &EvalContext) -> Value 
 /// | `VonMises`/`PrincipalStresses`/`MaxShear` + inner `Value::Field`  | analysis wrappers          |
 /// | `SafetyFactor` (any lambda)                | `analysis::sample_safety_factor_at_point`           |
 /// | `Composed` + `Value::List[f, g]`           | `sample_field_at(f, sample_field_at(g, at))`        |
-/// | `Restricted` + `Value::List[inner, region]`| stub → `Value::Undef` (task δ: OCCT containment)   |
+/// | `Restricted` + `Value::List[inner, region]`| `ContainmentQuery` hook → inner value or `Value::Undef` |
 fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
     if let Value::Field {
         lambda,
@@ -2787,15 +2830,19 @@ fn sample_field_at(field: &Value, at: &Value, ctx: &EvalContext) -> Value {
                 let intermediate = sample_field_at(&items[1], at, ctx);
                 sample_field_at(&items[0], &intermediate, ctx)
             }
-            // Restricted scaffold (std.fields α, task 4219, PRD §5.3 option (b)):
-            // lambda slot is Value::List[inner_field, region].  Returns Undef
-            // unconditionally pending the OCCT point-in-region containment hook.
-            // Task δ implements contains(region, point) and changes this to:
-            //   inside  → sample_field_at(inner_field, at)
-            //   outside → Value::Undef
+            // Restricted field (task 4222 δ, PRD §5.3 option (b)):
+            // lambda slot is Value::List[inner_field, region] (storage contract
+            // per value.rs:885).  Containment is resolved via the narrow
+            // `ContainmentQuery` callback injected into `EvalContext` by
+            // `Engine::cell_eval_ctx` (reify-eval) via `.with_containment(self)`.
+            //   inside  (Some(true))     → sample_field_at(inner_field, at, ctx)
+            //   outside (Some(false))    → Value::Undef
+            //   indeterminate/no-hook    → Value::Undef
             (Value::List(items), FieldSourceKind::Restricted) if items.len() == 2 => {
-                let _ = (&items[0], &items[1]); // inner_field, region — reserved for task δ
-                Value::Undef
+                match ctx.containment.and_then(|c| c.contains(&items[1], at)) {
+                    Some(true) => sample_field_at(&items[0], at, ctx),
+                    _ => Value::Undef,
+                }
             }
             _ => {
                 #[cfg(debug_assertions)]
