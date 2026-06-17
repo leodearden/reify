@@ -3116,4 +3116,109 @@ mod tests {
     fn is_orderable_scalar_frame_is_false() {
         assert!(!is_orderable_scalar(&Type::Frame(3)));
     }
+
+    // ── constraint_arg_type_conforms (task 4546) ──────────────────────────────
+
+    /// (gap) Bool passed where Length expected → false.
+    /// This is the primary gap this task closes.
+    #[test]
+    fn constraint_arg_type_conforms_bool_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &Type::Bool),
+            "Bool passed as Length param must be rejected"
+        );
+    }
+
+    /// (numeric leniency) Int passed where Length expected → true.
+    /// Dimensional strictness within predicates is task 4490's job.
+    #[test]
+    fn constraint_arg_type_conforms_int_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::Int),
+            "Int passed as Length param must be tolerated (numeric leniency)"
+        );
+    }
+
+    /// (cross-dimension numeric tolerated) Mass passed where Length expected → true.
+    /// Both sides are Scalar — the numeric-leniency rule applies.
+    #[test]
+    fn constraint_arg_type_conforms_mass_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &mass_ty()),
+            "Mass scalar passed as Length param must be tolerated (numeric leniency)"
+        );
+    }
+
+    /// (dimensionless numeric tolerated) dimensionless Real passed where Length → true.
+    #[test]
+    fn constraint_arg_type_conforms_dimensionless_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::dimensionless_scalar()),
+            "dimensionless Real scalar passed as Length param must be tolerated (numeric leniency)"
+        );
+    }
+
+    /// (identity) Length vs Length → true.
+    #[test]
+    fn constraint_arg_type_conforms_length_for_length_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &length_ty()),
+            "Length vs Length must be accepted"
+        );
+    }
+
+    /// (same-enum identity) Enum("Q") vs Enum("Q") → true.
+    #[test]
+    fn constraint_arg_type_conforms_same_enum_is_true() {
+        let enum_q = Type::Enum("Q".to_string());
+        assert!(
+            constraint_arg_type_conforms(&enum_q, &enum_q),
+            "Enum(Q) vs Enum(Q) must be accepted"
+        );
+    }
+
+    /// (generic-param skip) TypeParam("T") in param position → true regardless of arg.
+    #[test]
+    fn constraint_arg_type_conforms_type_param_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::TypeParam("T".to_string()), &Type::Bool),
+            "TypeParam-carrying param must be skipped (generic machinery handles it)"
+        );
+    }
+
+    /// (Bool vs Bool) concrete identical non-numeric → true.
+    #[test]
+    fn constraint_arg_type_conforms_bool_for_bool_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Bool, &Type::Bool),
+            "Bool vs Bool must be accepted"
+        );
+    }
+
+    /// (anti-cascade) Error on param side → true.
+    #[test]
+    fn constraint_arg_type_conforms_error_param_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&Type::Error, &length_ty()),
+            "Error param must be accepted (anti-cascade)"
+        );
+    }
+
+    /// (anti-cascade) Error on arg side → true.
+    #[test]
+    fn constraint_arg_type_conforms_error_arg_is_true() {
+        assert!(
+            constraint_arg_type_conforms(&length_ty(), &Type::Error),
+            "Error arg must be accepted (anti-cascade)"
+        );
+    }
+
+    /// (cross-category rejected) String passed where Length expected → false.
+    #[test]
+    fn constraint_arg_type_conforms_string_for_length_is_false() {
+        assert!(
+            !constraint_arg_type_conforms(&length_ty(), &Type::String),
+            "String passed as Length param must be rejected"
+        );
+    }
 }
