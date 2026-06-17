@@ -1204,6 +1204,19 @@ pub(crate) fn compile_geometry_op(
                         distance,
                     })
                 }
+                // STUB (step-12): evaluate distance and build the planar-overload
+                // OffsetCurve with no reference/direction so the workspace compiles.
+                // The full 3rd-arg dispatch (reference Surface vs direction Vector3,
+                // disambiguated on the "third" arg's Value variant) lands in step-14.
+                reify_compiler::ModifyKind::OffsetCurve => {
+                    let distance = eval_arg("distance")?;
+                    Ok(reify_ir::GeometryOp::OffsetCurve {
+                        target: target_id,
+                        distance,
+                        reference: None,
+                        direction: None,
+                    })
+                }
             }
         }
         CompiledGeometryOp::Transform { kind, target, args } => {

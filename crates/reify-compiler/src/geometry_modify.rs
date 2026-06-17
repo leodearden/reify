@@ -104,6 +104,50 @@ pub(crate) fn compile_modify_op(
             diagnostics,
             sub_ops,
         ),
+        // offset_curve(curve, distance)            — 2-arg planar offset (overload 1)
+        // offset_curve(curve, distance, reference) — 3-arg reference Surface (overload 2)
+        // offset_curve(curve, distance, direction) — 3-arg direction Vector3 (overload 3)
+        // The 3rd arg's role (reference Surface vs direction Vector3) is
+        // disambiguated at EVAL time on its Value variant, so the compiler stashes
+        // it under the neutral name "third" and validates only the 2-or-3 arity here.
+        "offset_curve" => match compiled_args.len() {
+            2 => compile_modify_2arg(
+                "offset_curve",
+                ModifyKind::OffsetCurve,
+                "distance",
+                compiled_args,
+                target,
+                expr_span,
+                diagnostics,
+                sub_ops,
+            ),
+            3 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Modify {
+                    kind: ModifyKind::OffsetCurve,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("distance".to_string(), it.next().unwrap()),
+                        ("third".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            // offset_curve accepts only the 2-arg planar form or the 3-arg
+            // reference/direction form. Emit a labeled diagnostic mirroring
+            // fillet/chamfer's range-arity message.
+            got => {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "offset_curve() expects 2 or 3 arguments, got {got}"
+                    ))
+                    .with_label(DiagnosticLabel::new(expr_span, "wrong number of arguments")),
+                );
+                None
+            }
+        },
         // draft(target, angle, plane)            — 3-arg all-draftable back-compat
         // draft(target, faces, angle, plane)     — 4-arg curated face selection
         "draft" => match compiled_args.len() {
@@ -876,6 +920,7 @@ mod tests {
             (ModifyKind::Draft, "draft", &["angle", "plane"]),
             (ModifyKind::ZoneSlab, "zone_slab", &["width"]),
             (ModifyKind::OffsetSolid, "offset_solid", &["distance"]),
+            (ModifyKind::OffsetCurve, "offset_curve", &["distance"]),
         ];
         // Compile-time coverage lock: if CASES.len() ever falls out of step with
         // ModifyKind::VARIANT_COUNT, `cargo check` fails here before any test runs.
@@ -894,7 +939,8 @@ mod tests {
             | ModifyKind::Shell
             | ModifyKind::Draft
             | ModifyKind::ZoneSlab
-            | ModifyKind::OffsetSolid => (),
+            | ModifyKind::OffsetSolid
+            | ModifyKind::OffsetCurve => (),
         };
         CASES
     }
