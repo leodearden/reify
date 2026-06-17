@@ -381,3 +381,97 @@ structure def UseC2 {
         q_cell.cell_type
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step 11 RED: nested generic instantiation must NOT trigger a false cycle
+//
+// `Wrap<Wrap<Prismatic>>::MotionValue` is a legitimately nested instantiation of the
+// same generic structure at two different nesting depths.  The (name, member) key
+// used in step-10's cycle guard conflates `Wrap<Wrap<Prismatic>>::MotionValue`
+// (outer) and `Wrap<Prismatic>::MotionValue` (inner) — when the outer reduction
+// substitutes P:=Wrap<Prismatic> and recurses, it re-enters the Applied arm with
+// the SAME ("Wrap","MotionValue") key, which is already in `visited` → false cycle
+// fire → spurious "recursive associated type Wrap::MotionValue" UnresolvedType
+// diagnostic + Type::Error poison (both assertions below fail RED).
+//
+// After step-12 the key is widened to (name, args, member), distinguishing the
+// outer (args=[Wrap<Prismatic>]) from the inner (args=[Prismatic]) → no false
+// positive and `a` reduces to Type::length().
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Legitimately-nested instantiation of the same generic structure at two
+/// different depths must reduce correctly without triggering a false cycle.
+///
+/// Fixture (reviewer's minimal repro):
+/// ```reify
+/// trait HasMotion { type MotionValue }
+/// structure def Prismatic : HasMotion { type MotionValue = Length }
+/// structure def Wrap<P: HasMotion> : HasMotion { type MotionValue = P::MotionValue }
+/// structure def UseNested { param a : Wrap<Wrap<Prismatic>>::MotionValue }
+/// ```
+///
+/// Reduction chain:
+///   `Wrap<Wrap<Prismatic>>::MotionValue`
+///   → Applied{Wrap, [Applied{Wrap,[StructureRef(Prismatic)]}]}
+///   → substitute P:=Wrap<Prismatic> into `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{Applied{Wrap,[StructureRef(Prismatic)]},"MotionValue"}`
+///   → substitute P:=Prismatic into `Projection{TypeParam(P),"MotionValue"}`
+///   → `Projection{StructureRef(Prismatic),"MotionValue"}`
+///   → Prismatic's binding = `Type::length()`.
+///
+/// WHY IT FAILS TODAY (step-10 key = (name, member)):
+///   The outer reduction inserts ("Wrap","MotionValue") into `visited`.
+///   Recursing for the inner `Wrap<Prismatic>::MotionValue` re-enters the Applied
+///   arm with the SAME key → `visited.contains(&key)` is true → false cycle fired.
+#[test]
+fn nested_generic_instantiation_reduces_without_false_cycle() {
+    let source = r#"
+trait HasMotion { type MotionValue }
+structure def Prismatic : HasMotion {
+    type MotionValue = Length
+}
+structure def Wrap<P: HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+}
+structure def UseNested {
+    param a : Wrap<Wrap<Prismatic>>::MotionValue
+}
+"#;
+    let module = compile_source(source);
+    let all_diags = errors_only(&module);
+
+    // (1) No false-cycle UnresolvedType diagnostic mentioning "recursive".
+    assert!(
+        !any_diag_has_code_and_msg(&all_diags, DiagnosticCode::UnresolvedType, "recursive"),
+        "Wrap<Wrap<Prismatic>>::MotionValue must NOT trigger a false cycle (spurious \
+         'recursive associated type Wrap::MotionValue' diagnostic); got: {:?}",
+        all_diags
+    );
+
+    // (2) Errors list must be empty.
+    assert!(
+        all_diags.is_empty(),
+        "nested instantiation must compile without errors; got: {:?}",
+        all_diags
+    );
+
+    // (3) UseNested's value cell `a` must reduce to Type::length().
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "UseNested")
+        .expect("UseNested template should be compiled");
+
+    let a_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "a")
+        .expect("value cell 'a' should exist");
+
+    assert_eq!(
+        a_cell.cell_type,
+        Type::length(),
+        "Wrap<Wrap<Prismatic>>::MotionValue must reduce to Type::length(); got: {:?}",
+        a_cell.cell_type
+    );
+}
