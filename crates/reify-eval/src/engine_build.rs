@@ -770,7 +770,6 @@ fn populate_attribute_history(
 /// The geometry is valid; only persistent-naming correspondence tracking is
 /// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
 /// that auxiliary-metadata degradation must not regress the realization to Failed.
-#[allow(dead_code)] // removed in step-6 when wired into execute_realization_ops
 fn diagnose_topology_correspondence_drops(
     attribute_history: &AttributeHistory,
     context: &str,
@@ -5494,6 +5493,18 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                             }
+                            // task 4545: surface topology-correspondence-loss counters
+                            // from the kernel history record as structured Warnings.
+                            // Called immediately after `populate_attribute_history`
+                            // (independent of its Result) so the warning is emitted
+                            // even when population also warns. Severity::Warning only
+                            // — geometry is valid, only persistent-naming tracking
+                            // is degraded (task-2574 auxiliary-metadata convention).
+                            diagnose_topology_correspondence_drops(
+                                &attribute_history,
+                                &format!("{realization_id} op {op_idx}"),
+                                diagnostics,
+                            );
                             // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
                             // propagation for non-BRep kernels.  Runs immediately after
                             // `populate_attribute_history` (BRep-first ordering per design
