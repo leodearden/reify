@@ -819,19 +819,25 @@ fn resolve_liveness_keyed(
                         format!("parked-on-anchor: line {line}: #{id} status={s} (do_not_complete): {text}"),
                     )
                 }
-                Some(_s) => {
+                Some(s) => {
                     // Non-terminal and NOT dnc — structurally unreachable: any such cite
                     // would have set `any_live = true` in the resolution loop above, and the
                     // §8.2 `if any_live { continue; }` guard would have skipped this entire
-                    // emission loop before reaching here.  Use `unreachable!` so a future
-                    // refactor that breaks the invariant surfaces as an immediate panic rather
-                    // than silently mislabelling a *present* task as `unknown-id` (which is
-                    // documented to mean "absent from the DB").
-                    unreachable!(
+                    // emission loop before reaching here.
+                    //
+                    // Use debug_assert! so an invariant break surfaces immediately in
+                    // debug/test builds while the release-mode audit sweep continues rather
+                    // than aborting every running pattern. Fallback: skip this cite silently
+                    // (emitting it as `unknown-id` would be confusing since that kind is
+                    // documented to mean "absent from the DB"; omission is the safer
+                    // release-mode degradation).
+                    debug_assert!(
+                        false,
                         "genuinely-live cite (present, non-terminal, not do_not_complete) \
                          should have set any_live and been skipped before emission; \
-                         id={id}, status={_s:?}"
-                    )
+                         id={id}, status={s:?}"
+                    );
+                    continue;
                 }
                 // Absent → unknown-id.
                 // Stays Medium: a DB-sync race (freshly-filed cite not yet in tasks.db)
